@@ -68,6 +68,21 @@ type failOnceRenderer struct {
 	next   *card.FakeRenderer
 }
 
+type blockingStreamRenderer struct {
+	next    *card.FakeRenderer
+	entered chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
+func (r *blockingStreamRenderer) Render(e card.Event) error {
+	if e.Type == "stream" {
+		r.once.Do(func() { close(r.entered) })
+		<-r.release
+	}
+	return r.next.Render(e)
+}
+
 func (r *failOnceRenderer) Render(e card.Event) error {
 	if e.Type != "stream" {
 		return r.next.Render(e)
@@ -913,6 +928,268 @@ func TestServiceBackgroundReadyTickDrainsWithoutSleep(t *testing.T) {
 	svc.startBackgroundLoopsWithTicks(ctx, nil, ready)
 	ready <- now.Add(time.Second)
 	waitForCalls(t, runner, 1)
+}
+
+func TestServiceRecallDuringStartingCancelsBeforeRunnerSpawn(t *testing.T) {
+	cfg := testConfig(t)
+	fake := card.NewFakeRenderer()
+	renderer := &blockingStreamRenderer{next: fake, entered: make(chan struct{}), release: make(chan struct{})}
+	runner := newFakeRunner()
+	svc := NewService(cfg, renderer, runner, audit.NewRecorder())
+	now := time.Now()
+	if err := svc.HandleMessage(context.Background(), Message{ID: "starting", ChatID: "chat", Sender: "u", Text: "/new work", Time: now}); err != nil {
+		t.Fatal(err)
+	}
+	drainDone := make(chan error, 1)
+	go func() { drainDone <- svc.DrainReady(now.Add(time.Second)) }()
+	<-renderer.entered
+	if err := svc.HandleMessageRecalled(context.Background(), MessageRecall{MessageID: "starting", ChatID: "chat"}); err != nil {
+		t.Fatal(err)
+	}
+	close(renderer.release)
+	if err := <-drainDone; err != nil {
+		t.Fatal(err)
+	}
+	if got := len(runner.Calls()); got != 0 {
+		t.Fatalf("runner calls = %d, want 0", got)
+	}
+	waitForSessionNoActiveBatch(t, svc, session.Key{Agent: agent.Claude, ChatID: "chat"})
+}
+
+func TestServiceRestoreDoesNotRunClearedQueue(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "sessions.json")
+	key := session.Key{Agent: agent.Claude, ChatID: "chat"}
+	now := time.Now()
+	seed := session.NewManagerWithStore(path)
+	if _, _, err := seed.AcceptAndEnqueue(key, session.Input{ID: "pending", ReplyToMessageID: "pending", WorkDir: t.TempDir(), Time: now, DebounceUntil: now, State: session.InputQueued}, now, time.Hour, 10, session.BatchLimits{MaxPending: 20}); err != nil {
+		t.Fatal(err)
+	}
+	restored := session.NewManagerWithStore(path)
+	notices, err := restored.Restore()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(notices) != 1 {
+		t.Fatalf("notices = %#v", notices)
+	}
+	runner := newFakeRunner()
+	svc := NewServiceWithSessions(testConfig(t), card.NewFakeRenderer(), runner, audit.NewRecorder(), restored, notices)
+	if err := svc.DrainReady(now.Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	if got := len(runner.Calls()); got != 0 {
+		t.Fatalf("runner calls = %d, want 0", got)
+	}
+}
+
+func TestServiceCompletionPersistFailureStillRendersResultAndAudits(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "sessions.json")
+	manager := session.NewManagerWithStore(path)
+	cfg := testConfig(t)
+	renderer := card.NewFakeRenderer()
+	runner := newFakeRunner()
+	runner.block = make(chan struct{})
+	runner.results = []AgentRunResult{{Segments: []card.Segment{{Kind: card.SegmentText, Text: "captured result"}}}}
+	recorder := audit.NewRecorder()
+	svc := NewServiceWithSessions(cfg, renderer, runner, recorder, manager, nil)
+	now := time.Now()
+	if err := svc.HandleMessage(context.Background(), Message{ID: "persist", ChatID: "chat", Sender: "u", Text: "/new work", Time: now}); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.DrainReady(now.Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	<-runner.started
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(dir); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(dir, []byte("not a directory"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	close(runner.block)
+	waitForEvents(t, renderer, 3)
+	last := renderer.Events()[len(renderer.Events())-1]
+	if last.Type != "result" || !containsAll(last.Segments[0].Text, "captured result") {
+		t.Fatalf("terminal card = %#v", last)
+	}
+	for _, event := range recorder.Events() {
+		if event.Action == "completion_persist_failed" {
+			return
+		}
+	}
+	t.Fatalf("audit events = %#v, want completion_persist_failed", recorder.Events())
+}
+
+func TestServiceMergesBusyTopicInputsIntoNextBatch(t *testing.T) {
+	cfg := testConfig(t)
+	runner := newFakeRunner()
+	runner.block = make(chan struct{})
+	svc := NewService(cfg, card.NewFakeRenderer(), runner, audit.NewRecorder())
+	now := time.Now()
+	first := Message{ID: "first", ChatID: "chat", ThreadID: "topic", Sender: "u", Text: "first", Time: now}
+	if err := svc.HandleMessage(context.Background(), first); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.DrainReady(now.Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	<-runner.started
+	for _, msg := range []Message{{ID: "two", ChatID: "chat", ThreadID: "topic", Sender: "u", Text: "two", Time: now}, {ID: "three", ChatID: "chat", ThreadID: "topic", Sender: "u", Text: "three", Time: now}} {
+		if err := svc.HandleMessage(context.Background(), msg); err != nil {
+			t.Fatal(err)
+		}
+	}
+	close(runner.block)
+	waitForSessionNoActiveBatch(t, svc, session.Key{Agent: agent.Claude, ChatID: "chat", Thread: "topic"})
+	if err := svc.DrainReady(now.Add(2 * time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	waitForCalls(t, runner, 2)
+	if prompt := runner.Calls()[1].Prompt; !containsAll(prompt, "two", "three") {
+		t.Fatalf("merged prompt = %q", prompt)
+	}
+}
+
+func TestServiceDeduplicatesCommandAndAcceptsOldBoundary(t *testing.T) {
+	svc := NewService(testConfig(t), card.NewFakeRenderer(), newFakeRunner(), audit.NewRecorder())
+	msg := Message{ID: "help", ChatID: "chat", Sender: "u", Text: "/help", Time: time.Now()}
+	if err := svc.HandleMessage(context.Background(), msg); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.HandleMessage(context.Background(), msg); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.HandleMessage(context.Background(), Message{ID: "boundary", ChatID: "chat", Sender: "u", Text: "/help", Time: svc.startedAt.Add(-2 * time.Second)}); err != nil {
+		t.Fatal(err)
+	}
+	// Two accepted help cards: one receipt duplicate is silent and the -2s boundary is not old.
+	if got := len(svc.Cards.(*card.LimitRenderer).Next.(*card.FakeRenderer).Events()); got != 2 {
+		t.Fatalf("help cards = %d, want 2", got)
+	}
+}
+
+func TestServiceRunningRecallCancelsMergedBatch(t *testing.T) {
+	cfg := testConfig(t)
+	runner := newFakeRunner()
+	runner.block = make(chan struct{})
+	svc := NewService(cfg, card.NewFakeRenderer(), runner, audit.NewRecorder())
+	now := time.Now()
+	for _, msg := range []Message{{ID: "one", ChatID: "chat", ThreadID: "topic", Sender: "u", Text: "one", Time: now}, {ID: "two", ChatID: "chat", ThreadID: "topic", Sender: "u", Text: "two", Time: now}} {
+		if err := svc.HandleMessage(context.Background(), msg); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := svc.DrainReady(now.Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	<-runner.started
+	if err := svc.HandleMessageRecalled(context.Background(), MessageRecall{MessageID: "one", ChatID: "chat"}); err != nil {
+		t.Fatal(err)
+	}
+	waitForSessionNoActiveBatch(t, svc, session.Key{Agent: agent.Claude, ChatID: "chat", Thread: "topic"})
+	if got := len(runner.Calls()); got != 1 {
+		t.Fatalf("runner calls = %d, want one cancelled batch", got)
+	}
+}
+
+func TestServiceStopKeepsLaterQueue(t *testing.T) {
+	cfg := testConfig(t)
+	runner := newFakeRunner()
+	runner.block = make(chan struct{})
+	svc := NewService(cfg, card.NewFakeRenderer(), runner, audit.NewRecorder())
+	now := time.Now()
+	if err := svc.HandleMessage(context.Background(), Message{ID: "first", ChatID: "chat", ThreadID: "topic", Sender: "u", Text: "first", Time: now}); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.DrainReady(now.Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	<-runner.started
+	if err := svc.HandleMessage(context.Background(), Message{ID: "later", ChatID: "chat", ThreadID: "topic", Sender: "u", Text: "later", Time: now}); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.HandleAction(context.Background(), ActionRequest{SessionID: "claude:chat:thread:topic:message:first", ActionID: "stop", Actor: "u"}); err != nil {
+		t.Fatal(err)
+	}
+	waitForSessionNoActiveBatch(t, svc, session.Key{Agent: agent.Claude, ChatID: "chat", Thread: "topic"})
+	if err := svc.DrainReady(now.Add(2 * time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	waitForCalls(t, runner, 2)
+	if got := runner.Calls()[1].Prompt; got != "later" {
+		t.Fatalf("later prompt = %q", got)
+	}
+}
+
+func TestServiceNewPromptIsBatchBoundaryAndResetsNextContext(t *testing.T) {
+	cfg := testConfig(t)
+	runner := newFakeRunner()
+	runner.results = []AgentRunResult{{ClaudeSessionID: "old"}, {ClaudeSessionID: "new"}, {ClaudeSessionID: "new"}}
+	svc := NewService(cfg, card.NewFakeRenderer(), runner, audit.NewRecorder())
+	now := time.Now()
+	inputs := []Message{{ID: "before", ChatID: "chat", ThreadID: "topic", Sender: "u", Text: "before", Time: now}, {ID: "new", ChatID: "chat", ThreadID: "topic", Sender: "u", Text: "/new reset", Time: now}, {ID: "after", ChatID: "chat", ThreadID: "topic", Sender: "u", Text: "after", Time: now}}
+	for _, msg := range inputs {
+		if err := svc.HandleMessage(context.Background(), msg); err != nil {
+			t.Fatal(err)
+		}
+	}
+	key := session.Key{Agent: agent.Claude, ChatID: "chat", Thread: "topic"}
+	if err := svc.DrainReady(now.Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	waitForCalls(t, runner, 1)
+	waitForSessionNoActiveBatch(t, svc, key)
+	if runner.Calls()[0].Prompt != "before" {
+		t.Fatalf("first prompt = %q", runner.Calls()[0].Prompt)
+	}
+	if err := svc.DrainReady(now.Add(2 * time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	waitForCalls(t, runner, 2)
+	waitForSessionNoActiveBatch(t, svc, key)
+	if call := runner.Calls()[1]; call.Prompt != "reset" || call.ClaudeSessionID != "" {
+		t.Fatalf("reset call = %#v", call)
+	}
+	if err := svc.DrainReady(now.Add(3 * time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	waitForCalls(t, runner, 3)
+	if call := runner.Calls()[2]; call.Prompt != "after" || call.ClaudeSessionID != "new" {
+		t.Fatalf("after call = %#v", call)
+	}
+}
+
+func TestServiceRunnerErrorSchedulesLaterQueue(t *testing.T) {
+	cfg := testConfig(t)
+	runner := newFakeRunner()
+	runner.block = make(chan struct{})
+	runner.errs = []error{errors.New("runner failed")}
+	svc := NewService(cfg, card.NewFakeRenderer(), runner, audit.NewRecorder())
+	now := time.Now()
+	if err := svc.HandleMessage(context.Background(), Message{ID: "first", ChatID: "chat", ThreadID: "topic", Sender: "u", Text: "first", Time: now}); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.DrainReady(now.Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	<-runner.started
+	if err := svc.HandleMessage(context.Background(), Message{ID: "next", ChatID: "chat", ThreadID: "topic", Sender: "u", Text: "next", Time: now}); err != nil {
+		t.Fatal(err)
+	}
+	close(runner.block)
+	key := session.Key{Agent: agent.Claude, ChatID: "chat", Thread: "topic"}
+	waitForSessionNoActiveBatch(t, svc, key)
+	if err := svc.DrainReady(now.Add(2 * time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	waitForCalls(t, runner, 2)
+	if got := runner.Calls()[1].Prompt; got != "next" {
+		t.Fatalf("next prompt = %q", got)
+	}
 }
 
 func TestParseClaudeStreamOutputDoesNotDuplicateFinalResult(t *testing.T) {
