@@ -68,6 +68,15 @@ type Batch struct {
 	RenderRef *RenderRef
 }
 
+// BatchCompletion records the durable terminal result for one active batch.
+type BatchCompletion struct {
+	Status          InputState
+	ClaudeSessionID string
+	Model           string
+	Tokens          int
+	At              time.Time
+}
+
 type RenderRef struct {
 	CardID         string
 	ReplyMessageID string
@@ -334,6 +343,177 @@ func (m *Manager) FreezeReadyBatch(key Key, now time.Time, limits BatchLimits) (
 	}
 	snapshot := cloneSession(s)
 	return *snapshot, cloneBatch(s.ActiveBatch), nil
+}
+
+// ReadyKeys returns scopes whose FIFO queue head can be frozen now. It is a
+// read-only view: promotion from debouncing to queued belongs to
+// FreezeReadyBatch so discovering ready work never changes durable state.
+func (m *Manager) ReadyKeys(now time.Time) []Key {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	keys := make([]Key, 0, len(m.sessions))
+	for _, s := range m.sessions {
+		if s.ActiveBatch != nil || len(s.Queue) == 0 {
+			continue
+		}
+		head := s.Queue[0]
+		if head.State == InputQueued || (head.State == InputDebouncing && !head.DebounceUntil.After(now)) {
+			keys = append(keys, s.Key)
+		}
+	}
+	sort.Slice(keys, func(i, j int) bool { return keys[i].ID() < keys[j].ID() })
+	return keys
+}
+
+// MarkBatchRunning publishes a starting batch as running after its candidate
+// state is durable. A stale or non-starting batch is rejected so an old
+// goroutine cannot claim a newer active batch.
+func (m *Manager) MarkBatchRunning(key Key, batchID string, renderRef *RenderRef, startedAt time.Time) (Session, *Batch, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	sessions := m.sessions
+	if m.storePath != "" {
+		sessions = cloneSessions(m.sessions)
+	}
+	s, ok := sessions[key.ID()]
+	if !ok {
+		return Session{}, nil, fmt.Errorf("session: active batch %q not found for %s", batchID, key.ID())
+	}
+	if s.ActiveBatch == nil {
+		return *cloneSession(s), nil, fmt.Errorf("session: no active batch for %s", key.ID())
+	}
+	if s.ActiveBatch.ID != batchID {
+		return *cloneSession(s), nil, fmt.Errorf("session: active batch mismatch for %s: got %q, want %q", key.ID(), batchID, s.ActiveBatch.ID)
+	}
+	if s.ActiveBatch.State != InputStarting {
+		return *cloneSession(s), nil, fmt.Errorf("session: active batch %q is %q, want %q", batchID, s.ActiveBatch.State, InputStarting)
+	}
+
+	batch := s.ActiveBatch
+	batch.State = InputRunning
+	batch.StartedAt = startedAt
+	batch.RenderRef = cloneRenderRef(renderRef)
+	for i := range batch.Inputs {
+		batch.Inputs[i].State = InputRunning
+	}
+	if len(batch.Inputs) > 0 {
+		first := batch.Inputs[0]
+		if first.Reset {
+			s.ClaudeSessionID = ""
+			s.Model = ""
+			s.Tokens = 0
+			s.History = nil
+		}
+		if first.WorkDir != "" {
+			s.WorkDir = first.WorkDir
+		}
+	}
+	for _, input := range batch.Inputs {
+		appendPromptLocked(s, input)
+	}
+	s.State = StateRunning
+
+	if m.storePath != "" {
+		if err := m.persistCandidateLocked(sessions, m.receipts, m.revision); err != nil {
+			return m.currentSessionLocked(key), nil, err
+		}
+	}
+	return *cloneSession(s), cloneBatch(batch), nil
+}
+
+// FinishBatch records a terminal active-batch outcome and releases the scope
+// for later queued work. It rejects stale batch IDs before changing anything.
+func (m *Manager) FinishBatch(key Key, batchID string, completion BatchCompletion) (Session, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if !terminalBatchStatus(completion.Status) {
+		return m.currentSessionLocked(key), fmt.Errorf("session: invalid batch completion status %q", completion.Status)
+	}
+	sessions := m.sessions
+	if m.storePath != "" {
+		sessions = cloneSessions(m.sessions)
+	}
+	s, ok := sessions[key.ID()]
+	if !ok {
+		return Session{}, fmt.Errorf("session: active batch %q not found for %s", batchID, key.ID())
+	}
+	if s.ActiveBatch == nil {
+		return *cloneSession(s), fmt.Errorf("session: no active batch for %s", key.ID())
+	}
+	if s.ActiveBatch.ID != batchID {
+		return *cloneSession(s), fmt.Errorf("session: active batch mismatch for %s: got %q, want %q", key.ID(), batchID, s.ActiveBatch.ID)
+	}
+
+	for i := range s.ActiveBatch.Inputs {
+		s.ActiveBatch.Inputs[i].State = completion.Status
+	}
+	s.ActiveBatch.State = completion.Status
+	if completion.ClaudeSessionID != "" {
+		s.ClaudeSessionID = completion.ClaudeSessionID
+	}
+	if completion.Model != "" {
+		s.Model = completion.Model
+	}
+	if completion.Tokens > 0 {
+		s.Tokens += completion.Tokens
+	}
+	s.ActiveBatch = nil
+	s.State = StateIdle
+	if !completion.At.IsZero() {
+		s.LastActive = completion.At
+	}
+
+	if m.storePath != "" {
+		if err := m.persistCandidateLocked(sessions, m.receipts, m.revision); err != nil {
+			return m.currentSessionLocked(key), err
+		}
+	}
+	return *cloneSession(s), nil
+}
+
+// CancelQueuedInputByMessageID removes exactly one queued or debouncing input
+// matched by its own or reply message ID. Persistence failures report the
+// match but leave the live queue unchanged so callers can retry safely.
+func (m *Manager) CancelQueuedInputByMessageID(messageID string) (Session, Input, bool, error) {
+	if messageID == "" {
+		return Session{}, Input{}, false, nil
+	}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	sessions := m.sessions
+	if m.storePath != "" {
+		sessions = cloneSessions(m.sessions)
+	}
+	for _, s := range sessions {
+		for i, input := range s.Queue {
+			if (input.State != InputQueued && input.State != InputDebouncing) || (input.ID != messageID && input.ReplyToMessageID != messageID) {
+				continue
+			}
+			input.State = InputCancelled
+			s.Queue = append(s.Queue[:i:i], s.Queue[i+1:]...)
+			if m.storePath != "" {
+				if err := m.persistCandidateLocked(sessions, m.receipts, m.revision); err != nil {
+					return m.currentSessionLocked(s.Key), input, true, err
+				}
+			}
+			return *cloneSession(s), input, true, nil
+		}
+	}
+	return Session{}, Input{}, false, nil
+}
+
+func terminalBatchStatus(status InputState) bool {
+	switch status {
+	case InputCompleted, InputFailed, InputCancelled, InputInterrupted:
+		return true
+	default:
+		return false
+	}
 }
 
 func (m *Manager) Complete(key Key, workDir string) (Session, *Input) {

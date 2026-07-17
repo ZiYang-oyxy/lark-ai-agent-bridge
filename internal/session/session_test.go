@@ -1,6 +1,7 @@
 package session
 
 import (
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -372,6 +373,210 @@ func TestCloneSessionDeepCopiesRenderRef(t *testing.T) {
 
 	if original.Queue[0].Text != "queued" || original.ActiveBatch.Inputs[0].Text != "active" || original.ActiveBatch.RenderRef.CardID != "card" {
 		t.Fatalf("clone mutated original: %#v", original)
+	}
+}
+
+func TestReadyKeysFiltersActiveAndFutureSessionsWithoutMutation(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "sessions.json")
+	m := NewManagerWithStore(path)
+	now := time.Unix(100, 0)
+	limits := BatchLimits{}
+	readyA := Key{Agent: agent.Claude, ChatID: "a"}
+	readyB := Key{Agent: agent.Claude, ChatID: "b"}
+	future := Key{Agent: agent.Claude, ChatID: "future"}
+	active := Key{Agent: agent.Claude, ChatID: "active"}
+
+	for _, tc := range []struct {
+		key   Key
+		input Input
+	}{
+		{readyB, Input{ID: "b", State: InputQueued}},
+		{readyA, Input{ID: "a", State: InputDebouncing, DebounceUntil: now}},
+		{future, Input{ID: "future", State: InputDebouncing, DebounceUntil: now.Add(time.Second)}},
+		{active, Input{ID: "active", State: InputQueued}},
+	} {
+		if _, _, err := m.EnqueueDurable(tc.key, tc.input, "/w", limits); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, batch, err := m.FreezeReadyBatch(active, now, limits); err != nil || batch == nil {
+		t.Fatalf("freeze active batch=%#v err=%v", batch, err)
+	}
+	revision := m.revision
+
+	got := m.ReadyKeys(now)
+	if len(got) != 2 || got[0] != readyA || got[1] != readyB {
+		t.Fatalf("ready keys = %#v, want a then b", got)
+	}
+	if m.revision != revision {
+		t.Fatalf("ReadyKeys advanced revision to %d, want %d", m.revision, revision)
+	}
+	stored, ok := m.Get(readyA)
+	if !ok || stored.Queue[0].State != InputDebouncing {
+		t.Fatalf("ReadyKeys promoted durable input: %#v", stored)
+	}
+}
+
+func TestMarkBatchRunningTransitionsAndReturnsIsolatedClones(t *testing.T) {
+	m := NewManager()
+	key := Key{Agent: agent.Claude, ChatID: "running"}
+	now := time.Unix(100, 0)
+	if _, _, err := m.EnqueueDurable(key, Input{ID: "input", Text: "hello", State: InputQueued, Time: now}, "/w", BatchLimits{}); err != nil {
+		t.Fatal(err)
+	}
+	_, frozen, err := m.FreezeReadyBatch(key, now, BatchLimits{})
+	if err != nil || frozen == nil {
+		t.Fatalf("freeze batch=%#v err=%v", frozen, err)
+	}
+	ref := &RenderRef{CardID: "card", ReplyMessageID: "reply", Version: 1}
+	sess, batch, err := m.MarkBatchRunning(key, frozen.ID, ref, now.Add(time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sess.State != StateRunning || sess.ActiveBatch == nil || sess.ActiveBatch.State != InputRunning || sess.ActiveBatch.StartedAt != now.Add(time.Second) || sess.ActiveBatch.Inputs[0].State != InputRunning {
+		t.Fatalf("running session = %#v", sess)
+	}
+	if batch == nil || batch.State != InputRunning || batch.RenderRef == nil || batch.RenderRef.CardID != "card" {
+		t.Fatalf("running batch = %#v", batch)
+	}
+
+	ref.CardID = "caller mutation"
+	sess.ActiveBatch.RenderRef.CardID = "session mutation"
+	batch.Inputs[0].Text = "batch mutation"
+	got, ok := m.Get(key)
+	if !ok || got.ActiveBatch == nil || got.ActiveBatch.RenderRef.CardID != "card" || got.ActiveBatch.Inputs[0].Text != "hello" {
+		t.Fatalf("returned values leaked into manager: %#v", got)
+	}
+}
+
+func TestMarkBatchRunningResetClearsContextAndPreservesLaterQueue(t *testing.T) {
+	m := NewManager()
+	key := Key{Agent: agent.Claude, ChatID: "reset"}
+	now := time.Unix(100, 0)
+	old, _ := m.Enqueue(key, Input{ID: "old", Sender: "u", Text: "old prompt", Time: now}, "/old")
+	m.UpdateRunResult(old.ID, "old-session", "old-model", 12)
+	m.CompleteAt(key, "/old", now.Add(time.Second))
+	for _, input := range []Input{
+		{ID: "reset", Sender: "u", Text: "fresh prompt", Reset: true, WorkDir: "/new", State: InputQueued, Time: now.Add(2 * time.Second)},
+		{ID: "later", Sender: "u", Text: "later prompt", WorkDir: "/new", State: InputQueued, Time: now.Add(3 * time.Second)},
+	} {
+		if _, _, err := m.EnqueueDurable(key, input, input.WorkDir, BatchLimits{}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	_, frozen, err := m.FreezeReadyBatch(key, now.Add(4*time.Second), BatchLimits{})
+	if err != nil || frozen == nil {
+		t.Fatalf("freeze batch=%#v err=%v", frozen, err)
+	}
+	sess, _, err := m.MarkBatchRunning(key, frozen.ID, nil, now.Add(5*time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sess.ClaudeSessionID != "" || sess.Model != "" || sess.Tokens != 0 || sess.WorkDir != "/new" {
+		t.Fatalf("reset context = %#v", sess)
+	}
+	if len(sess.History) != 1 || sess.History[0].Text != "fresh prompt" {
+		t.Fatalf("reset history = %#v", sess.History)
+	}
+	if sess.ActiveBatch == nil || len(sess.ActiveBatch.Inputs) != 1 || len(sess.Queue) != 1 || sess.Queue[0].ID != "later" {
+		t.Fatalf("reset scheduling state = %#v", sess)
+	}
+}
+
+func TestFinishBatchReleasesEveryTerminalStatusAndPreservesQueue(t *testing.T) {
+	for _, status := range []InputState{InputCompleted, InputFailed, InputCancelled, InputInterrupted} {
+		t.Run(string(status), func(t *testing.T) {
+			m := NewManager()
+			key := Key{Agent: agent.Claude, ChatID: string(status)}
+			now := time.Unix(100, 0)
+			if _, _, err := m.EnqueueDurable(key, Input{ID: "active", Text: "one", State: InputQueued, Time: now}, "/w", BatchLimits{}); err != nil {
+				t.Fatal(err)
+			}
+			_, frozen, err := m.FreezeReadyBatch(key, now, BatchLimits{})
+			if err != nil || frozen == nil {
+				t.Fatalf("freeze batch=%#v err=%v", frozen, err)
+			}
+			if _, _, err := m.MarkBatchRunning(key, frozen.ID, nil, now.Add(time.Second)); err != nil {
+				t.Fatal(err)
+			}
+			m.UpdateRunResult(key.ID(), "", "", 4)
+			if _, _, err := m.EnqueueDurable(key, Input{ID: "later", Text: "two", State: InputQueued, Time: now}, "/w", BatchLimits{}); err != nil {
+				t.Fatal(err)
+			}
+
+			finishedAt := now.Add(2 * time.Second)
+			sess, err := m.FinishBatch(key, frozen.ID, BatchCompletion{Status: status, ClaudeSessionID: "new-session", Model: "new-model", Tokens: 7, At: finishedAt})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if sess.State != StateIdle || sess.ActiveBatch != nil || len(sess.Queue) != 1 || sess.Queue[0].ID != "later" {
+				t.Fatalf("finished scheduling state = %#v", sess)
+			}
+			if sess.ClaudeSessionID != "new-session" || sess.Model != "new-model" || sess.Tokens != 11 || !sess.LastActive.Equal(finishedAt) {
+				t.Fatalf("finished context = %#v", sess)
+			}
+		})
+	}
+}
+
+func TestFinishBatchRejectsStaleBatchAndInvalidStatusWithoutMutation(t *testing.T) {
+	m := NewManager()
+	key := Key{Agent: agent.Claude, ChatID: "stale"}
+	now := time.Unix(100, 0)
+	if _, _, err := m.EnqueueDurable(key, Input{ID: "active", State: InputQueued, Time: now}, "/w", BatchLimits{}); err != nil {
+		t.Fatal(err)
+	}
+	_, frozen, err := m.FreezeReadyBatch(key, now, BatchLimits{})
+	if err != nil || frozen == nil {
+		t.Fatalf("freeze batch=%#v err=%v", frozen, err)
+	}
+	if _, _, err := m.MarkBatchRunning(key, frozen.ID, nil, now); err != nil {
+		t.Fatal(err)
+	}
+	before, _ := m.Get(key)
+	for _, completion := range []BatchCompletion{
+		{Status: InputCompleted, At: now},
+		{Status: InputQueued, At: now},
+	} {
+		batchID := frozen.ID
+		if completion.Status == InputCompleted {
+			batchID = "stale-batch"
+		}
+		if _, err := m.FinishBatch(key, batchID, completion); err == nil {
+			t.Fatalf("FinishBatch(%q, %#v) unexpectedly succeeded", batchID, completion)
+		}
+		got, _ := m.Get(key)
+		if got.ActiveBatch == nil || got.ActiveBatch.ID != before.ActiveBatch.ID || got.State != before.State || got.Tokens != before.Tokens {
+			t.Fatalf("failed finish mutated manager: before=%#v after=%#v", before, got)
+		}
+	}
+}
+
+func TestCancelQueuedInputByMessageIDMatchesBothIDsAndPreservesFIFO(t *testing.T) {
+	m := NewManager()
+	key := Key{Agent: agent.Claude, ChatID: "cancel"}
+	for _, input := range []Input{
+		{ID: "input-1", State: InputQueued},
+		{ID: "input-2", ReplyToMessageID: "reply-2", State: InputDebouncing},
+		{ID: "input-3", State: InputQueued},
+	} {
+		if _, _, err := m.EnqueueDurable(key, input, "/w", BatchLimits{}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	sess, removed, found, err := m.CancelQueuedInputByMessageID("reply-2")
+	if err != nil || !found || removed.ID != "input-2" || removed.State != InputCancelled {
+		t.Fatalf("reply cancellation: session=%#v removed=%#v found=%t err=%v", sess, removed, found, err)
+	}
+	if len(sess.Queue) != 2 || sess.Queue[0].ID != "input-1" || sess.Queue[1].ID != "input-3" {
+		t.Fatalf("reply cancellation queue = %#v", sess.Queue)
+	}
+	sess, removed, found, err = m.CancelQueuedInputByMessageID("input-1")
+	if err != nil || !found || removed.ID != "input-1" || removed.State != InputCancelled || len(sess.Queue) != 1 || sess.Queue[0].ID != "input-3" {
+		t.Fatalf("input cancellation: session=%#v removed=%#v found=%t err=%v", sess, removed, found, err)
+	}
+	if sess, removed, found, err := m.CancelQueuedInputByMessageID(""); err != nil || found || sess.ID != "" || removed.ID != "" {
+		t.Fatalf("empty cancellation: session=%#v removed=%#v found=%t err=%v", sess, removed, found, err)
 	}
 }
 

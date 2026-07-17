@@ -331,6 +331,106 @@ func TestFreezeReadyBatchDoesNotPublishWhenSnapshotSaveFails(t *testing.T) {
 	}
 }
 
+func TestStoreAwareBatchLifecyclePersistsRunningAndTerminalState(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "sessions.json")
+	m := NewManagerWithStore(path)
+	key := Key{Agent: agent.Claude, ChatID: "lifecycle"}
+	now := time.Unix(10, 0)
+	if _, _, err := m.EnqueueDurable(key, Input{ID: "input", Text: "hello", State: InputQueued, Time: now}, "/w", BatchLimits{}); err != nil {
+		t.Fatal(err)
+	}
+	_, frozen, err := m.FreezeReadyBatch(key, now, BatchLimits{})
+	if err != nil || frozen == nil {
+		t.Fatalf("freeze batch=%#v err=%v", frozen, err)
+	}
+	if _, _, err := m.MarkBatchRunning(key, frozen.ID, &RenderRef{CardID: "card"}, now.Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	running, err := LoadSnapshot(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if running.Revision != 3 || len(running.Sessions) != 1 || running.Sessions[0].State != StateRunning || running.Sessions[0].ActiveBatch == nil || running.Sessions[0].ActiveBatch.State != InputRunning || running.Sessions[0].ActiveBatch.Inputs[0].State != InputRunning || running.Sessions[0].ActiveBatch.RenderRef == nil || running.Sessions[0].ActiveBatch.RenderRef.CardID != "card" {
+		t.Fatalf("running snapshot = %#v", running)
+	}
+
+	finishedAt := now.Add(2 * time.Second)
+	if _, err := m.FinishBatch(key, frozen.ID, BatchCompletion{Status: InputCompleted, ClaudeSessionID: "session", Model: "model", Tokens: 5, At: finishedAt}); err != nil {
+		t.Fatal(err)
+	}
+	finished, err := LoadSnapshot(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if finished.Revision != 4 || len(finished.Sessions) != 1 || finished.Sessions[0].State != StateIdle || finished.Sessions[0].ActiveBatch != nil || finished.Sessions[0].ClaudeSessionID != "session" || finished.Sessions[0].Model != "model" || finished.Sessions[0].Tokens != 5 || !finished.Sessions[0].LastActive.Equal(finishedAt) {
+		t.Fatalf("finished snapshot = %#v", finished)
+	}
+}
+
+func TestStoreAwareLifecycleMutationsDoNotPublishWhenSnapshotSaveFails(t *testing.T) {
+	key := Key{Agent: agent.Claude, ChatID: "rollback"}
+	now := time.Unix(10, 0)
+	t.Run("mark running", func(t *testing.T) {
+		m := NewManagerWithStore(t.TempDir())
+		m.sessions[key.ID()] = &Session{
+			Key:             key,
+			ID:              key.ID(),
+			ClaudeSessionID: "old-session",
+			Model:           "old-model",
+			Tokens:          4,
+			History:         []Prompt{{Text: "old"}},
+			State:           StateIdle,
+			Queue:           []Input{{ID: "later", State: InputQueued}},
+			ActiveBatch:     &Batch{ID: "batch", State: InputStarting, Inputs: []Input{{ID: "active", Text: "new", State: InputStarting}}},
+		}
+		m.revision = 7
+
+		sess, batch, err := m.MarkBatchRunning(key, "batch", &RenderRef{CardID: "card"}, now)
+		if err == nil || batch != nil {
+			t.Fatalf("mark result session=%#v batch=%#v err=%v", sess, batch, err)
+		}
+		if sess.State != StateIdle || sess.ActiveBatch == nil || sess.ActiveBatch.State != InputStarting || sess.ActiveBatch.RenderRef != nil || len(sess.Queue) != 1 || sess.ClaudeSessionID != "old-session" || len(sess.History) != 1 || m.revision != 7 || m.lastPersistErr == nil {
+			t.Fatalf("mark failure published state: session=%#v revision=%d err=%v", sess, m.revision, m.lastPersistErr)
+		}
+	})
+	t.Run("finish", func(t *testing.T) {
+		m := NewManagerWithStore(t.TempDir())
+		m.sessions[key.ID()] = &Session{
+			Key:             key,
+			ID:              key.ID(),
+			ClaudeSessionID: "old-session",
+			Model:           "old-model",
+			Tokens:          4,
+			History:         []Prompt{{Text: "old"}},
+			State:           StateRunning,
+			Queue:           []Input{{ID: "later", State: InputQueued}},
+			ActiveBatch:     &Batch{ID: "batch", State: InputRunning, Inputs: []Input{{ID: "active", State: InputRunning}}},
+		}
+		m.revision = 7
+
+		sess, err := m.FinishBatch(key, "batch", BatchCompletion{Status: InputCompleted, ClaudeSessionID: "new-session", Model: "new-model", Tokens: 3, At: now})
+		if err == nil {
+			t.Fatalf("finish result session=%#v err=%v", sess, err)
+		}
+		if sess.State != StateRunning || sess.ActiveBatch == nil || sess.ActiveBatch.State != InputRunning || len(sess.Queue) != 1 || sess.ClaudeSessionID != "old-session" || sess.Model != "old-model" || sess.Tokens != 4 || len(sess.History) != 1 || m.revision != 7 || m.lastPersistErr == nil {
+			t.Fatalf("finish failure published state: session=%#v revision=%d err=%v", sess, m.revision, m.lastPersistErr)
+		}
+	})
+	t.Run("queued cancellation", func(t *testing.T) {
+		m := NewManagerWithStore(t.TempDir())
+		m.sessions[key.ID()] = &Session{Key: key, ID: key.ID(), Queue: []Input{{ID: "input", ReplyToMessageID: "reply", State: InputQueued}}}
+		m.revision = 7
+
+		sess, removed, found, err := m.CancelQueuedInputByMessageID("reply")
+		if err == nil || !found || removed.ID != "input" || removed.State != InputCancelled {
+			t.Fatalf("cancel result session=%#v removed=%#v found=%t err=%v", sess, removed, found, err)
+		}
+		if len(sess.Queue) != 1 || sess.Queue[0].ID != "input" || sess.Queue[0].State != InputQueued || m.revision != 7 || m.lastPersistErr == nil {
+			t.Fatalf("cancel failure published state: session=%#v revision=%d err=%v", sess, m.revision, m.lastPersistErr)
+		}
+	})
+}
+
 func TestStoreAwareDurableMutationsPersistSortedDeepCopiesAndAdvanceRevision(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "sessions.json")
 	m := NewManagerWithStore(path)
