@@ -600,6 +600,26 @@ wait_audit_since() {
   done
 }
 
+wait_audit_count_since() {
+  local mark="$1"
+  local pattern="$2"
+  local want="$3"
+  local timeout="${4:-$WAIT_TIMEOUT}"
+  local start count
+  start="$(date +%s)"
+  while true; do
+    count="$(audit_since "$mark" | grep -Ec "$pattern" || true)"
+    if [[ "$count" -ge "$want" ]]; then
+      return 0
+    fi
+    if (( $(date +%s) - start >= timeout )); then
+      echo "timed out waiting for $want new audit records matching: $pattern (got $count)" >&2
+      return 1
+    fi
+    sleep 1
+  done
+}
+
 result_message_since() {
   local mark="$1"
   local first="$2"
@@ -1012,6 +1032,7 @@ case_busy_merge() {
   first="$PAIR_FIRST"
   second="$PAIR_SECOND"
   wait_file_contains "$FAKE_CLAUDE_LOG" "$active_marker" 60
+  wait_audit_count_since "$mark" '"Action":"queue_input"' 2 60
   stop_card "claude:${E2E_E2E_CHAT_ID}:message:${active}"
   wait_audit_since "$mark" '"Action":"batch_stop_requested"' 60
   wait_audit_since "$mark" "($first|$second).*event=result" 60
