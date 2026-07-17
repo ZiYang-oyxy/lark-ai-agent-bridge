@@ -1,9 +1,11 @@
 package session
 
 import (
+	"fmt"
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"lark-agent-bridge/internal/agent"
 )
@@ -28,14 +30,58 @@ type Prompt struct {
 	Text   string
 }
 
+type InputState string
+
+const (
+	InputDebouncing  InputState = "debouncing"
+	InputQueued      InputState = "queued"
+	InputStarting    InputState = "starting"
+	InputRunning     InputState = "running"
+	InputCompleted   InputState = "completed"
+	InputFailed      InputState = "failed"
+	InputCancelled   InputState = "cancelled"
+	InputInterrupted InputState = "interrupted"
+)
+
 type Input struct {
+	ID               string
 	Sender           string
 	Text             string
 	ReplyToMessageID string
 	CardSessionID    string
 	WorkDir          string
+	RequestedModel   string
+	RequestedEffort  string
 	Time             time.Time
+	DebounceUntil    time.Time
+	State            InputState
 	Reset            bool
+}
+
+type Batch struct {
+	ID        string
+	Inputs    []Input
+	State     InputState
+	CreatedAt time.Time
+	StartedAt time.Time
+	RenderRef *RenderRef
+}
+
+type RenderRef struct {
+	CardID         string
+	ReplyMessageID string
+	Version        int
+}
+
+type BatchLimits struct {
+	MaxInputs    int
+	MaxTextRunes int
+	MaxPending   int
+}
+
+type EnqueueResult struct {
+	Position int
+	Queued   bool
 }
 
 type State string
@@ -57,6 +103,7 @@ type Session struct {
 	State           State
 	History         []Prompt
 	Queue           []Input
+	ActiveBatch     *Batch
 	CreatedAt       time.Time
 	LastActive      time.Time
 }
@@ -118,6 +165,93 @@ func (m *Manager) Enqueue(key Key, input Input, workDir string) (Session, bool) 
 	s.LastActive = input.Time
 	appendPromptLocked(s, input)
 	return *cloneSession(s), false
+}
+
+// EnqueueDurable appends an input to the durable-model queue without starting
+// an agent or changing session history. Persistence is intentionally layered
+// on by a later store-aware manager API.
+func (m *Manager) EnqueueDurable(key Key, input Input, workDir string, limits BatchLimits) (Session, EnqueueResult, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	s := m.ensureLocked(key, workDir)
+	if limits.MaxPending > 0 && len(s.Queue) >= limits.MaxPending {
+		return *cloneSession(s), EnqueueResult{}, fmt.Errorf("session: pending input limit %d reached", limits.MaxPending)
+	}
+	if input.Time.IsZero() {
+		input.Time = time.Now()
+	}
+	if input.WorkDir == "" {
+		input.WorkDir = workDir
+	}
+	if input.State == "" {
+		input.State = InputQueued
+	}
+	s.Queue = append(s.Queue, input)
+	return *cloneSession(s), EnqueueResult{Position: len(s.Queue), Queued: true}, nil
+}
+
+// FreezeReadyBatch turns ready inputs at a queue head into an immutable batch.
+// A scope with an active batch remains serial: no later input is inspected or
+// promoted until that batch has been released by the execution lifecycle.
+func (m *Manager) FreezeReadyBatch(key Key, now time.Time, limits BatchLimits) (Session, *Batch, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	s, ok := m.sessions[key.ID()]
+	if !ok {
+		return Session{}, nil, nil
+	}
+	if s.ActiveBatch != nil {
+		return *cloneSession(s), nil, nil
+	}
+	for i := range s.Queue {
+		if s.Queue[i].State == InputDebouncing && !s.Queue[i].DebounceUntil.After(now) {
+			s.Queue[i].State = InputQueued
+		}
+	}
+	if len(s.Queue) == 0 || s.Queue[0].State != InputQueued {
+		return *cloneSession(s), nil, nil
+	}
+
+	first := s.Queue[0]
+	count := 0
+	textRunes := 0
+	for _, input := range s.Queue {
+		if input.State != InputQueued || !compatibleBatchInput(first, input) {
+			break
+		}
+		if count > 0 && (first.Reset || input.Reset) {
+			break
+		}
+		if limits.MaxInputs > 0 && count >= limits.MaxInputs {
+			break
+		}
+		inputRunes := utf8.RuneCountInString(input.Text)
+		if limits.MaxTextRunes > 0 && textRunes+inputRunes > limits.MaxTextRunes {
+			break
+		}
+		count++
+		textRunes += inputRunes
+		if first.Reset {
+			break
+		}
+	}
+	if count == 0 {
+		return *cloneSession(s), nil, nil
+	}
+
+	inputs := cloneInputs(s.Queue[:count])
+	for i := range inputs {
+		inputs[i].State = InputStarting
+	}
+	s.Queue = append([]Input(nil), s.Queue[count:]...)
+	s.ActiveBatch = &Batch{
+		ID:        fmt.Sprintf("%s:%d", s.ID, now.UnixNano()),
+		Inputs:    cloneInputs(inputs),
+		State:     InputStarting,
+		CreatedAt: now,
+	}
+	snapshot := cloneSession(s)
+	return *snapshot, cloneBatch(s.ActiveBatch), nil
 }
 
 func (m *Manager) Complete(key Key, workDir string) (Session, *Input) {
@@ -257,6 +391,7 @@ func resetSessionLocked(s *Session, workDir string, now time.Time) {
 	s.Tokens = 0
 	s.History = nil
 	s.Queue = nil
+	s.ActiveBatch = nil
 	s.State = StateIdle
 	s.CreatedAt = now
 	s.LastActive = now
@@ -272,6 +407,35 @@ func appendPromptLocked(s *Session, input Input) {
 func cloneSession(s *Session) *Session {
 	cp := *s
 	cp.History = append([]Prompt(nil), s.History...)
-	cp.Queue = append([]Input(nil), s.Queue...)
+	cp.Queue = cloneInputs(s.Queue)
+	cp.ActiveBatch = cloneBatch(s.ActiveBatch)
+	return &cp
+}
+
+func compatibleBatchInput(first, next Input) bool {
+	return first.WorkDir == next.WorkDir &&
+		first.RequestedModel == next.RequestedModel &&
+		first.RequestedEffort == next.RequestedEffort
+}
+
+func cloneInputs(inputs []Input) []Input {
+	return append([]Input(nil), inputs...)
+}
+
+func cloneBatch(batch *Batch) *Batch {
+	if batch == nil {
+		return nil
+	}
+	cp := *batch
+	cp.Inputs = cloneInputs(batch.Inputs)
+	cp.RenderRef = cloneRenderRef(batch.RenderRef)
+	return &cp
+}
+
+func cloneRenderRef(ref *RenderRef) *RenderRef {
+	if ref == nil {
+		return nil
+	}
+	cp := *ref
 	return &cp
 }
