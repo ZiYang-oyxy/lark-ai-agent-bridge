@@ -290,6 +290,9 @@ Usage:
 
 Environment:
   E2E_DEFAULT_AGENT      defaults to claude
+  E2E_CLAUDE_BIN         claude executable path; defaults to "claude" (resolved via PATH).
+                         Set to an absolute path such as /path/to/lark-agent-workspace/bin/claude
+                         to launch Claude through a workspace wrapper.
   E2E_DEFAULT_WORKDIR    defaults to current directory
   E2E_CARD_UPDATE_MS     defaults to 800
   E2E_CARD_MAX_CHARS     defaults to 12000

@@ -19,8 +19,12 @@ type Check struct {
 }
 
 func Run(cfg config.Config) []Check {
+	claudeBin := cfg.ClaudeBin
+	if claudeBin == "" {
+		claudeBin = "claude"
+	}
 	checks := []Check{
-		lookPath("claude", "claude"),
+		lookPath("claude", claudeBin),
 		envPresent("LARK_APP_ID"),
 		envPresent("LARK_APP_SECRET"),
 		{Name: "default_agent", OK: cfg.DefaultAgent != "", Detail: cfg.DefaultAgent},
