@@ -174,7 +174,11 @@ func (m *Manager) EnqueueDurable(key Key, input Input, workDir string, limits Ba
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	s := m.ensureLocked(key, workDir)
-	if limits.MaxPending > 0 && len(s.Queue) >= limits.MaxPending {
+	pending := len(s.Queue)
+	if s.ActiveBatch != nil {
+		pending += len(s.ActiveBatch.Inputs)
+	}
+	if limits.MaxPending > 0 && pending >= limits.MaxPending {
 		return *cloneSession(s), EnqueueResult{}, fmt.Errorf("session: pending input limit %d reached", limits.MaxPending)
 	}
 	if input.Time.IsZero() {
@@ -227,6 +231,9 @@ func (m *Manager) FreezeReadyBatch(key Key, now time.Time, limits BatchLimits) (
 		}
 		inputRunes := utf8.RuneCountInString(input.Text)
 		if limits.MaxTextRunes > 0 && textRunes+inputRunes > limits.MaxTextRunes {
+			if count == 0 {
+				count++
+			}
 			break
 		}
 		count++

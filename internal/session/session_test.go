@@ -206,6 +206,32 @@ func TestFreezeReadyBatchStopsAtTextLimitWithoutSkippingHead(t *testing.T) {
 	}
 }
 
+func TestFreezeReadyBatchAllowsOversizedHeadAsSingleInput(t *testing.T) {
+	m := NewManager()
+	key := Key{Agent: agent.Claude, ChatID: "chat"}
+	now := time.Unix(10, 0)
+	limits := BatchLimits{MaxTextRunes: 3}
+	for _, input := range []Input{
+		{ID: "oversized", Text: "four", State: InputQueued, Time: now},
+		{ID: "following", Text: "one", State: InputQueued, Time: now},
+	} {
+		if _, _, err := m.EnqueueDurable(key, input, "/a", limits); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	sess, batch, err := m.FreezeReadyBatch(key, now, limits)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if batch == nil || len(batch.Inputs) != 1 || batch.Inputs[0].ID != "oversized" {
+		t.Fatalf("batch = %#v, want oversized queue head as one-input batch", batch)
+	}
+	if len(sess.Queue) != 1 || sess.Queue[0].ID != "following" {
+		t.Fatalf("queue = %#v, want following input retained", sess.Queue)
+	}
+}
+
 func TestFreezeReadyBatchDoesNotPromoteWhileBatchIsActive(t *testing.T) {
 	m := NewManager()
 	key := Key{Agent: agent.Claude, ChatID: "chat"}
@@ -244,6 +270,37 @@ func TestEnqueueDurableRejectsFullQueueWithoutMutation(t *testing.T) {
 	got, ok := m.Get(key)
 	if !ok || len(got.Queue) != 1 || got.Queue[0].ID != "i1" {
 		t.Fatalf("queue after rejected enqueue = %#v", got.Queue)
+	}
+}
+
+func TestEnqueueDurableCountsActiveBatchAgainstMaxPending(t *testing.T) {
+	m := NewManager()
+	key := Key{Agent: agent.Claude, ChatID: "chat"}
+	now := time.Unix(10, 0)
+	limits := BatchLimits{MaxPending: 2}
+	if _, _, err := m.EnqueueDurable(key, Input{ID: "active", Text: "one", State: InputQueued, Time: now}, "/a", limits); err != nil {
+		t.Fatal(err)
+	}
+	if _, batch, err := m.FreezeReadyBatch(key, now, BatchLimits{MaxInputs: 1}); err != nil || batch == nil {
+		t.Fatalf("freeze: batch=%#v err=%v", batch, err)
+	}
+	if _, _, err := m.EnqueueDurable(key, Input{ID: "queued", Text: "two", State: InputQueued, Time: now}, "/a", limits); err != nil {
+		t.Fatal(err)
+	}
+
+	before, ok := m.Get(key)
+	if !ok {
+		t.Fatal("missing session before full enqueue")
+	}
+	if _, _, err := m.EnqueueDurable(key, Input{ID: "rejected", Text: "three", State: InputQueued, Time: now}, "/a", limits); err == nil || !strings.Contains(err.Error(), "pending") {
+		t.Fatalf("full enqueue error = %v, want pending capacity error", err)
+	}
+	after, ok := m.Get(key)
+	if !ok || len(after.Queue) != 1 || after.Queue[0].ID != "queued" || after.ActiveBatch == nil || len(after.ActiveBatch.Inputs) != 1 || after.ActiveBatch.Inputs[0].ID != "active" {
+		t.Fatalf("session after rejected enqueue = %#v", after)
+	}
+	if len(before.Queue) != len(after.Queue) || before.Queue[0].ID != after.Queue[0].ID || before.ActiveBatch.Inputs[0].ID != after.ActiveBatch.Inputs[0].ID {
+		t.Fatalf("rejected enqueue changed durable state: before=%#v after=%#v", before, after)
 	}
 }
 
