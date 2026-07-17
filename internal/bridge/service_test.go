@@ -1188,6 +1188,79 @@ func TestServiceRetriesPersistedCompletionBeforeStartingLaterQueue(t *testing.T)
 	}
 }
 
+func TestServiceBacksOffPendingCompletionRetries(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, "store")
+	if err := os.Mkdir(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "sessions.json")
+	manager := session.NewManagerWithStore(path)
+	runner := newFakeRunner()
+	runner.block = make(chan struct{})
+	svc := NewServiceWithSessions(testConfig(t), card.NewFakeRenderer(), runner, audit.NewRecorder(), manager, nil)
+	now := time.Now()
+	if err := svc.HandleMessage(context.Background(), Message{ID: "first", ChatID: "chat", ThreadID: "topic", Sender: "u", Text: "first", Time: now}); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.DrainReady(now.Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	<-runner.started
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(dir); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(dir, []byte("not a directory"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	close(runner.block)
+	waitForEvents(t, svc.Cards.(*card.LimitRenderer).Next.(*card.FakeRenderer), 3)
+	svc.mu.Lock()
+	var pending pendingCompletion
+	for _, entry := range svc.pendingCompletions {
+		pending = entry
+	}
+	svc.mu.Unlock()
+	if pending.Attempts != 0 {
+		t.Fatalf("initial attempts = %d", pending.Attempts)
+	}
+	attempts := 0
+	svc.beforePendingCompletionRetryHook = func() { attempts++ }
+	if err := svc.DrainReady(pending.NextRetryAt.Add(-time.Millisecond)); err != nil {
+		t.Fatal(err)
+	}
+	if attempts != 0 {
+		t.Fatalf("retry before due attempts = %d", attempts)
+	}
+	if err := svc.DrainReady(pending.NextRetryAt); err != nil {
+		t.Fatal(err)
+	}
+	if attempts != 1 {
+		t.Fatalf("first due retry attempts = %d", attempts)
+	}
+	svc.mu.Lock()
+	pending = svc.pendingCompletions[completionKey(pending.Key, pending.BatchID)]
+	svc.mu.Unlock()
+	if pending.Attempts != 1 {
+		t.Fatalf("attempts after failure = %d", pending.Attempts)
+	}
+	if err := svc.DrainReady(pending.NextRetryAt.Add(-time.Millisecond)); err != nil {
+		t.Fatal(err)
+	}
+	if attempts != 1 {
+		t.Fatalf("retry before second due attempts = %d", attempts)
+	}
+	if err := svc.DrainReady(pending.NextRetryAt); err != nil {
+		t.Fatal(err)
+	}
+	if attempts != 2 {
+		t.Fatalf("second due retry attempts = %d", attempts)
+	}
+}
+
 func TestServiceMergesBusyTopicInputsIntoNextBatch(t *testing.T) {
 	cfg := testConfig(t)
 	runner := newFakeRunner()

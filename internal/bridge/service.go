@@ -45,7 +45,8 @@ type Service struct {
 
 	// Test seam: called after an active starting batch is registered and before
 	// the first cancellation check/card render.
-	afterStoreActiveRunHook func()
+	afterStoreActiveRunHook          func()
+	beforePendingCompletionRetryHook func()
 }
 
 type AgentRunner interface {
@@ -96,9 +97,12 @@ type activeRun struct {
 }
 
 type pendingCompletion struct {
-	Key        session.Key
-	BatchID    string
-	Completion session.BatchCompletion
+	Key         session.Key
+	BatchID     string
+	Completion  session.BatchCompletion
+	Attempts    int
+	NextRetryAt time.Time
+	Retrying    bool
 }
 
 type ActionRequest struct {
@@ -306,7 +310,7 @@ func (s *Service) DrainReady(now time.Time) error {
 	s.dispatchWG.Add(1)
 	s.mu.Unlock()
 	defer s.dispatchWG.Done()
-	s.retryPendingCompletions()
+	s.retryPendingCompletions(now, false)
 	for _, key := range s.Sessions.ReadyKeys(now) {
 		sess, batch, err := s.Sessions.FreezeReadyBatch(key, now, s.batchLimits())
 		if err != nil {
@@ -415,7 +419,19 @@ func (s *Service) finishBatchOrRemember(sess session.Session, batchID string, co
 		return updated, nil
 	}
 	s.mu.Lock()
-	s.pendingCompletions[completionKey(sess.Key, batchID)] = pendingCompletion{Key: sess.Key, BatchID: batchID, Completion: completion}
+	key := completionKey(sess.Key, batchID)
+	if pending, ok := s.pendingCompletions[key]; ok {
+		// A repeat terminal observation can refresh the payload, but cannot
+		// weaken a retry schedule that is already backing off.
+		pending.Completion = completion
+		s.pendingCompletions[key] = pending
+	} else {
+		failedAt := completion.At
+		if failedAt.IsZero() {
+			failedAt = time.Now()
+		}
+		s.pendingCompletions[key] = pendingCompletion{Key: sess.Key, BatchID: batchID, Completion: completion, NextRetryAt: failedAt.Add(time.Second)}
+	}
 	s.mu.Unlock()
 	s.Audit.Record("system", auditAction, sess.ID, err.Error())
 	return sess, err
@@ -423,10 +439,15 @@ func (s *Service) finishBatchOrRemember(sess session.Session, batchID string, co
 
 // retryPendingCompletions only commits terminal outcomes already produced by a
 // runner. It never renders cards or starts runners, so retries cannot replay.
-func (s *Service) retryPendingCompletions() {
+func (s *Service) retryPendingCompletions(now time.Time, force bool) {
 	s.mu.Lock()
 	pending := make([]pendingCompletion, 0, len(s.pendingCompletions))
-	for _, completion := range s.pendingCompletions {
+	for key, completion := range s.pendingCompletions {
+		if completion.Retrying || (!force && completion.NextRetryAt.After(now)) {
+			continue
+		}
+		completion.Retrying = true
+		s.pendingCompletions[key] = completion
 		pending = append(pending, completion)
 	}
 	s.mu.Unlock()
@@ -438,12 +459,34 @@ func (s *Service) retryPendingCompletions() {
 			s.mu.Unlock()
 			continue
 		}
+		if s.beforePendingCompletionRetryHook != nil {
+			s.beforePendingCompletionRetryHook()
+		}
 		if _, err := s.Sessions.FinishBatch(pendingCompletion.Key, pendingCompletion.BatchID, pendingCompletion.Completion); err == nil {
 			s.mu.Lock()
 			delete(s.pendingCompletions, key)
 			s.mu.Unlock()
+		} else {
+			s.mu.Lock()
+			if current, ok := s.pendingCompletions[key]; ok {
+				current.Retrying = false
+				current.Attempts++
+				current.NextRetryAt = now.Add(completionRetryDelay(current.Attempts))
+				s.pendingCompletions[key] = current
+			}
+			s.mu.Unlock()
 		}
 	}
+}
+
+func completionRetryDelay(attempts int) time.Duration {
+	if attempts <= 0 {
+		return time.Second
+	}
+	if attempts >= 5 {
+		return 30 * time.Second
+	}
+	return time.Duration(1<<attempts) * time.Second
 }
 
 func effectiveMessageTime(msg Message) time.Time {
@@ -601,7 +644,7 @@ func (s *Service) Shutdown(ctx context.Context) error {
 		_ = waitGroupContext(context.Background(), &s.runWG)
 		return err
 	}
-	s.retryPendingCompletions()
+	s.retryPendingCompletions(time.Now(), true)
 	return nil
 }
 
