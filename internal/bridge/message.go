@@ -3,14 +3,15 @@ package bridge
 import "time"
 
 type Message struct {
-	ID        string
-	ChatID    string
-	ThreadID  string
-	Sender    string
-	Text      string
-	IsGroup   bool
-	Mentioned bool
-	Time      time.Time
+	ID             string
+	ChatID         string
+	ThreadID       string
+	Sender         string
+	Text           string
+	IsGroup        bool
+	HasAttachments bool
+	Mentioned      bool
+	Time           time.Time
 }
 
 type MessageRecall struct {
