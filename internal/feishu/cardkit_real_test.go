@@ -21,14 +21,33 @@ func TestRealCardKitCreatesBridgeCard(t *testing.T) {
 	client := NewCardKitClient(appID, appSecret)
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
-	payload := card.BuildLarkCard(card.Event{
-		Type:      "workdir_confirm",
-		SessionID: "claude:real-cardkit-smoke",
-		Segments:  []card.Segment{{Kind: card.SegmentText, Text: "Workdir does not exist: /tmp/lark-agent-bridge-cardkit-smoke"}},
-		Actions:   card.WorkDirCreateActions("/tmp/lark-agent-bridge-cardkit-smoke"),
-		Meta:      card.Meta{Agent: "claude", Model: "smoke", RunTokens: 1, TotalTokens: 1, User: "smoke-user", IP: "192.0.2.1", WorkDir: "/tmp/lark-agent-bridge-cardkit-smoke", Status: "running"},
-	})
-	if _, err := client.CreateCard(ctx, CardKitCreateRequest{Card: payload}); err != nil {
-		t.Fatalf("CreateCard bridge payload error: %v", err)
+	events := []card.Event{
+		{
+			Type:      "workdir_confirm",
+			SessionID: "claude:real-cardkit-smoke:confirm",
+			Segments:  []card.Segment{{Kind: card.SegmentText, Text: "Workdir does not exist: /tmp/lark-agent-bridge-cardkit-smoke"}},
+			Actions:   card.WorkDirCreateActions("/tmp/lark-agent-bridge-cardkit-smoke"),
+			Meta:      card.Meta{Agent: "claude", Model: "smoke", RunTokens: 1, TotalTokens: 1, User: "smoke-user", IP: "192.0.2.1", WorkDir: "/tmp/lark-agent-bridge-cardkit-smoke", Status: "running"},
+		},
+		{
+			Type:      "workdir_created",
+			SessionID: "claude:real-cardkit-smoke:created",
+			Segments:  []card.Segment{{Kind: card.SegmentText, Text: "Workdir created: /tmp/lark-agent-bridge-cardkit-smoke"}},
+			Actions:   card.WorkDirActions("/tmp/lark-agent-bridge-cardkit-smoke", true),
+			Meta:      card.Meta{WorkDir: "/tmp/lark-agent-bridge-cardkit-smoke"},
+		},
+		{
+			Type:      "workdir_cancelled",
+			SessionID: "claude:real-cardkit-smoke:cancelled",
+			Segments:  []card.Segment{{Kind: card.SegmentText, Text: "Workdir creation cancelled: /tmp/lark-agent-bridge-cardkit-smoke"}},
+			Actions:   card.WorkDirActions("/tmp/lark-agent-bridge-cardkit-smoke", true),
+			Meta:      card.Meta{WorkDir: "/tmp/lark-agent-bridge-cardkit-smoke"},
+		},
+	}
+	for _, event := range events {
+		payload := card.BuildLarkCard(event)
+		if _, err := client.CreateCard(ctx, CardKitCreateRequest{Card: payload}); err != nil {
+			t.Fatalf("CreateCard %s bridge payload error: %v", event.Type, err)
+		}
 	}
 }

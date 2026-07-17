@@ -84,4 +84,11 @@ func TestWorkDirCreateActions(t *testing.T) {
 	if actions[0].Value != "/tmp/a" {
 		t.Fatalf("value = %q, want path", actions[0].Value)
 	}
+	if actions[0].Disabled {
+		t.Fatalf("default action disabled = true, want false")
+	}
+	disabled := WorkDirActions("/tmp/a", true)
+	if !disabled[0].Disabled || !disabled[1].Disabled {
+		t.Fatalf("disabled actions = %#v, want both disabled", disabled)
+	}
 }

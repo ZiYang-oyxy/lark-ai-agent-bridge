@@ -169,7 +169,7 @@ func buildButtonActions(e Event) []any {
 		if action.ID == "cancel_workdir" {
 			buttonType = "danger"
 		}
-		buttons = append(buttons, map[string]any{
+		button := map[string]any{
 			"tag":        "button",
 			"element_id": fmt.Sprintf("btn_%d", i+1),
 			"text":       map[string]any{"tag": "plain_text", "content": action.Label},
@@ -177,8 +177,11 @@ func buildButtonActions(e Event) []any {
 			"width":      "fill",
 			"size":       "medium",
 			"disabled":   action.Disabled,
-			"behaviors":  callbackBehavior(e.SessionID, action.ID, action.Value),
-		})
+		}
+		if !action.Disabled {
+			button["behaviors"] = callbackBehavior(e.SessionID, action.ID, action.Value)
+		}
+		buttons = append(buttons, button)
 	}
 	if e.StopButton.Visible {
 		buttonType := "danger"
@@ -336,6 +339,10 @@ func titleForEvent(eventType string) string {
 	switch eventType {
 	case "workdir_confirm":
 		return "工作目录确认"
+	case "workdir_created":
+		return "✅ 工作目录已创建"
+	case "workdir_cancelled":
+		return "⏹ 已取消"
 	case "error":
 		return "Agent 错误"
 	default:
@@ -347,6 +354,10 @@ func templateForEvent(eventType string) string {
 	switch eventType {
 	case "workdir_confirm":
 		return "orange"
+	case "workdir_created":
+		return "green"
+	case "workdir_cancelled":
+		return "grey"
 	case "error":
 		return "red"
 	default:

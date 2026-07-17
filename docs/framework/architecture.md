@@ -11,6 +11,7 @@
 bridge 当前不再托管交互式终端，也不再通过 tmux/PTY 捕获输出。每条可处理飞书消息会形成一次 Claude 子进程调用：
 
 - 启动命令：`claude -p --output-format stream-json --dangerously-skip-permissions <prompt>`
+- 子进程 `cmd.Dir` 和 `PWD` 都设置为本轮请求解析出的工作目录；没有 `--workdir` 时使用 `--default-workdir` 或环境默认目录。
 - 如果当前 chat/topic 已保存 Claude session id，后续普通消息会追加 `--resume <session_id>` 续接内部会话。
 - `/new` 会清空当前 chat/topic 保存的 Claude session id，并从新会话开始。
 - 执行开始时创建“执行中”卡片，读取 Claude `stream-json` stdout 时增量更新同一张卡片。
@@ -88,7 +89,7 @@ CardKit 卡片负责展示一次 Claude 请求的状态：
 - 结果：绿色 header，标题显示 `✅ 已完成 · ⏱ X`，展示正文、折叠思考过程、折叠工具调用，停止按钮变为灰色 disabled “已完成”。
 - 停止：灰色 header，标题显示 `⏹ 已停止 · ⏱ X`，同一卡片按钮置灰为“已停止”。
 - 错误：红色 header，标题显示 `❌ 执行失败 · ⏱ X`，展示错误内容，停止按钮变为灰色 disabled “已结束”。
-- 工作目录确认：当 `--workdir` 不存在时提供“Create directory”和“Cancel”按钮。
+- 工作目录确认：当 `--workdir` 不存在时提供“Create directory”和“Cancel”按钮；创建成功后确认卡变为绿色终态并禁用按钮，取消后变为灰色终态并禁用按钮。创建成功后 Claude 执行使用独立运行卡片，不覆盖确认卡片。
 - 底部状态栏：先用分割线与正文和折叠面板隔开，再使用两行 CardKit `column_set` 分栏展示。
 - 底部第一行：agent、model、tokens 三列，权重比例 `10:14:18`，tokens 格式为 `🔢 tokens: ▶ 本轮 / ∑ 累计`。
 - 底部第二行：user、ip、workdir 三列，权重比例 `10:12:30`，emoji 分别为 `👤`、`🖥️`、`📁`。
@@ -96,7 +97,7 @@ CardKit 卡片负责展示一次 Claude 请求的状态：
 
 长输出由 `E2E_CARD_MAX_CHARS` 控制，避免超过飞书卡片限制。
 
-按钮处理生产路径只使用飞书长连接 `card.action.trigger`。设置 `E2E_CALLBACK_ADDR` 后，`serve` 会额外启动 `/card/callback` HTTP 兼容入口；该入口仅用于本地调试和迁移期验证，不作为真实 E2E 依赖。
+按钮处理生产路径只使用飞书长连接 `card.action.trigger`。stop/create/cancel action 会同步返回终态卡片，让飞书客户端立即置灰按钮；同时 bridge 仍通过 CardKit update 写入同一终态作为兜底和审计证据。设置 `E2E_CALLBACK_ADDR` 后，`serve` 会额外启动 `/card/callback` HTTP 兼容入口；该入口仅用于本地调试和迁移期验证，不作为真实 E2E 依赖。
 
 ## 生命周期
 

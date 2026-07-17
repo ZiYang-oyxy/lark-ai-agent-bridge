@@ -32,6 +32,8 @@ type Input struct {
 	Sender           string
 	Text             string
 	ReplyToMessageID string
+	CardSessionID    string
+	WorkDir          string
 	Time             time.Time
 	Reset            bool
 }
@@ -89,6 +91,9 @@ func (m *Manager) Enqueue(key Key, input Input, workDir string) (Session, bool) 
 	if input.Time.IsZero() {
 		input.Time = time.Now()
 	}
+	if input.WorkDir == "" {
+		input.WorkDir = workDir
+	}
 	if s.State == StateRunning {
 		s.Queue = append(s.Queue, input)
 		s.LastActive = input.Time
@@ -122,8 +127,14 @@ func (m *Manager) CompleteAt(key Key, workDir string, now time.Time) (Session, *
 	}
 	next := s.Queue[0]
 	s.Queue = s.Queue[1:]
+	nextWorkDir := next.WorkDir
+	if nextWorkDir == "" {
+		nextWorkDir = workDir
+	}
 	if next.Reset {
-		resetSessionLocked(s, workDir, next.Time)
+		resetSessionLocked(s, nextWorkDir, next.Time)
+	} else if nextWorkDir != "" && s.WorkDir == "" {
+		s.WorkDir = nextWorkDir
 	}
 	s.State = StateRunning
 	if !next.Time.IsZero() {

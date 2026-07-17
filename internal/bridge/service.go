@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	osuser "os/user"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -63,11 +64,12 @@ type AgentStreamUpdate struct {
 }
 
 type pendingRun struct {
-	SessionID string
-	Command   Command
-	Message   Message
-	WorkDir   string
-	ExpiresAt time.Time
+	SessionID        string
+	RunCardSessionID string
+	Command          Command
+	Message          Message
+	WorkDir          string
+	ExpiresAt        time.Time
 }
 
 type activeRun struct {
@@ -83,6 +85,21 @@ type ActionRequest struct {
 	ActionID  string
 	Value     string
 	Actor     string
+}
+
+type ActionResult struct {
+	Event *card.Event
+}
+
+func (r ActionResult) BuildCard(maxChars int) map[string]any {
+	if r.Event == nil {
+		return nil
+	}
+	event := *r.Event
+	if maxChars > 0 {
+		event = card.LimitEvent(event, maxChars)
+	}
+	return card.BuildLarkCard(event)
 }
 
 func NewService(cfg config.Config, renderer card.Renderer, runner AgentRunner, recorder *audit.Recorder) *Service {
@@ -130,6 +147,10 @@ func (s *Service) HandleMessage(ctx context.Context, msg Message) error {
 }
 
 func (s *Service) run(ctx context.Context, cmd Command, msg Message) error {
+	return s.runWithCardSessionID(ctx, cmd, msg, "")
+}
+
+func (s *Service) runWithCardSessionID(ctx context.Context, cmd Command, msg Message, cardSessionID string) error {
 	if cmd.Agent == "" {
 		cmd.Agent = agent.Claude
 	}
@@ -147,7 +168,11 @@ func (s *Service) run(ctx context.Context, cmd Command, msg Message) error {
 		return err
 	}
 	if asked {
-		s.storePendingRun(pendingID, pendingRun{Command: cmd, Message: msg, WorkDir: workDir})
+		runCardSessionID := cardSessionID
+		if runCardSessionID == "" {
+			runCardSessionID = runID(key.ID(), msg.ID+":run")
+		}
+		s.storePendingRun(pendingID, pendingRun{RunCardSessionID: runCardSessionID, Command: cmd, Message: msg, WorkDir: workDir})
 		return nil
 	}
 	text := strings.TrimSpace(cmd.Text)
@@ -165,7 +190,7 @@ func (s *Service) run(ctx context.Context, cmd Command, msg Message) error {
 		}
 		return s.renderText("empty", msg.ID, card.SegmentError, "empty prompt")
 	}
-	input := session.Input{Sender: msg.Sender, Text: text, ReplyToMessageID: msg.ID, Time: msg.Time, Reset: cmd.Reset}
+	input := session.Input{Sender: msg.Sender, Text: text, ReplyToMessageID: msg.ID, CardSessionID: cardSessionID, WorkDir: workDir, Time: msg.Time, Reset: cmd.Reset}
 	sess, queued := s.Sessions.Enqueue(key, input, workDir)
 	if queued {
 		s.Audit.Record(msg.Sender, "queue_input", sess.ID, text)
@@ -179,7 +204,7 @@ func (s *Service) startRun(ctx context.Context, sess session.Session, input sess
 	if input.Time.IsZero() {
 		input.Time = time.Now()
 	}
-	id := runID(sess.ID, input.ReplyToMessageID)
+	id := runCardSessionID(sess.ID, input)
 	runCtx, cancel := context.WithCancel(ctx)
 	stream := newAgentCardStream(s, id, sess, input)
 	s.storeActiveRun(id, activeRun{BaseSessionID: sess.ID, Key: sess.Key, WorkDir: sess.WorkDir, Cancel: cancel, Stream: stream})
@@ -189,7 +214,7 @@ func (s *Service) startRun(ctx context.Context, sess session.Session, input sess
 }
 
 func (s *Service) executeRun(ctx context.Context, sess session.Session, input session.Input) {
-	id := runID(sess.ID, input.ReplyToMessageID)
+	id := runCardSessionID(sess.ID, input)
 	defer s.clearActiveRun(id)
 	result, err := s.Runner.Run(ctx, AgentRunRequest{
 		Kind:            sess.Key.Agent,
@@ -235,23 +260,41 @@ func (s *Service) executeRun(ctx context.Context, sess session.Session, input se
 	}
 	if next != nil {
 		s.Audit.Record(next.Sender, "dequeue_input", sess.ID, next.Text)
-		nextSession := s.Sessions.GetOrCreate(sess.Key, sess.WorkDir)
+		nextWorkDir := next.WorkDir
+		if nextWorkDir == "" {
+			nextWorkDir = sess.WorkDir
+		}
+		nextSession := s.Sessions.GetOrCreate(sess.Key, nextWorkDir)
 		s.startRun(context.Background(), nextSession, *next)
 	}
 }
 
+func runCardSessionID(baseSessionID string, input session.Input) string {
+	if input.CardSessionID != "" {
+		return input.CardSessionID
+	}
+	return runID(baseSessionID, input.ReplyToMessageID)
+}
+
 func (s *Service) HandleAction(ctx context.Context, req ActionRequest) error {
+	_, err := s.HandleActionResult(ctx, req)
+	return err
+}
+
+func (s *Service) HandleActionResult(ctx context.Context, req ActionRequest) (ActionResult, error) {
 	s.Audit.Record(req.Actor, "card_action", req.SessionID, req.ActionID+" "+req.Value)
 	switch req.ActionID {
 	case "stop":
 		if run, ok := s.cancelActiveRun(req.SessionID); ok {
 			updated := s.Sessions.Stop(run.Key, run.WorkDir)
 			if run.Stream != nil {
-				run.Stream.Finish("stopped", metaFromSession(updated), AgentRunResult{})
+				event, err := run.Stream.Finish("stopped", metaFromSession(updated), AgentRunResult{})
+				return actionResultFromEvent(event), err
 			}
-			return nil
+			event := stoppedActionEvent(req.SessionID)
+			return s.renderActionEvent(event)
 		}
-		return s.Cards.Render(card.Event{Type: "stopped", SessionID: req.SessionID, StopButton: card.StopButton{Visible: true, Disabled: true}, Message: "stopped", HeaderTitle: "⏹ 已停止 · ⏱ 0s", HeaderTemplate: "grey"})
+		return s.renderActionEvent(stoppedActionEvent(req.SessionID))
 	case "create_workdir":
 		pending, hasPending := s.popPendingRun(req.SessionID)
 		workDir := req.Value
@@ -259,20 +302,68 @@ func (s *Service) HandleAction(ctx context.Context, req ActionRequest) error {
 			workDir = pending.WorkDir
 		}
 		if err := os.MkdirAll(workDir, 0o755); err != nil {
-			return err
+			return ActionResult{}, err
 		}
-		if err := s.Cards.Render(card.Event{Type: "action", SessionID: req.SessionID, Message: "workdir created: " + workDir}); err != nil {
-			return err
+		result, err := s.renderActionEvent(workDirActionEvent("workdir_created", req.SessionID, workDir))
+		if err != nil {
+			return result, err
 		}
 		if hasPending {
-			return s.run(ctx, pending.Command, pending.Message)
+			if err := s.runWithCardSessionID(ctx, pending.Command, pending.Message, pending.RunCardSessionID); err != nil {
+				return result, err
+			}
 		}
-		return nil
+		return result, nil
 	case "cancel_workdir":
-		s.popPendingRun(req.SessionID)
-		return s.Cards.Render(card.Event{Type: "action", SessionID: req.SessionID, Message: "workdir creation cancelled"})
+		pending, hasPending := s.popPendingRun(req.SessionID)
+		workDir := req.Value
+		if hasPending && pending.WorkDir != "" {
+			workDir = pending.WorkDir
+		}
+		return s.renderActionEvent(workDirActionEvent("workdir_cancelled", req.SessionID, workDir))
 	default:
-		return s.Cards.Render(card.Event{Type: "error", SessionID: req.SessionID, Segments: []card.Segment{{Kind: card.SegmentError, Text: "unknown action: " + req.ActionID}}})
+		return s.renderActionEvent(card.Event{Type: "error", SessionID: req.SessionID, Segments: []card.Segment{{Kind: card.SegmentError, Text: "unknown action: " + req.ActionID}}})
+	}
+}
+
+func actionResultFromEvent(event card.Event) ActionResult {
+	if event.Type == "" && event.SessionID == "" {
+		return ActionResult{}
+	}
+	return ActionResult{Event: &event}
+}
+
+func (s *Service) renderActionEvent(event card.Event) (ActionResult, error) {
+	if err := s.Cards.Render(event); err != nil {
+		return ActionResult{}, err
+	}
+	return actionResultFromEvent(event), nil
+}
+
+func stoppedActionEvent(sessionID string) card.Event {
+	return card.Event{
+		Type:           "stopped",
+		SessionID:      sessionID,
+		StopButton:     card.StopButton{Visible: true, Disabled: true},
+		Message:        "stopped",
+		HeaderTitle:    "⏹ 已停止 · ⏱ 0s",
+		HeaderTemplate: "grey",
+	}
+}
+
+func workDirActionEvent(eventType, sessionID, workDir string) card.Event {
+	message := "workdir: " + workDir
+	if eventType == "workdir_created" {
+		message = "Workdir created: " + workDir
+	} else if eventType == "workdir_cancelled" {
+		message = "Workdir creation cancelled: " + workDir
+	}
+	return card.Event{
+		Type:      eventType,
+		SessionID: sessionID,
+		Segments:  []card.Segment{{Kind: card.SegmentText, Text: message}},
+		Actions:   card.WorkDirActions(workDir, true),
+		Meta:      card.Meta{WorkDir: workDir},
 	}
 }
 
@@ -579,7 +670,14 @@ func (CLIExecRunner) Run(ctx context.Context, req AgentRunRequest) (AgentRunResu
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
 	cmd := exec.CommandContext(ctx, command[0], command[1:]...)
-	cmd.Dir = req.WorkDir
+	if req.WorkDir != "" {
+		workDir, err := filepath.Abs(req.WorkDir)
+		if err != nil {
+			return AgentRunResult{}, err
+		}
+		cmd.Dir = workDir
+		cmd.Env = environWithPWD(workDir)
+	}
 	cmd.Stderr = &stderr
 	pipe, err := cmd.StdoutPipe()
 	if err != nil {
@@ -604,6 +702,17 @@ func (CLIExecRunner) Run(ctx context.Context, req AgentRunRequest) (AgentRunResu
 		return result, waitErr
 	}
 	return result, nil
+}
+
+func environWithPWD(workDir string) []string {
+	env := make([]string, 0, len(os.Environ())+1)
+	for _, item := range os.Environ() {
+		if strings.HasPrefix(item, "PWD=") {
+			continue
+		}
+		env = append(env, item)
+	}
+	return append(env, "PWD="+workDir)
 }
 
 func ParseClaudeStreamOutput(data []byte) AgentRunResult {

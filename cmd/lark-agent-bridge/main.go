@@ -55,7 +55,7 @@ func runSimulateAction(args []string) error {
 	cfg := config.LoadFromEnv()
 	actionID := fs.String("action", "stop", "action id")
 	value := fs.String("value", "", "action value")
-	sessionID := fs.String("session", "claude:chat-demo", "session id")
+	sessionID := fs.String("session", "claude:chat-demo:message:local-id", "session id")
 	actor := fs.String("actor", "user-demo", "actor id")
 	primeText := fs.String("prime-text", "/new hello", "message to create a session before action; empty disables")
 	defaultWorkDir := fs.String("default-workdir", cfg.DefaultWorkDir, "default workdir for messages without --workdir")
@@ -68,7 +68,7 @@ func runSimulateAction(args []string) error {
 	svc := bridge.NewService(cfg, renderer, simulateRunner{}, recorder)
 	if *primeText != "" {
 		msg := bridge.Message{
-			ID:        fmt.Sprintf("local-%d", time.Now().UnixNano()),
+			ID:        "local-id",
 			ChatID:    "chat-demo",
 			Sender:    *actor,
 			Text:      *primeText,
@@ -218,15 +218,16 @@ func runServe(args []string) error {
 		AppSecret: appSecret,
 		BotOpenID: botOpenID,
 		ActionHandler: func(ctx context.Context, action feishu.CardAction) (*feishu.CardActionResponse, error) {
-			if err := svc.HandleAction(ctx, bridge.ActionRequest{
+			result, err := svc.HandleActionResult(ctx, bridge.ActionRequest{
 				SessionID: action.SessionID,
 				ActionID:  action.ActionID,
 				Value:     action.Value,
 				Actor:     action.Actor,
-			}); err != nil {
+			})
+			if err != nil {
 				return nil, err
 			}
-			return nil, nil
+			return &feishu.CardActionResponse{Card: result.BuildCard(cfg.CardMaxChars)}, nil
 		},
 	})
 	defer func() {

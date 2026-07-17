@@ -28,6 +28,7 @@ GOCACHE=$PWD/.cache/go-build go test ./...
 - Claude one-shot 命令构造和 stream-json 解析
 - CardKit 流式更新、标题颜色和 `⏱` 耗时、分栏底部状态栏、折叠面板、停止按钮、工作目录确认按钮
 - 工作目录创建、取消和超时
+- `/new --workdir` 的 Claude 子进程 `pwd` 和 `$PWD`
 - 长连接 `card.action.trigger` action 解析
 - 未设置飞书凭据时 `serve` 明确拒绝启动
 
@@ -128,7 +129,18 @@ GOCACHE=$PWD/.cache/go-build go run ./cmd/lark-agent-bridge simulate-action \
   -value /tmp/lark-agent-bridge-confirm-test
 ```
 
-期望先输出 `workdir_confirm`，再输出 `action`，最后输出 `stream/result`；运行中卡片 header 为 blue，最终卡片 header 为 green。
+期望先输出 `workdir_confirm`，再输出绿色 `workdir_created` 终态卡片且两个按钮 disabled；随后使用独立 run card 输出 `stream/result`，运行中卡片 header 为 blue，最终卡片 header 为 green。确认卡片不应被运行卡片覆盖。
+
+模拟点击取消创建目录：
+
+```bash
+GOCACHE=$PWD/.cache/go-build go run ./cmd/lark-agent-bridge simulate-action \
+  -prime-text "/new --workdir /tmp/lark-agent-bridge-cancel-test hello" \
+  -action cancel_workdir \
+  -value /tmp/lark-agent-bridge-cancel-test
+```
+
+期望先输出 `workdir_confirm`，再输出灰色 `workdir_cancelled` 终态卡片且两个按钮 disabled；目录不应被创建，也不应启动 runner。
 
 模拟停止按钮：
 
@@ -139,7 +151,7 @@ GOCACHE=$PWD/.cache/go-build go run ./cmd/lark-agent-bridge simulate-action \
   -action stop
 ```
 
-实际 session id 需要与执行中卡片的 `SessionID` 一致。单测 `TestServiceStopCancelsActiveOneShotRun` 覆盖 stop action 会取消 active run，并把同一卡片更新为灰色 stopped 状态。
+实际 session id 需要与执行中卡片的 `SessionID` 一致。单测 `TestServiceStopCancelsActiveOneShotRun` 覆盖 stop action 会取消 active run，并把同一卡片更新为灰色 stopped 状态；action 返回值也应包含同步终态 card payload。
 
 本地单测还应覆盖：
 
@@ -149,6 +161,9 @@ GOCACHE=$PWD/.cache/go-build go run ./cmd/lark-agent-bridge simulate-action \
 - 第二行包含 `👤 user`、`🖥️ ip`、`📁 workdir`，列权重为 `10:12:30`。
 - 底部状态栏不包含 `agent=`、`model=`、`workdir=`、`status=`。
 - completed/failed/stopped 的停止按钮均为灰色 disabled，文案分别是“已完成”“已结束”“已停止”。
+- `workdir_created` 和 `workdir_cancelled` 的两个工作目录按钮均为 disabled，且不再携带 callback behavior。
+- `/new --workdir <path>` 下 fake Claude 进程看到的 `pwd` 和 `$PWD` 都等于 `<path>`。
+- 同一会话排队输入 dequeue 后仍使用各自输入携带的 workdir。
 - 最终 result 只替换自身带回来的正文/思考/工具分区，保留流式阶段已解析到但最终 result 缺失的思考或工具内容。
 
 ## 飞书 E2E 前置检查
@@ -202,7 +217,20 @@ lark-cli im +messages-send --as user \
    - Claude 子进程被取消
    - 同一卡片标题更新为灰色 `⏹ 已停止 · ⏱ Ns`
    - 卡片按钮置灰为“已停止”，且不会额外发送新的停止结果卡片
-7. 使用不存在的 `--workdir` 发送 `/new`，点击“Create directory”或“Cancel”，预期目录创建/取消行为与卡片状态一致。
+7. 使用不存在的 `--workdir` 发送 `/new`，点击“Create directory”或“Cancel”，预期目录创建/取消行为与卡片状态一致：
+   - create 后确认卡绿色、按钮 disabled，随后出现独立运行卡片。
+   - cancel 后确认卡灰色、按钮 disabled，不创建目录，不启动 Claude。
+   - 运行卡片底部 `📁` 显示指定 workdir。
+8. 验证话题续聊时，使用用户态 lark-cli 对原始 `/new` 消息做 thread reply，并在群话题内继续 @bot：
+
+```bash
+lark-cli im +messages-reply --as user \
+  --message-id "<root_message_id>" \
+  --reply-in-thread \
+  --text '<at user_id="BOT_OPEN_ID"></at> 请继续当前话题会话'
+```
+
+当前飞书事件权限下，群话题内不 @bot 的普通文本不会推送到 bridge；可作为负向验证。带 @ 的话题回复应进入 `chat_id + thread_id` 对应会话，并创建新的执行卡片。
 
 单聊 E2E 暂缓。当前用户态 `lark-cli` 与 bridge app 不同，直接按 bot open_id 发送 P2P 可能触发 `open_id cross app`；后续需要同 bridge app 用户 OAuth profile，或手动建立 P2P 后记录 chat_id。
 

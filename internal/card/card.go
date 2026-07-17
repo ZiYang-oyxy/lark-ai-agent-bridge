@@ -63,9 +63,13 @@ type Event struct {
 }
 
 func WorkDirCreateActions(path string) []Action {
+	return WorkDirActions(path, false)
+}
+
+func WorkDirActions(path string, disabled bool) []Action {
 	return []Action{
-		{ID: "create_workdir", Label: "Create directory", Value: path},
-		{ID: "cancel_workdir", Label: "Cancel", Value: path},
+		{ID: "create_workdir", Label: "Create directory", Value: path, Disabled: disabled},
+		{ID: "cancel_workdir", Label: "Cancel", Value: path, Disabled: disabled},
 	}
 }
 

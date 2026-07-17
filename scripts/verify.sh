@@ -68,16 +68,16 @@ require_contains "$group_output" '"events": []' "group mention filter simulation
 echo "group mention filter ok"
 
 echo "== session behavior tests =="
-go test ./internal/bridge -run 'TestServiceQueuesSecondInputUntilFirstCompletes|TestDifferentTopicsRunInParallel|TestTopicPlainTextContinuesStoredClaudeSession|TestNewInTopicResetsStoredClaudeSession|TestServiceNewWithoutPromptCreatesReadySession'
+go test ./internal/bridge -run 'TestServiceQueuesSecondInputUntilFirstCompletes|TestDifferentTopicsRunInParallel|TestTopicPlainTextContinuesStoredClaudeSession|TestNewInTopicResetsStoredClaudeSession|TestServiceNewWithoutPromptCreatesReadySession|TestQueuedRunPreservesInputWorkDir'
 go test ./internal/session -run 'TestEnqueueQueuesWhileRunning|TestResetClearsClaudeSessionAndHistory|TestQueuedResetClearsBeforeNextInput'
 echo "session behavior ok"
 
 echo "== claude one-shot runner tests =="
-go test ./internal/agent ./internal/bridge -run 'TestBuildClaudeOneShotCommand|TestBuildClaudeOneShotCommandResumesInternalSession|TestBuildOneShotRejectsUnsupportedAgent|TestServiceNewRunsClaudeOneShotAndRendersResult'
+go test ./internal/agent ./internal/bridge -run 'TestBuildClaudeOneShotCommand|TestBuildClaudeOneShotCommandResumesInternalSession|TestBuildOneShotRejectsUnsupportedAgent|TestServiceNewRunsClaudeOneShotAndRendersResult|TestCLIExecRunnerUsesRequestedWorkDirAndPWD'
 echo "claude one-shot ok"
 
 echo "== stop button and workdir tests =="
-go test ./internal/bridge ./internal/card -run 'TestServiceStopCancelsActiveOneShotRun|TestBuildLarkCardIncludesDisabledStopButton|TestServiceMissingWorkdirAsksThenRunsAfterCreate|TestWorkdirCancelDoesNotRun|TestWorkDirCreateActions'
+go test ./internal/bridge ./internal/card -run 'TestServiceStopCancelsActiveOneShotRun|TestBuildLarkCardIncludesDisabledStopButton|TestServiceMissingWorkdirAsksThenRunsAfterCreate|TestWorkdirCancelDoesNotRun|TestWorkDirCreateActions|TestBuildLarkCardDisablesWorkdirTerminalActions'
 missing_workdir="$ROOT/.cache/workdir-timeout-$RANDOM/missing"
 workdir_timeout_output="$(go run ./cmd/lark-agent-bridge simulate -text "/new --workdir $missing_workdir hello" -timeout-now)"
 require_contains "$workdir_timeout_output" '"Message": "workdir creation timed out: cancelled"' "workdir confirmation timeout simulation"

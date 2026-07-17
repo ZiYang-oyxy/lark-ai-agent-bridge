@@ -102,10 +102,55 @@ func TestBuildLarkCardUsesFinalStopButtonLabels(t *testing.T) {
 	}
 }
 
+func TestBuildLarkCardDisablesWorkdirTerminalActions(t *testing.T) {
+	tests := []struct {
+		eventType    string
+		wantTitle    string
+		wantTemplate string
+	}{
+		{eventType: "workdir_created", wantTitle: "✅ 工作目录已创建", wantTemplate: "green"},
+		{eventType: "workdir_cancelled", wantTitle: "⏹ 已取消", wantTemplate: "grey"},
+	}
+	for _, tt := range tests {
+		payload := BuildLarkCard(Event{
+			Type:      tt.eventType,
+			SessionID: "claude:chat:message:msg-1",
+			Segments:  []Segment{{Kind: SegmentText, Text: "workdir /tmp/work"}},
+			Actions:   WorkDirActions("/tmp/work", true),
+		})
+		header := payload["header"].(map[string]any)
+		if header["template"] != tt.wantTemplate {
+			t.Fatalf("%s template = %#v, want %s", tt.eventType, header["template"], tt.wantTemplate)
+		}
+		title := header["title"].(map[string]any)
+		if title["content"] != tt.wantTitle {
+			t.Fatalf("%s title = %#v, want %s", tt.eventType, title["content"], tt.wantTitle)
+		}
+		elements := payload["body"].(map[string]any)["elements"].([]any)
+		disabledButtons := 0
+		for _, raw := range elements {
+			button := raw.(map[string]any)
+			if button["tag"] != "button" {
+				continue
+			}
+			disabledButtons++
+			if button["disabled"] != true {
+				t.Fatalf("%s button = %#v, want disabled", tt.eventType, button)
+			}
+			if _, ok := button["behaviors"]; ok {
+				t.Fatalf("%s disabled action should not include behaviors: %#v", tt.eventType, button)
+			}
+		}
+		if disabledButtons != 2 {
+			t.Fatalf("%s disabled buttons = %d, want 2", tt.eventType, disabledButtons)
+		}
+	}
+}
+
 func TestBuildLarkCardUsesDynamicHeaderAndStreamingMode(t *testing.T) {
 	payload := BuildLarkCard(Event{
 		Type:           "stream",
-		HeaderTitle:    "REDACTED",
+		HeaderTitle:    "🧠 正在推理 · ⏱ 3s",
 		HeaderTemplate: "blue",
 		Streaming:      true,
 		Activity:       "reasoning",
@@ -190,7 +235,7 @@ func assertColumnWeights(t *testing.T, columnSet map[string]any, want []int) {
 	}
 	for i, rawColumn := range columns {
 		column := rawColumn.(map[string]any)
-		if column["REDACTED"] != want[i] {
+		if column["weight"] != want[i] {
 			t.Fatalf("column %d weight = %#v, want %d", i, column["weight"], want[i])
 		}
 	}

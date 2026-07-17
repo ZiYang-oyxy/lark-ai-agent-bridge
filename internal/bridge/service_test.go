@@ -284,8 +284,15 @@ func TestServiceMissingWorkdirAsksThenRunsAfterCreate(t *testing.T) {
 	if events[0].SessionID != "claude:chat:message:msg-1" {
 		t.Fatalf("confirm session id = %q", events[0].SessionID)
 	}
-	if err := svc.HandleAction(context.Background(), ActionRequest{SessionID: "claude:chat:message:msg-1", ActionID: "create_workdir", Actor: "u1"}); err != nil {
+	result, err := svc.HandleActionResult(context.Background(), ActionRequest{SessionID: "claude:chat:message:msg-1", ActionID: "create_workdir", Actor: "u1"})
+	if err != nil {
 		t.Fatalf("create action error: %v", err)
+	}
+	if result.Event == nil || result.Event.Type != "workdir_created" || result.Event.SessionID != "claude:chat:message:msg-1" {
+		t.Fatalf("action result = %#v, want workdir_created on confirm card", result.Event)
+	}
+	if len(result.Event.Actions) != 2 || !result.Event.Actions[0].Disabled || !result.Event.Actions[1].Disabled {
+		t.Fatalf("terminal actions = %#v, want disabled", result.Event.Actions)
 	}
 	if _, err := os.Stat(missing); err != nil {
 		t.Fatalf("missing dir was not created: %v", err)
@@ -293,6 +300,15 @@ func TestServiceMissingWorkdirAsksThenRunsAfterCreate(t *testing.T) {
 	waitForCalls(t, runner, 1)
 	if got := runner.Calls()[0].WorkDir; got != missing {
 		t.Fatalf("runner workdir = %q, want %q", got, missing)
+	}
+	waitForEvents(t, renderer, 4)
+	events = renderer.Events()
+	if events[1].Type != "workdir_created" || events[1].SessionID != "claude:chat:message:msg-1" {
+		t.Fatalf("terminal confirm event = %#v", events[1])
+	}
+	runEvent := events[2]
+	if runEvent.Type != "stream" || runEvent.SessionID == events[1].SessionID || runEvent.ReplyToMessageID != "msg-1" {
+		t.Fatalf("run event = %#v, want separate card replying to original message", runEvent)
 	}
 }
 
@@ -307,14 +323,25 @@ func TestWorkdirCancelDoesNotRun(t *testing.T) {
 	if err := svc.HandleMessage(context.Background(), msg); err != nil {
 		t.Fatalf("handle message error: %v", err)
 	}
-	if err := svc.HandleAction(context.Background(), ActionRequest{SessionID: "claude:chat:message:msg-1", ActionID: "cancel_workdir", Actor: "u1"}); err != nil {
+	result, err := svc.HandleActionResult(context.Background(), ActionRequest{SessionID: "claude:chat:message:msg-1", ActionID: "cancel_workdir", Actor: "u1"})
+	if err != nil {
 		t.Fatalf("cancel action error: %v", err)
+	}
+	if result.Event == nil || result.Event.Type != "workdir_cancelled" || result.Event.HeaderTemplate != "" {
+		t.Fatalf("cancel result = %#v, want workdir_cancelled default grey card", result.Event)
+	}
+	if len(result.Event.Actions) != 2 || !result.Event.Actions[0].Disabled || !result.Event.Actions[1].Disabled {
+		t.Fatalf("cancel actions = %#v, want disabled", result.Event.Actions)
 	}
 	if _, err := os.Stat(missing); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("missing dir stat = %v, want not exist", err)
 	}
 	if len(runner.Calls()) != 0 {
 		t.Fatalf("runner calls = %#v, want none", runner.Calls())
+	}
+	events := renderer.Events()
+	if events[len(events)-1].Type != "workdir_cancelled" {
+		t.Fatalf("last event = %#v, want workdir_cancelled", events[len(events)-1])
 	}
 }
 
@@ -372,13 +399,67 @@ func TestServiceStopCancelsActiveOneShotRun(t *testing.T) {
 		t.Fatalf("handle message error: %v", err)
 	}
 	<-runner.started
-	if err := svc.HandleAction(context.Background(), ActionRequest{SessionID: "claude:chat:message:msg-1", ActionID: "stop", Actor: "u1"}); err != nil {
+	result, err := svc.HandleActionResult(context.Background(), ActionRequest{SessionID: "claude:chat:message:msg-1", ActionID: "stop", Actor: "u1"})
+	if err != nil {
 		t.Fatalf("stop action error: %v", err)
+	}
+	if result.Event == nil || result.Event.Type != "stopped" || !result.Event.StopButton.Disabled {
+		t.Fatalf("stop action result = %#v, want disabled stopped", result.Event)
+	}
+	payload := result.BuildCard(cfg.CardMaxChars)
+	elements := payload["body"].(map[string]any)["elements"].([]any)
+	var button map[string]any
+	for _, raw := range elements {
+		element := raw.(map[string]any)
+		if element["element_id"] == "btn_stop" {
+			button = element
+			break
+		}
+	}
+	if button == nil {
+		t.Fatalf("sync stop card elements = %#v, want stop button", elements)
+	}
+	if button["disabled"] != true {
+		t.Fatalf("sync stop button = %#v, want disabled", button)
 	}
 	events := renderer.Events()
 	last := events[len(events)-1]
 	if last.Type != "stopped" || !last.StopButton.Disabled || last.HeaderTemplate != "grey" {
 		t.Fatalf("stop event = %#v", last)
+	}
+}
+
+func TestQueuedRunPreservesInputWorkDir(t *testing.T) {
+	root := t.TempDir()
+	first := filepath.Join(root, "first")
+	second := filepath.Join(root, "second")
+	if err := os.MkdirAll(first, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(second, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Config{DefaultAgent: "claude", DefaultWorkDir: root, CardMaxChars: 1000, InteractionTimeout: time.Second}
+	renderer := card.NewFakeRenderer()
+	runner := newFakeRunner()
+	runner.block = make(chan struct{})
+	svc := NewService(cfg, renderer, runner, audit.NewRecorder())
+
+	if err := svc.HandleMessage(context.Background(), Message{ID: "msg-1", ChatID: "chat", Sender: "u1", Text: "/new --workdir " + first + " first", Time: time.Now()}); err != nil {
+		t.Fatalf("first message error: %v", err)
+	}
+	<-runner.started
+	if err := svc.HandleMessage(context.Background(), Message{ID: "msg-2", ChatID: "chat", Sender: "u1", Text: "/new --workdir " + second + " second", Time: time.Now()}); err != nil {
+		t.Fatalf("second message error: %v", err)
+	}
+	close(runner.block)
+	waitForCalls(t, runner, 2)
+	calls := runner.Calls()
+	if calls[0].WorkDir != first {
+		t.Fatalf("first workdir = %q, want %q", calls[0].WorkDir, first)
+	}
+	if calls[1].WorkDir != second {
+		t.Fatalf("queued workdir = %q, want %q", calls[1].WorkDir, second)
 	}
 }
 
@@ -393,6 +474,34 @@ func TestParseClaudeStreamOutputDoesNotDuplicateFinalResult(t *testing.T) {
 	}
 	if len(result.Segments) != 1 || result.Segments[0].Text != "E2E_ONESHOT" {
 		t.Fatalf("segments = %#v, want single E2E_ONESHOT", result.Segments)
+	}
+}
+
+func TestCLIExecRunnerUsesRequestedWorkDirAndPWD(t *testing.T) {
+	fakeBin := t.TempDir()
+	fakeClaude := filepath.Join(fakeBin, "claude")
+	script := `#!/bin/sh
+printf '{"type":"assistant","message":{"model":"fake-claude","content":[{"type":"text","text":"pwd=%s envpwd=%s"}],"usage":{"output_tokens":1},"session_id":"sess-1"}}\n' "$(pwd)" "$PWD"
+`
+	if err := os.WriteFile(fakeClaude, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", fakeBin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	workDir := t.TempDir()
+	result, err := CLIExecRunner{}.Run(context.Background(), AgentRunRequest{
+		Kind:    agent.Claude,
+		Prompt:  "check cwd",
+		WorkDir: workDir,
+	})
+	if err != nil {
+		t.Fatalf("runner error: %v", err)
+	}
+	if len(result.Segments) != 1 {
+		t.Fatalf("segments = %#v, want one answer", result.Segments)
+	}
+	got := result.Segments[0].Text
+	if !containsAll(got, "pwd="+workDir, "envpwd="+workDir) {
+		t.Fatalf("runner cwd output = %q, want pwd and envpwd %s", got, workDir)
 	}
 }
 

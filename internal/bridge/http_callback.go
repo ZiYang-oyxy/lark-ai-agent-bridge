@@ -29,12 +29,17 @@ func NewCallbackHTTPHandler(service *Service) http.Handler {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
-		if err := service.HandleAction(r.Context(), req); err != nil {
+		result, err := service.HandleActionResult(r.Context(), req)
+		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]any{"ok": true})
+		resp := map[string]any{"ok": true}
+		if card := result.BuildCard(service.Config.CardMaxChars); card != nil {
+			resp["card"] = card
+		}
+		_ = json.NewEncoder(w).Encode(resp)
 	})
 	return mux
 }

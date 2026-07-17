@@ -7,7 +7,7 @@
 - 飞书消息通过长连接进入 bridge。
 - bridge 启动一次 Claude CLI 子进程处理请求。
 - 执行中、流式输出、结果、停止和错误使用同一张 CardKit 卡片展示。
-- 卡片按钮生产路径使用长连接 `card.action.trigger`，不依赖公网 HTTP callback。
+- 卡片按钮生产路径使用长连接 `card.action.trigger`，同步返回终态卡片并保留异步 CardKit update 兜底，不依赖公网 HTTP callback。
 - 第一版只适配 `claude`，`codex` 暂缓。
 - 群聊默认只响应 @bot；单聊逻辑默认全量响应，但真实单聊 E2E 暂缓。
 
@@ -22,7 +22,8 @@
 - topic 内普通文本续接保存的 Claude session id。
 - `/new` 重置当前 chat/topic 会话。
 - 同一 chat/topic 串行排队，不同 topic 并行。
-- 工作目录不存在时的创建/取消确认。
+- 工作目录不存在时的创建/取消确认；create/cancel 后确认卡片进入绿色/灰色终态并禁用按钮，create 后 Claude 执行另起运行卡片。
+- `/new --workdir` 会传递到 Claude 子进程的 `cmd.Dir` 和 `PWD`，排队输入也保留各自 workdir。
 - 执行中停止按钮取消 active run，并把同一卡片置灰为“已停止”。
 - CardKit 2.0 create/reply/update、蓝/绿/灰/红 header、`状态 · ⏱ Ns` 标题、富文本正文、折叠思考面板、折叠工具面板和底部分栏状态栏。
 - 底部状态栏先用分割线隔开，再用两行分栏展示 agent/model/tokens 和 user/ip/workdir；tokens 使用 `🔢 tokens: ▶ 本轮 / ∑ 累计`，不展示 status。
@@ -30,14 +31,14 @@
 - JSONL 审计日志和敏感信息脱敏。
 - doctor、verify、evidence 本地证据链。
 
-## 仍需真实环境验证
+## 真实环境验证状态
 
-- 真实 Feishu 群聊 @bot 后，bridge 长连接接收消息并回复执行中/结果卡片。
-- 真实点击“停止”按钮后，长连接收到 `card.action.trigger`，Claude 子进程被取消，卡片按钮置灰。
-- 真实卡片流式更新中出现 `cardkit_update event=stream`，最终同一卡片更新为 `event=result`。
-- 真实点击工作目录“Create directory”和“Cancel”。
-- 真实 Claude 生成结果中的 session id 是否稳定返回，并能用于 topic 内续接。
-- 单聊 E2E 暂缓；需要同 bridge app 用户 OAuth profile，或手动建立 P2P 后记录 chat_id。
+- 已验证真实 Feishu 群聊 @bot 后，bridge 通过长连接接收消息并回复执行中/结果卡片。
+- 已验证真实卡片流式更新：audit 中出现 `cardkit_update event=stream`，最终同一卡片更新为 `event=result`。
+- 已验证真实点击“停止”按钮后，长连接收到 `card.action.trigger`，Claude 子进程被取消，卡片更新为灰色终态且按钮 disabled。
+- 已验证真实点击工作目录“Create directory”和“Cancel”后，确认卡片分别进入绿色/灰色终态并禁用按钮；create 后出现独立 Claude 运行卡片。
+- 已验证群话题内 @bot 续聊进入 `thread:<thread_id>` 会话；当前飞书权限下，群话题内不 @bot 的消息不会推送到 bridge。
+- 单聊 E2E 仍暂缓；需要同 bridge app 用户 OAuth profile，或手动建立 P2P 后记录 chat_id。
 
 ## 标准验证命令
 

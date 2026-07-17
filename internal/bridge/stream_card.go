@@ -59,7 +59,8 @@ func newAgentCardStream(service *Service, sessionID string, sess session.Session
 }
 
 func (s *agentCardStream) Start() error {
-	return s.render(true)
+	_, err := s.render(true)
+	return err
 }
 
 func (s *agentCardStream) Handle(update AgentStreamUpdate) {
@@ -93,11 +94,11 @@ func (s *agentCardStream) Handle(update AgentStreamUpdate) {
 	}
 }
 
-func (s *agentCardStream) Finish(status string, meta card.Meta, result AgentRunResult) {
+func (s *agentCardStream) Finish(status string, meta card.Meta, result AgentRunResult) (card.Event, error) {
 	s.mu.Lock()
 	if s.closed {
 		s.mu.Unlock()
-		return
+		return card.Event{}, nil
 	}
 	s.status = status
 	if meta.Agent != "" {
@@ -135,7 +136,7 @@ func (s *agentCardStream) Finish(status string, meta card.Meta, result AgentRunR
 	}
 	s.closed = true
 	s.mu.Unlock()
-	_ = s.render(false)
+	return s.render(false)
 }
 
 func (s *agentCardStream) Flush() error {
@@ -145,7 +146,8 @@ func (s *agentCardStream) Flush() error {
 		return nil
 	}
 	s.mu.Unlock()
-	return s.render(false)
+	_, err := s.render(false)
+	return err
 }
 
 func (s *agentCardStream) appendSegmentLocked(segment card.Segment) {
@@ -173,12 +175,12 @@ func (s *agentCardStream) mergeFinalSegmentsLocked(segments []card.Segment) {
 	}
 }
 
-func (s *agentCardStream) render(initial bool) error {
+func (s *agentCardStream) render(initial bool) (card.Event, error) {
 	s.mu.Lock()
 	event := s.eventLocked(initial)
 	s.lastFlush = time.Now()
 	s.mu.Unlock()
-	return s.service.Cards.Render(event)
+	return event, s.service.Cards.Render(event)
 }
 
 func (s *agentCardStream) eventLocked(initial bool) card.Event {

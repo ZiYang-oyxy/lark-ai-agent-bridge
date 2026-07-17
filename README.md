@@ -13,8 +13,8 @@
 - CardKit 卡片流式展示正文、折叠思考过程、折叠工具调用、分栏底部状态栏和一次性停止按钮。
 - 执行中标题使用蓝色 `正在推理/正在执行工具/正在回复 · ⏱ Ns`，完成绿色，停止灰色，失败红色。
 - 底部状态栏使用分割线和两行分栏：agent/model/tokens，以及 user/ip/workdir。
-- 工作目录不存在时先发确认卡片，点击创建后继续原请求。
-- 卡片按钮走长连接 `card.action.trigger`；HTTP `/card/callback` 只保留为本地兼容调试入口。
+- 工作目录不存在时先发确认卡片；点击创建后确认卡变绿并禁用按钮，Claude 执行另起运行卡片。
+- 卡片按钮走长连接 `card.action.trigger`，回调会同步返回终态卡片并保留异步 CardKit update 兜底；HTTP `/card/callback` 只保留为本地兼容调试入口。
 
 ## 本地命令
 

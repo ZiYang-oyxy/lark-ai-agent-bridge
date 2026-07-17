@@ -29,6 +29,13 @@ func TestCallbackHTTPHandlerDispatchesAction(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
 	}
+	var bodyResp map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &bodyResp); err != nil {
+		t.Fatalf("response is not JSON: %v", err)
+	}
+	if bodyResp["card"] == nil {
+		t.Fatalf("response body = %#v, want card payload", bodyResp)
+	}
 	events := renderer.Events()
 	if got := events[len(events)-1]; got.Type != "stopped" || !got.StopButton.Disabled || got.HeaderTemplate != "grey" {
 		t.Fatalf("last event = %#v, want disabled stop", got)
