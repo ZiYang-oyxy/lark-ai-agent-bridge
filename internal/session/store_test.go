@@ -363,6 +363,51 @@ func TestStoreAwareDurableMutationsPersistSortedDeepCopiesAndAdvanceRevision(t *
 	}
 }
 
+func TestStoreAwarePersistenceSortsReceiptSnapshotWithoutMutatingManagerOrder(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "sessions.json")
+	m := NewManagerWithStore(path)
+	source := []Receipt{
+		{MessageID: "z-message", ExpiresAt: time.Unix(30, 0)},
+		{MessageID: "a-message", ExpiresAt: time.Unix(20, 0)},
+		{MessageID: "a-message", ExpiresAt: time.Unix(10, 0)},
+	}
+	m.receipts = source
+	key := Key{Agent: agent.Claude, ChatID: "receipts"}
+	if _, _, err := m.EnqueueDurable(key, Input{ID: "input", State: InputQueued}, "/w", BatchLimits{}); err != nil {
+		t.Fatal(err)
+	}
+
+	persisted, err := LoadSnapshot(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []Receipt{
+		{MessageID: "a-message", ExpiresAt: time.Unix(10, 0)},
+		{MessageID: "a-message", ExpiresAt: time.Unix(20, 0)},
+		{MessageID: "z-message", ExpiresAt: time.Unix(30, 0)},
+	}
+	if len(persisted.Receipts) != len(want) {
+		t.Fatalf("persisted receipts = %#v", persisted.Receipts)
+	}
+	for i := range want {
+		if persisted.Receipts[i] != want[i] {
+			t.Fatalf("persisted receipt[%d] = %#v, want %#v", i, persisted.Receipts[i], want[i])
+		}
+	}
+
+	source[0].MessageID = "mutated-source"
+	if m.receipts[0].MessageID != "z-message" {
+		t.Fatalf("source mutation leaked into manager receipts: %#v", m.receipts)
+	}
+	reloaded, err := LoadSnapshot(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reloaded.Receipts[2].MessageID != "z-message" {
+		t.Fatalf("source mutation leaked into persisted receipts: %#v", reloaded.Receipts)
+	}
+}
+
 func TestRestoreMissingSnapshotPersistsAnEmptyCurrentSnapshot(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "sessions.json")
 	m := NewManagerWithStore(path)

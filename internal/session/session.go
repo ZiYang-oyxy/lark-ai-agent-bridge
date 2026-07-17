@@ -512,7 +512,7 @@ func (m *Manager) persistCandidateLocked(sessions map[string]*Session, receipts 
 		Revision: revision + 1,
 		SavedAt:  time.Now().UTC(),
 		Sessions: snapshotSessions(sessions),
-		Receipts: cloneReceipts(receipts),
+		Receipts: snapshotReceipts(receipts),
 	}
 	if err := SaveSnapshot(m.storePath, snapshot); err != nil {
 		m.lastPersistErr = err
@@ -605,6 +605,17 @@ func snapshotSessions(sessions map[string]*Session) []Session {
 
 func cloneReceipts(receipts []Receipt) []Receipt {
 	return append([]Receipt(nil), receipts...)
+}
+
+func snapshotReceipts(receipts []Receipt) []Receipt {
+	list := cloneReceipts(receipts)
+	sort.Slice(list, func(i, j int) bool {
+		if list[i].MessageID == list[j].MessageID {
+			return list[i].ExpiresAt.Before(list[j].ExpiresAt)
+		}
+		return list[i].MessageID < list[j].MessageID
+	})
+	return list
 }
 
 func compatibleBatchInput(first, next Input) bool {
