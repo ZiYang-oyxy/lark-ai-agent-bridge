@@ -10,7 +10,7 @@
 
 bridge 当前不再托管交互式终端，也不再通过 tmux/PTY 捕获输出。每条可处理飞书消息会形成一次 Claude 子进程调用：
 
-- 启动命令：`claude -p --output-format stream-json --dangerously-skip-permissions <prompt>`
+- 启动命令：`claude -p --output-format stream-json --dangerously-skip-permissions --effort low <prompt>`
 - 子进程 `cmd.Dir` 和 `PWD` 都设置为本轮请求解析出的工作目录；没有 `--workdir` 时使用 `--default-workdir` 或环境默认目录。
 - 如果当前 chat/topic 已保存 Claude session id，后续普通消息会追加 `--resume <session_id>` 续接内部会话。
 - `/new` 会清空当前 chat/topic 保存的 Claude session id，并从新会话开始。
