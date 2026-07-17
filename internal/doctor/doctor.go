@@ -45,11 +45,21 @@ func sessionStoreWritable(path string) Check {
 		return Check{Name: "session_store", OK: false, Detail: "empty"}
 	}
 	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return Check{Name: "session_store", OK: false, Detail: "parent_create_failed: " + path}
+	info, err := os.Lstat(dir)
+	if os.IsNotExist(err) {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			return Check{Name: "session_store", OK: false, Detail: "parent_create_failed: " + path}
+		}
+		info, err = os.Lstat(dir)
 	}
-	if err := os.Chmod(dir, 0o700); err != nil {
-		return Check{Name: "session_store", OK: false, Detail: "parent_permissions_failed: " + path}
+	if err != nil {
+		return Check{Name: "session_store", OK: false, Detail: "parent_stat_failed: " + path}
+	}
+	if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+		return Check{Name: "session_store", OK: false, Detail: "parent_not_directory: " + path}
+	}
+	if info.Mode().Perm() != 0o700 {
+		return Check{Name: "session_store", OK: false, Detail: "parent_insecure_permissions: " + path}
 	}
 	probe, err := os.CreateTemp(dir, ".session-store-probe-*")
 	if err != nil {
@@ -64,7 +74,7 @@ func sessionStoreWritable(path string) Check {
 		return Check{Name: "session_store", OK: false, Detail: "write_probe_cleanup_failed: " + path}
 	}
 
-	info, err := os.Lstat(path)
+	info, err = os.Lstat(path)
 	if os.IsNotExist(err) {
 		return Check{Name: "session_store", OK: true, Detail: path}
 	}
@@ -138,7 +148,7 @@ func auditLogWritable(path string) Check {
 		return Check{Name: "audit_log", OK: false, Detail: "empty"}
 	}
 	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return Check{Name: "audit_log", OK: false, Detail: err.Error()}
 	}
 	file, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)

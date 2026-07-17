@@ -116,6 +116,144 @@ func TestRunRejectsInsecureSessionStoreFile(t *testing.T) {
 	}
 }
 
+func TestSessionStoreRelativePathDoesNotMutateCurrentDirectoryPermissions(t *testing.T) {
+	originalDir, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cwd := t.TempDir()
+	if err := os.Chmod(cwd, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(cwd); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(originalDir) })
+	before := filePermissions(t, cwd)
+
+	check := sessionStoreWritable("sessions.json")
+
+	if check.OK {
+		t.Errorf("relative session_store check = %#v, want failure for cwd permissions", check)
+	}
+	if after := filePermissions(t, cwd); after != before {
+		t.Errorf("cwd permissions changed from %o to %o", before, after)
+	}
+}
+
+func TestSessionStoreRejectsSymlinkParentWithoutMutatingTargetOrLeavingProbe(t *testing.T) {
+	target := t.TempDir()
+	if err := os.Chmod(target, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	parent := t.TempDir()
+	link := filepath.Join(parent, "store-link")
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatal(err)
+	}
+	before := filePermissions(t, target)
+
+	check := sessionStoreWritable(filepath.Join(link, "sessions.json"))
+
+	if check.OK {
+		t.Errorf("symlink-parent session_store check = %#v, want failure", check)
+	}
+	if after := filePermissions(t, target); after != before {
+		t.Errorf("symlink target permissions changed from %o to %o", before, after)
+	}
+	probes, err := filepath.Glob(filepath.Join(target, ".session-store-probe-*"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(probes) != 0 {
+		t.Fatalf("symlink target probe files = %q, want none", probes)
+	}
+}
+
+func TestRunAcceptsValidExistingSessionStoreAndCleansProbe(t *testing.T) {
+	workDir := t.TempDir()
+	storePath := filepath.Join(workDir, "store", "sessions.json")
+	if err := session.SaveSnapshot(storePath, session.Snapshot{}); err != nil {
+		t.Fatal(err)
+	}
+
+	check := findCheck(t, Run(doctorTestConfig(workDir, storePath)), "session_store")
+	if !check.OK {
+		t.Fatalf("session_store check = %#v, want success", check)
+	}
+	probes, err := filepath.Glob(filepath.Join(filepath.Dir(storePath), ".session-store-probe-*"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(probes) != 0 {
+		t.Fatalf("session store probe files = %q, want none", probes)
+	}
+}
+
+func TestRunCreatesSharedAuditAndSessionParentSecurely(t *testing.T) {
+	workDir := t.TempDir()
+	parent := filepath.Join(workDir, ".lark-agent-bridge")
+	checks := Run(config.Config{
+		DefaultAgent:       "claude",
+		DefaultWorkDir:     workDir,
+		CardUpdateEvery:    time.Second,
+		InteractionTimeout: time.Second,
+		CardMaxChars:       12000,
+		AuditLogPath:       filepath.Join(parent, "audit.jsonl"),
+		SessionStorePath:   filepath.Join(parent, "sessions.json"),
+	})
+
+	if !findCheck(t, checks, "audit_log").OK || !findCheck(t, checks, "session_store").OK {
+		t.Fatalf("checks = %#v, want secure shared parent", checks)
+	}
+	if got := filePermissions(t, parent); got != 0o700 {
+		t.Fatalf("shared parent permissions = %o, want 700", got)
+	}
+}
+
+func TestAuditLogWritableCreatesSecureParent(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "audit", "audit.jsonl")
+
+	check := auditLogWritable(path)
+
+	if !check.OK {
+		t.Fatalf("audit log check = %#v, want success", check)
+	}
+	if got := filePermissions(t, filepath.Dir(path)); got != 0o700 {
+		t.Fatalf("audit parent permissions = %o, want 700", got)
+	}
+}
+
+func TestAuditLogWritablePreservesExistingCustomDirectoryPermissions(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.Chmod(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	before := filePermissions(t, dir)
+	path := filepath.Join(dir, "audit.jsonl")
+
+	check := auditLogWritable(path)
+
+	if !check.OK {
+		t.Fatalf("audit log check = %#v, want success", check)
+	}
+	if after := filePermissions(t, dir); after != before {
+		t.Fatalf("custom audit directory permissions changed from %o to %o", before, after)
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("audit log was not created: %v", err)
+	}
+}
+
+func filePermissions(t *testing.T, path string) os.FileMode {
+	t.Helper()
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return info.Mode().Perm()
+}
+
 func doctorTestConfig(workDir, storePath string) config.Config {
 	return config.Config{
 		DefaultAgent:       "claude",

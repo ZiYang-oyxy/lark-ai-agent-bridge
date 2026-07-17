@@ -14,6 +14,16 @@ type failWriter struct{}
 
 func (failWriter) Write([]byte) (int, error) { return 0, errors.New("disk full") }
 
+type sequenceFailWriter struct {
+	errs []error
+}
+
+func (w *sequenceFailWriter) Write([]byte) (int, error) {
+	err := w.errs[0]
+	w.errs = w.errs[1:]
+	return 0, err
+}
+
 type switchWriter struct {
 	writer io.Writer
 }
@@ -69,6 +79,19 @@ func TestRecorderKeepsWriteFailureHistoryAfterLaterSuccess(t *testing.T) {
 	}
 	if err := recorder.LastWriteError(); err == nil || err.Error() != "disk full" {
 		t.Fatalf("last write error = %v, want retained disk full", err)
+	}
+}
+
+func TestRecorderExposesMostRecentWriteError(t *testing.T) {
+	recorder := NewRecorderWithWriter(&sequenceFailWriter{errs: []error{errors.New("first failure"), errors.New("second failure")}})
+	recorder.Record("u", "first", "session", "detail")
+	recorder.Record("u", "second", "session", "detail")
+
+	if got := recorder.WriteErrors(); got != 2 {
+		t.Fatalf("write errors = %d, want 2", got)
+	}
+	if err := recorder.LastWriteError(); err == nil || err.Error() != "second failure" {
+		t.Fatalf("last write error = %v, want second failure", err)
 	}
 }
 
