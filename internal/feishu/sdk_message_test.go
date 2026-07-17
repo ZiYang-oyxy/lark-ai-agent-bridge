@@ -10,9 +10,9 @@ func TestParseMessageTextFromTextPayload(t *testing.T) {
 }
 
 func TestParseMessageTextFromPostPayload(t *testing.T) {
-	raw := `{"zh_cn":{"content":[[{"tag":"at","user_id":"ou_bot","user_name":"bot"},{"tag":"text","text":" /codex status"}]]}}`
+	raw := `{"zh_cn":{"content":[[{"tag":"at","user_id":"ou_bot","user_name":"bot"},{"tag":"text","text":" /new status"}]]}}`
 	got := parseMessageText(raw)
-	if got != "/codex status" {
+	if got != "/new status" {
 		t.Fatalf("text = %q, want command text", got)
 	}
 }

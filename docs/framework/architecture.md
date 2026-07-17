@@ -1,135 +1,102 @@
-# Feishu Agent Bridge Architecture
+# Feishu AI Agent Bridge Architecture
 
 ## 目标
 
-本项目实现一个独立的 Feishu agent bridge。它把飞书聊天、话题和卡片按钮映射到本地或远端的交互式 AI agent 终端，让用户可以在飞书里控制 `claude`、`codex` 等 agent，同时实时看到 agent 终端输出。
+本项目实现一个独立的 Feishu/Lark AI agent bridge。它把飞书聊天、话题和 CardKit 按钮映射到 Claude one-shot 调用，让用户在飞书中发起任务、查看执行状态、阅读结果，并在需要时停止本轮执行。
 
-`reference/lark-agent-workspace/` 只是归档参考，不是本 bridge 的接口约束。bridge 可以对接任何满足交互式终端行为的 agent。
+`reference/lark-agent-workspace/` 只是归档参考，不是本 bridge 的接口约束。
 
 ## 核心模型
 
-bridge 以长期运行的 tmux/PTY 会话为核心，而不是一次性命令调用：
+bridge 当前不再托管交互式终端，也不再通过 tmux/PTY 捕获输出。每条可处理飞书消息会形成一次 Claude 子进程调用：
 
-- 固定 tmux session：`lark-agent-bridge`
-- 一个 agent 会话对应一个 tmux window
-- 飞书输入写入对应 window 的 stdin
-- tmux pane 输出被 bridge 捕获并同步到飞书 CardKit 卡片
-- 人也可以通过 `/attach` 返回的 tmux 命令直接 attach 到同一个 window 手动输入
-
-同一会话内部串行执行。agent 正在执行时收到的新输入会进入内存队列，并通过飞书反应提示“已收到并排队”。跨会话可以并发。
+- 启动命令：`claude -p --output-format stream-json --dangerously-skip-permissions <prompt>`
+- 如果当前 chat/topic 已保存 Claude session id，后续普通消息会追加 `--resume <session_id>` 续接内部会话。
+- `/new` 会清空当前 chat/topic 保存的 Claude session id，并从新会话开始。
+- 执行开始时创建“执行中”卡片，完成后更新同一张卡片为结果。
+- 执行中卡片带一次性“停止”按钮，点击后取消当前 Claude 子进程并置灰。
 
 ## 包结构
 
-- `cmd/lark-agent-bridge`：CLI 入口，包含 `doctor`、`simulate`、`serve`
-- `internal/agent`：agent 抽象层，负责 `claude`、`codex` 的命令构造与审批模式映射
-- `internal/tmux`：tmux session/window 管理，包含真实 runner 与测试 recording runner
-- `internal/tmux` 还包含 pane 增量监听器，用于把终端输出同步到卡片
-- `internal/session`：会话 key、状态、队列、prompt 历史和 window 名管理
-- `internal/bridge`：消息归一化、命令解析、service 编排
-- `internal/card`：卡片事件抽象、富文本 segment、fake renderer、长度控制、飞书 interactive card JSON builder
-- `internal/feishu`：从 `fai-agent-ph` 裁剪出的飞书消息模型、SDK 长连接、sender/reaction 接口、消息归一化、内存去重、CardKit HTTP client、CardKit renderer
+- `cmd/lark-agent-bridge`：CLI 入口，包含 `doctor`、`simulate`、`simulate-action`、`serve`
+- `internal/agent`：Claude one-shot 命令构造
+- `internal/session`：会话 key、状态、队列、Claude session id、prompt 历史
+- `internal/bridge`：消息命令解析、工作目录确认、队列、Claude runner、action 处理
+- `internal/card`：卡片事件抽象、富文本 segment、fake renderer、长度控制、CardKit 2.0 JSON builder
+- `internal/feishu`：飞书消息模型、SDK 长连接、sender/reaction 接口、消息归一化、CardKit HTTP client、CardKit renderer、`card.action.trigger` action 解析
 - `internal/audit`：审计事件记录
 - `internal/security`：敏感信息脱敏
 - `internal/doctor`：就绪检查
 
 `serve` 默认把审计事件写入 `<workdir>/.lark-agent-bridge/audit.jsonl`，也可以通过 `E2E_AUDIT_LOG` 覆盖路径。审计写入前会调用脱敏逻辑，避免 token、secret、password 等敏感值落盘。
 
-## Agent 交互识别
+## 命令面
 
-`internal/agent` 提供启发式交互识别：
+当前飞书命令只保留：
 
-- 授权请求：识别 permission、approve、授权、Allow once 等输出
-- 选择题：识别带编号的选项
-- 恢复 session：识别 resume session/恢复会话等输出，且必须解析出编号候选项
+- `/new [--workdir <path>] [prompt]`：重置当前 chat/topic 的 Claude 会话；有 prompt 时立即执行，没有 prompt 时只创建 ready 状态。
+- `/status`：查看当前 chat/topic 会话状态；群聊中会额外显示当前群内已知会话数量。
+- `/help`：显示帮助。
 
-识别结果后续会映射为 CardKit 按钮。第一版先用启发式规则，后续如果 `claude` 或 `codex` 提供稳定 hook/event API，再优先切换到原生事件。
+暂不实现 `/resume`。`/sessions`、`/history`、`/topic`、`/attach`、`/interrupt`、`/stop` 文本命令以及 `/claude`、`/codex` 旧入口均不属于当前范围。
 
-交互卡片默认 120 秒超时，可通过 `E2E_INTERACTION_TIMEOUT_SEC` 调整。超时后 bridge 会向 agent stdin 写入默认值：授权请求写入 `reject`，选择题和恢复候选写入 `cancel`。用户在超时前点击按钮会清除 pending timeout，避免重复写入。点击或超时后，bridge 会短期记录该交互的候选签名；如果 tmux TUI 重绘又带出相同候选列表，后续增量会按普通 stream 展示，避免重复生成同一组按钮。
+群聊默认只处理 @ 机器人的消息；单聊默认处理全部文本。
 
-普通流式输出由 `internal/bridge` 按行拆分为富文本 segment，并合并相邻同类行：
-
-- 普通文本：默认 segment
-- 思考过程：识别 thinking、thought、reasoning、思考等标记
-- 工具调用：识别 tool、tool_use、function_call、mcp、工具，以及常见 `Bash(...)`、`Read(...)`、`Edit(...)` 等调用格式
-
-这层分段只负责展示，不改变 agent stdin/stdout 行为。
-
-## 会话 Key
+## 会话 Key 与并发
 
 会话 key 由以下字段组成：
 
-- agent 名称：`claude` 或 `codex`
+- agent：当前固定为 `claude`
 - 飞书 chat id
 - 飞书 thread/topic id，可空
 
-话题模式下，thread/topic id 进入 key，因此话题会话与普通群聊/单聊会话完全独立。
+有 thread/topic id 时，topic 会进入 key；无 topic 时只按 chat 维度管理。
 
-topic mode 是 chat 级内存配置，默认开启以保持飞书话题隔离；用户可在当前 chat 内发送 `/topic off` 临时忽略 thread/topic id，使后续输入回到普通 chat 会话，发送 `/topic on` 恢复隔离。
+并发规则：
 
-## 启动模式
+- 同一 chat/topic 内串行执行。
+- 执行中收到同一 chat/topic 的新输入时进入内存队列，并产生 `reaction` 事件提示已排队。
+- 不同 topic 使用不同 key，可以并行运行各自的 Claude 子进程。
+- 非 topic 普通文本默认新建会话。
+- topic 普通文本默认继续当前 topic 会话；`/new` 会重置当前 topic 会话。
 
-抽象三种审批级别：
+## Claude 输出解析
 
-- `default`：保留 agent 默认审批行为
-- `auto`：尽量自动接受低风险编辑或普通审批
-- `full`：完全授权，允许 agent 以高权限参数启动
+Claude runner 使用 `--output-format stream-json`，并从 JSONL 事件中提取：
 
-具体 CLI 参数由每个 agent adapter 负责。当前实现：
+- 正文：`text` block 或 `result` 字段
+- 思考过程：`thinking`、`reasoning`、`redacted_thinking` block
+- 工具调用：`tool_use`、`tool_result` block
+- model：顶层或 message 内的 `model`
+- token 数：递归统计 usage 中以 `tokens` 结尾的数字字段
+- Claude session id：顶层或 message 内的 `session_id`
 
-- `claude full`：`claude --dangerously-skip-permissions`
-- `codex full`：`codex -c check_for_update_on_startup=false --dangerously-bypass-approvals-and-sandbox`
-- `claude resume <id>`：`claude --resume <id>`
-- `claude resume --last`：`claude --continue`
-- `codex resume <id>`：`codex -c check_for_update_on_startup=false resume <id>`
-- `codex resume --last`：`codex -c check_for_update_on_startup=false resume --last`
-
-`codex` adapter 会统一追加 `-c check_for_update_on_startup=false`，避免真实 E2E 或常驻会话启动时进入 CLI 自更新提示，导致用户输入和 bridge 队列被更新流程截获。
-
-后续需要基于实际 agent CLI 版本继续校正 `auto` 参数。
+输出会映射为 `card.Segment`，CardKit 卡片中正文直接展示，思考过程和工具调用放入折叠面板。
 
 ## 飞书卡片职责
 
-CardKit 卡片是远程终端同步视图：
+CardKit 卡片负责展示一次 Claude 请求的状态：
 
-- 流式显示终端输出
-- 以富文本 segment 区分普通文本、思考过程、工具调用、错误
-- 底部展示 agent、model、token 数量、工作目录、状态
-- 查询进行中显示一次性的「停止」按钮
-- 点击停止后，bridge 向 tmux window 发送中断，把按钮置灰，并释放当前 running 状态；如果同一会话已有排队输入，则推进下一条输入到同一个 tmux window
-- 长输出通过分页和兜底截断控制卡片长度；普通命令回复和流式 tmux delta 都会按 `E2E_CARD_MAX_CHARS` 拆页
-- 流式分页复用同一个 session/card 更新，用 `page X/Y` 标明当前页，避免 CardKit 后续页因为没有原始飞书消息 id 而无法创建新卡
+- 执行中：显示“正在执行 Claude 请求...”和“停止”按钮。
+- 结果：展示正文、折叠思考过程、折叠工具调用。
+- 错误：展示错误内容。
+- 工作目录确认：当 `--workdir` 不存在时提供“Create directory”和“Cancel”按钮。
+- 底部 meta：展示 agent、model、tokens、workdir、status。
 
-`serve` 使用 reaction/card 分流 renderer：
+长输出由 `E2E_CARD_MAX_CHARS` 控制，避免超过飞书卡片限制。
 
-- `reaction` 事件调用飞书消息 reaction API
-- 其他卡片事件通过 CardKit 按 session 创建或更新同一张卡片
-- tmux pane 轮询循环会把终端输出增量映射为 `stream`、`authorization`、`choice`、`resume` 等事件
-- 卡片按钮生产入口是飞书长连接 `card.action.trigger`；`internal/feishu` 先把 SDK `CardActionTriggerEvent` 转成轻量 `CardAction`，`serve` 再映射为 `bridge.ActionRequest` 并复用 service action 处理
-- `stop`/`interrupt` 按钮成功处理后，长连接回调响应会直接返回 disabled「已停止」`card_json`；同时 service 仍异步更新原 CardKit 卡片并额外回复 terminal「已停止」确认卡
-- 设置 `E2E_CALLBACK_ADDR` 后，`serve` 会额外启动 `/card/callback` HTTP 兼容入口；该入口仅用于本地调试和迁移期验证，不作为真实 E2E 依赖
-
-如果消息指定的 `--workdir` 不存在，bridge 会先发送工作目录创建确认卡片，不提前创建目录，也不启动 agent。确认卡片同样受 `E2E_INTERACTION_TIMEOUT_SEC` 控制；超时默认取消 pending 请求，避免无响应时残留待启动任务。
+按钮处理生产路径只使用飞书长连接 `card.action.trigger`。设置 `E2E_CALLBACK_ADDR` 后，`serve` 会额外启动 `/card/callback` HTTP 兼容入口；该入口仅用于本地调试和迁移期验证，不作为真实 E2E 依赖。
 
 ## 生命周期
 
-bridge 主进程退出时需要清理：
-
-- `lark-agent-bridge` tmux session
-- 所有 agent window 和进程
-- 临时卡片状态
-- 运行中队列状态
-
-`serve` 会监听 Ctrl-C 和 `SIGTERM`，退出时调用 service cleanup，清理固定 tmux session。内存队列、watcher 和卡片路由状态随进程退出释放。
-
-会话不会因为闲置被主动释放。默认 24 小时无活跃后，bridge 只发送提醒，用户可以在飞书上终止会话。阈值由 `E2E_IDLE_REMINDER_AFTER_SEC` 控制，后台扫描间隔由 `E2E_IDLE_CHECK_MS` 控制；生产默认值分别是 24 小时和 1 小时，E2E 可临时缩短到几秒。
-
-当前 service 已提供 `RenderIdleReminders`，用于扫描内存会话并产生 `idle_reminder` 卡片事件；它不会停止 tmux window。提醒只对 `idle` 状态会话触发，非空终端输出会刷新会话的 idle 时钟并清除已提醒标记，避免提醒卡片被后续 stream 更新覆盖。提醒卡片携带 `terminate_session` 动作，用户点击后才会执行 `tmux kill-window` 并把会话状态标记为 `stopped`。
+bridge 主进程退出时会取消仍在运行的 Claude 子进程，并释放内存中的 pending action、队列和卡片路由状态。当前不做 SQLite/重启恢复，会话状态和 prompt 历史只保存在内存中。
 
 ## 暂缓项
 
+- `/resume` 和历史会话恢复
+- `codex` agent 适配
+- tmux/PTY/WebTTY/共享终端
+- 文件/图片输入
 - 权限与用户映射
 - metrics 观测
-- 工作目录白名单
 - SQLite/重启恢复
-- WebTTY
-- 飞书按钮点击权限限制

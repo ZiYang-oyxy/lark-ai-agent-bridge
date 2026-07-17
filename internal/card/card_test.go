@@ -76,16 +76,6 @@ func TestLimitEventRedactsSecrets(t *testing.T) {
 	}
 }
 
-func TestAuthorizationActions(t *testing.T) {
-	actions := AuthorizationActions()
-	if len(actions) != 4 {
-		t.Fatalf("actions len = %d, want 4", len(actions))
-	}
-	if actions[3].Value != "reject" {
-		t.Fatalf("last action = %#v, want reject", actions[3])
-	}
-}
-
 func TestWorkDirCreateActions(t *testing.T) {
 	actions := WorkDirCreateActions("/tmp/a")
 	if len(actions) != 2 {
@@ -93,51 +83,5 @@ func TestWorkDirCreateActions(t *testing.T) {
 	}
 	if actions[0].Value != "/tmp/a" {
 		t.Fatalf("value = %q, want path", actions[0].Value)
-	}
-}
-
-func TestResumeActionsAddsCancel(t *testing.T) {
-	actions := ResumeActions([]string{"s1"})
-	if len(actions) != 2 {
-		t.Fatalf("actions len = %d, want 2", len(actions))
-	}
-	if actions[0].Value != "1" {
-		t.Fatalf("first action value = %q, want 1", actions[0].Value)
-	}
-	if actions[1].ID != "resume_cancel" {
-		t.Fatalf("last action = %#v, want cancel", actions[1])
-	}
-}
-
-func TestChoiceActionsUseNumericValues(t *testing.T) {
-	actions := ChoiceActions([]string{"repo top3", "AI only"})
-	if len(actions) != 2 {
-		t.Fatalf("actions len = %d, want 2", len(actions))
-	}
-	if actions[0].Label != "repo top3" || actions[0].Value != "1" {
-		t.Fatalf("first action = %#v, want label repo top3 and value 1", actions[0])
-	}
-	if actions[1].Label != "AI only" || actions[1].Value != "2" {
-		t.Fatalf("second action = %#v, want label AI only and value 2", actions[1])
-	}
-}
-
-func TestRestartActions(t *testing.T) {
-	actions := RestartActions()
-	if len(actions) != 1 {
-		t.Fatalf("actions len = %d, want 1", len(actions))
-	}
-	if actions[0].ID != "restart_session" {
-		t.Fatalf("action = %#v, want restart_session", actions[0])
-	}
-}
-
-func TestTerminateSessionActions(t *testing.T) {
-	actions := TerminateSessionActions(true)
-	if len(actions) != 1 {
-		t.Fatalf("actions len = %d, want 1", len(actions))
-	}
-	if actions[0].ID != "terminate_session" || !actions[0].Disabled {
-		t.Fatalf("action = %#v, want disabled terminate_session", actions[0])
 	}
 }

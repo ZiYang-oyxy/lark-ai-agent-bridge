@@ -1,7 +1,6 @@
 package session
 
 import (
-	"fmt"
 	"strings"
 	"sync"
 	"time"
@@ -30,9 +29,11 @@ type Prompt struct {
 }
 
 type Input struct {
-	Sender string
-	Text   string
-	Time   time.Time
+	Sender           string
+	Text             string
+	ReplyToMessageID string
+	Time             time.Time
+	Reset            bool
 }
 
 type State string
@@ -45,20 +46,17 @@ const (
 )
 
 type Session struct {
-	Key           Key
-	ID            string
-	WindowName    string
-	WindowStarted bool
-	WorkDir       string
-	ApprovalMode  agent.ApprovalMode
-	Model         string
-	Tokens        int
-	State         State
-	History       []Prompt
-	Queue         []Input
-	CreatedAt     time.Time
-	LastActive    time.Time
-	IdleNotified  bool
+	Key             Key
+	ID              string
+	WorkDir         string
+	ClaudeSessionID string
+	Model           string
+	Tokens          int
+	State           State
+	History         []Prompt
+	Queue           []Input
+	CreatedAt       time.Time
+	LastActive      time.Time
 }
 
 type Manager struct {
@@ -70,56 +68,41 @@ func NewManager() *Manager {
 	return &Manager{sessions: map[string]*Session{}}
 }
 
-func (m *Manager) GetOrCreate(key Key, workDir string) *Session {
+func (m *Manager) GetOrCreate(key Key, workDir string) Session {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	id := key.ID()
-	if s, ok := m.sessions[id]; ok {
-		return cloneSession(s)
-	}
-	now := time.Now()
-	s := &Session{
-		Key:        key,
-		ID:         id,
-		WindowName: windowName(id),
-		WorkDir:    workDir,
-		State:      StateIdle,
-		CreatedAt:  now,
-		LastActive: now,
-	}
-	m.sessions[id] = s
-	return cloneSession(s)
+	return *cloneSession(m.ensureLocked(key, workDir))
+}
+
+func (m *Manager) Reset(key Key, workDir string) Session {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	s := m.ensureLocked(key, workDir)
+	resetSessionLocked(s, workDir, time.Now())
+	return *cloneSession(s)
 }
 
 func (m *Manager) Enqueue(key Key, input Input, workDir string) (Session, bool) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	s := m.ensureLocked(key, workDir)
-	if shouldAdoptWorkDir(s, workDir) {
-		s.WorkDir = workDir
-	}
 	if input.Time.IsZero() {
 		input.Time = time.Now()
 	}
-	s.LastActive = input.Time
-	s.IdleNotified = false
-	s.History = append(s.History, Prompt{Time: input.Time, Sender: input.Sender, Text: input.Text})
 	if s.State == StateRunning {
 		s.Queue = append(s.Queue, input)
+		s.LastActive = input.Time
 		return *cloneSession(s), true
 	}
+	if input.Reset {
+		resetSessionLocked(s, workDir, input.Time)
+	} else if workDir != "" && s.WorkDir == "" {
+		s.WorkDir = workDir
+	}
 	s.State = StateRunning
+	s.LastActive = input.Time
+	appendPromptLocked(s, input)
 	return *cloneSession(s), false
-}
-
-func shouldAdoptWorkDir(s *Session, workDir string) bool {
-	if workDir == "" || workDir == s.WorkDir {
-		return false
-	}
-	if s.State == StateRunning {
-		return false
-	}
-	return !s.WindowStarted || s.State == StateCrashed || s.State == StateStopped
 }
 
 func (m *Manager) Complete(key Key, workDir string) (Session, *Input) {
@@ -135,28 +118,19 @@ func (m *Manager) CompleteAt(key Key, workDir string, now time.Time) (Session, *
 		if !now.IsZero() {
 			s.LastActive = now
 		}
-		s.IdleNotified = false
 		return *cloneSession(s), nil
 	}
 	next := s.Queue[0]
 	s.Queue = s.Queue[1:]
+	if next.Reset {
+		resetSessionLocked(s, workDir, next.Time)
+	}
 	s.State = StateRunning
 	if !next.Time.IsZero() {
 		s.LastActive = next.Time
 	}
-	s.IdleNotified = false
+	appendPromptLocked(s, next)
 	return *cloneSession(s), &next
-}
-
-func (m *Manager) MarkWindowStarted(key Key, workDir string, approvalMode agent.ApprovalMode) Session {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	s := m.ensureLocked(key, workDir)
-	s.WindowStarted = true
-	if approvalMode != "" {
-		s.ApprovalMode = approvalMode
-	}
-	return *cloneSession(s)
 }
 
 func (m *Manager) MarkCrashed(key Key, workDir string) Session {
@@ -164,20 +138,6 @@ func (m *Manager) MarkCrashed(key Key, workDir string) Session {
 	defer m.mu.Unlock()
 	s := m.ensureLocked(key, workDir)
 	s.State = StateCrashed
-	s.WindowStarted = false
-	return *cloneSession(s)
-}
-
-func (m *Manager) MarkRestarted(key Key, workDir string, approvalMode agent.ApprovalMode) Session {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	s := m.ensureLocked(key, workDir)
-	s.State = StateIdle
-	s.WindowStarted = true
-	if approvalMode != "" {
-		s.ApprovalMode = approvalMode
-	}
-	s.LastActive = time.Now()
 	return *cloneSession(s)
 }
 
@@ -186,17 +146,19 @@ func (m *Manager) Stop(key Key, workDir string) Session {
 	defer m.mu.Unlock()
 	s := m.ensureLocked(key, workDir)
 	s.State = StateStopped
-	s.WindowStarted = false
 	s.Queue = nil
 	return *cloneSession(s)
 }
 
-func (m *Manager) UpdateMeta(id, model string, tokens int) Session {
+func (m *Manager) UpdateRunResult(id, claudeSessionID, model string, tokens int) Session {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	s, ok := m.sessions[id]
 	if !ok {
 		return Session{}
+	}
+	if claudeSessionID != "" {
+		s.ClaudeSessionID = claudeSessionID
 	}
 	if model != "" {
 		s.Model = model
@@ -204,21 +166,6 @@ func (m *Manager) UpdateMeta(id, model string, tokens int) Session {
 	if tokens > 0 {
 		s.Tokens = tokens
 	}
-	return *cloneSession(s)
-}
-
-func (m *Manager) Touch(id string, now time.Time) Session {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	s, ok := m.sessions[id]
-	if !ok {
-		return Session{}
-	}
-	if now.IsZero() {
-		now = time.Now()
-	}
-	s.LastActive = now
-	s.IdleNotified = false
 	return *cloneSession(s)
 }
 
@@ -230,22 +177,6 @@ func (m *Manager) List() []Session {
 		out = append(out, *cloneSession(s))
 	}
 	return out
-}
-
-func (m *Manager) IdleReminderDue(now time.Time, after time.Duration) []Session {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	var due []Session
-	for _, s := range m.sessions {
-		if s.IdleNotified || s.State != StateIdle {
-			continue
-		}
-		if after > 0 && now.Sub(s.LastActive) >= after {
-			s.IdleNotified = true
-			due = append(due, *cloneSession(s))
-		}
-	}
-	return due
 }
 
 func (m *Manager) History(id string) []Prompt {
@@ -263,12 +194,39 @@ func (m *Manager) History(id string) []Prompt {
 func (m *Manager) ensureLocked(key Key, workDir string) *Session {
 	id := key.ID()
 	if s, ok := m.sessions[id]; ok {
+		if s.WorkDir == "" && workDir != "" {
+			s.WorkDir = workDir
+		}
 		return s
 	}
 	now := time.Now()
-	s := &Session{Key: key, ID: id, WindowName: windowName(id), WorkDir: workDir, State: StateIdle, CreatedAt: now, LastActive: now}
+	s := &Session{Key: key, ID: id, WorkDir: workDir, State: StateIdle, CreatedAt: now, LastActive: now}
 	m.sessions[id] = s
 	return s
+}
+
+func resetSessionLocked(s *Session, workDir string, now time.Time) {
+	if now.IsZero() {
+		now = time.Now()
+	}
+	if workDir != "" {
+		s.WorkDir = workDir
+	}
+	s.ClaudeSessionID = ""
+	s.Model = ""
+	s.Tokens = 0
+	s.History = nil
+	s.Queue = nil
+	s.State = StateIdle
+	s.CreatedAt = now
+	s.LastActive = now
+}
+
+func appendPromptLocked(s *Session, input Input) {
+	if strings.TrimSpace(input.Text) == "" {
+		return
+	}
+	s.History = append(s.History, Prompt{Time: input.Time, Sender: input.Sender, Text: input.Text})
 }
 
 func cloneSession(s *Session) *Session {
@@ -276,16 +234,4 @@ func cloneSession(s *Session) *Session {
 	cp.History = append([]Prompt(nil), s.History...)
 	cp.Queue = append([]Input(nil), s.Queue...)
 	return &cp
-}
-
-func windowName(id string) string {
-	replacer := strings.NewReplacer(":", "-", "/", "-", " ", "-", ".", "-")
-	name := replacer.Replace(id)
-	if len(name) > 80 {
-		name = name[:80]
-	}
-	if name == "" {
-		return "agent"
-	}
-	return fmt.Sprintf("agent-%s", name)
 }

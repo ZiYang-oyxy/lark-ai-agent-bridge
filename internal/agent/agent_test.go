@@ -5,58 +5,40 @@ import (
 	"testing"
 )
 
-func TestBuildCommands(t *testing.T) {
-	claude, _ := AdapterFor(Claude)
-	cmd, err := claude.BuildCommand(LaunchConfig{Kind: Claude, ApprovalMode: ApprovalFull})
+func TestBuildClaudeOneShotCommand(t *testing.T) {
+	cmd, err := BuildOneShotCommand(OneShotConfig{Kind: Claude, Prompt: "hello"})
 	if err != nil {
-		t.Fatalf("claude command error: %v", err)
+		t.Fatalf("one-shot command error: %v", err)
 	}
-	if cmd[0] != "claude" || cmd[1] != "--dangerously-skip-permissions" {
-		t.Fatalf("claude full command = %#v", cmd)
-	}
-
-	codex, _ := AdapterFor(Codex)
-	cmd, err = codex.BuildCommand(LaunchConfig{Kind: Codex, ApprovalMode: ApprovalFull})
-	if err != nil {
-		t.Fatalf("codex command error: %v", err)
-	}
-	if got := strings.Join(cmd, " "); got != "codex -c check_for_update_on_startup=false --dangerously-bypass-approvals-and-sandbox" {
-		t.Fatalf("codex full command = %#v", cmd)
+	got := strings.Join(cmd, " ")
+	want := "claude -p --output-format stream-json --verbose --dangerously-skip-permissions hello"
+	if got != want {
+		t.Fatalf("one-shot command = %q, want %q", got, want)
 	}
 }
 
-func TestBuildResumeCommands(t *testing.T) {
-	claude, _ := AdapterFor(Claude)
-	cmd, err := claude.BuildCommand(LaunchConfig{Kind: Claude, ApprovalMode: ApprovalFull, Resume: true, ResumeTarget: "34cc"})
+func TestBuildClaudeOneShotCommandResumesInternalSession(t *testing.T) {
+	cmd, err := BuildOneShotCommand(OneShotConfig{Kind: Claude, Prompt: "next", ClaudeSessionID: "sess-123"})
 	if err != nil {
-		t.Fatalf("claude resume command error: %v", err)
+		t.Fatalf("one-shot command error: %v", err)
 	}
-	if got := strings.Join(cmd, " "); got != "claude --dangerously-skip-permissions --resume 34cc" {
-		t.Fatalf("claude resume command = %q", got)
+	got := strings.Join(cmd, " ")
+	want := "claude -p --output-format stream-json --verbose --dangerously-skip-permissions --resume sess-123 next"
+	if got != want {
+		t.Fatalf("one-shot command = %q, want %q", got, want)
 	}
+}
 
-	cmd, err = claude.BuildCommand(LaunchConfig{Kind: Claude, ApprovalMode: ApprovalDefault, Resume: true, ResumeLast: true})
-	if err != nil {
-		t.Fatalf("claude continue command error: %v", err)
+func TestBuildOneShotRejectsEmptyPrompt(t *testing.T) {
+	_, err := BuildOneShotCommand(OneShotConfig{Kind: Claude, Prompt: "   "})
+	if err == nil || !strings.Contains(err.Error(), "empty") {
+		t.Fatalf("empty prompt error = %v, want empty prompt error", err)
 	}
-	if got := strings.Join(cmd, " "); got != "claude --continue" {
-		t.Fatalf("claude continue command = %q", got)
-	}
+}
 
-	codex, _ := AdapterFor(Codex)
-	cmd, err = codex.BuildCommand(LaunchConfig{Kind: Codex, ApprovalMode: ApprovalFull, Resume: true, ResumeTarget: "34cc"})
-	if err != nil {
-		t.Fatalf("codex resume command error: %v", err)
-	}
-	if got := strings.Join(cmd, " "); got != "codex -c check_for_update_on_startup=false --dangerously-bypass-approvals-and-sandbox resume 34cc" {
-		t.Fatalf("codex resume command = %q", got)
-	}
-
-	cmd, err = codex.BuildCommand(LaunchConfig{Kind: Codex, ApprovalMode: ApprovalDefault, Resume: true, ResumeLast: true})
-	if err != nil {
-		t.Fatalf("codex last command error: %v", err)
-	}
-	if got := strings.Join(cmd, " "); got != "codex -c check_for_update_on_startup=false resume --last" {
-		t.Fatalf("codex last command = %q", got)
+func TestBuildOneShotRejectsUnsupportedAgent(t *testing.T) {
+	_, err := BuildOneShotCommand(OneShotConfig{Kind: Kind("codex"), Prompt: "hello"})
+	if err == nil || !strings.Contains(err.Error(), "not supported") {
+		t.Fatalf("unsupported agent error = %v, want unsupported", err)
 	}
 }

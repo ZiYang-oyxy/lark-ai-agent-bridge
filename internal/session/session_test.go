@@ -24,11 +24,8 @@ func TestEnqueueQueuesWhileRunning(t *testing.T) {
 	if len(second.Queue) != 1 {
 		t.Fatalf("queue len = %d, want 1", len(second.Queue))
 	}
-	if len(second.History) != 2 {
-		t.Fatalf("history len = %d, want 2", len(second.History))
-	}
-	if second.WorkDir != "/tmp/work" {
-		t.Fatalf("queued running workdir = %q, want original /tmp/work", second.WorkDir)
+	if len(second.History) != 1 {
+		t.Fatalf("history len = %d, want only running prompt recorded", len(second.History))
 	}
 	after, next := m.Complete(key, "/tmp/work")
 	if next == nil || next.Text != "second" {
@@ -37,75 +34,63 @@ func TestEnqueueQueuesWhileRunning(t *testing.T) {
 	if after.State != StateRunning {
 		t.Fatalf("state after complete = %s, want running for next queued item", after.State)
 	}
+	if len(after.History) != 2 {
+		t.Fatalf("history len after dequeue = %d, want 2", len(after.History))
+	}
 }
 
-func TestCrashedSessionAdoptsNextWorkDir(t *testing.T) {
+func TestResetClearsClaudeSessionAndHistory(t *testing.T) {
 	m := NewManager()
-	key := Key{Agent: agent.Codex, ChatID: "chat"}
-	first, queued := m.Enqueue(key, Input{Sender: "u1", Text: "first"}, "/tmp/old-work")
+	key := Key{Agent: agent.Claude, ChatID: "chat", Thread: "topic"}
+	started, queued := m.Enqueue(key, Input{Sender: "u1", Text: "first"}, "/tmp/work")
 	if queued {
-		t.Fatal("first input should not queue")
+		t.Fatal("first input should start")
 	}
-	m.MarkWindowStarted(key, first.WorkDir, agent.ApprovalDefault)
-	crashed := m.MarkCrashed(key, first.WorkDir)
-	if crashed.WorkDir != "/tmp/old-work" {
-		t.Fatalf("crashed workdir = %q, want old workdir", crashed.WorkDir)
+	m.UpdateRunResult(started.ID, "claude-session-1", "sonnet", 12)
+	m.Complete(key, "/tmp/work")
+	reset := m.Reset(key, "/tmp/next")
+	if reset.ClaudeSessionID != "" || reset.Model != "" || reset.Tokens != 0 {
+		t.Fatalf("reset metadata = %#v, want cleared", reset)
 	}
-	next, queued := m.Enqueue(key, Input{Sender: "u1", Text: "next"}, "/tmp/new-work")
-	if queued {
-		t.Fatal("input after crash should start running, not queue")
+	if len(reset.History) != 0 {
+		t.Fatalf("history len = %d, want cleared", len(reset.History))
 	}
-	if next.WorkDir != "/tmp/new-work" {
-		t.Fatalf("workdir after crash = %q, want /tmp/new-work", next.WorkDir)
-	}
-	if next.WindowStarted {
-		t.Fatal("crashed session should require a fresh window")
+	if reset.WorkDir != "/tmp/next" {
+		t.Fatalf("workdir = %q, want /tmp/next", reset.WorkDir)
 	}
 }
 
-func TestIdleReminderDueOnlyOnce(t *testing.T) {
+func TestQueuedResetClearsBeforeNextInput(t *testing.T) {
+	m := NewManager()
+	key := Key{Agent: agent.Claude, ChatID: "chat"}
+	first, _ := m.Enqueue(key, Input{Sender: "u1", Text: "first"}, "/tmp/work")
+	m.UpdateRunResult(first.ID, "claude-session-1", "sonnet", 12)
+	m.Enqueue(key, Input{Sender: "u1", Text: "second", Reset: true}, "/tmp/work")
+	after, next := m.Complete(key, "/tmp/work")
+	if next == nil || next.Text != "second" {
+		t.Fatalf("next = %#v, want reset input", next)
+	}
+	if after.ClaudeSessionID != "" {
+		t.Fatalf("claude session = %q, want reset before next run", after.ClaudeSessionID)
+	}
+	if len(after.History) != 1 || after.History[0].Text != "second" {
+		t.Fatalf("history = %#v, want only reset prompt", after.History)
+	}
+}
+
+func TestCompleteMarksIdle(t *testing.T) {
 	m := NewManager()
 	key := Key{Agent: agent.Claude, ChatID: "chat"}
 	now := time.Now()
-	m.Enqueue(key, Input{Sender: "u1", Text: "first", Time: now.Add(-25 * time.Hour)}, "/tmp/work")
-	due := m.IdleReminderDue(now, 24*time.Hour)
-	if len(due) != 0 {
-		t.Fatalf("running due len = %d, want 0", len(due))
+	m.Enqueue(key, Input{Sender: "u1", Text: "first", Time: now}, "/tmp/work")
+	after, next := m.CompleteAt(key, "/tmp/work", now.Add(time.Second))
+	if next != nil {
+		t.Fatalf("next = %#v, want nil", next)
 	}
-	m.CompleteAt(key, "/tmp/work", now.Add(-25*time.Hour))
-	due = m.IdleReminderDue(now, 24*time.Hour)
-	if len(due) != 1 {
-		t.Fatalf("due len = %d, want 1", len(due))
+	if after.State != StateIdle {
+		t.Fatalf("state = %s, want idle", after.State)
 	}
-	due = m.IdleReminderDue(now, 24*time.Hour)
-	if len(due) != 0 {
-		t.Fatalf("second due len = %d, want 0", len(due))
-	}
-	m.Enqueue(key, Input{Sender: "u1", Text: "second", Time: now.Add(-1 * time.Hour)}, "/tmp/work")
-	m.CompleteAt(key, "/tmp/work", now.Add(-1*time.Hour))
-	due = m.IdleReminderDue(now, 24*time.Hour)
-	if len(due) != 0 {
-		t.Fatalf("recent activity due len = %d, want 0", len(due))
-	}
-}
-
-func TestTouchResetsIdleReminder(t *testing.T) {
-	m := NewManager()
-	key := Key{Agent: agent.Claude, ChatID: "chat"}
-	now := time.Now()
-	m.Enqueue(key, Input{Sender: "u1", Text: "first", Time: now.Add(-25 * time.Hour)}, "/tmp/work")
-	m.CompleteAt(key, "/tmp/work", now.Add(-25*time.Hour))
-	if due := m.IdleReminderDue(now, 24*time.Hour); len(due) != 1 {
-		t.Fatalf("due len = %d, want 1", len(due))
-	}
-	touched := m.Touch(key.ID(), now.Add(-1*time.Hour))
-	if touched.ID == "" {
-		t.Fatal("touch returned empty session")
-	}
-	if touched.IdleNotified {
-		t.Fatal("touch should clear idle notified")
-	}
-	if due := m.IdleReminderDue(now, 24*time.Hour); len(due) != 0 {
-		t.Fatalf("due after touch = %d, want 0", len(due))
+	if !after.LastActive.Equal(now.Add(time.Second)) {
+		t.Fatalf("last active = %s, want completion time", after.LastActive)
 	}
 }

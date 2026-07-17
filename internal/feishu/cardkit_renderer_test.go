@@ -55,7 +55,7 @@ func TestCardKitRendererCreateReplyThenUpdate(t *testing.T) {
 	if err := renderer.Render(card.Event{Type: "stream", SessionID: "claude:chat", Segments: []card.Segment{{Kind: card.SegmentText, Text: "hello"}}}); err != nil {
 		t.Fatalf("first render error: %v", err)
 	}
-	if err := renderer.Render(card.Event{Type: "authorization", SessionID: "claude:chat", Actions: card.AuthorizationActions()}); err != nil {
+	if err := renderer.Render(card.Event{Type: "workdir_confirm", SessionID: "claude:chat", Actions: card.WorkDirCreateActions("/tmp/work")}); err != nil {
 		t.Fatalf("second render error: %v", err)
 	}
 	if client.created != 1 || client.replied != 1 || client.updated != 1 {
@@ -104,11 +104,11 @@ func TestCardKitRouterRendererReusesSessionForPagedStream(t *testing.T) {
 func TestCardKitReplyUUIDIncludesReplyMessage(t *testing.T) {
 	client := &fakeCardKitClient{}
 	first := NewCardKitRenderer(client, "message-1")
-	if err := first.Render(card.Event{Type: "stream", SessionID: "codex:chat"}); err != nil {
+	if err := first.Render(card.Event{Type: "stream", SessionID: "claude:chat"}); err != nil {
 		t.Fatalf("first render error: %v", err)
 	}
 	second := NewCardKitRenderer(client, "message-2")
-	if err := second.Render(card.Event{Type: "stream", SessionID: "codex:chat"}); err != nil {
+	if err := second.Render(card.Event{Type: "stream", SessionID: "claude:chat"}); err != nil {
 		t.Fatalf("second render error: %v", err)
 	}
 	if len(client.replyUUIDs) != 2 {
@@ -151,10 +151,10 @@ func TestCardKitRouterRendererRecordsRenderAudit(t *testing.T) {
 func TestCardKitRendererSendsStopTerminalCardOnce(t *testing.T) {
 	client := &fakeCardKitClient{}
 	renderer := NewCardKitRenderer(client, "message-1")
-	if err := renderer.Render(card.Event{Type: "stream", SessionID: "codex:chat"}); err != nil {
+	if err := renderer.Render(card.Event{Type: "stream", SessionID: "claude:chat"}); err != nil {
 		t.Fatalf("first render error: %v", err)
 	}
-	stop := card.Event{Type: "stop_button", SessionID: "codex:chat", StopButton: card.StopButton{Visible: true, Disabled: true}}
+	stop := card.Event{Type: "stop_button", SessionID: "claude:chat", StopButton: card.StopButton{Visible: true, Disabled: true}}
 	if err := renderer.Render(stop); err != nil {
 		t.Fatalf("stop render error: %v", err)
 	}

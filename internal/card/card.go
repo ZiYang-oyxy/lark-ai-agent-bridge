@@ -1,7 +1,6 @@
 package card
 
 import (
-	"fmt"
 	"strings"
 	"sync"
 
@@ -53,49 +52,11 @@ type Event struct {
 	Message          string
 }
 
-func AuthorizationActions() []Action {
-	return []Action{
-		{ID: "allow_once", Label: "Allow once", Value: "allow_once"},
-		{ID: "allow_tool_session", Label: "Allow tool for this session", Value: "allow_tool_session"},
-		{ID: "allow_all_session", Label: "Allow all tools for this session", Value: "allow_all_session"},
-		{ID: "reject", Label: "Reject", Value: "reject"},
-	}
-}
-
 func WorkDirCreateActions(path string) []Action {
 	return []Action{
 		{ID: "create_workdir", Label: "Create directory", Value: path},
 		{ID: "cancel_workdir", Label: "Cancel", Value: path},
 	}
-}
-
-func ChoiceActions(options []string) []Action {
-	actions := make([]Action, 0, len(options))
-	for i, option := range options {
-		id := fmt.Sprintf("choice_%d", i+1)
-		value := fmt.Sprint(i + 1)
-		actions = append(actions, Action{ID: id, Label: option, Value: value})
-	}
-	return actions
-}
-
-func ResumeActions(options []string) []Action {
-	actions := make([]Action, 0, len(options)+1)
-	for i, option := range options {
-		id := fmt.Sprintf("resume_%d", i+1)
-		value := fmt.Sprint(i + 1)
-		actions = append(actions, Action{ID: id, Label: option, Value: value})
-	}
-	actions = append(actions, Action{ID: "resume_cancel", Label: "Cancel", Value: "cancel"})
-	return actions
-}
-
-func RestartActions() []Action {
-	return []Action{{ID: "restart_session", Label: "Restart session", Value: "restart"}}
-}
-
-func TerminateSessionActions(disabled bool) []Action {
-	return []Action{{ID: "terminate_session", Label: "Terminate session", Value: "terminate", Disabled: disabled}}
 }
 
 type Renderer interface {

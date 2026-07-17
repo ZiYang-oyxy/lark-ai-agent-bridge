@@ -20,23 +20,16 @@ type Check struct {
 
 func Run(cfg config.Config) []Check {
 	checks := []Check{
-		lookPath("tmux", "tmux"),
 		lookPath("claude", "claude"),
-		lookPath("codex", "codex"),
 		envPresent("LARK_APP_ID"),
 		envPresent("LARK_APP_SECRET"),
-		{Name: "tmux_session", OK: cfg.TmuxSession == config.DefaultTmuxSession, Detail: cfg.TmuxSession},
 		{Name: "default_agent", OK: cfg.DefaultAgent != "", Detail: cfg.DefaultAgent},
 		dirExists("default_workdir", cfg.DefaultWorkDir),
 		auditLogWritable(cfg.AuditLogPath),
 		optionalEnv("E2E_CALLBACK_ADDR"),
 		durationPositive("card_update_every", cfg.CardUpdateEvery),
 		durationPositive("interaction_timeout", cfg.InteractionTimeout),
-		durationPositive("idle_reminder_after", cfg.IdleReminderAfter),
-		durationPositive("idle_check_every", cfg.IdleCheckEvery),
 		intPositive("card_max_chars", cfg.CardMaxChars),
-		intNonNegative("queue_quiet_polls", cfg.QueueQuietPolls),
-		codexHooksConfig(),
 	}
 	return checks
 }
@@ -115,33 +108,4 @@ func durationPositive(name string, value time.Duration) Check {
 
 func intPositive(name string, value int) Check {
 	return Check{Name: name, OK: value > 0, Detail: fmt.Sprint(value)}
-}
-
-func intNonNegative(name string, value int) Check {
-	return Check{Name: name, OK: value >= 0, Detail: fmt.Sprint(value)}
-}
-
-func codexHooksConfig() Check {
-	home, err := os.UserHomeDir()
-	if err != nil || home == "" {
-		return Check{Name: "codex_config_hooks", OK: true, Detail: "not checked: home directory unavailable"}
-	}
-	path := filepath.Join(home, ".codex", "config.toml")
-	data, err := os.ReadFile(path)
-	if os.IsNotExist(err) {
-		return Check{Name: "codex_config_hooks", OK: true, Detail: "not found"}
-	}
-	if err != nil {
-		return Check{Name: "codex_config_hooks", OK: false, Detail: "cannot read " + path + ": " + err.Error()}
-	}
-	for _, line := range strings.Split(string(data), "\n") {
-		trimmed := strings.TrimSpace(line)
-		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
-			continue
-		}
-		if strings.HasPrefix(trimmed, "codex_hooks") {
-			return Check{Name: "codex_config_hooks", OK: true, Warning: true, Detail: "deprecated codex_hooks in " + path + "; keep [features].hooks = true and remove codex_hooks"}
-		}
-	}
-	return Check{Name: "codex_config_hooks", OK: true, Detail: "no deprecated codex_hooks in " + path}
 }

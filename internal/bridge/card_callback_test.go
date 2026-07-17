@@ -28,8 +28,8 @@ func TestActionRequestFromNestedEventPayload(t *testing.T) {
 			"action": {
 				"value": {
 					"session": "claude:chat",
-					"action_id": "choice_1",
-					"value": "1"
+				"action_id": "create_workdir",
+				"value": "/tmp/work"
 				}
 			}
 		}
@@ -37,7 +37,7 @@ func TestActionRequestFromNestedEventPayload(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parse error: %v", err)
 	}
-	if req.ActionID != "choice_1" || req.Value != "1" {
+	if req.ActionID != "create_workdir" || req.Value != "/tmp/work" {
 		t.Fatalf("request = %#v", req)
 	}
 }
@@ -46,13 +46,13 @@ func TestActionRequestFromStringifiedValue(t *testing.T) {
 	req, err := ActionRequestFromCardCallback([]byte(`{
 		"operator": {"open_id": "user-1"},
 		"action": {
-			"value": "{\"session\":\"claude:chat\",\"action_id\":\"restart_session\",\"value\":\"restart\"}"
+			"value": "{\"session\":\"claude:chat\",\"action_id\":\"cancel_workdir\",\"value\":\"/tmp/work\"}"
 		}
 	}`))
 	if err != nil {
 		t.Fatalf("parse error: %v", err)
 	}
-	if req.SessionID != "claude:chat" || req.ActionID != "restart_session" || req.Value != "restart" {
+	if req.SessionID != "claude:chat" || req.ActionID != "cancel_workdir" || req.Value != "/tmp/work" {
 		t.Fatalf("request = %#v", req)
 	}
 }

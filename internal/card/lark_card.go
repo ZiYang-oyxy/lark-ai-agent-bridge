@@ -6,25 +6,23 @@ import (
 )
 
 func BuildLarkCard(e Event) map[string]any {
-	elements := make([]any, 0, len(e.Segments)+3)
-	elementSeq := 1
-	for _, seg := range e.Segments {
-		if strings.TrimSpace(seg.Text) == "" {
-			continue
-		}
-		elements = append(elements, map[string]any{
-			"tag":        "markdown",
-			"element_id": fmt.Sprintf("md_%d", elementSeq),
-			"content":    formatSegment(seg),
-		})
-		elementSeq++
+	elements := make([]any, 0, len(e.Segments)+5)
+	answer, thought, tools := splitCardSections(e.Segments)
+	if strings.TrimSpace(answer) != "" {
+		elements = append(elements, markdownElement("answer", answer))
 	}
 	if e.Message != "" {
-		elements = append(elements, map[string]any{
-			"tag":        "markdown",
-			"element_id": "message",
-			"content":    e.Message,
-		})
+		elements = append(elements, markdownElement("message", e.Message))
+	}
+	if shouldShowAgentPanels(e, thought, tools) {
+		elements = append(elements,
+			collapsiblePanelElement("panel_thought", panelTitle("思考推理", thought), false, []map[string]any{
+				markdownElement("thought", defaultPanelText(thought, "暂无思考推理内容。")),
+			}),
+			collapsiblePanelElement("panel_tools", panelTitle("工具调用", tools), false, []map[string]any{
+				markdownElement("tools", defaultPanelText(tools, "暂无工具调用。")),
+			}),
+		)
 	}
 	actions := buildButtonActions(e)
 	for _, action := range actions {
@@ -57,16 +55,93 @@ func BuildLarkCard(e Event) map[string]any {
 	}
 }
 
-func formatSegment(seg Segment) string {
-	switch seg.Kind {
-	case SegmentThought:
-		return "**Thinking**\n" + seg.Text
-	case SegmentTool:
-		return "**Tool**\n" + seg.Text
-	case SegmentError:
-		return "**Error**\n" + seg.Text
-	default:
-		return seg.Text
+func splitCardSections(segments []Segment) (string, string, string) {
+	var answer strings.Builder
+	var thought strings.Builder
+	var tools strings.Builder
+	write := func(b *strings.Builder, text string) {
+		text = strings.TrimSpace(text)
+		if text == "" {
+			return
+		}
+		if b.Len() > 0 {
+			b.WriteString("\n\n")
+		}
+		b.WriteString(text)
+	}
+	for _, seg := range segments {
+		switch seg.Kind {
+		case SegmentThought:
+			write(&thought, seg.Text)
+		case SegmentTool:
+			write(&tools, seg.Text)
+		case SegmentError:
+			write(&answer, "**Error**\n"+seg.Text)
+		default:
+			write(&answer, seg.Text)
+		}
+	}
+	return answer.String(), thought.String(), tools.String()
+}
+
+func shouldShowAgentPanels(e Event, thought, tools string) bool {
+	if strings.TrimSpace(thought) != "" || strings.TrimSpace(tools) != "" {
+		return true
+	}
+	return e.Type == "result"
+}
+
+func defaultPanelText(text, fallback string) string {
+	if strings.TrimSpace(text) == "" {
+		return fallback
+	}
+	return text
+}
+
+func panelTitle(title, content string) string {
+	if strings.TrimSpace(content) == "" {
+		return title + "（暂无，点击展开）"
+	}
+	return title + "（点击展开）"
+}
+
+func markdownElement(id, content string) map[string]any {
+	return map[string]any{
+		"tag":        "markdown",
+		"element_id": id,
+		"content":    content,
+	}
+}
+
+func collapsiblePanelElement(id, title string, expanded bool, elements []map[string]any) map[string]any {
+	return map[string]any{
+		"tag":              "collapsible_panel",
+		"element_id":       id,
+		"expanded":         expanded,
+		"vertical_spacing": "8px",
+		"padding":          "8px 8px 8px 8px",
+		"header": map[string]any{
+			"title": map[string]string{
+				"tag":     "plain_text",
+				"content": title,
+			},
+			"vertical_align": "center",
+			"padding":        "4px 0px 4px 8px",
+			"width":          "auto_when_fold",
+			"icon": map[string]string{
+				"tag":   "standard_icon",
+				"token": "down-small-ccm_outlined",
+				"color": "",
+				"size":  "16px 16px",
+			},
+			"icon_position":       "right",
+			"icon_expanded_angle": -180,
+		},
+		"border": map[string]string{
+			"color":         "grey",
+			"corner_radius": "5px",
+		},
+		"elements": elements,
 	}
 }
 
@@ -74,7 +149,7 @@ func buildButtonActions(e Event) []any {
 	var buttons []any
 	for i, action := range e.Actions {
 		buttonType := "default"
-		if action.ID == "reject" || action.ID == "cancel_workdir" || action.ID == "resume_cancel" || action.ID == "terminate_session" {
+		if action.ID == "cancel_workdir" {
 			buttonType = "danger"
 		}
 		buttons = append(buttons, map[string]any{
@@ -147,16 +222,8 @@ func formatMeta(meta Meta) string {
 
 func titleForEvent(eventType string) string {
 	switch eventType {
-	case "authorization":
-		return "工具授权请求"
-	case "choice":
-		return "需要你的回答"
-	case "resume":
-		return "恢复会话"
 	case "workdir_confirm":
 		return "工作目录确认"
-	case "idle_reminder":
-		return "会话闲置提醒"
 	case "error":
 		return "Agent 错误"
 	default:
@@ -166,12 +233,10 @@ func titleForEvent(eventType string) string {
 
 func templateForEvent(eventType string) string {
 	switch eventType {
-	case "authorization", "workdir_confirm", "idle_reminder":
+	case "workdir_confirm":
 		return "orange"
 	case "error":
 		return "red"
-	case "choice", "resume":
-		return "blue"
 	default:
 		return "green"
 	}

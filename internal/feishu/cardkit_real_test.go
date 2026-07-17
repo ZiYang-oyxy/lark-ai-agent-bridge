@@ -22,10 +22,10 @@ func TestRealCardKitCreatesBridgeCard(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	payload := card.BuildLarkCard(card.Event{
-		Type:      "authorization",
+		Type:      "workdir_confirm",
 		SessionID: "claude:real-cardkit-smoke",
-		Segments:  []card.Segment{{Kind: card.SegmentTool, Text: "tool_search requests permission"}},
-		Actions:   card.AuthorizationActions(),
+		Segments:  []card.Segment{{Kind: card.SegmentText, Text: "Workdir does not exist: /tmp/lark-agent-bridge-cardkit-smoke"}},
+		Actions:   card.WorkDirCreateActions("/tmp/lark-agent-bridge-cardkit-smoke"),
 		Meta:      card.Meta{Agent: "claude", Model: "smoke", Tokens: 1, WorkDir: "/tmp/lark-agent-bridge-cardkit-smoke", Status: "running"},
 	})
 	if _, err := client.CreateCard(ctx, CardKitCreateRequest{Card: payload}); err != nil {

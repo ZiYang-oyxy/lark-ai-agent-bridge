@@ -1,9 +1,14 @@
 package bridge
 
 import (
+	"bufio"
+	"bytes"
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"strings"
 	"sync"
 	"time"
@@ -13,33 +18,52 @@ import (
 	"lark-agent-bridge/internal/card"
 	"lark-agent-bridge/internal/config"
 	"lark-agent-bridge/internal/session"
-	"lark-agent-bridge/internal/tmux"
 )
 
 type Service struct {
 	Config   config.Config
 	Sessions *session.Manager
 	Cards    card.Renderer
-	Tmux     *tmux.Manager
+	Runner   AgentRunner
 	Audit    *audit.Recorder
 
-	watchersMu           sync.Mutex
-	watchers             map[string]*tmux.PaneWatcher
-	quietPolls           map[string]int
-	stopOutputMu         sync.Mutex
-	stopOutputSuppresses map[string]time.Time
-	pendingMu            sync.Mutex
-	pendingRuns          map[string]pendingRun
-	pendingInteractions  map[string]pendingInteraction
-	pendingInitialInputs map[string]session.Input
-	handledInteractions  map[string]handledInteraction
-	topicMu              sync.Mutex
-	topicModes           map[string]bool
+	mu          sync.Mutex
+	pendingRuns map[string]pendingRun
+	activeRuns  map[string]activeRun
 }
 
-const activeSessionPollStartupGrace = 2 * time.Second
-const stopOutputSuppressDuration = 20 * time.Second
-const handledInteractionSuppressDuration = 5 * time.Minute
+type AgentRunner interface {
+	Run(context.Context, AgentRunRequest) (AgentRunResult, error)
+}
+
+type AgentRunRequest struct {
+	Kind            agent.Kind
+	Prompt          string
+	WorkDir         string
+	ClaudeSessionID string
+}
+
+type AgentRunResult struct {
+	Segments        []card.Segment
+	Model           string
+	Tokens          int
+	ClaudeSessionID string
+}
+
+type pendingRun struct {
+	SessionID string
+	Command   Command
+	Message   Message
+	WorkDir   string
+	ExpiresAt time.Time
+}
+
+type activeRun struct {
+	BaseSessionID string
+	Key           session.Key
+	WorkDir       string
+	Cancel        context.CancelFunc
+}
 
 type ActionRequest struct {
 	SessionID string
@@ -48,55 +72,25 @@ type ActionRequest struct {
 	Actor     string
 }
 
-type pendingRun struct {
-	SessionID string
-	Command   Command
-	Message   Message
-	WorkDir   string
-	Resume    bool
-	ExpiresAt time.Time
-}
-
-type pendingInteraction struct {
-	SessionID  string
-	WindowName string
-	Kind       agent.InteractionKind
-	ActionID   string
-	Value      string
-	Signature  string
-	ExpiresAt  time.Time
-}
-
-type handledInteraction struct {
-	Signature string
-	ExpiresAt time.Time
-}
-
-func NewService(cfg config.Config, renderer card.Renderer, tmuxManager *tmux.Manager, recorder *audit.Recorder) *Service {
+func NewService(cfg config.Config, renderer card.Renderer, runner AgentRunner, recorder *audit.Recorder) *Service {
 	if renderer == nil {
 		renderer = card.NewFakeRenderer()
 	}
-	if tmuxManager == nil {
-		tmuxManager = tmux.NewManager(cfg.TmuxSession, nil)
+	if runner == nil {
+		runner = CLIExecRunner{}
 	}
 	if recorder == nil {
 		recorder = audit.NewRecorder()
 	}
 	renderer = card.NewLimitRenderer(renderer, cfg.CardMaxChars)
 	return &Service{
-		Config:               cfg,
-		Sessions:             session.NewManager(),
-		Cards:                renderer,
-		Tmux:                 tmuxManager,
-		Audit:                recorder,
-		watchers:             map[string]*tmux.PaneWatcher{},
-		quietPolls:           map[string]int{},
-		stopOutputSuppresses: map[string]time.Time{},
-		pendingRuns:          map[string]pendingRun{},
-		pendingInteractions:  map[string]pendingInteraction{},
-		pendingInitialInputs: map[string]session.Input{},
-		handledInteractions:  map[string]handledInteraction{},
-		topicModes:           map[string]bool{},
+		Config:      cfg,
+		Sessions:    session.NewManager(),
+		Cards:       renderer,
+		Runner:      runner,
+		Audit:       recorder,
+		pendingRuns: map[string]pendingRun{},
+		activeRuns:  map[string]activeRun{},
 	}
 }
 
@@ -105,7 +99,7 @@ func (s *Service) HandleMessage(ctx context.Context, msg Message) error {
 	if !ok {
 		defaultKind = agent.Claude
 	}
-	cmd := ParseCommand(msg, defaultKind, agent.ApprovalDefault)
+	cmd := ParseCommand(msg, defaultKind)
 	switch cmd.Type {
 	case CommandIgnored:
 		return nil
@@ -113,22 +107,8 @@ func (s *Service) HandleMessage(ctx context.Context, msg Message) error {
 		return s.renderText("help", msg.ID, card.SegmentText, HelpText())
 	case CommandUnknown:
 		return s.renderText("command", msg.ID, card.SegmentError, cmd.Text)
-	case CommandSessions:
-		return s.renderText("sessions", msg.ID, card.SegmentText, s.sessionsText())
 	case CommandStatus:
 		return s.renderText("status", msg.ID, card.SegmentText, s.statusText(cmd.Agent, msg))
-	case CommandAttach:
-		return s.renderText("attach", msg.ID, card.SegmentText, s.attachText(cmd.Agent, msg))
-	case CommandInterrupt:
-		return s.interrupt(ctx, cmd.Agent, msg)
-	case CommandStop:
-		return s.stop(ctx, cmd.Agent, msg)
-	case CommandHistory:
-		return s.renderText("history", msg.ID, card.SegmentText, s.historyText(cmd.Agent, msg))
-	case CommandResume:
-		return s.resume(ctx, cmd, msg)
-	case CommandTopic:
-		return s.renderText("topic", msg.ID, card.SegmentText, s.topicText(msg.ChatID, cmd.Text))
 	case CommandRun:
 		return s.run(ctx, cmd, msg)
 	default:
@@ -140,100 +120,125 @@ func (s *Service) run(ctx context.Context, cmd Command, msg Message) error {
 	if cmd.Agent == "" {
 		cmd.Agent = agent.Claude
 	}
-	text := strings.TrimSpace(cmd.Text)
+	if cmd.Agent != agent.Claude {
+		return s.renderText("unsupported-agent", msg.ID, card.SegmentError, "当前 bridge 只适配 claude。")
+	}
 	key := s.sessionKey(cmd.Agent, msg)
 	workDir := s.Config.DefaultWorkDir
 	if cmd.WorkDir != "" {
 		workDir = cmd.WorkDir
 	}
-	asked, err := s.ensureWorkDirOrAsk(workDir, key.ID(), msg.ID)
+	pendingID := runID(key.ID(), msg.ID)
+	asked, err := s.ensureWorkDirOrAsk(workDir, pendingID, msg.ID)
 	if err != nil {
 		return err
 	}
 	if asked {
-		s.storePendingRun(key.ID(), pendingRun{Command: cmd, Message: msg, WorkDir: workDir})
+		s.storePendingRun(pendingID, pendingRun{Command: cmd, Message: msg, WorkDir: workDir})
 		return nil
 	}
-	input := session.Input{Sender: msg.Sender, Text: text, Time: msg.Time}
+	text := strings.TrimSpace(cmd.Text)
+	if text == "" {
+		if cmd.Reset {
+			sess := s.Sessions.Reset(key, workDir)
+			s.Audit.Record(msg.Sender, "new_session", sess.ID, workDir)
+			return s.Cards.Render(card.Event{
+				Type:             "status",
+				SessionID:        sess.ID,
+				ReplyToMessageID: msg.ID,
+				Segments:         []card.Segment{{Kind: card.SegmentText, Text: "Claude session is ready. Send a message in this chat/topic to continue."}},
+				Meta:             metaFromSession(sess),
+			})
+		}
+		return s.renderText("empty", msg.ID, card.SegmentError, "empty prompt")
+	}
+	input := session.Input{Sender: msg.Sender, Text: text, ReplyToMessageID: msg.ID, Time: msg.Time, Reset: cmd.Reset}
 	sess, queued := s.Sessions.Enqueue(key, input, workDir)
 	if queued {
 		s.Audit.Record(msg.Sender, "queue_input", sess.ID, text)
-		return s.Cards.Render(card.Event{Type: "reaction", SessionID: sess.ID, ReplyToMessageID: msg.ID, Message: "queued"})
+		return s.Cards.Render(card.Event{Type: "reaction", SessionID: runID(sess.ID, msg.ID), ReplyToMessageID: msg.ID, Message: "queued"})
 	}
-	s.Audit.Record(msg.Sender, "run_input", sess.ID, text)
-	s.clearStopOutputSuppression(sess.ID)
-	newWindow := !sess.WindowStarted
-	if newWindow {
-		if err := s.ensureAgentWindow(ctx, sess, cmd); err != nil {
-			updated := s.Sessions.MarkCrashed(key, workDir)
-			_ = s.Cards.Render(card.Event{
-				Type:             "error",
-				SessionID:        updated.ID,
-				ReplyToMessageID: msg.ID,
-				Segments:         []card.Segment{{Kind: card.SegmentError, Text: err.Error()}},
-				Actions:          card.RestartActions(),
-				Meta:             metaFromSession(updated),
-			})
-			return err
-		}
-		sess = s.Sessions.MarkWindowStarted(key, workDir, cmd.ApprovalMode)
+	s.startRun(ctx, sess, input)
+	return nil
+}
+
+func (s *Service) startRun(ctx context.Context, sess session.Session, input session.Input) {
+	if input.Time.IsZero() {
+		input.Time = time.Now()
 	}
-	deferInitialInput := newWindow && cmd.Agent == agent.Codex && text != ""
-	if deferInitialInput {
-		s.storePendingInitialInput(sess.ID, input)
-	} else if text != "" {
-		if err := s.Tmux.SendLine(ctx, sess.WindowName, text); err != nil {
-			return err
-		}
-	}
-	return s.renderStream(card.Event{
+	id := runID(sess.ID, input.ReplyToMessageID)
+	runCtx, cancel := context.WithCancel(ctx)
+	s.storeActiveRun(id, activeRun{BaseSessionID: sess.ID, Key: sess.Key, WorkDir: sess.WorkDir, Cancel: cancel})
+	s.Audit.Record(input.Sender, "run_input", sess.ID, input.Text)
+	_ = s.Cards.Render(card.Event{
 		Type:             "stream",
-		SessionID:        sess.ID,
-		ReplyToMessageID: msg.ID,
-		Segments:         []card.Segment{{Kind: card.SegmentText, Text: text}},
+		SessionID:        id,
+		ReplyToMessageID: input.ReplyToMessageID,
+		Segments:         []card.Segment{{Kind: card.SegmentText, Text: "正在执行 Claude 请求..."}},
 		Meta:             metaFromSession(sess),
-		StopButton: card.StopButton{
-			Visible: true,
-		},
+		StopButton:       card.StopButton{Visible: true},
 	})
+	go s.executeRun(runCtx, sess, input)
+}
+
+func (s *Service) executeRun(ctx context.Context, sess session.Session, input session.Input) {
+	id := runID(sess.ID, input.ReplyToMessageID)
+	defer s.clearActiveRun(id)
+	result, err := s.Runner.Run(ctx, AgentRunRequest{
+		Kind:            sess.Key.Agent,
+		Prompt:          input.Text,
+		WorkDir:         sess.WorkDir,
+		ClaudeSessionID: sess.ClaudeSessionID,
+	})
+	if errors.Is(ctx.Err(), context.Canceled) {
+		updated := s.Sessions.Stop(sess.Key, sess.WorkDir)
+		_ = s.Cards.Render(card.Event{Type: "stop_button", SessionID: id, StopButton: card.StopButton{Visible: true, Disabled: true}, Message: "stopped", Meta: metaFromSession(updated)})
+		return
+	}
+	if err != nil {
+		updated := s.Sessions.MarkCrashed(sess.Key, sess.WorkDir)
+		s.Audit.Record("system", "run_failed", updated.ID, err.Error())
+		_ = s.Cards.Render(card.Event{
+			Type:      "error",
+			SessionID: id,
+			Segments:  []card.Segment{{Kind: card.SegmentError, Text: err.Error()}},
+			Meta:      metaFromSession(updated),
+		})
+		return
+	}
+	if result.ClaudeSessionID != "" || result.Model != "" || result.Tokens > 0 {
+		sess = s.Sessions.UpdateRunResult(sess.ID, result.ClaudeSessionID, result.Model, result.Tokens)
+	}
+	updated, next := s.Sessions.Complete(sess.Key, sess.WorkDir)
+	if updated.ID != "" {
+		sess = updated
+	}
+	segments := result.Segments
+	if len(segments) == 0 {
+		segments = []card.Segment{{Kind: card.SegmentText, Text: "Claude 未返回内容。"}}
+	}
+	_ = s.renderStream(card.Event{
+		Type:      "result",
+		SessionID: id,
+		Segments:  segments,
+		Meta:      metaFromSession(sess),
+	})
+	if next != nil {
+		s.Audit.Record(next.Sender, "dequeue_input", sess.ID, next.Text)
+		nextSession := s.Sessions.GetOrCreate(sess.Key, sess.WorkDir)
+		s.startRun(context.Background(), nextSession, *next)
+	}
 }
 
 func (s *Service) HandleAction(ctx context.Context, req ActionRequest) error {
 	s.Audit.Record(req.Actor, "card_action", req.SessionID, req.ActionID+" "+req.Value)
 	switch req.ActionID {
-	case "stop", "interrupt":
-		s.clearPendingInteraction(req.SessionID)
-		s.popPendingInitialInput(req.SessionID)
-		sess := s.findSession(req.SessionID)
-		if sess == nil {
-			return s.Cards.Render(card.Event{Type: "error", SessionID: req.SessionID, Segments: []card.Segment{{Kind: card.SegmentError, Text: "session not found"}}})
+	case "stop":
+		if run, ok := s.cancelActiveRun(req.SessionID); ok {
+			updated := s.Sessions.Stop(run.Key, run.WorkDir)
+			return s.Cards.Render(card.Event{Type: "stop_button", SessionID: req.SessionID, StopButton: card.StopButton{Visible: true, Disabled: true}, Message: "stopped", Meta: metaFromSession(updated)})
 		}
-		if err := s.interruptActiveRun(ctx, *sess); err != nil {
-			return err
-		}
-		updated, next, err := s.finishCurrentRun(ctx, *sess)
-		if err != nil {
-			return err
-		}
-		if next == nil {
-			s.suppressStopOutput(updated.ID)
-		}
-		if err := s.Cards.Render(card.Event{Type: "stop_button", SessionID: updated.ID, StopButton: card.StopButton{Visible: true, Disabled: true}, Message: "stopped", Meta: metaFromSession(updated)}); err != nil {
-			return err
-		}
-		if next != nil {
-			return s.renderDequeuedInput(updated, *next)
-		}
-		return nil
-	case "restart_session":
-		s.clearPendingInteraction(req.SessionID)
-		return s.restartSession(ctx, req)
-	case "terminate_session":
-		s.clearPendingInteraction(req.SessionID)
-		return s.terminateSession(ctx, req)
-	case "allow_once", "allow_tool_session", "allow_all_session", "reject":
-		s.suppressPendingInteraction(req.SessionID)
-		return s.sendActionValue(ctx, req)
+		return s.Cards.Render(card.Event{Type: "stop_button", SessionID: req.SessionID, StopButton: card.StopButton{Visible: true, Disabled: true}, Message: "stopped"})
 	case "create_workdir":
 		pending, hasPending := s.popPendingRun(req.SessionID)
 		workDir := req.Value
@@ -247,9 +252,6 @@ func (s *Service) HandleAction(ctx context.Context, req ActionRequest) error {
 			return err
 		}
 		if hasPending {
-			if pending.Resume {
-				return s.resume(ctx, pending.Command, pending.Message)
-			}
 			return s.run(ctx, pending.Command, pending.Message)
 		}
 		return nil
@@ -257,277 +259,19 @@ func (s *Service) HandleAction(ctx context.Context, req ActionRequest) error {
 		s.popPendingRun(req.SessionID)
 		return s.Cards.Render(card.Event{Type: "action", SessionID: req.SessionID, Message: "workdir creation cancelled"})
 	default:
-		if strings.HasPrefix(req.ActionID, "choice_") || strings.HasPrefix(req.ActionID, "resume_") {
-			s.suppressPendingInteraction(req.SessionID)
-			return s.sendActionValue(ctx, req)
-		}
 		return s.Cards.Render(card.Event{Type: "error", SessionID: req.SessionID, Segments: []card.Segment{{Kind: card.SegmentError, Text: "unknown action: " + req.ActionID}}})
 	}
 }
 
-func (s *Service) PollSessionOutput(ctx context.Context, sessionID string) error {
-	sess := s.findSession(sessionID)
-	if sess == nil {
-		return s.Cards.Render(card.Event{Type: "error", SessionID: sessionID, Segments: []card.Segment{{Kind: card.SegmentError, Text: "session not found"}}})
+func (s *Service) Cleanup(ctx context.Context) error {
+	s.Audit.Record("system", "cleanup", "", "oneshot")
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for id, run := range s.activeRuns {
+		run.Cancel()
+		delete(s.activeRuns, id)
 	}
-	return s.pollSessionOutput(ctx, sess, false)
-}
-
-func (s *Service) pollSessionOutput(ctx context.Context, sess *session.Session, skipTransientStartupMissing bool) error {
-	if current := s.findSession(sess.ID); current != nil {
-		sess = current
-	}
-	watcher := s.watcherFor(sess.ID, sess.WindowName)
-	if sess.State != session.StateRunning && s.stopOutputSuppressed(sess.ID, time.Now()) {
-		_, _ = watcher.Poll(ctx)
-		return nil
-	}
-	delta, err := watcher.Poll(ctx)
-	if err != nil {
-		if skipTransientStartupMissing && isRecentWindowMissing(*sess, err, time.Now()) {
-			return nil
-		}
-		return s.renderCrashed(sess, err)
-	}
-	if strings.TrimSpace(delta) == "" {
-		return s.dispatchQueuedIfReady(ctx, *sess, watcher.Last, true)
-	}
-	s.resetQuietPolls(sess.ID)
-	if touched := s.Sessions.Touch(sess.ID, time.Now()); touched.ID != "" {
-		sess = &touched
-	}
-	sess = s.applyRuntimeMeta(sess, watcher.Last)
-	interaction := agent.DetectInteraction(delta)
-	if s.isHandledInteractionSuppressed(sess.ID, interaction, time.Now()) {
-		interaction = agent.Interaction{Kind: agent.InteractionNone, Raw: delta}
-	}
-	switch interaction.Kind {
-	case agent.InteractionAuthorization:
-		s.storePendingInteraction(*sess, interaction)
-		return s.Cards.Render(card.Event{
-			Type:      "authorization",
-			SessionID: sess.ID,
-			Segments:  []card.Segment{{Kind: card.SegmentTool, Text: delta}},
-			Actions:   card.AuthorizationActions(),
-			Meta:      metaFromSession(*sess),
-		})
-	case agent.InteractionChoice:
-		s.storePendingInteraction(*sess, interaction)
-		return s.Cards.Render(card.Event{
-			Type:      "choice",
-			SessionID: sess.ID,
-			Segments:  []card.Segment{{Kind: card.SegmentText, Text: delta}},
-			Actions:   card.ChoiceActions(interaction.Options),
-			Meta:      metaFromSession(*sess),
-		})
-	case agent.InteractionResume:
-		s.storePendingInteraction(*sess, interaction)
-		return s.Cards.Render(card.Event{
-			Type:      "resume",
-			SessionID: sess.ID,
-			Segments:  []card.Segment{{Kind: card.SegmentText, Text: delta}},
-			Actions:   card.ResumeActions(interaction.Options),
-			Meta:      metaFromSession(*sess),
-		})
-	default:
-		if err := s.renderStream(card.Event{
-			Type:      "stream",
-			SessionID: sess.ID,
-			Segments:  segmentOutput(delta),
-			Meta:      metaFromSession(*sess),
-			StopButton: card.StopButton{
-				Visible: true,
-			},
-		}); err != nil {
-			return err
-		}
-		return s.dispatchQueuedIfReady(ctx, *sess, watcher.Last, false)
-	}
-}
-
-func isRecentWindowMissing(sess session.Session, err error, now time.Time) bool {
-	if err == nil || sess.CreatedAt.IsZero() || now.Sub(sess.CreatedAt) > activeSessionPollStartupGrace {
-		return false
-	}
-	msg := err.Error()
-	return strings.Contains(msg, "can't find session") ||
-		strings.Contains(msg, "can't find window") ||
-		strings.Contains(msg, "can't find pane")
-}
-
-func (s *Service) applyRuntimeMeta(sess *session.Session, output string) *session.Session {
-	meta := agent.ParseRuntimeMeta(output)
-	if meta.Model == "" && meta.Tokens == 0 {
-		return sess
-	}
-	updated := s.Sessions.UpdateMeta(sess.ID, meta.Model, meta.Tokens)
-	if updated.ID == "" {
-		return sess
-	}
-	return &updated
-}
-
-func (s *Service) dispatchQueuedIfReady(ctx context.Context, sess session.Session, snapshot string, quietPoll bool) error {
-	if sess.State != session.StateRunning {
-		return nil
-	}
-	ready := agent.DetectReady(snapshot)
-	if !ready && !s.quietPollReady(sess.ID, quietPoll) {
-		return nil
-	}
-	if pending, ok := s.peekPendingInitialInput(sess.ID); ok {
-		if !ready {
-			return nil
-		}
-		s.popPendingInitialInput(sess.ID)
-		s.resetQuietPolls(sess.ID)
-		s.Audit.Record(pending.Sender, "replay_initial_input", sess.ID, pending.Text)
-		if err := s.Tmux.SendLine(ctx, sess.WindowName, pending.Text); err != nil {
-			return err
-		}
-		return s.renderDequeuedInput(sess, pending)
-	}
-	updated, next, err := s.finishCurrentRun(ctx, sess)
-	if err != nil {
-		return err
-	}
-	if next == nil {
-		return s.Cards.Render(card.Event{
-			Type:      "status",
-			SessionID: updated.ID,
-			Meta:      metaFromSession(updated),
-			Message:   "session idle",
-		})
-	}
-	return s.renderDequeuedInput(updated, *next)
-}
-
-func (s *Service) finishCurrentRun(ctx context.Context, sess session.Session) (session.Session, *session.Input, error) {
-	updated, next := s.Sessions.Complete(sess.Key, sess.WorkDir)
-	s.resetQuietPolls(sess.ID)
-	if next == nil {
-		return updated, nil, nil
-	}
-	s.Audit.Record(next.Sender, "dequeue_input", updated.ID, next.Text)
-	if err := s.Tmux.SendLine(ctx, updated.WindowName, next.Text); err != nil {
-		return updated, next, err
-	}
-	return updated, next, nil
-}
-
-func (s *Service) renderDequeuedInput(updated session.Session, next session.Input) error {
-	s.clearStopOutputSuppression(updated.ID)
-	return s.Cards.Render(card.Event{
-		Type:      "dequeue",
-		SessionID: updated.ID,
-		Segments:  []card.Segment{{Kind: card.SegmentText, Text: next.Text}},
-		Meta:      metaFromSession(updated),
-		StopButton: card.StopButton{
-			Visible: true,
-		},
-		Message: "dequeued next prompt",
-	})
-}
-
-func (s *Service) quietPollReady(sessionID string, quietPoll bool) bool {
-	if !quietPoll || s.Config.QueueQuietPolls <= 0 {
-		return false
-	}
-	s.watchersMu.Lock()
-	defer s.watchersMu.Unlock()
-	s.quietPolls[sessionID]++
-	return s.quietPolls[sessionID] >= s.Config.QueueQuietPolls
-}
-
-func (s *Service) resetQuietPolls(sessionID string) {
-	s.watchersMu.Lock()
-	defer s.watchersMu.Unlock()
-	delete(s.quietPolls, sessionID)
-}
-
-func (s *Service) suppressStopOutput(sessionID string) {
-	if sessionID == "" {
-		return
-	}
-	s.stopOutputMu.Lock()
-	defer s.stopOutputMu.Unlock()
-	s.stopOutputSuppresses[sessionID] = time.Now().Add(stopOutputSuppressDuration)
-}
-
-func (s *Service) clearStopOutputSuppression(sessionID string) {
-	if sessionID == "" {
-		return
-	}
-	s.stopOutputMu.Lock()
-	defer s.stopOutputMu.Unlock()
-	delete(s.stopOutputSuppresses, sessionID)
-}
-
-func (s *Service) stopOutputSuppressed(sessionID string, now time.Time) bool {
-	s.stopOutputMu.Lock()
-	defer s.stopOutputMu.Unlock()
-	until, ok := s.stopOutputSuppresses[sessionID]
-	if !ok {
-		return false
-	}
-	if now.Before(until) {
-		return true
-	}
-	delete(s.stopOutputSuppresses, sessionID)
-	return false
-}
-
-func (s *Service) renderCrashed(sess *session.Session, cause error) error {
-	updated := s.Sessions.MarkCrashed(sess.Key, sess.WorkDir)
-	s.resetQuietPolls(sess.ID)
-	s.popPendingInitialInput(sess.ID)
-	s.watchersMu.Lock()
-	delete(s.watchers, sess.ID)
-	s.watchersMu.Unlock()
-	s.Audit.Record("system", "session_crashed", updated.ID, cause.Error())
-	return s.Cards.Render(card.Event{
-		Type:      "error",
-		SessionID: updated.ID,
-		Segments:  []card.Segment{{Kind: card.SegmentError, Text: "agent session crashed or tmux pane is unavailable: " + cause.Error()}},
-		Actions:   card.RestartActions(),
-		Meta:      metaFromSession(updated),
-	})
-}
-
-func (s *Service) storePendingRun(sessionID string, pending pendingRun) {
-	s.pendingMu.Lock()
-	defer s.pendingMu.Unlock()
-	pending.SessionID = sessionID
-	if s.Config.InteractionTimeout > 0 && pending.ExpiresAt.IsZero() {
-		pending.ExpiresAt = time.Now().Add(s.Config.InteractionTimeout)
-	}
-	s.pendingRuns[sessionID] = pending
-}
-
-func (s *Service) popPendingRun(sessionID string) (pendingRun, bool) {
-	s.pendingMu.Lock()
-	defer s.pendingMu.Unlock()
-	pending, ok := s.pendingRuns[sessionID]
-	if ok {
-		delete(s.pendingRuns, sessionID)
-	}
-	return pending, ok
-}
-
-func (s *Service) duePendingRuns(now time.Time) []pendingRun {
-	s.pendingMu.Lock()
-	defer s.pendingMu.Unlock()
-	var due []pendingRun
-	for sessionID, pending := range s.pendingRuns {
-		if pending.ExpiresAt.IsZero() {
-			continue
-		}
-		if !now.Before(pending.ExpiresAt) {
-			due = append(due, pending)
-			delete(s.pendingRuns, sessionID)
-		}
-	}
-	return due
+	return nil
 }
 
 func (s *Service) RenderPendingRunTimeouts(now time.Time) error {
@@ -544,186 +288,9 @@ func (s *Service) RenderPendingRunTimeouts(now time.Time) error {
 	return nil
 }
 
-func (s *Service) storePendingInteraction(sess session.Session, interaction agent.Interaction) {
-	if s.Config.InteractionTimeout <= 0 {
-		return
-	}
-	actionID, value := defaultInteractionAction(interaction.Kind)
-	if actionID == "" {
-		return
-	}
-	s.pendingMu.Lock()
-	defer s.pendingMu.Unlock()
-	s.pendingInteractions[sess.ID] = pendingInteraction{
-		SessionID:  sess.ID,
-		WindowName: sess.WindowName,
-		Kind:       interaction.Kind,
-		ActionID:   actionID,
-		Value:      value,
-		Signature:  interactionSignature(interaction),
-		ExpiresAt:  time.Now().Add(s.Config.InteractionTimeout),
-	}
-}
-
-func (s *Service) clearPendingInteraction(sessionID string) {
-	s.pendingMu.Lock()
-	defer s.pendingMu.Unlock()
-	delete(s.pendingInteractions, sessionID)
-}
-
-func (s *Service) suppressPendingInteraction(sessionID string) {
-	s.pendingMu.Lock()
-	defer s.pendingMu.Unlock()
-	if pending, ok := s.pendingInteractions[sessionID]; ok && pending.Signature != "" {
-		s.handledInteractions[sessionID] = handledInteraction{
-			Signature: pending.Signature,
-			ExpiresAt: time.Now().Add(handledInteractionSuppressDuration),
-		}
-	}
-	delete(s.pendingInteractions, sessionID)
-}
-
-func (s *Service) isHandledInteractionSuppressed(sessionID string, interaction agent.Interaction, now time.Time) bool {
-	signature := interactionSignature(interaction)
-	if signature == "" {
-		return false
-	}
-	s.pendingMu.Lock()
-	defer s.pendingMu.Unlock()
-	suppressed, ok := s.handledInteractions[sessionID]
-	if !ok {
-		return false
-	}
-	if !now.Before(suppressed.ExpiresAt) {
-		delete(s.handledInteractions, sessionID)
-		return false
-	}
-	return suppressed.Signature == signature
-}
-
-func interactionSignature(interaction agent.Interaction) string {
-	if interaction.Kind == agent.InteractionNone {
-		return ""
-	}
-	if len(interaction.Options) == 0 {
-		return string(interaction.Kind)
-	}
-	return string(interaction.Kind) + "|" + strings.Join(interaction.Options, "\x1f")
-}
-
-func (s *Service) storePendingInitialInput(sessionID string, input session.Input) {
-	s.pendingMu.Lock()
-	defer s.pendingMu.Unlock()
-	s.pendingInitialInputs[sessionID] = input
-}
-
-func (s *Service) peekPendingInitialInput(sessionID string) (session.Input, bool) {
-	s.pendingMu.Lock()
-	defer s.pendingMu.Unlock()
-	input, ok := s.pendingInitialInputs[sessionID]
-	return input, ok
-}
-
-func (s *Service) popPendingInitialInput(sessionID string) (session.Input, bool) {
-	s.pendingMu.Lock()
-	defer s.pendingMu.Unlock()
-	input, ok := s.pendingInitialInputs[sessionID]
-	delete(s.pendingInitialInputs, sessionID)
-	return input, ok
-}
-
-func (s *Service) duePendingInteractions(now time.Time) []pendingInteraction {
-	s.pendingMu.Lock()
-	defer s.pendingMu.Unlock()
-	var due []pendingInteraction
-	for sessionID, pending := range s.pendingInteractions {
-		if !now.Before(pending.ExpiresAt) {
-			due = append(due, pending)
-			if pending.Signature != "" {
-				s.handledInteractions[sessionID] = handledInteraction{
-					Signature: pending.Signature,
-					ExpiresAt: now.Add(handledInteractionSuppressDuration),
-				}
-			}
-			delete(s.pendingInteractions, sessionID)
-		}
-	}
-	return due
-}
-
-func defaultInteractionAction(kind agent.InteractionKind) (string, string) {
-	switch kind {
-	case agent.InteractionAuthorization:
-		return "reject", "reject"
-	case agent.InteractionChoice:
-		return "choice_timeout", "cancel"
-	case agent.InteractionResume:
-		return "resume_cancel", "cancel"
-	default:
-		return "", ""
-	}
-}
-
-func (s *Service) RenderInteractionTimeouts(ctx context.Context, now time.Time) error {
-	for _, pending := range s.duePendingInteractions(now) {
-		if err := s.Tmux.SendLine(ctx, pending.WindowName, pending.Value); err != nil {
-			return err
-		}
-		detail := pending.ActionID + " " + pending.Value
-		s.Audit.Record("system", "interaction_timeout", pending.SessionID, detail)
-		if err := s.Cards.Render(card.Event{
-			Type:      "action",
-			SessionID: pending.SessionID,
-			Message:   "interaction timed out: sent " + pending.Value,
-		}); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func (s *Service) RenderIdleReminders(now time.Time) error {
-	for _, sess := range s.Sessions.IdleReminderDue(now, s.Config.IdleReminderAfter) {
-		idleAfter := roundDuration(s.Config.IdleReminderAfter)
-		if err := s.Cards.Render(card.Event{
-			Type:      "idle_reminder",
-			SessionID: sess.ID,
-			Segments:  []card.Segment{{Kind: card.SegmentText, Text: fmt.Sprintf("Session has been idle for %s. Use /stop to terminate it when no longer needed.", idleAfter)}},
-			Actions:   card.TerminateSessionActions(false),
-			Meta:      metaFromSession(sess),
-		}); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func (s *Service) PollActiveSessions(ctx context.Context) error {
-	for _, sess := range s.Sessions.List() {
-		if sess.State == session.StateStopped || sess.State == session.StateCrashed {
-			continue
-		}
-		if !sess.WindowStarted {
-			continue
-		}
-		if err := s.pollSessionOutput(ctx, &sess, true); err != nil {
-			_ = s.Cards.Render(card.Event{
-				Type:      "error",
-				SessionID: sess.ID,
-				Segments:  []card.Segment{{Kind: card.SegmentError, Text: err.Error()}},
-				Meta:      metaFromSession(sess),
-			})
-		}
-	}
-	return nil
-}
-
-func (s *Service) StartBackgroundLoops(ctx context.Context, outputEvery, idleEvery time.Duration) {
+func (s *Service) StartBackgroundLoops(ctx context.Context, outputEvery time.Duration) {
 	if outputEvery <= 0 {
 		outputEvery = time.Second
-	}
-	if idleEvery <= 0 {
-		idleEvery = time.Hour
 	}
 	go func() {
 		ticker := time.NewTicker(outputEvery)
@@ -732,253 +299,70 @@ func (s *Service) StartBackgroundLoops(ctx context.Context, outputEvery, idleEve
 			select {
 			case <-ctx.Done():
 				return
-			case <-ticker.C:
-				_ = s.PollActiveSessions(ctx)
-				_ = s.RenderInteractionTimeouts(ctx, time.Now())
-				_ = s.RenderPendingRunTimeouts(time.Now())
-			}
-		}
-	}()
-	go func() {
-		ticker := time.NewTicker(idleEvery)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-ctx.Done():
-				return
 			case now := <-ticker.C:
-				_ = s.RenderIdleReminders(now)
+				_ = s.RenderPendingRunTimeouts(now)
 			}
 		}
 	}()
 }
 
-func (s *Service) watcherFor(sessionID, windowName string) *tmux.PaneWatcher {
-	s.watchersMu.Lock()
-	defer s.watchersMu.Unlock()
-	if w, ok := s.watchers[sessionID]; ok {
-		return w
-	}
-	w := &tmux.PaneWatcher{Manager: s.Tmux, WindowName: windowName}
-	s.watchers[sessionID] = w
-	return w
+func (s *Service) storeActiveRun(id string, run activeRun) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.activeRuns[id] = run
 }
 
-func classifySegment(output string) card.SegmentKind {
-	return classifySegmentLine(strings.TrimSpace(output))
+func (s *Service) clearActiveRun(id string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.activeRuns, id)
 }
 
-func segmentOutput(output string) []card.Segment {
-	if output == "" {
-		return nil
+func (s *Service) cancelActiveRun(id string) (activeRun, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	run, ok := s.activeRuns[id]
+	if ok {
+		run.Cancel()
+		delete(s.activeRuns, id)
 	}
-	lines := strings.SplitAfter(output, "\n")
-	segments := make([]card.Segment, 0, len(lines))
-	var b strings.Builder
-	var current card.SegmentKind
-	hasCurrent := false
-	flush := func() {
-		if !hasCurrent {
-			return
-		}
-		segments = append(segments, card.Segment{Kind: current, Text: b.String()})
-		b.Reset()
-		hasCurrent = false
+	return run, ok
+}
+
+func (s *Service) storePendingRun(sessionID string, pending pendingRun) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	pending.SessionID = sessionID
+	if s.Config.InteractionTimeout > 0 && pending.ExpiresAt.IsZero() {
+		pending.ExpiresAt = time.Now().Add(s.Config.InteractionTimeout)
 	}
-	for _, line := range lines {
-		if line == "" {
+	s.pendingRuns[sessionID] = pending
+}
+
+func (s *Service) popPendingRun(sessionID string) (pendingRun, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	pending, ok := s.pendingRuns[sessionID]
+	if ok {
+		delete(s.pendingRuns, sessionID)
+	}
+	return pending, ok
+}
+
+func (s *Service) duePendingRuns(now time.Time) []pendingRun {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var due []pendingRun
+	for sessionID, pending := range s.pendingRuns {
+		if pending.ExpiresAt.IsZero() {
 			continue
 		}
-		kind := classifySegmentLine(strings.TrimSpace(line))
-		if strings.TrimSpace(line) == "" && hasCurrent {
-			kind = current
-		}
-		if !hasCurrent {
-			current = kind
-			hasCurrent = true
-		}
-		if kind != current {
-			flush()
-			current = kind
-			hasCurrent = true
-		}
-		b.WriteString(line)
-	}
-	flush()
-	return segments
-}
-
-func classifySegmentLine(line string) card.SegmentKind {
-	lower := strings.ToLower(line)
-	switch {
-	case strings.Contains(lower, "thinking") || strings.Contains(lower, "thought") || strings.Contains(lower, "reasoning") || strings.Contains(line, "思考"):
-		return card.SegmentThought
-	case strings.Contains(lower, "tool") ||
-		strings.Contains(lower, "tool_use") ||
-		strings.Contains(lower, "function_call") ||
-		strings.Contains(lower, "mcp__") ||
-		strings.Contains(line, "工具") ||
-		looksLikeToolInvocation(line):
-		return card.SegmentTool
-	default:
-		return card.SegmentText
-	}
-}
-
-func looksLikeToolInvocation(line string) bool {
-	for _, marker := range []string{
-		"Bash(",
-		"Read(",
-		"Write(",
-		"Edit(",
-		"MultiEdit(",
-		"Grep(",
-		"Glob(",
-		"WebFetch(",
-		"TodoWrite(",
-	} {
-		if strings.Contains(line, marker) {
-			return true
+		if !now.Before(pending.ExpiresAt) {
+			due = append(due, pending)
+			delete(s.pendingRuns, sessionID)
 		}
 	}
-	return false
-}
-
-func (s *Service) sendActionValue(ctx context.Context, req ActionRequest) error {
-	sess := s.findSession(req.SessionID)
-	if sess == nil {
-		return s.Cards.Render(card.Event{Type: "error", SessionID: req.SessionID, Segments: []card.Segment{{Kind: card.SegmentError, Text: "session not found"}}})
-	}
-	value := req.Value
-	if value == "" {
-		value = req.ActionID
-	}
-	if err := s.Tmux.SendLine(ctx, sess.WindowName, value); err != nil {
-		return err
-	}
-	return s.Cards.Render(card.Event{Type: "action", SessionID: sess.ID, Message: "sent action: " + req.ActionID})
-}
-
-func (s *Service) restartSession(ctx context.Context, req ActionRequest) error {
-	sess := s.findSession(req.SessionID)
-	if sess == nil {
-		return s.Cards.Render(card.Event{Type: "error", SessionID: req.SessionID, Segments: []card.Segment{{Kind: card.SegmentError, Text: "session not found"}}})
-	}
-	mode := sess.ApprovalMode
-	if mode == "" {
-		mode = agent.ApprovalDefault
-	}
-	cmd := Command{Agent: sess.Key.Agent, ApprovalMode: mode}
-	if err := s.ensureAgentWindow(ctx, *sess, cmd); err != nil {
-		updated := s.Sessions.MarkCrashed(sess.Key, sess.WorkDir)
-		return s.Cards.Render(card.Event{
-			Type:      "error",
-			SessionID: updated.ID,
-			Segments:  []card.Segment{{Kind: card.SegmentError, Text: err.Error()}},
-			Actions:   card.RestartActions(),
-			Meta:      metaFromSession(updated),
-		})
-	}
-	updated := s.Sessions.MarkRestarted(sess.Key, sess.WorkDir, mode)
-	s.Audit.Record(req.Actor, "restart_session", updated.ID, string(mode))
-	return s.Cards.Render(card.Event{
-		Type:      "status",
-		SessionID: updated.ID,
-		Message:   "session restarted",
-		Meta:      metaFromSession(updated),
-	})
-}
-
-func (s *Service) terminateSession(ctx context.Context, req ActionRequest) error {
-	sess := s.findSession(req.SessionID)
-	if sess == nil {
-		return s.Cards.Render(card.Event{Type: "error", SessionID: req.SessionID, Segments: []card.Segment{{Kind: card.SegmentError, Text: "session not found"}}})
-	}
-	updated := s.Sessions.Stop(sess.Key, sess.WorkDir)
-	s.Audit.Record(req.Actor, "terminate_session", updated.ID, "")
-	if err := s.Tmux.KillWindow(ctx, updated.WindowName); err != nil {
-		return err
-	}
-	return s.Cards.Render(card.Event{
-		Type:      "terminate_session",
-		SessionID: updated.ID,
-		Message:   "session terminated",
-		Actions:   card.TerminateSessionActions(true),
-		Meta:      metaFromSession(updated),
-	})
-}
-
-func (s *Service) resume(ctx context.Context, cmd Command, msg Message) error {
-	if cmd.Agent == "" {
-		cmd.Agent = agent.Claude
-	}
-	key := s.sessionKey(cmd.Agent, msg)
-	workDir := s.Config.DefaultWorkDir
-	if cmd.WorkDir != "" {
-		workDir = cmd.WorkDir
-	}
-	asked, err := s.ensureWorkDirOrAsk(workDir, key.ID(), msg.ID)
-	if err != nil {
-		return err
-	}
-	if asked {
-		s.storePendingRun(key.ID(), pendingRun{Command: cmd, Message: msg, WorkDir: workDir, Resume: true})
-		return nil
-	}
-	sess := s.Sessions.GetOrCreate(key, workDir)
-	if sess.WindowStarted {
-		return s.Cards.Render(card.Event{
-			Type:             "error",
-			SessionID:        sess.ID,
-			ReplyToMessageID: msg.ID,
-			Segments:         []card.Segment{{Kind: card.SegmentError, Text: "session already has an active tmux window; use /stop before /resume"}},
-			Meta:             metaFromSession(*sess),
-		})
-	}
-	adapter, err := agent.AdapterFor(cmd.Agent)
-	if err != nil {
-		return err
-	}
-	command, err := adapter.BuildCommand(agent.LaunchConfig{
-		Kind:         cmd.Agent,
-		WorkDir:      workDir,
-		ApprovalMode: cmd.ApprovalMode,
-		Resume:       true,
-		ResumeTarget: cmd.ResumeTarget,
-		ResumeLast:   cmd.ResumeLast,
-	})
-	if err != nil {
-		return err
-	}
-	if err := s.Tmux.NewWindow(ctx, tmux.WindowSpec{Name: sess.WindowName, WorkDir: workDir, Command: command}); err != nil {
-		updated := s.Sessions.MarkCrashed(key, workDir)
-		_ = s.Cards.Render(card.Event{
-			Type:             "error",
-			SessionID:        updated.ID,
-			ReplyToMessageID: msg.ID,
-			Segments:         []card.Segment{{Kind: card.SegmentError, Text: err.Error()}},
-			Actions:          card.RestartActions(),
-			Meta:             metaFromSession(updated),
-		})
-		return err
-	}
-	updated := s.Sessions.MarkWindowStarted(key, workDir, cmd.ApprovalMode)
-	detail := "picker"
-	if cmd.ResumeLast {
-		detail = "last"
-	} else if cmd.ResumeTarget != "" {
-		detail = cmd.ResumeTarget
-	}
-	s.Audit.Record(msg.Sender, "resume_agent_session", updated.ID, detail)
-	return s.Cards.Render(card.Event{
-		Type:             "status",
-		SessionID:        updated.ID,
-		ReplyToMessageID: msg.ID,
-		Segments:         []card.Segment{{Kind: card.SegmentText, Text: "resume session launched: " + detail}},
-		Meta:             metaFromSession(updated),
-		Message:          "resume session launched",
-		StopButton:       card.StopButton{Visible: true},
-	})
+	return due
 }
 
 func (s *Service) ensureWorkDirOrAsk(workDir, sessionID, replyToMessageID string) (bool, error) {
@@ -1002,75 +386,6 @@ func (s *Service) ensureWorkDirOrAsk(workDir, sessionID, replyToMessageID string
 		Segments:         []card.Segment{{Kind: card.SegmentText, Text: "Workdir does not exist: " + workDir}},
 		Actions:          card.WorkDirCreateActions(workDir),
 	})
-}
-
-func (s *Service) findSession(id string) *session.Session {
-	for _, sess := range s.Sessions.List() {
-		if sess.ID == id {
-			cp := sess
-			return &cp
-		}
-	}
-	return nil
-}
-
-func (s *Service) ensureAgentWindow(ctx context.Context, sess session.Session, cmd Command) error {
-	adapter, err := agent.AdapterFor(sess.Key.Agent)
-	if err != nil {
-		return err
-	}
-	command, err := adapter.BuildCommand(agent.LaunchConfig{Kind: sess.Key.Agent, WorkDir: sess.WorkDir, ApprovalMode: cmd.ApprovalMode})
-	if err != nil {
-		return err
-	}
-	return s.Tmux.NewWindow(ctx, tmux.WindowSpec{Name: sess.WindowName, WorkDir: sess.WorkDir, Command: command})
-}
-
-func (s *Service) interruptActiveRun(ctx context.Context, sess session.Session) error {
-	if sess.Key.Agent == agent.Codex {
-		if err := s.Tmux.KillPaneDescendants(ctx, sess.WindowName, string(agent.Codex)); err != nil {
-			s.Audit.Record("system", "tool_process_cleanup_failed", sess.ID, err.Error())
-		}
-	}
-	return s.Tmux.Interrupt(ctx, sess.WindowName)
-}
-
-func (s *Service) interrupt(ctx context.Context, kind agent.Kind, msg Message) error {
-	key := s.sessionKey(kind, msg)
-	sess := s.Sessions.GetOrCreate(key, s.Config.DefaultWorkDir)
-	s.Audit.Record(msg.Sender, "interrupt", sess.ID, "")
-	if err := s.interruptActiveRun(ctx, *sess); err != nil {
-		return err
-	}
-	updated, next, err := s.finishCurrentRun(ctx, *sess)
-	if err != nil {
-		return err
-	}
-	if next == nil {
-		s.suppressStopOutput(updated.ID)
-	}
-	if err := s.Cards.Render(card.Event{Type: "stop_button", SessionID: updated.ID, StopButton: card.StopButton{Visible: true, Disabled: true}, Message: "interrupted", Meta: metaFromSession(updated)}); err != nil {
-		return err
-	}
-	if next != nil {
-		return s.renderDequeuedInput(updated, *next)
-	}
-	return nil
-}
-
-func (s *Service) stop(ctx context.Context, kind agent.Kind, msg Message) error {
-	key := s.sessionKey(kind, msg)
-	sess := s.Sessions.Stop(key, s.Config.DefaultWorkDir)
-	s.Audit.Record(msg.Sender, "stop_session", sess.ID, "")
-	if err := s.Tmux.KillWindow(ctx, sess.WindowName); err != nil {
-		return err
-	}
-	return s.Cards.Render(card.Event{Type: "stop_button", SessionID: sess.ID, StopButton: card.StopButton{Visible: true, Disabled: true}, Message: "stopped"})
-}
-
-func (s *Service) Cleanup(ctx context.Context) error {
-	s.Audit.Record("system", "cleanup", "", s.Config.TmuxSession)
-	return s.Tmux.KillSession(ctx)
 }
 
 func (s *Service) renderText(id, replyToMessageID string, kind card.SegmentKind, text string) error {
@@ -1101,97 +416,11 @@ func (s *Service) renderStream(event card.Event) error {
 	return nil
 }
 
-func (s *Service) sessionsText() string {
-	sessions := s.Sessions.List()
-	if len(sessions) == 0 {
-		return "no active sessions"
-	}
-	now := time.Now()
-	var b strings.Builder
-	for _, sess := range sessions {
-		fmt.Fprintf(&b, "%s\n", sess.ID)
-		fmt.Fprintf(&b, "  agent=%s chat=%s", sess.Key.Agent, sess.Key.ChatID)
-		if sess.Key.Thread != "" {
-			fmt.Fprintf(&b, " thread=%s", sess.Key.Thread)
-		}
-		fmt.Fprintf(&b, "\n")
-		fmt.Fprintf(&b, "  state=%s window=%s window_started=%t\n", sess.State, sess.WindowName, sess.WindowStarted)
-		fmt.Fprintf(&b, "  workdir=%s\n", sess.WorkDir)
-		fmt.Fprintf(&b, "  queue=%d history=%d\n", len(sess.Queue), len(sess.History))
-		if sess.ApprovalMode != "" {
-			fmt.Fprintf(&b, "  approval=%s\n", sess.ApprovalMode)
-		}
-		if sess.Model != "" || sess.Tokens > 0 {
-			fmt.Fprintf(&b, "  model=%s tokens=%d\n", sess.Model, sess.Tokens)
-		}
-		if !sess.CreatedAt.IsZero() {
-			fmt.Fprintf(&b, "  age=%s\n", roundDuration(now.Sub(sess.CreatedAt)))
-		}
-		if !sess.LastActive.IsZero() {
-			fmt.Fprintf(&b, "  last_active=%s idle=%s\n", sess.LastActive.Format(time.RFC3339), roundDuration(now.Sub(sess.LastActive)))
-		}
-		fmt.Fprintf(&b, "  attach=%s\n", s.Tmux.AttachCommand(sess.WindowName))
-	}
-	return strings.TrimSpace(b.String())
-}
-
-func roundDuration(d time.Duration) time.Duration {
-	if d < 0 {
-		return 0
-	}
-	return d.Round(time.Second)
-}
-
-func (s *Service) sessionKey(kind agent.Kind, msg Message) session.Key {
-	thread := msg.ThreadID
-	if !s.topicModeEnabled(msg.ChatID) {
-		thread = ""
-	}
-	return session.Key{Agent: kind, ChatID: msg.ChatID, Thread: thread}
-}
-
-func (s *Service) topicText(chatID, text string) string {
-	mode := strings.ToLower(strings.TrimSpace(text))
-	switch mode {
-	case "on", "enable", "enabled":
-		s.setTopicMode(chatID, true)
-		return "topic mode enabled"
-	case "off", "disable", "disabled":
-		s.setTopicMode(chatID, false)
-		return "topic mode disabled"
-	case "", "status":
-		if s.topicModeEnabled(chatID) {
-			return "topic mode enabled"
-		}
-		return "topic mode disabled"
-	default:
-		return "usage: /topic on|off|status"
-	}
-}
-
-func (s *Service) setTopicMode(chatID string, enabled bool) {
-	s.topicMu.Lock()
-	defer s.topicMu.Unlock()
-	s.topicModes[chatID] = enabled
-}
-
-func (s *Service) topicModeEnabled(chatID string) bool {
-	s.topicMu.Lock()
-	defer s.topicMu.Unlock()
-	enabled, ok := s.topicModes[chatID]
-	if !ok {
-		return true
-	}
-	return enabled
-}
-
 func (s *Service) statusText(kind agent.Kind, msg Message) string {
 	key := s.sessionKey(kind, msg)
 	var b strings.Builder
-	fmt.Fprintf(&b, "tmux_session=%s\n", s.Config.TmuxSession)
-	fmt.Fprintf(&b, "default_agent=%s\n", s.Config.DefaultAgent)
+	fmt.Fprintf(&b, "mode=claude_oneshot\n")
 	fmt.Fprintf(&b, "default_workdir=%s\n", s.Config.DefaultWorkDir)
-	fmt.Fprintf(&b, "topic_mode=%t\n", s.topicModeEnabled(msg.ChatID))
 	fmt.Fprintf(&b, "current_session=%s\n", key.ID())
 	sess := s.findSession(key.ID())
 	if sess == nil {
@@ -1199,41 +428,250 @@ func (s *Service) statusText(kind agent.Kind, msg Message) string {
 		return b.String()
 	}
 	fmt.Fprintf(&b, "state=%s\n", sess.State)
-	fmt.Fprintf(&b, "window=%s\n", sess.WindowName)
-	fmt.Fprintf(&b, "window_started=%t\n", sess.WindowStarted)
 	fmt.Fprintf(&b, "workdir=%s\n", sess.WorkDir)
 	fmt.Fprintf(&b, "queue=%d\n", len(sess.Queue))
 	fmt.Fprintf(&b, "history=%d\n", len(sess.History))
+	if sess.ClaudeSessionID != "" {
+		fmt.Fprintf(&b, "claude_session=%s\n", sess.ClaudeSessionID)
+	}
 	if sess.Model != "" {
 		fmt.Fprintf(&b, "model=%s\n", sess.Model)
 	}
 	if sess.Tokens > 0 {
 		fmt.Fprintf(&b, "tokens=%d\n", sess.Tokens)
 	}
-	fmt.Fprintf(&b, "attach=%s", s.Tmux.AttachCommand(sess.WindowName))
-	return b.String()
-}
-
-func (s *Service) attachText(kind agent.Kind, msg Message) string {
-	key := s.sessionKey(kind, msg)
-	sess := s.Sessions.GetOrCreate(key, s.Config.DefaultWorkDir)
-	return s.Tmux.AttachCommand(sess.WindowName)
-}
-
-func (s *Service) historyText(kind agent.Kind, msg Message) string {
-	key := s.sessionKey(kind, msg)
-	sess := s.Sessions.GetOrCreate(key, s.Config.DefaultWorkDir)
-	history := s.Sessions.History(sess.ID)
-	if len(history) == 0 {
-		return "no prompt history"
-	}
-	var b strings.Builder
-	for _, p := range history {
-		fmt.Fprintf(&b, "%s %s %s\n", p.Time.Format(time.RFC3339), p.Sender, p.Text)
+	if msg.IsGroup {
+		fmt.Fprintf(&b, "chat_sessions=%d\n", s.countChatSessions(msg.ChatID))
 	}
 	return strings.TrimSpace(b.String())
 }
 
+func (s *Service) findSession(id string) *session.Session {
+	for _, sess := range s.Sessions.List() {
+		if sess.ID == id {
+			cp := sess
+			return &cp
+		}
+	}
+	return nil
+}
+
+func (s *Service) countChatSessions(chatID string) int {
+	count := 0
+	for _, sess := range s.Sessions.List() {
+		if sess.Key.ChatID == chatID {
+			count++
+		}
+	}
+	return count
+}
+
+func (s *Service) sessionKey(kind agent.Kind, msg Message) session.Key {
+	return session.Key{Agent: kind, ChatID: msg.ChatID, Thread: msg.ThreadID}
+}
+
 func metaFromSession(sess session.Session) card.Meta {
 	return card.Meta{Agent: string(sess.Key.Agent), Model: sess.Model, Tokens: sess.Tokens, WorkDir: sess.WorkDir, Status: string(sess.State)}
+}
+
+func runID(baseSessionID, replyToMessageID string) string {
+	if replyToMessageID == "" {
+		return baseSessionID
+	}
+	return baseSessionID + ":message:" + replyToMessageID
+}
+
+type CLIExecRunner struct{}
+
+func (CLIExecRunner) Run(ctx context.Context, req AgentRunRequest) (AgentRunResult, error) {
+	command, err := agent.BuildOneShotCommand(agent.OneShotConfig{
+		Kind:            req.Kind,
+		WorkDir:         req.WorkDir,
+		Prompt:          req.Prompt,
+		ClaudeSessionID: req.ClaudeSessionID,
+	})
+	if err != nil {
+		return AgentRunResult{}, err
+	}
+	if len(command) == 0 {
+		return AgentRunResult{}, fmt.Errorf("empty agent command")
+	}
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	cmd := exec.CommandContext(ctx, command[0], command[1:]...)
+	cmd.Dir = req.WorkDir
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		detail := strings.TrimSpace(stderr.String())
+		if detail == "" {
+			detail = strings.TrimSpace(stdout.String())
+		}
+		if detail != "" {
+			return AgentRunResult{}, fmt.Errorf("%w: %s", err, detail)
+		}
+		return AgentRunResult{}, err
+	}
+	return ParseClaudeStreamOutput(stdout.Bytes()), nil
+}
+
+func ParseClaudeStreamOutput(data []byte) AgentRunResult {
+	var result AgentRunResult
+	var answer strings.Builder
+	var thought strings.Builder
+	var tool strings.Builder
+	scanner := bufio.NewScanner(bytes.NewReader(data))
+	scanner.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
+	parsedJSON := false
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" {
+			continue
+		}
+		var event map[string]any
+		if err := json.Unmarshal([]byte(line), &event); err != nil {
+			answer.WriteString(line)
+			answer.WriteByte('\n')
+			continue
+		}
+		parsedJSON = true
+		consumeClaudeEvent(event, &answer, &thought, &tool, &result)
+	}
+	if !parsedJSON && strings.TrimSpace(answer.String()) == "" {
+		answer.Write(data)
+	}
+	addSegment := func(kind card.SegmentKind, text string) {
+		text = strings.TrimSpace(text)
+		if text != "" {
+			result.Segments = append(result.Segments, card.Segment{Kind: kind, Text: text})
+		}
+	}
+	addSegment(card.SegmentText, answer.String())
+	addSegment(card.SegmentThought, thought.String())
+	addSegment(card.SegmentTool, tool.String())
+	return result
+}
+
+func consumeClaudeEvent(event map[string]any, answer, thought, tool *strings.Builder, result *AgentRunResult) {
+	if id, ok := event["session_id"].(string); ok && result.ClaudeSessionID == "" {
+		result.ClaudeSessionID = id
+	}
+	if model, ok := event["model"].(string); ok && result.Model == "" {
+		result.Model = model
+	}
+	result.Tokens += tokensFromValue(event["usage"])
+	if eventType, _ := event["type"].(string); eventType == "result" {
+		if text, ok := event["result"].(string); ok && strings.TrimSpace(text) != "" && strings.TrimSpace(answer.String()) == "" {
+			answer.WriteString(text)
+			answer.WriteByte('\n')
+		}
+		return
+	}
+	message, _ := event["message"].(map[string]any)
+	if message == nil {
+		return
+	}
+	if id, ok := message["session_id"].(string); ok && result.ClaudeSessionID == "" {
+		result.ClaudeSessionID = id
+	}
+	if model, ok := message["model"].(string); ok && result.Model == "" {
+		result.Model = model
+	}
+	result.Tokens += tokensFromValue(message["usage"])
+	content, _ := message["content"].([]any)
+	for _, raw := range content {
+		block, _ := raw.(map[string]any)
+		if block == nil {
+			continue
+		}
+		blockType, _ := block["type"].(string)
+		switch blockType {
+		case "text":
+			writeBlockText(answer, block)
+		case "thinking", "reasoning", "redacted_thinking":
+			writeBlockText(thought, block)
+		case "tool_use":
+			writeToolUse(tool, block)
+		case "tool_result":
+			writeToolResult(tool, block)
+		}
+	}
+}
+
+func writeBlockText(b *strings.Builder, block map[string]any) {
+	for _, key := range []string{"text", "thinking", "content"} {
+		if text, ok := block[key].(string); ok && strings.TrimSpace(text) != "" {
+			b.WriteString(text)
+			b.WriteByte('\n')
+			return
+		}
+	}
+}
+
+func writeToolUse(b *strings.Builder, block map[string]any) {
+	name, _ := block["name"].(string)
+	if name == "" {
+		name = "tool_use"
+	}
+	b.WriteString("- ")
+	b.WriteString(name)
+	if id, ok := block["id"].(string); ok && id != "" {
+		b.WriteString(" `")
+		b.WriteString(id)
+		b.WriteString("`")
+	}
+	if input, ok := block["input"]; ok {
+		if payload, err := json.Marshal(input); err == nil && len(payload) > 0 {
+			b.WriteByte('\n')
+			b.WriteString("```json\n")
+			b.Write(payload)
+			b.WriteString("\n```")
+		}
+	}
+	b.WriteByte('\n')
+}
+
+func writeToolResult(b *strings.Builder, block map[string]any) {
+	b.WriteString("- tool_result")
+	if id, ok := block["tool_use_id"].(string); ok && id != "" {
+		b.WriteString(" `")
+		b.WriteString(id)
+		b.WriteString("`")
+	}
+	b.WriteByte('\n')
+	writeBlockText(b, block)
+}
+
+func tokensFromValue(value any) int {
+	switch v := value.(type) {
+	case map[string]any:
+		total := 0
+		for key, item := range v {
+			if strings.HasSuffix(key, "tokens") {
+				total += intFromJSONNumber(item)
+				continue
+			}
+			total += tokensFromValue(item)
+		}
+		return total
+	case []any:
+		total := 0
+		for _, item := range v {
+			total += tokensFromValue(item)
+		}
+		return total
+	default:
+		return 0
+	}
+}
+
+func intFromJSONNumber(value any) int {
+	switch v := value.(type) {
+	case float64:
+		return int(v)
+	case int:
+		return v
+	default:
+		return 0
+	}
 }

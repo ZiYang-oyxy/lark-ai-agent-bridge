@@ -34,7 +34,7 @@ func TestBuildCardActionFromLarkFallbacks(t *testing.T) {
 			Name:   "choice_1",
 			Option: "2",
 			FormValue: map[string]any{
-				"session": "codex:chat",
+				"session": "claude:chat",
 			},
 		},
 	}}
@@ -43,7 +43,7 @@ func TestBuildCardActionFromLarkFallbacks(t *testing.T) {
 	if err != nil {
 		t.Fatalf("BuildCardActionFromLark error: %v", err)
 	}
-	if got.SessionID != "codex:chat" || got.ActionID != "choice_1" || got.Value != "2" || got.Actor != "user_1" {
+	if got.SessionID != "claude:chat" || got.ActionID != "choice_1" || got.Value != "2" || got.Actor != "user_1" {
 		t.Fatalf("action = %#v", got)
 	}
 }

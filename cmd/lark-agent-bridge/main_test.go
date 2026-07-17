@@ -13,14 +13,6 @@ import (
 	"lark-agent-bridge/internal/feishu"
 )
 
-func TestDecodeFlagEscapes(t *testing.T) {
-	got := decodeFlagEscapes(`done\n>\tready`)
-	want := "done\n>\tready"
-	if got != want {
-		t.Fatalf("decoded = %q, want %q", got, want)
-	}
-}
-
 func TestNewServeAuditRecorderWritesFile(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "audit", "audit.jsonl")
 	recorder, closeFn, err := newServeAuditRecorder(config.Config{AuditLogPath: path})
@@ -39,6 +31,18 @@ func TestNewServeAuditRecorderWritesFile(t *testing.T) {
 	}
 	if !strings.Contains(log, `"Action":"run_input"`) || !strings.Contains(log, `[REDACTED]`) {
 		t.Fatalf("audit log missing expected fields: %s", log)
+	}
+}
+
+func TestApplyDefaultWorkDirPreservesExplicitAuditLog(t *testing.T) {
+	t.Setenv("E2E_AUDIT_LOG", "/tmp/custom-audit.jsonl")
+	cfg := config.Config{AuditLogPath: "/tmp/custom-audit.jsonl"}
+	applyDefaultWorkDir(&cfg, "/tmp/work")
+	if cfg.DefaultWorkDir != "/tmp/work" {
+		t.Fatalf("default workdir = %q, want /tmp/work", cfg.DefaultWorkDir)
+	}
+	if cfg.AuditLogPath != "/tmp/custom-audit.jsonl" {
+		t.Fatalf("audit path = %q, want explicit path preserved", cfg.AuditLogPath)
 	}
 }
 

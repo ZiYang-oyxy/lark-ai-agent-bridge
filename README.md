@@ -1,19 +1,18 @@
-# Lark Agent Bridge
+# Lark AI Agent Bridge
 
-独立的 Feishu/Lark agent bridge，用于把飞书聊天与交互式 AI agent 终端同步起来。
+独立的 Feishu/Lark AI agent bridge，用于让用户在飞书里触发 Claude 单次任务，并用 CardKit 卡片同步展示执行中、结果、停止和工作目录确认状态。
 
-当前首轮实现聚焦核心底座：
+当前实现聚焦 Claude one-shot 模式：
 
-- `claude`、`codex` agent 抽象
-- 固定 tmux session `lark-agent-bridge`
-- 会话 key、队列、内存 prompt 历史
-- 本地模拟工具
-- doctor 就绪检查
-- 卡片事件抽象和 fake renderer
-- 飞书 SDK 长连接入口、消息归一化、普通回复/反应接口
-- CardKit HTTP client、CardKit renderer
-- tmux 输出轮询、ready 自动出队、runtime model/token 元信息提取
-- 长连接 `card.action.trigger` 卡片按钮入口，`/card/callback` 仅保留为本地兼容入口
+- 飞书消息通过 SDK 长连接进入 bridge。
+- 第一版只适配 `claude`，暂不适配 `codex`。
+- Claude 以 `claude -p --output-format stream-json --dangerously-skip-permissions` 启动。
+- 同一 chat/topic 会话串行执行，不同 topic 可并行执行。
+- topic 内普通消息继续当前 Claude session；`/new` 重置当前 topic 会话。
+- 非 topic 普通消息默认创建新 Claude 会话。
+- CardKit 卡片展示正文、折叠思考过程、折叠工具调用、底部 meta 和一次性停止按钮。
+- 工作目录不存在时先发确认卡片，点击创建后继续原请求。
+- 卡片按钮走长连接 `card.action.trigger`；HTTP `/card/callback` 只保留为本地兼容调试入口。
 
 ## 本地命令
 
@@ -23,16 +22,11 @@ GOCACHE=$PWD/.cache/go-build go test ./...
 ./scripts/evidence.sh
 LARK_APP_ID=... LARK_APP_SECRET=... ./scripts/e2e-preflight.sh
 GOCACHE=$PWD/.cache/go-build go run ./cmd/lark-agent-bridge doctor
-GOCACHE=$PWD/.cache/go-build go run ./cmd/lark-agent-bridge simulate -text "/claude hello"
-GOCACHE=$PWD/.cache/go-build go run ./cmd/lark-agent-bridge simulate -text "/resume codex --last"
-GOCACHE=$PWD/.cache/go-build go run ./cmd/lark-agent-bridge simulate -text "/claude first" -next-text "/claude second"
-GOCACHE=$PWD/.cache/go-build go run ./cmd/lark-agent-bridge simulate -text "/claude --workdir /tmp/missing-for-test hello" -timeout-now
-GOCACHE=$PWD/.cache/go-build go run ./cmd/lark-agent-bridge simulate-action -action stop -session claude:chat-demo
-GOCACHE=$PWD/.cache/go-build go run ./cmd/lark-agent-bridge simulate-output -output "Tool permission required\nAllow once\nReject"
-GOCACHE=$PWD/.cache/go-build go run ./cmd/lark-agent-bridge simulate-output -output "done\n>" -next-text "/claude second"
-GOCACHE=$PWD/.cache/go-build go run ./cmd/lark-agent-bridge simulate-output -capture-error "pane missing"
-GOCACHE=$PWD/.cache/go-build go run ./cmd/lark-agent-bridge serve
-./scripts/tmux-smoke.sh
+GOCACHE=$PWD/.cache/go-build go run ./cmd/lark-agent-bridge simulate -text "/new hello"
+GOCACHE=$PWD/.cache/go-build go run ./cmd/lark-agent-bridge simulate -thread topic-a -text "/new hello" -next-text "continue"
+GOCACHE=$PWD/.cache/go-build go run ./cmd/lark-agent-bridge simulate -text "/new --workdir /tmp/missing-for-test hello" -timeout-now
+GOCACHE=$PWD/.cache/go-build go run ./cmd/lark-agent-bridge simulate-action -action stop -session claude:chat-demo:message:local-id
+GOCACHE=$PWD/.cache/go-build go run ./cmd/lark-agent-bridge serve --default-workdir /tmp/lark-agent-bridge
 ```
 
 `serve` 需要 `LARK_APP_ID` 和 `LARK_APP_SECRET`。本地未配置时会明确失败，用于验证启动前置条件。

@@ -10,40 +10,34 @@ import (
 	"lark-agent-bridge/internal/audit"
 	"lark-agent-bridge/internal/card"
 	"lark-agent-bridge/internal/config"
-	"lark-agent-bridge/internal/tmux"
 )
 
 func TestCallbackHTTPHandlerDispatchesAction(t *testing.T) {
-	cfg := config.Config{TmuxSession: config.DefaultTmuxSession, DefaultAgent: "claude", DefaultWorkDir: t.TempDir(), CardMaxChars: 1000}
+	cfg := config.Config{DefaultAgent: "claude", DefaultWorkDir: t.TempDir(), CardMaxChars: 1000, InteractionTimeout: 120}
 	renderer := card.NewFakeRenderer()
-	runner := tmux.NewRecordingRunner()
-	service := NewService(cfg, renderer, tmux.NewManager(cfg.TmuxSession, runner), audit.NewRecorder())
-	if err := service.HandleMessage(t.Context(), Message{ChatID: "chat", Sender: "u1", Text: "/claude hello"}); err != nil {
+	runner := newFakeRunner()
+	runner.block = make(chan struct{})
+	service := NewService(cfg, renderer, runner, audit.NewRecorder())
+	if err := service.HandleMessage(t.Context(), Message{ID: "msg-1", ChatID: "chat", Sender: "u1", Text: "/new hello"}); err != nil {
 		t.Fatal(err)
 	}
-	body := `{"operator":{"open_id":"u1"},"action":{"value":{"session":"claude:chat","action_id":"stop"}}}`
+	<-runner.started
+	body := `{"operator":{"open_id":"u1"},"action":{"value":{"session":"claude:chat:message:msg-1","action_id":"stop"}}}`
 	req := httptest.NewRequest(http.MethodPost, "/card/callback", strings.NewReader(body))
 	rec := httptest.NewRecorder()
 	NewCallbackHTTPHandler(service).ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
 	}
-	foundInterrupt := false
-	for _, cmd := range runner.Snapshot() {
-		for _, arg := range cmd.Args {
-			if arg == "C-c" {
-				foundInterrupt = true
-			}
-		}
-	}
-	if !foundInterrupt {
-		t.Fatalf("C-c not found in %#v", runner.Snapshot())
+	events := renderer.Events()
+	if got := events[len(events)-1]; got.Type != "stop_button" || !got.StopButton.Disabled {
+		t.Fatalf("last event = %#v, want disabled stop", got)
 	}
 }
 
 func TestCallbackHTTPHandlerRespondsToChallenge(t *testing.T) {
-	cfg := config.Config{TmuxSession: config.DefaultTmuxSession, DefaultAgent: "claude", DefaultWorkDir: t.TempDir(), CardMaxChars: 1000}
-	service := NewService(cfg, card.NewFakeRenderer(), tmux.NewManager(cfg.TmuxSession, tmux.NewRecordingRunner()), audit.NewRecorder())
+	cfg := config.Config{DefaultAgent: "claude", DefaultWorkDir: t.TempDir(), CardMaxChars: 1000}
+	service := NewService(cfg, card.NewFakeRenderer(), newFakeRunner(), audit.NewRecorder())
 	req := httptest.NewRequest(http.MethodPost, "/card/callback", strings.NewReader(`{"challenge":"abc123"}`))
 	rec := httptest.NewRecorder()
 	NewCallbackHTTPHandler(service).ServeHTTP(rec, req)
