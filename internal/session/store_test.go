@@ -639,6 +639,246 @@ func TestAcceptAndEnqueueSaveFailureDoesNotPublishReceiptOrInput(t *testing.T) {
 	}
 }
 
+func TestAcceptAndEnqueueExtendsCompatibleDebounceCohort(t *testing.T) {
+	m := NewManager()
+	key := Key{Agent: agent.Claude, ChatID: "debounce-cohort"}
+	now := time.Unix(10, 0).UTC()
+	firstDeadline := now.Add(time.Second)
+	sharedDeadline := now.Add(2 * time.Second)
+	limits := BatchLimits{MaxPending: 10}
+
+	for _, input := range []Input{
+		{ID: "one", WorkDir: "/w", RequestedModel: "sonnet", RequestedEffort: "low", State: InputDebouncing, DebounceUntil: firstDeadline},
+		{ID: "two", WorkDir: "/w", RequestedModel: "sonnet", RequestedEffort: "low", State: InputDebouncing, DebounceUntil: sharedDeadline},
+	} {
+		if accepted, _, err := m.AcceptAndEnqueue(key, input, now, 0, 0, limits); err != nil || !accepted {
+			t.Fatalf("accept input %q: accepted=%t err=%v", input.ID, accepted, err)
+		}
+	}
+	got, ok := m.Get(key)
+	if !ok || len(got.Queue) != 2 || !got.Queue[0].DebounceUntil.Equal(sharedDeadline) {
+		t.Fatalf("first debounce deadline = %s, want %s", got.Queue[0].DebounceUntil, sharedDeadline)
+	}
+
+	if _, batch, err := m.FreezeReadyBatch(key, firstDeadline, limits); err != nil || batch != nil {
+		t.Fatalf("freeze before shared deadline: batch=%#v err=%v", batch, err)
+	}
+	_, batch, err := m.FreezeReadyBatch(key, sharedDeadline, limits)
+	if err != nil || batch == nil {
+		t.Fatalf("freeze at shared deadline: batch=%#v err=%v", batch, err)
+	}
+	if len(batch.Inputs) != 2 || batch.Inputs[0].ID != "one" || batch.Inputs[1].ID != "two" {
+		t.Fatalf("batch inputs = %#v, want one then two", batch.Inputs)
+	}
+}
+
+func TestAcceptAndEnqueueResetsEntireCompatibleDebounceTailInFIFOOrder(t *testing.T) {
+	m := NewManager()
+	key := Key{Agent: agent.Claude, ChatID: "debounce-tail"}
+	now := time.Unix(10, 0).UTC()
+	limits := BatchLimits{MaxPending: 10}
+	deadlines := []time.Time{now.Add(time.Second), now.Add(2 * time.Second), now.Add(3 * time.Second)}
+
+	for i, deadline := range deadlines {
+		input := Input{ID: string(rune('a' + i)), WorkDir: "/w", RequestedModel: "sonnet", RequestedEffort: "low", State: InputDebouncing, DebounceUntil: deadline}
+		if accepted, _, err := m.AcceptAndEnqueue(key, input, now, 0, 0, limits); err != nil || !accepted {
+			t.Fatalf("accept input %q: accepted=%t err=%v", input.ID, accepted, err)
+		}
+	}
+
+	got, ok := m.Get(key)
+	if !ok || len(got.Queue) != 3 {
+		t.Fatalf("queue = %#v", got.Queue)
+	}
+	for i, input := range got.Queue {
+		if input.ID != string(rune('a'+i)) || !input.DebounceUntil.Equal(deadlines[2]) {
+			t.Fatalf("queue[%d] = %#v, want FIFO deadline %s", i, input, deadlines[2])
+		}
+	}
+	if _, batch, err := m.FreezeReadyBatch(key, deadlines[2].Add(-time.Nanosecond), limits); err != nil || batch != nil {
+		t.Fatalf("freeze before tail deadline: batch=%#v err=%v", batch, err)
+	}
+	_, batch, err := m.FreezeReadyBatch(key, deadlines[2], limits)
+	if err != nil || batch == nil || len(batch.Inputs) != 3 {
+		t.Fatalf("freeze at tail deadline: batch=%#v err=%v", batch, err)
+	}
+	for i, input := range batch.Inputs {
+		if input.ID != string(rune('a'+i)) {
+			t.Fatalf("batch input[%d] = %q, want %q", i, input.ID, string(rune('a'+i)))
+		}
+	}
+}
+
+func TestAcceptAndEnqueueDoesNotExtendAcrossDebounceBoundaries(t *testing.T) {
+	now := time.Unix(10, 0).UTC()
+	oldDeadline := now.Add(time.Second)
+	newDeadline := now.Add(2 * time.Second)
+	for _, tc := range []struct {
+		name      string
+		preceding Input
+		newest    Input
+	}{
+		{
+			name:      "preceding reset",
+			preceding: Input{Reset: true},
+			newest:    Input{},
+		},
+		{
+			name:      "new reset",
+			preceding: Input{},
+			newest:    Input{Reset: true},
+		},
+		{
+			name:      "workdir",
+			preceding: Input{WorkDir: "/other"},
+			newest:    Input{WorkDir: "/w"},
+		},
+		{
+			name:      "model",
+			preceding: Input{RequestedModel: "opus"},
+			newest:    Input{RequestedModel: "sonnet"},
+		},
+		{
+			name:      "effort",
+			preceding: Input{RequestedEffort: "high"},
+			newest:    Input{RequestedEffort: "low"},
+		},
+		{
+			name:      "non-debouncing",
+			preceding: Input{State: InputQueued},
+			newest:    Input{},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m := NewManager()
+			key := Key{Agent: agent.Claude, ChatID: tc.name}
+			preceding := tc.preceding
+			preceding.ID = "first"
+			if preceding.State == "" {
+				preceding.State = InputDebouncing
+			}
+			preceding.DebounceUntil = oldDeadline
+			newest := tc.newest
+			newest.ID = "second"
+			newest.State = InputDebouncing
+			newest.DebounceUntil = newDeadline
+
+			for _, input := range []Input{preceding, newest} {
+				if accepted, _, err := m.AcceptAndEnqueue(key, input, now, 0, 0, BatchLimits{}); err != nil || !accepted {
+					t.Fatalf("accept input %q: accepted=%t err=%v", input.ID, accepted, err)
+				}
+			}
+			got, ok := m.Get(key)
+			if !ok || len(got.Queue) != 2 || !got.Queue[0].DebounceUntil.Equal(oldDeadline) {
+				t.Fatalf("queue crossed %s boundary: %#v", tc.name, got.Queue)
+			}
+		})
+	}
+}
+
+func TestAcceptAndEnqueueNeverShortensAnEarlierDebounceDeadline(t *testing.T) {
+	m := NewManager()
+	key := Key{Agent: agent.Claude, ChatID: "debounce-out-of-order"}
+	now := time.Unix(10, 0).UTC()
+	laterDeadline := now.Add(2 * time.Second)
+	earlierDeadline := now.Add(time.Second)
+	for _, input := range []Input{
+		{ID: "first", WorkDir: "/w", State: InputDebouncing, DebounceUntil: laterDeadline},
+		{ID: "second", WorkDir: "/w", State: InputDebouncing, DebounceUntil: earlierDeadline},
+	} {
+		if accepted, _, err := m.AcceptAndEnqueue(key, input, now, 0, 0, BatchLimits{}); err != nil || !accepted {
+			t.Fatalf("accept input %q: accepted=%t err=%v", input.ID, accepted, err)
+		}
+	}
+	got, ok := m.Get(key)
+	if !ok || !got.Queue[0].DebounceUntil.Equal(laterDeadline) {
+		t.Fatalf("first deadline = %s, want %s", got.Queue[0].DebounceUntil, laterDeadline)
+	}
+	if _, batch, err := m.FreezeReadyBatch(key, earlierDeadline, BatchLimits{}); err != nil || batch != nil {
+		t.Fatalf("freeze at earlier deadline: batch=%#v err=%v", batch, err)
+	}
+	_, batch, err := m.FreezeReadyBatch(key, laterDeadline, BatchLimits{})
+	if err != nil || batch == nil || len(batch.Inputs) != 2 {
+		t.Fatalf("freeze at later deadline: batch=%#v err=%v", batch, err)
+	}
+}
+
+func TestAcceptAndEnqueueRejectedOrFailedCandidateDoesNotExtendDebounceDeadline(t *testing.T) {
+	now := time.Unix(10, 0).UTC()
+	oldDeadline := now.Add(time.Second)
+	newDeadline := now.Add(2 * time.Second)
+	for _, tc := range []struct {
+		name string
+		run  func(*testing.T, *Manager, Key, Input)
+	}{
+		{
+			name: "duplicate",
+			run: func(t *testing.T, m *Manager, key Key, input Input) {
+				t.Helper()
+				if accepted, _, err := m.AcceptAndEnqueue(key, input, now, time.Hour, 10, BatchLimits{}); err != nil || !accepted {
+					t.Fatalf("accept original: accepted=%t err=%v", accepted, err)
+				}
+				input.DebounceUntil = newDeadline
+				if accepted, _, err := m.AcceptAndEnqueue(key, input, now, time.Hour, 10, BatchLimits{}); err != nil || accepted {
+					t.Fatalf("accept duplicate: accepted=%t err=%v", accepted, err)
+				}
+			},
+		},
+		{
+			name: "queue full",
+			run: func(t *testing.T, m *Manager, key Key, input Input) {
+				t.Helper()
+				if accepted, _, err := m.AcceptAndEnqueue(key, input, now, 0, 0, BatchLimits{MaxPending: 1}); err != nil || !accepted {
+					t.Fatalf("accept original: accepted=%t err=%v", accepted, err)
+				}
+				input.ID = "new"
+				input.DebounceUntil = newDeadline
+				if accepted, _, err := m.AcceptAndEnqueue(key, input, now, 0, 0, BatchLimits{MaxPending: 1}); err == nil || accepted {
+					t.Fatalf("accept queue full: accepted=%t err=%v", accepted, err)
+				}
+			},
+		},
+		{
+			name: "save failure",
+			run: func(t *testing.T, m *Manager, key Key, input Input) {
+				t.Helper()
+				m.sessions[key.ID()] = &Session{Key: key, ID: key.ID(), WorkDir: input.WorkDir, Queue: []Input{input}}
+				m.revision = 7
+				input.ID = "new"
+				input.DebounceUntil = newDeadline
+				if accepted, _, err := m.AcceptAndEnqueue(key, input, now, 0, 0, BatchLimits{}); err == nil || accepted {
+					t.Fatalf("accept persistence failure: accepted=%t err=%v", accepted, err)
+				}
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m := NewManager()
+			if tc.name == "save failure" {
+				m = NewManagerWithStore(t.TempDir())
+			}
+			key := Key{Agent: agent.Claude, ChatID: tc.name}
+			input := Input{ID: "original", WorkDir: "/w", State: InputDebouncing, DebounceUntil: oldDeadline}
+			tc.run(t, m, key, input)
+
+			got, ok := m.Get(key)
+			if !ok || len(got.Queue) != 1 || !got.Queue[0].DebounceUntil.Equal(oldDeadline) {
+				t.Fatalf("live deadline changed: %#v", got.Queue)
+			}
+			want := uint64(0)
+			if tc.name == "save failure" {
+				want = 7
+				if m.lastPersistErr == nil {
+					t.Fatal("save failure did not record persistence error")
+				}
+			}
+			if m.revision != want {
+				t.Fatalf("revision = %d, want %d", m.revision, want)
+			}
+		})
+	}
+}
+
 func TestAcceptMessagePrunesReceiptsLimitsEntriesAndIgnoresEmptyID(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "sessions.json")
 	now := time.Unix(10, 0).UTC()

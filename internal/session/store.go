@@ -143,6 +143,9 @@ func (m *Manager) AcceptAndEnqueue(key Key, input Input, now time.Time, ttl time
 		input.State = InputQueued
 	}
 	s.Queue = append(s.Queue, input)
+	if input.State == InputDebouncing && !input.DebounceUntil.IsZero() {
+		extendCompatibleDebounceTail(s.Queue)
+	}
 	if input.ID != "" && ttl > 0 {
 		receipts = appendReceipt(receipts, Receipt{MessageID: input.ID, ExpiresAt: now.Add(ttl)}, maxReceipts)
 	}
@@ -156,6 +159,23 @@ func (m *Manager) AcceptAndEnqueue(key Key, input Input, now time.Time, ttl time
 		m.receipts = cloneReceipts(receipts)
 	}
 	return true, EnqueueResult{Position: len(s.Queue), Queued: true}, nil
+}
+
+func extendCompatibleDebounceTail(queue []Input) {
+	last := len(queue) - 1
+	newest := queue[last]
+	if newest.Reset {
+		return
+	}
+	for i := last - 1; i >= 0; i-- {
+		preceding := &queue[i]
+		if preceding.State != InputDebouncing || preceding.Reset || !compatibleBatchInput(*preceding, newest) {
+			return
+		}
+		if preceding.DebounceUntil.Before(newest.DebounceUntil) {
+			preceding.DebounceUntil = newest.DebounceUntil
+		}
+	}
 }
 
 func (m *Manager) publishReceiptCandidateLocked(receipts []Receipt) (bool, error) {
