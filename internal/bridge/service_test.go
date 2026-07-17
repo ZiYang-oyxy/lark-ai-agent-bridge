@@ -953,6 +953,115 @@ func TestServiceRecallDuringStartingCancelsBeforeRunnerSpawn(t *testing.T) {
 	if got := len(runner.Calls()); got != 0 {
 		t.Fatalf("runner calls = %d, want 0", got)
 	}
+	events := fake.Events()
+	if last := events[len(events)-1]; last.Type != "stopped" || last.Streaming {
+		t.Fatalf("early-cancel card = %#v, want stopped terminal", last)
+	}
+	waitForSessionNoActiveBatch(t, svc, session.Key{Agent: agent.Claude, ChatID: "chat"})
+}
+
+func TestServiceRecallBeforeInitialCardRendersStopped(t *testing.T) {
+	cfg := testConfig(t)
+	fake := card.NewFakeRenderer()
+	runner := newFakeRunner()
+	svc := NewService(cfg, fake, runner, audit.NewRecorder())
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	svc.afterStoreActiveRunHook = func() { close(entered); <-release }
+	now := time.Now()
+	if err := svc.HandleMessage(context.Background(), Message{ID: "pre-card", ChatID: "chat", Sender: "u", Text: "/new work", Time: now}); err != nil {
+		t.Fatal(err)
+	}
+	drainDone := make(chan error, 1)
+	go func() { drainDone <- svc.DrainReady(now.Add(time.Second)) }()
+	<-entered
+	if err := svc.HandleMessageRecalled(context.Background(), MessageRecall{MessageID: "pre-card", ChatID: "chat"}); err != nil {
+		t.Fatal(err)
+	}
+	close(release)
+	if err := <-drainDone; err != nil {
+		t.Fatal(err)
+	}
+	if got := len(runner.Calls()); got != 0 {
+		t.Fatalf("runner calls = %d, want 0", got)
+	}
+	events := fake.Events()
+	if len(events) < 2 {
+		t.Fatalf("events = %#v", events)
+	}
+	if last := events[len(events)-1]; last.Type != "stopped" || last.Streaming {
+		t.Fatalf("early card = %#v, want stopped", last)
+	}
+	waitForSessionNoActiveBatch(t, svc, session.Key{Agent: agent.Claude, ChatID: "chat"})
+}
+
+func TestServiceShutdownWaitsForFrozenDispatchAndPreventsSpawn(t *testing.T) {
+	cfg := testConfig(t)
+	fake := card.NewFakeRenderer()
+	runner := newFakeRunner()
+	svc := NewService(cfg, fake, runner, audit.NewRecorder())
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	svc.afterStoreActiveRunHook = func() { close(entered); <-release }
+	now := time.Now()
+	if err := svc.HandleMessage(context.Background(), Message{ID: "dispatch", ChatID: "chat", Sender: "u", Text: "/new work", Time: now}); err != nil {
+		t.Fatal(err)
+	}
+	drainDone := make(chan error, 1)
+	go func() { drainDone <- svc.DrainReady(now.Add(time.Second)) }()
+	<-entered
+	shutdownCtx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	shutdownDone := make(chan error, 1)
+	go func() { shutdownDone <- svc.Shutdown(shutdownCtx) }()
+	waitForNotAccepting(t, svc)
+	select {
+	case err := <-shutdownDone:
+		t.Fatalf("shutdown returned while dispatch blocked: %v", err)
+	default:
+	}
+	close(release)
+	if err := <-drainDone; err != nil {
+		t.Fatal(err)
+	}
+	if err := <-shutdownDone; err != nil {
+		t.Fatal(err)
+	}
+	if got := len(runner.Calls()); got != 0 {
+		t.Fatalf("runner calls = %d, want 0", got)
+	}
+	waitForSessionNoActiveBatch(t, svc, session.Key{Agent: agent.Claude, ChatID: "chat"})
+}
+
+func TestServiceShutdownDeadlineCancelsFrozenDispatchBeforeSpawn(t *testing.T) {
+	cfg := testConfig(t)
+	runner := newFakeRunner()
+	svc := NewService(cfg, card.NewFakeRenderer(), runner, audit.NewRecorder())
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	svc.afterStoreActiveRunHook = func() { close(entered); <-release }
+	now := time.Now()
+	if err := svc.HandleMessage(context.Background(), Message{ID: "deadline", ChatID: "chat", Sender: "u", Text: "/new work", Time: now}); err != nil {
+		t.Fatal(err)
+	}
+	drainDone := make(chan error, 1)
+	go func() { drainDone <- svc.DrainReady(now.Add(time.Second)) }()
+	<-entered
+	shutdownCtx, cancel := context.WithCancel(context.Background())
+	shutdownDone := make(chan error, 1)
+	go func() { shutdownDone <- svc.Shutdown(shutdownCtx) }()
+	waitForNotAccepting(t, svc)
+	cancel()
+	close(release)
+	if err := <-drainDone; err != nil {
+		t.Fatal(err)
+	}
+	if err := <-shutdownDone; !errors.Is(err, context.Canceled) {
+		t.Fatalf("shutdown error = %v", err)
+	}
+	if got := len(runner.Calls()); got != 0 {
+		t.Fatalf("runner calls = %d, want 0", got)
+	}
 	waitForSessionNoActiveBatch(t, svc, session.Key{Agent: agent.Claude, ChatID: "chat"})
 }
 
@@ -1022,6 +1131,61 @@ func TestServiceCompletionPersistFailureStillRendersResultAndAudits(t *testing.T
 		}
 	}
 	t.Fatalf("audit events = %#v, want completion_persist_failed", recorder.Events())
+}
+
+func TestServiceRetriesPersistedCompletionBeforeStartingLaterQueue(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, "store")
+	if err := os.Mkdir(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "sessions.json")
+	manager := session.NewManagerWithStore(path)
+	runner := newFakeRunner()
+	runner.block = make(chan struct{})
+	recorder := audit.NewRecorder()
+	svc := NewServiceWithSessions(testConfig(t), card.NewFakeRenderer(), runner, recorder, manager, nil)
+	now := time.Now()
+	if err := svc.HandleMessage(context.Background(), Message{ID: "first", ChatID: "chat", ThreadID: "topic", Sender: "u", Text: "first", Time: now}); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.DrainReady(now.Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	<-runner.started
+	if err := svc.HandleMessage(context.Background(), Message{ID: "later", ChatID: "chat", ThreadID: "topic", Sender: "u", Text: "later", Time: now}); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(dir); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(dir, []byte("not a directory"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	close(runner.block)
+	waitForEvents(t, svc.Cards.(*card.LimitRenderer).Next.(*card.FakeRenderer), 4)
+	if got := len(runner.Calls()); got != 1 {
+		t.Fatalf("runner calls before repair = %d, want 1", got)
+	}
+	if got := len(svc.pendingCompletions); got != 1 {
+		t.Fatalf("pending completions = %d, want 1", got)
+	}
+	if err := os.Remove(dir); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.DrainReady(now.Add(2 * time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	waitForCalls(t, runner, 2)
+	if got := len(svc.pendingCompletions); got != 0 {
+		t.Fatalf("pending completions after retry = %d", got)
+	}
 }
 
 func TestServiceMergesBusyTopicInputsIntoNextBatch(t *testing.T) {
@@ -1297,6 +1461,18 @@ func waitForSessionNoActiveBatch(t *testing.T, svc *Service, key session.Key) {
 		time.Sleep(time.Millisecond)
 	}
 	t.Fatalf("session %s still has an active batch", key.ID())
+}
+
+func waitForNotAccepting(t *testing.T, svc *Service) {
+	t.Helper()
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		if !svc.isAccepting() {
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatal("service remained accepting after Shutdown started")
 }
 
 func containsAll(text string, parts ...string) bool {

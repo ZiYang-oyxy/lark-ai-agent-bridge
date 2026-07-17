@@ -32,14 +32,20 @@ type Service struct {
 	Audit          *audit.Recorder
 	RestoreNotices []session.RecoveryNotice
 
-	mu           sync.Mutex
-	pendingRuns  map[string]pendingRun
-	activeRuns   map[string]activeRun
-	startedAt    time.Time
-	accepting    bool
-	loopsCancel  context.CancelFunc
-	loopsStarted bool
-	runWG        sync.WaitGroup
+	mu                 sync.Mutex
+	pendingRuns        map[string]pendingRun
+	activeRuns         map[string]activeRun
+	pendingCompletions map[string]pendingCompletion
+	startedAt          time.Time
+	accepting          bool
+	loopsCancel        context.CancelFunc
+	loopsStarted       bool
+	dispatchWG         sync.WaitGroup
+	runWG              sync.WaitGroup
+
+	// Test seam: called after an active starting batch is registered and before
+	// the first cancellation check/card render.
+	afterStoreActiveRunHook func()
 }
 
 type AgentRunner interface {
@@ -89,6 +95,12 @@ type activeRun struct {
 	Stream           *agentCardStream
 }
 
+type pendingCompletion struct {
+	Key        session.Key
+	BatchID    string
+	Completion session.BatchCompletion
+}
+
 type ActionRequest struct {
 	SessionID string
 	ActionID  string
@@ -133,16 +145,17 @@ func NewServiceWithSessions(cfg config.Config, renderer card.Renderer, runner Ag
 	}
 	renderer = card.NewLimitRenderer(renderer, cfg.CardMaxChars)
 	return &Service{
-		Config:         cfg,
-		Sessions:       sessions,
-		Cards:          renderer,
-		Runner:         runner,
-		Audit:          recorder,
-		pendingRuns:    map[string]pendingRun{},
-		activeRuns:     map[string]activeRun{},
-		startedAt:      time.Now(),
-		accepting:      true,
-		RestoreNotices: cloneRecoveryNotices(notices),
+		Config:             cfg,
+		Sessions:           sessions,
+		Cards:              renderer,
+		Runner:             runner,
+		Audit:              recorder,
+		pendingRuns:        map[string]pendingRun{},
+		activeRuns:         map[string]activeRun{},
+		pendingCompletions: map[string]pendingCompletion{},
+		startedAt:          time.Now(),
+		accepting:          true,
+		RestoreNotices:     cloneRecoveryNotices(notices),
 	}
 }
 
@@ -285,9 +298,15 @@ func (s *Service) effectiveWorkDir(key session.Key, cmd Command) string {
 
 // DrainReady freezes due queues and starts each independent scope concurrently.
 func (s *Service) DrainReady(now time.Time) error {
-	if !s.isAccepting() {
+	s.mu.Lock()
+	if !s.accepting {
+		s.mu.Unlock()
 		return nil
 	}
+	s.dispatchWG.Add(1)
+	s.mu.Unlock()
+	defer s.dispatchWG.Done()
+	s.retryPendingCompletions()
 	for _, key := range s.Sessions.ReadyKeys(now) {
 		sess, batch, err := s.Sessions.FreezeReadyBatch(key, now, s.batchLimits())
 		if err != nil {
@@ -302,6 +321,7 @@ func (s *Service) DrainReady(now time.Time) error {
 
 func (s *Service) startBatch(parent context.Context, sess session.Session, batch session.Batch) {
 	if !s.isAccepting() {
+		s.finishBatchOrRemember(sess, batch.ID, session.BatchCompletion{Status: session.InputCancelled, At: time.Now()}, "batch_finish_failed")
 		return
 	}
 	if len(batch.Inputs) == 0 {
@@ -316,8 +336,11 @@ func (s *Service) startBatch(parent context.Context, sess session.Session, batch
 	}
 	stream := newAgentCardStream(s, id, sess, anchor)
 	s.storeActiveRun(id, activeRun{BaseSessionID: sess.ID, BatchID: batch.ID, SourceMessageIDs: sources, Key: sess.Key, WorkDir: sess.WorkDir, Cancel: cancel, Stream: stream})
-	if runCtx.Err() != nil {
-		s.finishStartingBatch(sess, batch, id, session.InputCancelled, "cancelled", AgentRunResult{})
+	if s.afterStoreActiveRunHook != nil {
+		s.afterStoreActiveRunHook()
+	}
+	if !s.isAccepting() || runCtx.Err() != nil {
+		s.finishStartingBatch(sess, batch, id, session.InputCancelled, "stopped", AgentRunResult{})
 		return
 	}
 	if err := stream.Start(); err != nil {
@@ -344,10 +367,7 @@ func (s *Service) startBatch(parent context.Context, sess session.Session, batch
 func batchKey(sess session.Session, _ session.Batch) session.Key { return sess.Key }
 
 func (s *Service) finishStartingBatch(sess session.Session, batch session.Batch, id string, status session.InputState, cardStatus string, result AgentRunResult) {
-	updated, err := s.Sessions.FinishBatch(sess.Key, batch.ID, session.BatchCompletion{Status: status, At: time.Now()})
-	if err != nil {
-		s.Audit.Record("system", "batch_finish_failed", sess.ID, err.Error())
-	}
+	updated, _ := s.finishBatchOrRemember(sess, batch.ID, session.BatchCompletion{Status: status, At: time.Now()}, "batch_finish_failed")
 	if run, ok := s.activeRun(id); ok && run.BatchID == batch.ID && run.Stream != nil {
 		_, _ = run.Stream.Finish(cardStatus, metaFromSession(updated), result)
 	}
@@ -360,10 +380,7 @@ func (s *Service) executeBatch(ctx context.Context, sess session.Session, batch 
 	defer func() { s.clearActiveRun(id); _ = s.DrainReady(time.Now()) }()
 	prompt := BuildBatchPrompt(batch.Inputs)
 	if batch.Inputs[0].Reset && strings.TrimSpace(prompt) == "" {
-		updated, err := s.Sessions.FinishBatch(sess.Key, batch.ID, session.BatchCompletion{Status: session.InputCompleted, At: time.Now()})
-		if err != nil {
-			s.Audit.Record("system", "completion_persist_failed", sess.ID, err.Error())
-		}
+		updated, _ := s.finishBatchOrRemember(sess, batch.ID, session.BatchCompletion{Status: session.InputCompleted, At: time.Now()}, "completion_persist_failed")
 		if run, ok := s.activeRun(id); ok && run.BatchID == batch.ID && run.Stream != nil {
 			_, _ = run.Stream.Finish("completed", metaFromSession(updated), AgentRunResult{Segments: []card.Segment{{Kind: card.SegmentText, Text: "Claude session is ready. Send a message in this chat/topic to continue."}}})
 		}
@@ -384,13 +401,48 @@ func (s *Service) executeBatch(ctx context.Context, sess session.Session, batch 
 	if len(result.Segments) == 0 && status == session.InputCompleted {
 		result.Segments = []card.Segment{{Kind: card.SegmentText, Text: "Claude 未返回内容。"}}
 	}
-	updated, finishErr := s.Sessions.FinishBatch(sess.Key, batch.ID, session.BatchCompletion{Status: status, ClaudeSessionID: result.ClaudeSessionID, Model: result.Model, Tokens: result.Tokens, At: time.Now()})
-	if finishErr != nil {
-		s.Audit.Record("system", "completion_persist_failed", sess.ID, finishErr.Error())
-		updated = sess
-	}
+	updated, _ := s.finishBatchOrRemember(sess, batch.ID, session.BatchCompletion{Status: status, ClaudeSessionID: result.ClaudeSessionID, Model: result.Model, Tokens: result.Tokens, At: time.Now()}, "completion_persist_failed")
 	if run, ok := s.activeRun(id); ok && run.BatchID == batch.ID && run.Stream != nil {
 		_, _ = run.Stream.Finish(cardStatus, metaFromSession(updated), result)
+	}
+}
+
+func completionKey(key session.Key, batchID string) string { return key.ID() + "\x00" + batchID }
+
+func (s *Service) finishBatchOrRemember(sess session.Session, batchID string, completion session.BatchCompletion, auditAction string) (session.Session, error) {
+	updated, err := s.Sessions.FinishBatch(sess.Key, batchID, completion)
+	if err == nil {
+		return updated, nil
+	}
+	s.mu.Lock()
+	s.pendingCompletions[completionKey(sess.Key, batchID)] = pendingCompletion{Key: sess.Key, BatchID: batchID, Completion: completion}
+	s.mu.Unlock()
+	s.Audit.Record("system", auditAction, sess.ID, err.Error())
+	return sess, err
+}
+
+// retryPendingCompletions only commits terminal outcomes already produced by a
+// runner. It never renders cards or starts runners, so retries cannot replay.
+func (s *Service) retryPendingCompletions() {
+	s.mu.Lock()
+	pending := make([]pendingCompletion, 0, len(s.pendingCompletions))
+	for _, completion := range s.pendingCompletions {
+		pending = append(pending, completion)
+	}
+	s.mu.Unlock()
+	for _, pendingCompletion := range pending {
+		key := completionKey(pendingCompletion.Key, pendingCompletion.BatchID)
+		if sess, ok := s.Sessions.Get(pendingCompletion.Key); !ok || sess.ActiveBatch == nil || sess.ActiveBatch.ID != pendingCompletion.BatchID {
+			s.mu.Lock()
+			delete(s.pendingCompletions, key)
+			s.mu.Unlock()
+			continue
+		}
+		if _, err := s.Sessions.FinishBatch(pendingCompletion.Key, pendingCompletion.BatchID, pendingCompletion.Completion); err == nil {
+			s.mu.Lock()
+			delete(s.pendingCompletions, key)
+			s.mu.Unlock()
+		}
 	}
 }
 
@@ -538,14 +590,28 @@ func (s *Service) Shutdown(ctx context.Context) error {
 		s.loopsCancel = nil
 	}
 	s.mu.Unlock()
+	if err := waitGroupContext(ctx, &s.dispatchWG); err != nil {
+		s.cancelAllActiveRuns()
+		_ = waitGroupContext(context.Background(), &s.dispatchWG)
+		_ = waitGroupContext(context.Background(), &s.runWG)
+		return err
+	}
+	if err := waitGroupContext(ctx, &s.runWG); err != nil {
+		s.cancelAllActiveRuns()
+		_ = waitGroupContext(context.Background(), &s.runWG)
+		return err
+	}
+	s.retryPendingCompletions()
+	return nil
+}
+
+func waitGroupContext(ctx context.Context, wg *sync.WaitGroup) error {
 	done := make(chan struct{})
-	go func() { s.runWG.Wait(); close(done) }()
+	go func() { wg.Wait(); close(done) }()
 	select {
 	case <-done:
 		return nil
 	case <-ctx.Done():
-		s.cancelAllActiveRuns()
-		<-done
 		return ctx.Err()
 	}
 }
