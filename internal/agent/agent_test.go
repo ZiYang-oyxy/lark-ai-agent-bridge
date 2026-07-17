@@ -11,7 +11,7 @@ func TestBuildClaudeOneShotCommand(t *testing.T) {
 		t.Fatalf("one-shot command error: %v", err)
 	}
 	got := strings.Join(cmd, " ")
-	want := "claude -p --output-format stream-json --verbose --dangerously-skip-permissions hello"
+	want := "claude -p --output-format stream-json --verbose --dangerously-skip-permissions --effort low hello"
 	if got != want {
 		t.Fatalf("one-shot command = %q, want %q", got, want)
 	}
@@ -23,7 +23,7 @@ func TestBuildClaudeOneShotCommandResumesInternalSession(t *testing.T) {
 		t.Fatalf("one-shot command error: %v", err)
 	}
 	got := strings.Join(cmd, " ")
-	want := "claude -p --output-format stream-json --verbose --dangerously-skip-permissions --resume sess-123 next"
+	want := "claude -p --output-format stream-json --verbose --dangerously-skip-permissions --effort low --resume sess-123 next"
 	if got != want {
 		t.Fatalf("one-shot command = %q, want %q", got, want)
 	}

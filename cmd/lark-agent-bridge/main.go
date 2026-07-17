@@ -229,6 +229,14 @@ func runServe(args []string) error {
 			}
 			return &feishu.CardActionResponse{Card: result.BuildCard(cfg.CardMaxChars)}, nil
 		},
+		MessageRecalledHandler: func(ctx context.Context, recall feishu.RecalledMessage) error {
+			return svc.HandleMessageRecalled(ctx, bridge.MessageRecall{
+				MessageID:  recall.MessageID,
+				ChatID:     recall.ChatID,
+				RecallType: recall.RecallType,
+				Time:       recall.OccurredAt,
+			})
+		},
 	})
 	defer func() {
 		_ = svc.Cleanup(context.Background())

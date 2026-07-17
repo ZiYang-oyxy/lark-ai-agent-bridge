@@ -43,7 +43,7 @@ func buildClaudeOneShotCommand(cfg OneShotConfig) ([]string, error) {
 	if prompt == "" {
 		return nil, fmt.Errorf("claude prompt is empty")
 	}
-	args := []string{"claude", "-p", "--output-format", "stream-json", "--verbose", "--dangerously-skip-permissions"}
+	args := []string{"claude", "-p", "--output-format", "stream-json", "--verbose", "--dangerously-skip-permissions", "--effort", "low"}
 	if sessionID := strings.TrimSpace(cfg.ClaudeSessionID); sessionID != "" {
 		args = append(args, "--resume", sessionID)
 	}

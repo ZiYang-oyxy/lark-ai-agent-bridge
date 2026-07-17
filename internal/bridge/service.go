@@ -73,11 +73,12 @@ type pendingRun struct {
 }
 
 type activeRun struct {
-	BaseSessionID string
-	Key           session.Key
-	WorkDir       string
-	Cancel        context.CancelFunc
-	Stream        *agentCardStream
+	BaseSessionID   string
+	SourceMessageID string
+	Key             session.Key
+	WorkDir         string
+	Cancel          context.CancelFunc
+	Stream          *agentCardStream
 }
 
 type ActionRequest struct {
@@ -146,6 +147,34 @@ func (s *Service) HandleMessage(ctx context.Context, msg Message) error {
 	}
 }
 
+func (s *Service) HandleMessageRecalled(_ context.Context, recall MessageRecall) error {
+	if recall.MessageID == "" {
+		return nil
+	}
+	if pending, ok := s.popPendingRunByMessageID(recall.MessageID); ok {
+		s.Audit.Record("system", "message_recalled_pending_cancelled", pending.SessionID, recall.MessageID)
+		_, err := s.renderActionEvent(workDirActionEvent("workdir_cancelled", pending.SessionID, pending.WorkDir))
+		return err
+	}
+	if run, ok := s.cancelActiveRunByMessageID(recall.MessageID); ok {
+		updated := s.Sessions.Stop(run.Key, run.WorkDir)
+		s.Audit.Record("system", "message_recalled_active_cancelled", run.BaseSessionID, recall.MessageID)
+		if run.Stream != nil {
+			_, err := run.Stream.Finish("stopped", metaFromSession(updated), AgentRunResult{
+				Segments: []card.Segment{{Kind: card.SegmentText, Text: "原始消息已撤回，已停止本轮执行。"}},
+			})
+			return err
+		}
+		return nil
+	}
+	if sess, input, ok := s.Sessions.RemoveQueuedInputByMessageID(recall.MessageID); ok {
+		s.Audit.Record("system", "message_recalled_queued_cancelled", sess.ID, input.Text)
+		return s.Cards.Render(card.Event{Type: "reaction", SessionID: runID(sess.ID, recall.MessageID), Message: "cancelled"})
+	}
+	s.Audit.Record("system", "message_recalled_ignored", recall.ChatID, recall.MessageID)
+	return nil
+}
+
 func (s *Service) run(ctx context.Context, cmd Command, msg Message) error {
 	return s.runWithCardSessionID(ctx, cmd, msg, "")
 }
@@ -158,10 +187,7 @@ func (s *Service) runWithCardSessionID(ctx context.Context, cmd Command, msg Mes
 		return s.renderText("unsupported-agent", msg.ID, card.SegmentError, "当前 bridge 只适配 claude。")
 	}
 	key := s.sessionKey(cmd.Agent, msg)
-	workDir := s.Config.DefaultWorkDir
-	if cmd.WorkDir != "" {
-		workDir = cmd.WorkDir
-	}
+	workDir := s.effectiveWorkDir(key, cmd)
 	pendingID := runID(key.ID(), msg.ID)
 	asked, err := s.ensureWorkDirOrAsk(workDir, pendingID, msg.ID)
 	if err != nil {
@@ -200,6 +226,16 @@ func (s *Service) runWithCardSessionID(ctx context.Context, cmd Command, msg Mes
 	return nil
 }
 
+func (s *Service) effectiveWorkDir(key session.Key, cmd Command) string {
+	if cmd.WorkDir != "" {
+		return cmd.WorkDir
+	}
+	if existing, ok := s.Sessions.Get(key); ok && existing.WorkDir != "" {
+		return existing.WorkDir
+	}
+	return s.Config.DefaultWorkDir
+}
+
 func (s *Service) startRun(ctx context.Context, sess session.Session, input session.Input) {
 	if input.Time.IsZero() {
 		input.Time = time.Now()
@@ -207,9 +243,15 @@ func (s *Service) startRun(ctx context.Context, sess session.Session, input sess
 	id := runCardSessionID(sess.ID, input)
 	runCtx, cancel := context.WithCancel(ctx)
 	stream := newAgentCardStream(s, id, sess, input)
-	s.storeActiveRun(id, activeRun{BaseSessionID: sess.ID, Key: sess.Key, WorkDir: sess.WorkDir, Cancel: cancel, Stream: stream})
+	s.storeActiveRun(id, activeRun{BaseSessionID: sess.ID, SourceMessageID: input.ReplyToMessageID, Key: sess.Key, WorkDir: sess.WorkDir, Cancel: cancel, Stream: stream})
 	s.Audit.Record(input.Sender, "run_input", sess.ID, input.Text)
-	_ = stream.Start()
+	if err := stream.Start(); err != nil {
+		cancel()
+		s.clearActiveRun(id)
+		updated := s.Sessions.MarkCrashed(sess.Key, sess.WorkDir)
+		s.Audit.Record("system", "card_render_failed", updated.ID, err.Error())
+		return
+	}
 	go s.executeRun(runCtx, sess, input)
 }
 
@@ -440,6 +482,23 @@ func (s *Service) cancelActiveRun(id string) (activeRun, bool) {
 	return run, ok
 }
 
+func (s *Service) cancelActiveRunByMessageID(messageID string) (activeRun, bool) {
+	if messageID == "" {
+		return activeRun{}, false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for id, run := range s.activeRuns {
+		if run.SourceMessageID != messageID {
+			continue
+		}
+		run.Cancel()
+		delete(s.activeRuns, id)
+		return run, true
+	}
+	return activeRun{}, false
+}
+
 func (s *Service) storePendingRun(sessionID string, pending pendingRun) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -458,6 +517,22 @@ func (s *Service) popPendingRun(sessionID string) (pendingRun, bool) {
 		delete(s.pendingRuns, sessionID)
 	}
 	return pending, ok
+}
+
+func (s *Service) popPendingRunByMessageID(messageID string) (pendingRun, bool) {
+	if messageID == "" {
+		return pendingRun{}, false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for sessionID, pending := range s.pendingRuns {
+		if pending.Message.ID != messageID {
+			continue
+		}
+		delete(s.pendingRuns, sessionID)
+		return pending, true
+	}
+	return pendingRun{}, false
 }
 
 func (s *Service) duePendingRuns(now time.Time) []pendingRun {

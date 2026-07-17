@@ -32,6 +32,7 @@ func TestLoadFromEnvParsesRuntimeTuning(t *testing.T) {
 
 func TestLoadFromEnvDefaultsAuditLogUnderWorkdir(t *testing.T) {
 	t.Setenv("E2E_DEFAULT_WORKDIR", "/tmp/lab-work")
+	t.Setenv("E2E_AUDIT_LOG", "")
 	cfg := LoadFromEnv()
 	want := filepath.Join("/tmp/lab-work", ".lark-agent-bridge", "audit.jsonl")
 	if cfg.AuditLogPath != want {

@@ -71,7 +71,39 @@ func BuildInboundMessageFromLark(event *larkim.P2MessageReceiveV1, botOpenID str
 	}
 }
 
+func BuildRecalledMessageFromLark(event *larkim.P2MessageRecalledV1) RecalledMessage {
+	if event == nil {
+		return RecalledMessage{}
+	}
+	var appID string
+	if event.EventV2Base != nil && event.EventV2Base.Header != nil {
+		appID = event.EventV2Base.Header.AppID
+	}
+	var messageID, chatID, recallTime, recallType string
+	if event.Event != nil {
+		messageID = stringValue(event.Event.MessageId)
+		chatID = stringValue(event.Event.ChatId)
+		recallTime = stringValue(event.Event.RecallTime)
+		recallType = stringValue(event.Event.RecallType)
+	}
+	return RecalledMessage{
+		AppID:      appID,
+		ChatID:     chatID,
+		MessageID:  messageID,
+		RecallTime: recallTime,
+		RecallType: recallType,
+		OccurredAt: parseCreateTime(recallTime, recalledEventHeader(event)),
+	}
+}
+
 func eventHeader(event *larkim.P2MessageReceiveV1) *larkevent.EventHeader {
+	if event == nil || event.EventV2Base == nil {
+		return nil
+	}
+	return event.EventV2Base.Header
+}
+
+func recalledEventHeader(event *larkim.P2MessageRecalledV1) *larkevent.EventHeader {
 	if event == nil || event.EventV2Base == nil {
 		return nil
 	}

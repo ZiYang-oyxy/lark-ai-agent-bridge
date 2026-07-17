@@ -60,6 +60,23 @@ func (r *fakeRunner) Run(ctx context.Context, req AgentRunRequest) (AgentRunResu
 	return AgentRunResult{Segments: []card.Segment{{Kind: card.SegmentText, Text: "ok"}}}, nil
 }
 
+type failOnceRenderer struct {
+	mu     sync.Mutex
+	failed bool
+	next   *card.FakeRenderer
+}
+
+func (r *failOnceRenderer) Render(e card.Event) error {
+	r.mu.Lock()
+	if !r.failed {
+		r.failed = true
+		r.mu.Unlock()
+		return errors.New("reply message revoked")
+	}
+	r.mu.Unlock()
+	return r.next.Render(e)
+}
+
 func (r *fakeRunner) Calls() []AgentRunRequest {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -107,6 +124,47 @@ func TestServiceNewRunsClaudeOneShotAndRendersResult(t *testing.T) {
 	status := svc.statusText(agent.Claude, Message{ChatID: "chat"})
 	if !containsAll(status, "claude_session=sess-1", "state=idle") {
 		t.Fatalf("status = %q, want stored claude session", status)
+	}
+}
+
+func TestInitialCardRenderFailureDoesNotStartRunnerOrLeakActiveRun(t *testing.T) {
+	cfg := testConfig(t)
+	fake := card.NewFakeRenderer()
+	renderer := &failOnceRenderer{next: fake}
+	runner := newFakeRunner()
+	recorder := audit.NewRecorder()
+	svc := NewService(cfg, renderer, runner, recorder)
+	if err := svc.HandleMessage(context.Background(), Message{ID: "msg-1", ChatID: "chat", Sender: "u1", Text: "/new first", Time: time.Now()}); err != nil {
+		t.Fatalf("first message error: %v", err)
+	}
+	if len(runner.Calls()) != 0 {
+		t.Fatalf("runner calls after failed card render = %#v, want none", runner.Calls())
+	}
+	status := svc.statusText(agent.Claude, Message{ChatID: "chat"})
+	if !containsAll(status, "state=crashed", "queue=0") {
+		t.Fatalf("status after failed card render = %q, want crashed with empty queue", status)
+	}
+	foundAudit := false
+	for _, event := range recorder.Events() {
+		if event.Action == "card_render_failed" && strings.Contains(event.Detail, "reply message revoked") {
+			foundAudit = true
+			break
+		}
+	}
+	if !foundAudit {
+		t.Fatalf("audit events = %#v, want card_render_failed", recorder.Events())
+	}
+	if err := svc.HandleMessage(context.Background(), Message{ID: "msg-2", ChatID: "chat", Sender: "u1", Text: "/new second", Time: time.Now()}); err != nil {
+		t.Fatalf("second message error: %v", err)
+	}
+	waitForCalls(t, runner, 1)
+	if got := runner.Calls()[0].Prompt; got != "second" {
+		t.Fatalf("runner prompt = %q, want second", got)
+	}
+	for _, event := range fake.Events() {
+		if event.Type == "reaction" && event.Message == "queued" {
+			t.Fatalf("second message was queued after failed card render: %#v", event)
+		}
 	}
 }
 
@@ -164,6 +222,38 @@ func TestServiceNewWithoutPromptCreatesReadySession(t *testing.T) {
 	events := renderer.Events()
 	if len(events) != 1 || events[0].Type != "status" {
 		t.Fatalf("events = %#v, want status ready card", events)
+	}
+}
+
+func TestPlainTextAfterReadySessionKeepsWorkDir(t *testing.T) {
+	cfg := testConfig(t)
+	renderer := card.NewFakeRenderer()
+	runner := newFakeRunner()
+	svc := NewService(cfg, renderer, runner, audit.NewRecorder())
+	workDir := t.TempDir()
+	if err := svc.HandleMessage(context.Background(), Message{ID: "msg-1", ChatID: "chat", Sender: "u1", Text: "/new --workdir " + workDir, Time: time.Now()}); err != nil {
+		t.Fatalf("ready message error: %v", err)
+	}
+	waitForEvents(t, renderer, 1)
+	if len(runner.Calls()) != 0 {
+		t.Fatalf("runner calls = %#v, want none for ready session", runner.Calls())
+	}
+	if err := svc.HandleMessage(context.Background(), Message{ID: "msg-2", ChatID: "chat", Sender: "u1", Text: "show pwd", Time: time.Now()}); err != nil {
+		t.Fatalf("plain message error: %v", err)
+	}
+	waitForCalls(t, runner, 1)
+	calls := runner.Calls()
+	if calls[0].WorkDir != workDir {
+		t.Fatalf("runner workdir = %q, want %q", calls[0].WorkDir, workDir)
+	}
+	if calls[0].ClaudeSessionID != "" {
+		t.Fatalf("plain top-level message should start a fresh Claude session, got %q", calls[0].ClaudeSessionID)
+	}
+	waitForEvents(t, renderer, 3)
+	events := renderer.Events()
+	last := events[len(events)-1]
+	if last.Meta.WorkDir != workDir {
+		t.Fatalf("result workdir = %q, want %q", last.Meta.WorkDir, workDir)
 	}
 }
 
@@ -312,6 +402,42 @@ func TestServiceMissingWorkdirAsksThenRunsAfterCreate(t *testing.T) {
 	}
 }
 
+func TestPlainTextAfterCreatedWorkDirKeepsWorkDir(t *testing.T) {
+	root := t.TempDir()
+	missing := filepath.Join(root, "missing")
+	cfg := config.Config{DefaultAgent: "claude", DefaultWorkDir: root, CardMaxChars: 1000, InteractionTimeout: time.Second}
+	renderer := card.NewFakeRenderer()
+	runner := newFakeRunner()
+	svc := NewService(cfg, renderer, runner, audit.NewRecorder())
+	if err := svc.HandleMessage(context.Background(), Message{ID: "msg-1", ChatID: "chat", Sender: "u1", Text: "/new --workdir " + missing, Time: time.Now()}); err != nil {
+		t.Fatalf("handle missing workdir error: %v", err)
+	}
+	events := renderer.Events()
+	if len(events) != 1 || events[0].Type != "workdir_confirm" {
+		t.Fatalf("events = %#v, want workdir confirm", events)
+	}
+	if err := svc.HandleAction(context.Background(), ActionRequest{SessionID: events[0].SessionID, ActionID: "create_workdir", Actor: "u1"}); err != nil {
+		t.Fatalf("create action error: %v", err)
+	}
+	waitForEvents(t, renderer, 3)
+	if len(runner.Calls()) != 0 {
+		t.Fatalf("runner calls = %#v, want none for empty ready session", runner.Calls())
+	}
+	if err := svc.HandleMessage(context.Background(), Message{ID: "msg-2", ChatID: "chat", Sender: "u1", Text: "show pwd", Time: time.Now()}); err != nil {
+		t.Fatalf("plain message error: %v", err)
+	}
+	waitForCalls(t, runner, 1)
+	if got := runner.Calls()[0].WorkDir; got != missing {
+		t.Fatalf("runner workdir = %q, want %q", got, missing)
+	}
+	waitForEvents(t, renderer, 5)
+	events = renderer.Events()
+	last := events[len(events)-1]
+	if last.Meta.WorkDir != missing {
+		t.Fatalf("result workdir = %q, want %q", last.Meta.WorkDir, missing)
+	}
+}
+
 func TestWorkdirCancelDoesNotRun(t *testing.T) {
 	root := t.TempDir()
 	missing := filepath.Join(root, "missing")
@@ -426,6 +552,133 @@ func TestServiceStopCancelsActiveOneShotRun(t *testing.T) {
 	last := events[len(events)-1]
 	if last.Type != "stopped" || !last.StopButton.Disabled || last.HeaderTemplate != "grey" {
 		t.Fatalf("stop event = %#v", last)
+	}
+}
+
+func TestMessageRecallCancelsActiveRun(t *testing.T) {
+	cfg := testConfig(t)
+	renderer := card.NewFakeRenderer()
+	runner := newFakeRunner()
+	runner.block = make(chan struct{})
+	recorder := audit.NewRecorder()
+	svc := NewService(cfg, renderer, runner, recorder)
+	if err := svc.HandleMessage(context.Background(), Message{ID: "msg-1", ChatID: "chat", Sender: "u1", Text: "/new long", Time: time.Now()}); err != nil {
+		t.Fatalf("handle message error: %v", err)
+	}
+	<-runner.started
+	if err := svc.HandleMessageRecalled(context.Background(), MessageRecall{MessageID: "msg-1", ChatID: "chat", RecallType: "user"}); err != nil {
+		t.Fatalf("recall message error: %v", err)
+	}
+	waitForEvents(t, renderer, 2)
+	last := renderer.Events()[len(renderer.Events())-1]
+	if last.Type != "stopped" || !last.StopButton.Disabled || last.HeaderTemplate != "grey" {
+		t.Fatalf("recall stopped event = %#v", last)
+	}
+	if !containsAll(last.Segments[0].Text, "原始消息已撤回") {
+		t.Fatalf("recall stopped segments = %#v", last.Segments)
+	}
+	status := svc.statusText(agent.Claude, Message{ChatID: "chat"})
+	if !containsAll(status, "state=stopped", "queue=0") {
+		t.Fatalf("status after recall = %q, want stopped with empty queue", status)
+	}
+	foundAudit := false
+	for _, event := range recorder.Events() {
+		if event.Action == "message_recalled_active_cancelled" && event.Detail == "msg-1" {
+			foundAudit = true
+			break
+		}
+	}
+	if !foundAudit {
+		t.Fatalf("audit events = %#v, want message_recalled_active_cancelled", recorder.Events())
+	}
+	if err := svc.HandleMessage(context.Background(), Message{ID: "msg-2", ChatID: "chat", Sender: "u1", Text: "/new second", Time: time.Now()}); err != nil {
+		t.Fatalf("second message error: %v", err)
+	}
+	waitForCalls(t, runner, 2)
+	if got := runner.Calls()[1].Prompt; got != "second" {
+		t.Fatalf("second prompt = %q, want second", got)
+	}
+}
+
+func TestMessageRecallCancelsPendingWorkdirConfirmation(t *testing.T) {
+	root := t.TempDir()
+	missing := filepath.Join(root, "missing")
+	cfg := config.Config{DefaultAgent: "claude", DefaultWorkDir: root, CardMaxChars: 1000, InteractionTimeout: time.Second}
+	renderer := card.NewFakeRenderer()
+	runner := newFakeRunner()
+	recorder := audit.NewRecorder()
+	svc := NewService(cfg, renderer, runner, recorder)
+	if err := svc.HandleMessage(context.Background(), Message{ID: "msg-1", ChatID: "chat", Sender: "u1", Text: "/new --workdir " + missing + " hello", Time: time.Now()}); err != nil {
+		t.Fatalf("handle message error: %v", err)
+	}
+	if err := svc.HandleMessageRecalled(context.Background(), MessageRecall{MessageID: "msg-1", ChatID: "chat", RecallType: "user"}); err != nil {
+		t.Fatalf("recall message error: %v", err)
+	}
+	events := renderer.Events()
+	if len(events) != 2 {
+		t.Fatalf("events = %#v, want confirm and cancelled", events)
+	}
+	last := events[len(events)-1]
+	if last.Type != "workdir_cancelled" || last.SessionID != "claude:chat:message:msg-1" {
+		t.Fatalf("last event = %#v, want workdir_cancelled", last)
+	}
+	if len(last.Actions) != 2 || !last.Actions[0].Disabled || !last.Actions[1].Disabled {
+		t.Fatalf("cancelled actions = %#v, want disabled", last.Actions)
+	}
+	if _, err := os.Stat(missing); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("missing dir stat = %v, want not exist", err)
+	}
+	if len(runner.Calls()) != 0 {
+		t.Fatalf("runner calls = %#v, want none", runner.Calls())
+	}
+	foundAudit := false
+	for _, event := range recorder.Events() {
+		if event.Action == "message_recalled_pending_cancelled" && event.Detail == "msg-1" {
+			foundAudit = true
+			break
+		}
+	}
+	if !foundAudit {
+		t.Fatalf("audit events = %#v, want message_recalled_pending_cancelled", recorder.Events())
+	}
+}
+
+func TestMessageRecallRemovesQueuedInput(t *testing.T) {
+	cfg := testConfig(t)
+	renderer := card.NewFakeRenderer()
+	runner := newFakeRunner()
+	runner.block = make(chan struct{})
+	recorder := audit.NewRecorder()
+	svc := NewService(cfg, renderer, runner, recorder)
+	if err := svc.HandleMessage(context.Background(), Message{ID: "msg-1", ChatID: "chat", ThreadID: "topic-a", Sender: "u1", Text: "/new first", Time: time.Now()}); err != nil {
+		t.Fatalf("first message error: %v", err)
+	}
+	<-runner.started
+	if err := svc.HandleMessage(context.Background(), Message{ID: "msg-2", ChatID: "chat", ThreadID: "topic-a", Sender: "u1", Text: "second", Time: time.Now()}); err != nil {
+		t.Fatalf("second message error: %v", err)
+	}
+	if err := svc.HandleMessageRecalled(context.Background(), MessageRecall{MessageID: "msg-2", ChatID: "chat", RecallType: "user"}); err != nil {
+		t.Fatalf("recall message error: %v", err)
+	}
+	close(runner.block)
+	waitForEvents(t, renderer, 4)
+	time.Sleep(50 * time.Millisecond)
+	if len(runner.Calls()) != 1 {
+		t.Fatalf("runner calls = %#v, want only first call", runner.Calls())
+	}
+	status := svc.statusText(agent.Claude, Message{ChatID: "chat", ThreadID: "topic-a"})
+	if !containsAll(status, "state=idle", "queue=0") {
+		t.Fatalf("status after queued recall = %q, want idle with empty queue", status)
+	}
+	foundAudit := false
+	for _, event := range recorder.Events() {
+		if event.Action == "message_recalled_queued_cancelled" && event.Detail == "second" {
+			foundAudit = true
+			break
+		}
+	}
+	if !foundAudit {
+		t.Fatalf("audit events = %#v, want message_recalled_queued_cancelled", recorder.Events())
 	}
 }
 

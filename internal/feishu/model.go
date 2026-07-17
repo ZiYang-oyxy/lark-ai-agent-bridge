@@ -34,6 +34,15 @@ type InboundMessage struct {
 	OccurredAt  time.Time
 }
 
+type RecalledMessage struct {
+	AppID      string
+	ChatID     string
+	MessageID  string
+	RecallTime string
+	RecallType string
+	OccurredAt time.Time
+}
+
 type Event struct {
 	Kind        EventKind
 	AppID       string
