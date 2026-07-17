@@ -257,6 +257,55 @@ func TestFreezeReadyBatchDoesNotPromoteWhileBatchIsActive(t *testing.T) {
 	}
 }
 
+func TestFreezeReadyBatchUsesUniqueIDsToRejectLateCompletionAtSameTime(t *testing.T) {
+	m := NewManager()
+	key := Key{Agent: agent.Claude, ChatID: "same-time"}
+	now := time.Unix(100, 0)
+	if _, _, err := m.EnqueueDurable(key, Input{ID: "a", Text: "first", State: InputQueued, Time: now}, "/w", BatchLimits{}); err != nil {
+		t.Fatal(err)
+	}
+	_, first, err := m.FreezeReadyBatch(key, now, BatchLimits{})
+	if err != nil || first == nil {
+		t.Fatalf("freeze first batch=%#v err=%v", first, err)
+	}
+	if _, _, err := m.MarkBatchRunning(key, first.ID, nil, now); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := m.EnqueueDurable(key, Input{ID: "b", Text: "second", State: InputQueued, Time: now}, "/w", BatchLimits{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.FinishBatch(key, first.ID, BatchCompletion{Status: InputCompleted, ClaudeSessionID: "session-a", Model: "model-a", Tokens: 5, At: now}); err != nil {
+		t.Fatal(err)
+	}
+
+	_, second, err := m.FreezeReadyBatch(key, now, BatchLimits{})
+	if err != nil || second == nil {
+		t.Fatalf("freeze second batch=%#v err=%v", second, err)
+	}
+	if second.ID == first.ID {
+		t.Fatalf("batch IDs collided at same time: %q", first.ID)
+	}
+	if _, _, err := m.MarkBatchRunning(key, second.ID, nil, now); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := m.EnqueueDurable(key, Input{ID: "later", Text: "third", State: InputQueued, Time: now}, "/w", BatchLimits{}); err != nil {
+		t.Fatal(err)
+	}
+	before, ok := m.Get(key)
+	if !ok {
+		t.Fatal("missing session before late completion")
+	}
+	revision := m.revision
+
+	if _, err := m.FinishBatch(key, first.ID, BatchCompletion{Status: InputCompleted, ClaudeSessionID: "stale", Model: "stale", Tokens: 99, At: now.Add(time.Second)}); err == nil || !strings.Contains(err.Error(), "mismatch") {
+		t.Fatalf("late completion error = %v, want batch mismatch", err)
+	}
+	after, ok := m.Get(key)
+	if !ok || after.ActiveBatch == nil || after.ActiveBatch.ID != second.ID || after.State != StateRunning || len(after.Queue) != 1 || after.Queue[0].ID != "later" || after.ClaudeSessionID != before.ClaudeSessionID || after.Model != before.Model || after.Tokens != before.Tokens || after.LastActive != before.LastActive || m.revision != revision {
+		t.Fatalf("late completion changed new batch: before=%#v after=%#v revision=%d want=%d", before, after, m.revision, revision)
+	}
+}
+
 func TestEnqueueDurableRejectsFullQueueWithoutMutation(t *testing.T) {
 	m := NewManager()
 	key := Key{Agent: agent.Claude, ChatID: "chat"}

@@ -123,6 +123,7 @@ type Manager struct {
 	sessions       map[string]*Session
 	storePath      string
 	revision       uint64
+	batchSeq       uint64
 	lastPersistErr error
 	receipts       []Receipt
 }
@@ -330,8 +331,9 @@ func (m *Manager) FreezeReadyBatch(key Key, now time.Time, limits BatchLimits) (
 		inputs[i].State = InputStarting
 	}
 	s.Queue = append([]Input(nil), s.Queue[count:]...)
+	m.batchSeq++
 	s.ActiveBatch = &Batch{
-		ID:        fmt.Sprintf("%s:%d", s.ID, now.UnixNano()),
+		ID:        fmt.Sprintf("%s:%d:%d", s.ID, now.UnixNano(), m.batchSeq),
 		Inputs:    cloneInputs(inputs),
 		State:     InputStarting,
 		CreatedAt: now,
