@@ -22,11 +22,15 @@ type Segment struct {
 }
 
 type Meta struct {
-	Agent   string
-	Model   string
-	Tokens  int
-	WorkDir string
-	Status  string
+	Agent       string
+	Model       string
+	Tokens      int
+	RunTokens   int
+	TotalTokens int
+	User        string
+	IP          string
+	WorkDir     string
+	Status      string
 }
 
 type StopButton struct {
@@ -50,6 +54,12 @@ type Event struct {
 	StopButton       StopButton
 	Actions          []Action
 	Message          string
+	HeaderTitle      string
+	HeaderTemplate   string
+	Streaming        bool
+	Activity         string
+	ThoughtExpanded  bool
+	ToolsExpanded    bool
 }
 
 func WorkDirCreateActions(path string) []Action {

@@ -2,6 +2,7 @@ package feishu
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"lark-agent-bridge/internal/card"
@@ -124,14 +125,14 @@ func TestCardKitRouterRendererRecordsRenderAudit(t *testing.T) {
 	observer := &fakeCardKitObserver{}
 	router := NewCardKitRouterRendererWithObserver(client, observer)
 	first := card.Event{Type: "stream", SessionID: "claude:chat", ReplyToMessageID: "message-1", Segments: []card.Segment{{Kind: card.SegmentText, Text: "hello"}}}
-	second := card.Event{Type: "stop_button", SessionID: "claude:chat", StopButton: card.StopButton{Visible: true, Disabled: true}}
+	second := card.Event{Type: "stopped", SessionID: "claude:chat", StopButton: card.StopButton{Visible: true, Disabled: true}, HeaderTemplate: "grey"}
 	if err := router.Render(first); err != nil {
 		t.Fatalf("first render error: %v", err)
 	}
 	if err := router.Render(second); err != nil {
 		t.Fatalf("second render error: %v", err)
 	}
-	wantActions := []string{"cardkit_create", "cardkit_reply", "cardkit_update", "cardkit_update", "cardkit_terminal_create", "cardkit_terminal_reply"}
+	wantActions := []string{"cardkit_create", "cardkit_reply", "cardkit_update"}
 	if len(observer.actions) != len(wantActions) {
 		t.Fatalf("observer actions = %#v, want %#v", observer.actions, wantActions)
 	}
@@ -143,28 +144,40 @@ func TestCardKitRouterRendererRecordsRenderAudit(t *testing.T) {
 	if observer.details[0] == "" || observer.details[2] == "" {
 		t.Fatalf("observer details missing: %#v", observer.details)
 	}
-	if client.created != 2 || client.replied != 2 || client.updated != 2 {
-		t.Fatalf("created/replied/updated = %d/%d/%d, want 2/2/2", client.created, client.replied, client.updated)
+	if !containsAll(observer.details[2], "event=stopped", "template=grey", "stop_visible=true", "stop_disabled=true") {
+		t.Fatalf("stopped detail = %q", observer.details[2])
+	}
+	if client.created != 1 || client.replied != 1 || client.updated != 1 {
+		t.Fatalf("created/replied/updated = %d/%d/%d, want 1/1/1", client.created, client.replied, client.updated)
 	}
 }
 
-func TestCardKitRendererSendsStopTerminalCardOnce(t *testing.T) {
+func TestCardKitRendererUpdatesStoppedCardInPlace(t *testing.T) {
 	client := &fakeCardKitClient{}
 	renderer := NewCardKitRenderer(client, "message-1")
 	if err := renderer.Render(card.Event{Type: "stream", SessionID: "claude:chat"}); err != nil {
 		t.Fatalf("first render error: %v", err)
 	}
-	stop := card.Event{Type: "stop_button", SessionID: "claude:chat", StopButton: card.StopButton{Visible: true, Disabled: true}}
+	stop := card.Event{Type: "stopped", SessionID: "claude:chat", StopButton: card.StopButton{Visible: true, Disabled: true}, HeaderTemplate: "grey"}
 	if err := renderer.Render(stop); err != nil {
 		t.Fatalf("stop render error: %v", err)
 	}
 	if err := renderer.Render(stop); err != nil {
 		t.Fatalf("second stop render error: %v", err)
 	}
-	if client.created != 2 || client.replied != 2 {
-		t.Fatalf("created/replied = %d/%d, want one initial card and one terminal card", client.created, client.replied)
+	if client.created != 1 || client.replied != 1 {
+		t.Fatalf("created/replied = %d/%d, want one initial card only", client.created, client.replied)
 	}
-	if client.updated != 4 {
-		t.Fatalf("updated = %d, want two updates per stop render", client.updated)
+	if client.updated != 2 {
+		t.Fatalf("updated = %d, want one update per stopped render", client.updated)
 	}
+}
+
+func containsAll(text string, parts ...string) bool {
+	for _, part := range parts {
+		if !strings.Contains(text, part) {
+			return false
+		}
+	}
+	return true
 }

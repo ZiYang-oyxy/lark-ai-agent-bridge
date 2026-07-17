@@ -16,10 +16,10 @@ func BuildLarkCard(e Event) map[string]any {
 	}
 	if shouldShowAgentPanels(e, thought, tools) {
 		elements = append(elements,
-			collapsiblePanelElement("panel_thought", panelTitle("思考推理", thought), false, []map[string]any{
-				markdownElement("thought", defaultPanelText(thought, "暂无思考推理内容。")),
+			collapsiblePanelElement("panel_thought", thoughtPanelTitle(e, thought), e.ThoughtExpanded, []map[string]any{
+				markdownElement("thought", defaultPanelText(thought, "等待模型输出思考或推理内容。")),
 			}),
-			collapsiblePanelElement("panel_tools", panelTitle("工具调用", tools), false, []map[string]any{
+			collapsiblePanelElement("panel_tools", toolsPanelTitle(e, tools), e.ToolsExpanded, []map[string]any{
 				markdownElement("tools", defaultPanelText(tools, "暂无工具调用。")),
 			}),
 		)
@@ -28,23 +28,18 @@ func BuildLarkCard(e Event) map[string]any {
 	for _, action := range actions {
 		elements = append(elements, action)
 	}
-	meta := formatMeta(e.Meta)
-	if meta != "" {
-		elements = append(elements, map[string]any{
-			"tag":        "markdown",
-			"element_id": "meta",
-			"content":    "`" + meta + "`",
-		})
-	}
-	return map[string]any{
+	elements = append(elements, buildMetaElements(e.Meta)...)
+	title := headerTitle(e)
+	payload := map[string]any{
 		"schema": "2.0",
 		"config": map[string]any{
-			"update_multi": true,
-			"summary":      map[string]string{"content": titleForEvent(e.Type)},
+			"update_multi":   true,
+			"streaming_mode": e.Streaming,
+			"summary":        map[string]string{"content": title},
 		},
 		"header": map[string]any{
-			"template": templateForEvent(e.Type),
-			"title":    map[string]any{"tag": "plain_text", "content": titleForEvent(e.Type)},
+			"template": headerTemplate(e),
+			"title":    map[string]any{"tag": "plain_text", "content": title},
 		},
 		"body": map[string]any{
 			"direction":        "vertical",
@@ -53,6 +48,15 @@ func BuildLarkCard(e Event) map[string]any {
 			"elements":         elements,
 		},
 	}
+	if e.Streaming {
+		config := payload["config"].(map[string]any)
+		config["streaming_config"] = map[string]any{
+			"print_frequency_ms": map[string]int{"default": 80, "android": 80, "ios": 80, "pc": 80},
+			"print_step":         map[string]int{"default": 1, "android": 1, "ios": 1, "pc": 1},
+			"print_strategy":     "fast",
+		}
+	}
+	return payload
 }
 
 func splitCardSections(segments []Segment) (string, string, string) {
@@ -88,7 +92,7 @@ func shouldShowAgentPanels(e Event, thought, tools string) bool {
 	if strings.TrimSpace(thought) != "" || strings.TrimSpace(tools) != "" {
 		return true
 	}
-	return e.Type == "result"
+	return e.Streaming || e.Type == "result" || e.Type == "stopped" || e.Type == "error"
 }
 
 func defaultPanelText(text, fallback string) string {
@@ -98,11 +102,24 @@ func defaultPanelText(text, fallback string) string {
 	return text
 }
 
-func panelTitle(title, content string) string {
-	if strings.TrimSpace(content) == "" {
-		return title + "（暂无，点击展开）"
+func thoughtPanelTitle(e Event, content string) string {
+	if e.ThoughtExpanded {
+		return "思考推理（生成中，点击收起）"
 	}
-	return title + "（点击展开）"
+	if strings.TrimSpace(content) != "" {
+		return "思考推理（已完成，点击展开）"
+	}
+	return "思考推理（暂无，点击展开）"
+}
+
+func toolsPanelTitle(e Event, content string) string {
+	if e.ToolsExpanded {
+		return "工具调用（执行中，点击收起）"
+	}
+	if strings.TrimSpace(content) == "" {
+		return "工具调用（暂无，点击展开）"
+	}
+	return "工具调用（点击展开）"
 }
 
 func markdownElement(id, content string) map[string]any {
@@ -165,10 +182,9 @@ func buildButtonActions(e Event) []any {
 	}
 	if e.StopButton.Visible {
 		buttonType := "danger"
-		label := "停止"
+		label := stopButtonLabel(e)
 		if e.StopButton.Disabled {
 			buttonType = "default"
-			label = "已停止"
 		}
 		button := map[string]any{
 			"tag":        "button",
@@ -187,6 +203,22 @@ func buildButtonActions(e Event) []any {
 	return buttons
 }
 
+func stopButtonLabel(e Event) string {
+	if !e.StopButton.Disabled {
+		return "停止"
+	}
+	switch e.Type {
+	case "result":
+		return "已完成"
+	case "error":
+		return "已结束"
+	case "stopped":
+		return "已停止"
+	default:
+		return "已停止"
+	}
+}
+
 func callbackBehavior(sessionID, actionID, value string) []any {
 	return []any{
 		map[string]any{
@@ -200,24 +232,104 @@ func callbackBehavior(sessionID, actionID, value string) []any {
 	}
 }
 
-func formatMeta(meta Meta) string {
-	var parts []string
+type weightedMetaCell struct {
+	Weight  int
+	Content string
+	ID      string
+}
+
+func buildMetaElements(meta Meta) []any {
+	firstRow, secondRow := metaRows(meta)
+	if len(firstRow) == 0 && len(secondRow) == 0 {
+		return nil
+	}
+	elements := []any{map[string]any{"tag": "hr"}}
+	if len(firstRow) > 0 {
+		elements = append(elements, columnSetElement("meta_primary", firstRow))
+	}
+	if len(secondRow) > 0 {
+		elements = append(elements, columnSetElement("meta_runtime", secondRow))
+	}
+	return elements
+}
+
+func metaRows(meta Meta) ([]weightedMetaCell, []weightedMetaCell) {
+	var first []weightedMetaCell
 	if meta.Agent != "" {
-		parts = append(parts, "agent="+meta.Agent)
+		first = append(first, weightedMetaCell{Weight: 10, Content: "🤖 " + displayAgent(meta.Agent), ID: "meta_agent"})
 	}
 	if meta.Model != "" {
-		parts = append(parts, "model="+meta.Model)
+		first = append(first, weightedMetaCell{Weight: 14, Content: "🧠 " + meta.Model, ID: "meta_model"})
 	}
-	if meta.Tokens > 0 {
-		parts = append(parts, fmt.Sprintf("tokens=%d", meta.Tokens))
+	runTokens := meta.RunTokens
+	totalTokens := meta.TotalTokens
+	if runTokens == 0 && meta.Tokens > 0 {
+		runTokens = meta.Tokens
+	}
+	if totalTokens == 0 && meta.Tokens > 0 {
+		totalTokens = meta.Tokens
+	}
+	if runTokens > 0 || totalTokens > 0 {
+		if totalTokens > 0 {
+			first = append(first, weightedMetaCell{Weight: 18, Content: fmt.Sprintf("🔢 tokens: ▶ %s / ∑ %s", compactInt(runTokens), compactInt(totalTokens)), ID: "meta_tokens"})
+		} else {
+			first = append(first, weightedMetaCell{Weight: 18, Content: fmt.Sprintf("🔢 tokens: ▶ %s", compactInt(runTokens)), ID: "meta_tokens"})
+		}
+	}
+	var second []weightedMetaCell
+	if meta.User != "" {
+		second = append(second, weightedMetaCell{Weight: 10, Content: "👤 " + meta.User, ID: "meta_user"})
+	}
+	if meta.IP != "" {
+		second = append(second, weightedMetaCell{Weight: 12, Content: "🖥️ " + meta.IP, ID: "meta_ip"})
 	}
 	if meta.WorkDir != "" {
-		parts = append(parts, "workdir="+meta.WorkDir)
+		second = append(second, weightedMetaCell{Weight: 30, Content: "📁 `" + meta.WorkDir + "`", ID: "meta_workdir"})
 	}
-	if meta.Status != "" {
-		parts = append(parts, "status="+meta.Status)
+	return first, second
+}
+
+func columnSetElement(id string, cells []weightedMetaCell) map[string]any {
+	columns := make([]any, 0, len(cells))
+	for _, cell := range cells {
+		columns = append(columns, map[string]any{
+			"tag":            "column",
+			"width":          "weighted",
+			"weight":         cell.Weight,
+			"vertical_align": "top",
+			"elements": []any{
+				markdownElement(cell.ID, cell.Content),
+			},
+		})
 	}
-	return strings.Join(parts, " | ")
+	return map[string]any{
+		"tag":                "column_set",
+		"element_id":         id,
+		"flex_mode":          "none",
+		"horizontal_spacing": "8px",
+		"columns":            columns,
+	}
+}
+
+func displayAgent(agent string) string {
+	switch strings.ToLower(agent) {
+	case "claude":
+		return "Claude"
+	default:
+		return agent
+	}
+}
+
+func compactInt(n int) string {
+	if n < 1000 {
+		return fmt.Sprintf("%d", n)
+	}
+	value := float64(n) / 1000
+	text := fmt.Sprintf("%.1fk", value)
+	if strings.HasSuffix(text, ".0k") {
+		return strings.TrimSuffix(text, ".0k") + "k"
+	}
+	return text
 }
 
 func titleForEvent(eventType string) string {
@@ -240,4 +352,18 @@ func templateForEvent(eventType string) string {
 	default:
 		return "green"
 	}
+}
+
+func headerTitle(e Event) string {
+	if e.HeaderTitle != "" {
+		return e.HeaderTitle
+	}
+	return titleForEvent(e.Type)
+}
+
+func headerTemplate(e Event) string {
+	if e.HeaderTemplate != "" {
+		return e.HeaderTemplate
+	}
+	return templateForEvent(e.Type)
 }

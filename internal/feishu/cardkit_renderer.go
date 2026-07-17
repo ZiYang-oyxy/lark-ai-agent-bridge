@@ -13,7 +13,6 @@ type CardKitRenderer struct {
 	client           CardKitClientAPI
 	replyToMessageID string
 	cardID           string
-	stopTerminalSent bool
 	sequence         int
 	observer         CardKitRenderObserver
 	routerKey        string
@@ -91,7 +90,7 @@ func (r *CardKitRenderer) Render(e card.Event) error {
 			return err
 		}
 		r.cardID = created.CardID
-		r.recordRender("cardkit_create", e, fmt.Sprintf("key=%s card_id=%s reply_to=%s event=%s", r.renderKey(e), r.cardID, r.replyToMessageID, e.Type))
+		r.recordRender("cardkit_create", e, fmt.Sprintf("key=%s card_id=%s reply_to=%s event=%s %s", r.renderKey(e), r.cardID, r.replyToMessageID, e.Type, renderAuditState(e)))
 		if r.replyToMessageID != "" {
 			_, err = r.client.ReplyCard(ctx, CardKitReplyRequest{
 				ReplyToMessageID: r.replyToMessageID,
@@ -101,18 +100,12 @@ func (r *CardKitRenderer) Render(e card.Event) error {
 			if err != nil {
 				return err
 			}
-			r.recordRender("cardkit_reply", e, fmt.Sprintf("key=%s card_id=%s reply_to=%s event=%s", r.renderKey(e), r.cardID, r.replyToMessageID, e.Type))
+			r.recordRender("cardkit_reply", e, fmt.Sprintf("key=%s card_id=%s reply_to=%s event=%s %s", r.renderKey(e), r.cardID, r.replyToMessageID, e.Type, renderAuditState(e)))
 		}
 		return nil
 	}
 	if err := r.updateCard(ctx, e, payload); err != nil {
 		return err
-	}
-	if e.Type == "stop_button" {
-		if err := r.updateCard(ctx, e, payload); err != nil {
-			return err
-		}
-		return r.replyStopTerminalCard(ctx, e, payload)
 	}
 	return nil
 }
@@ -128,29 +121,7 @@ func (r *CardKitRenderer) updateCard(ctx context.Context, e card.Event, payload 
 	if err != nil {
 		return err
 	}
-	r.recordRender("cardkit_update", e, fmt.Sprintf("key=%s card_id=%s event=%s sequence=%d", r.renderKey(e), r.cardID, e.Type, r.sequence))
-	return nil
-}
-
-func (r *CardKitRenderer) replyStopTerminalCard(ctx context.Context, e card.Event, payload map[string]any) error {
-	if r.stopTerminalSent || r.replyToMessageID == "" || !e.StopButton.Disabled {
-		return nil
-	}
-	created, err := r.client.CreateCard(ctx, CardKitCreateRequest{Card: payload})
-	if err != nil {
-		return err
-	}
-	r.recordRender("cardkit_terminal_create", e, fmt.Sprintf("key=%s card_id=%s reply_to=%s event=%s", r.renderKey(e), created.CardID, r.replyToMessageID, e.Type))
-	_, err = r.client.ReplyCard(ctx, CardKitReplyRequest{
-		ReplyToMessageID: r.replyToMessageID,
-		CardID:           created.CardID,
-		UUID:             stableUUID("card-terminal-reply", r.replyToMessageID, created.CardID, e.SessionID, e.Type),
-	})
-	if err != nil {
-		return err
-	}
-	r.stopTerminalSent = true
-	r.recordRender("cardkit_terminal_reply", e, fmt.Sprintf("key=%s card_id=%s reply_to=%s event=%s", r.renderKey(e), created.CardID, r.replyToMessageID, e.Type))
+	r.recordRender("cardkit_update", e, fmt.Sprintf("key=%s card_id=%s event=%s sequence=%d %s", r.renderKey(e), r.cardID, e.Type, r.sequence, renderAuditState(e)))
 	return nil
 }
 
@@ -173,4 +144,8 @@ func (r *CardKitRenderer) renderKey(e card.Event) string {
 		return e.SessionID
 	}
 	return e.ReplyToMessageID
+}
+
+func renderAuditState(e card.Event) string {
+	return fmt.Sprintf("title=%q template=%s streaming=%t stop_visible=%t stop_disabled=%t", e.HeaderTitle, e.HeaderTemplate, e.Streaming, e.StopButton.Visible, e.StopButton.Disabled)
 }

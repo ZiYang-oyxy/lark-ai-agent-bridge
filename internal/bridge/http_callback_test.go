@@ -30,7 +30,7 @@ func TestCallbackHTTPHandlerDispatchesAction(t *testing.T) {
 		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
 	}
 	events := renderer.Events()
-	if got := events[len(events)-1]; got.Type != "stop_button" || !got.StopButton.Disabled {
+	if got := events[len(events)-1]; got.Type != "stopped" || !got.StopButton.Disabled || got.HeaderTemplate != "grey" {
 		t.Fatalf("last event = %#v, want disabled stop", got)
 	}
 }

@@ -10,7 +10,9 @@
 - 同一 chat/topic 会话串行执行，不同 topic 可并行执行。
 - topic 内普通消息继续当前 Claude session；`/new` 重置当前 topic 会话。
 - 非 topic 普通消息默认创建新 Claude 会话。
-- CardKit 卡片展示正文、折叠思考过程、折叠工具调用、底部 meta 和一次性停止按钮。
+- CardKit 卡片流式展示正文、折叠思考过程、折叠工具调用、分栏底部状态栏和一次性停止按钮。
+- 执行中标题使用蓝色 `正在推理/正在执行工具/正在回复 · ⏱ Ns`，完成绿色，停止灰色，失败红色。
+- 底部状态栏使用分割线和两行分栏：agent/model/tokens，以及 user/ip/workdir。
 - 工作目录不存在时先发确认卡片，点击创建后继续原请求。
 - 卡片按钮走长连接 `card.action.trigger`；HTTP `/card/callback` 只保留为本地兼容调试入口。
 

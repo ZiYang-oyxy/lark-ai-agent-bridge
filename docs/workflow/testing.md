@@ -26,7 +26,7 @@ GOCACHE=$PWD/.cache/go-build go test ./...
 - topic 普通文本续接内部 Claude session
 - `/new` 重置当前会话
 - Claude one-shot 命令构造和 stream-json 解析
-- CardKit 富文本、折叠面板、停止按钮、工作目录确认按钮
+- CardKit 流式更新、标题颜色和 `⏱` 耗时、分栏底部状态栏、折叠面板、停止按钮、工作目录确认按钮
 - 工作目录创建、取消和超时
 - 长连接 `card.action.trigger` action 解析
 - 未设置飞书凭据时 `serve` 明确拒绝启动
@@ -128,7 +128,7 @@ GOCACHE=$PWD/.cache/go-build go run ./cmd/lark-agent-bridge simulate-action \
   -value /tmp/lark-agent-bridge-confirm-test
 ```
 
-期望先输出 `workdir_confirm`，再输出 `action`，最后输出 `stream/result`。
+期望先输出 `workdir_confirm`，再输出 `action`，最后输出 `stream/result`；运行中卡片 header 为 blue，最终卡片 header 为 green。
 
 模拟停止按钮：
 
@@ -139,7 +139,17 @@ GOCACHE=$PWD/.cache/go-build go run ./cmd/lark-agent-bridge simulate-action \
   -action stop
 ```
 
-实际 session id 需要与执行中卡片的 `SessionID` 一致。单测 `TestServiceStopCancelsActiveOneShotRun` 覆盖 stop action 会取消 active run 并置灰按钮。
+实际 session id 需要与执行中卡片的 `SessionID` 一致。单测 `TestServiceStopCancelsActiveOneShotRun` 覆盖 stop action 会取消 active run，并把同一卡片更新为灰色 stopped 状态。
+
+本地单测还应覆盖：
+
+- running 标题类似 `🧠 正在推理 · ⏱ 3s`，completed/stopped/failed 标题不再包含“已执行”或“总耗时”。
+- 底部状态栏先出现分割线，再出现两行 `column_set`。
+- 第一行包含 `🤖 Claude`、model、`🔢 tokens: ▶ 本轮 / ∑ 累计`，列权重为 `10:14:18`。
+- 第二行包含 `👤 user`、`🖥️ ip`、`📁 workdir`，列权重为 `10:12:30`。
+- 底部状态栏不包含 `agent=`、`model=`、`workdir=`、`status=`。
+- completed/failed/stopped 的停止按钮均为灰色 disabled，文案分别是“已完成”“已结束”“已停止”。
+- 最终 result 只替换自身带回来的正文/思考/工具分区，保留流式阶段已解析到但最终 result 缺失的思考或工具内容。
 
 ## 飞书 E2E 前置检查
 
@@ -181,11 +191,17 @@ lark-cli im +messages-send --as user \
 ```
 
 5. 预期 bridge 长连接收到消息，飞书中出现执行中卡片，完成后同一卡片更新为结果。
+   - audit 中应先出现 `cardkit_create`/`cardkit_reply`，再出现一个或多个 `cardkit_update event=stream`，最后出现 `cardkit_update event=result`。
+   - 执行中卡片标题应为蓝色 `正在推理/正在执行工具/正在回复 · ⏱ Ns`。
+   - 最终卡片标题应为绿色 `已完成 · ⏱ Ns`。
+   - 底部状态栏应以分割线开头，分两行展示 agent/model/tokens 和 user/ip/workdir，不包含 status。
+   - 最终 completed 卡片的停止按钮应变为灰色 disabled “已完成”。
 6. 发送长任务后点击卡片“停止”，预期：
    - 长连接收到 `card.action.trigger`
    - audit 记录 `card_action stop`
    - Claude 子进程被取消
-   - 卡片按钮置灰为“已停止”
+   - 同一卡片标题更新为灰色 `⏹ 已停止 · ⏱ Ns`
+   - 卡片按钮置灰为“已停止”，且不会额外发送新的停止结果卡片
 7. 使用不存在的 `--workdir` 发送 `/new`，点击“Create directory”或“Cancel”，预期目录创建/取消行为与卡片状态一致。
 
 单聊 E2E 暂缓。当前用户态 `lark-cli` 与 bridge app 不同，直接按 bot open_id 发送 P2P 可能触发 `open_id cross app`；后续需要同 bridge app 用户 OAuth profile，或手动建立 P2P 后记录 chat_id。

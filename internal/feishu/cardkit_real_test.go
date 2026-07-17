@@ -26,7 +26,7 @@ func TestRealCardKitCreatesBridgeCard(t *testing.T) {
 		SessionID: "claude:real-cardkit-smoke",
 		Segments:  []card.Segment{{Kind: card.SegmentText, Text: "Workdir does not exist: /tmp/lark-agent-bridge-cardkit-smoke"}},
 		Actions:   card.WorkDirCreateActions("/tmp/lark-agent-bridge-cardkit-smoke"),
-		Meta:      card.Meta{Agent: "claude", Model: "smoke", Tokens: 1, WorkDir: "/tmp/lark-agent-bridge-cardkit-smoke", Status: "running"},
+		Meta:      card.Meta{Agent: "claude", Model: "smoke", RunTokens: 1, TotalTokens: 1, User: "smoke-user", IP: "192.0.2.1", WorkDir: "/tmp/lark-agent-bridge-cardkit-smoke", Status: "running"},
 	})
 	if _, err := client.CreateCard(ctx, CardKitCreateRequest{Card: payload}); err != nil {
 		t.Fatalf("CreateCard bridge payload error: %v", err)

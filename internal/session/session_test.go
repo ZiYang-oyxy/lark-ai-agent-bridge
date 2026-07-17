@@ -94,3 +94,14 @@ func TestCompleteMarksIdle(t *testing.T) {
 		t.Fatalf("last active = %s, want completion time", after.LastActive)
 	}
 }
+
+func TestUpdateRunResultAccumulatesTokens(t *testing.T) {
+	m := NewManager()
+	key := Key{Agent: agent.Claude, ChatID: "chat"}
+	started, _ := m.Enqueue(key, Input{Sender: "u1", Text: "first"}, "/tmp/work")
+	first := m.UpdateRunResult(started.ID, "claude-session-1", "sonnet", 12)
+	second := m.UpdateRunResult(started.ID, "", "", 8)
+	if first.Tokens != 12 || second.Tokens != 20 {
+		t.Fatalf("tokens first=%d second=%d, want 12 then 20", first.Tokens, second.Tokens)
+	}
+}

@@ -1,6 +1,7 @@
 package bridge
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"os"
@@ -21,6 +22,7 @@ type fakeRunner struct {
 	calls   []AgentRunRequest
 	results []AgentRunResult
 	errs    []error
+	updates []AgentStreamUpdate
 	block   chan struct{}
 	started chan struct{}
 }
@@ -35,6 +37,11 @@ func (r *fakeRunner) Run(ctx context.Context, req AgentRunRequest) (AgentRunResu
 	idx := len(r.calls) - 1
 	r.mu.Unlock()
 	r.started <- struct{}{}
+	for _, update := range r.updates {
+		if req.OnEvent != nil {
+			req.OnEvent(update)
+		}
+	}
 	if r.block != nil {
 		select {
 		case <-r.block:
@@ -87,13 +94,59 @@ func TestServiceNewRunsClaudeOneShotAndRendersResult(t *testing.T) {
 	if events[0].ReplyToMessageID != "msg-1" || !events[0].StopButton.Visible {
 		t.Fatalf("initial event = %#v", events[0])
 	}
+	if events[0].HeaderTemplate != "blue" || !containsAll(events[0].HeaderTitle, "正在推理", "⏱") {
+		t.Fatalf("initial header = %q/%q", events[0].HeaderTemplate, events[0].HeaderTitle)
+	}
 	last := events[len(events)-1]
-	if last.Type != "result" || last.Meta.Model != "claude-sonnet" || last.Meta.Tokens != 42 {
+	if last.Type != "result" || last.Meta.Model != "claude-sonnet" || last.Meta.RunTokens != 42 || last.Meta.TotalTokens != 42 || last.HeaderTemplate != "green" {
 		t.Fatalf("result event = %#v", last)
+	}
+	if !last.StopButton.Visible || !last.StopButton.Disabled {
+		t.Fatalf("completed event should show disabled stop button: %#v", last.StopButton)
 	}
 	status := svc.statusText(agent.Claude, Message{ChatID: "chat"})
 	if !containsAll(status, "claude_session=sess-1", "state=idle") {
 		t.Fatalf("status = %q, want stored claude session", status)
+	}
+}
+
+func TestServiceStreamsRunnerUpdatesIntoSameCard(t *testing.T) {
+	cfg := testConfig(t)
+	cfg.CardUpdateEvery = time.Nanosecond
+	renderer := card.NewFakeRenderer()
+	runner := newFakeRunner()
+	runner.updates = []AgentStreamUpdate{
+		{Segments: []card.Segment{{Kind: card.SegmentThought, Text: "plan"}}, Activity: streamActivityReasoning},
+		{Segments: []card.Segment{{Kind: card.SegmentTool, Text: "Bash(ls)"}}, Activity: streamActivityTool},
+		{Segments: []card.Segment{{Kind: card.SegmentText, Text: "answer"}}, Activity: streamActivityAnswering, Model: "claude-stream", Tokens: 3},
+	}
+	runner.results = []AgentRunResult{{Model: "claude-stream", Tokens: 3, Segments: []card.Segment{
+		{Kind: card.SegmentText, Text: "answer"},
+	}}}
+	svc := NewService(cfg, renderer, runner, audit.NewRecorder())
+	if err := svc.HandleMessage(context.Background(), Message{ID: "msg-1", ChatID: "chat", Sender: "u1", Text: "/new hello", Time: time.Now()}); err != nil {
+		t.Fatalf("handle message error: %v", err)
+	}
+	waitForEvents(t, renderer, 5)
+	events := renderer.Events()
+	if events[1].Type != "stream" || !events[1].ThoughtExpanded {
+		t.Fatalf("thought stream event = %#v", events[1])
+	}
+	if events[2].Type != "stream" || !events[2].ToolsExpanded {
+		t.Fatalf("tool stream event = %#v", events[2])
+	}
+	last := events[len(events)-1]
+	if last.Type != "result" || last.HeaderTemplate != "green" {
+		t.Fatalf("last event = %#v", last)
+	}
+	if !last.StopButton.Visible || !last.StopButton.Disabled {
+		t.Fatalf("completed event should show disabled stop button: %#v", last.StopButton)
+	}
+	if last.Meta.RunTokens != 3 || last.Meta.TotalTokens != 3 {
+		t.Fatalf("last meta = %#v, want run and total tokens", last.Meta)
+	}
+	if !containsAll(last.Segments[0].Text, "answer") || !containsAll(last.Segments[1].Text, "plan") || !containsAll(last.Segments[2].Text, "Bash(ls)") {
+		t.Fatalf("final segments = %#v", last.Segments)
 	}
 }
 
@@ -119,8 +172,8 @@ func TestTopicPlainTextContinuesStoredClaudeSession(t *testing.T) {
 	renderer := card.NewFakeRenderer()
 	runner := newFakeRunner()
 	runner.results = []AgentRunResult{
-		{ClaudeSessionID: "sess-topic", Segments: []card.Segment{{Kind: card.SegmentText, Text: "first"}}},
-		{ClaudeSessionID: "sess-topic", Segments: []card.Segment{{Kind: card.SegmentText, Text: "second"}}},
+		{ClaudeSessionID: "sess-topic", Tokens: 2, Segments: []card.Segment{{Kind: card.SegmentText, Text: "first"}}},
+		{ClaudeSessionID: "sess-topic", Tokens: 3, Segments: []card.Segment{{Kind: card.SegmentText, Text: "second"}}},
 	}
 	svc := NewService(cfg, renderer, runner, audit.NewRecorder())
 	msg1 := Message{ID: "msg-1", ChatID: "chat", ThreadID: "topic-a", Sender: "u1", Text: "/new first", Time: time.Now()}
@@ -137,6 +190,12 @@ func TestTopicPlainTextContinuesStoredClaudeSession(t *testing.T) {
 	calls := runner.Calls()
 	if calls[1].ClaudeSessionID != "sess-topic" {
 		t.Fatalf("second call session id = %q, want sess-topic", calls[1].ClaudeSessionID)
+	}
+	waitForEvents(t, renderer, 4)
+	events := renderer.Events()
+	last := events[len(events)-1]
+	if last.Meta.RunTokens != 3 || last.Meta.TotalTokens != 5 {
+		t.Fatalf("second run meta = %#v, want run=3 total=5", last.Meta)
 	}
 }
 
@@ -318,7 +377,7 @@ func TestServiceStopCancelsActiveOneShotRun(t *testing.T) {
 	}
 	events := renderer.Events()
 	last := events[len(events)-1]
-	if last.Type != "stop_button" || !last.StopButton.Disabled {
+	if last.Type != "stopped" || !last.StopButton.Disabled || last.HeaderTemplate != "grey" {
 		t.Fatalf("stop event = %#v", last)
 	}
 }
@@ -334,6 +393,30 @@ func TestParseClaudeStreamOutputDoesNotDuplicateFinalResult(t *testing.T) {
 	}
 	if len(result.Segments) != 1 || result.Segments[0].Text != "E2E_ONESHOT" {
 		t.Fatalf("segments = %#v, want single E2E_ONESHOT", result.Segments)
+	}
+}
+
+func TestStreamUpdateParsesClaudeDeltaThinking(t *testing.T) {
+	var got []AgentStreamUpdate
+	data := []byte(strings.Join([]string{
+		`{"type":"content_block_delta","delta":{"type":"thinking_delta","thinking":"hidden plan"}}`,
+		`{"type":"content_block_delta","delta":{"type":"text_delta","text":"visible answer"}}`,
+	}, "\n"))
+	_ = ParseClaudeStreamOutput(data)
+	_, err := parseClaudeStream(bytes.NewReader(data), nil, func(update AgentStreamUpdate) {
+		got = append(got, update)
+	})
+	if err != nil {
+		t.Fatalf("parse stream error: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("updates = %#v", got)
+	}
+	if got[0].Segments[0].Kind != card.SegmentThought || got[0].Segments[0].Text != "hidden plan" {
+		t.Fatalf("thinking update = %#v", got[0])
+	}
+	if got[1].Segments[0].Kind != card.SegmentText || got[1].Segments[0].Text != "visible answer" {
+		t.Fatalf("text update = %#v", got[1])
 	}
 }
 

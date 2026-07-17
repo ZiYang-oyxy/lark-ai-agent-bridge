@@ -226,14 +226,6 @@ func runServe(args []string) error {
 			}); err != nil {
 				return nil, err
 			}
-			if action.ActionID == "stop" {
-				return &feishu.CardActionResponse{Card: card.BuildLarkCard(card.Event{
-					Type:       "stop_button",
-					SessionID:  action.SessionID,
-					StopButton: card.StopButton{Visible: true, Disabled: true},
-					Message:    "stopped",
-				})}, nil
-			}
 			return nil, nil
 		},
 	})

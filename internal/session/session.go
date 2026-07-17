@@ -164,7 +164,7 @@ func (m *Manager) UpdateRunResult(id, claudeSessionID, model string, tokens int)
 		s.Model = model
 	}
 	if tokens > 0 {
-		s.Tokens = tokens
+		s.Tokens += tokens
 	}
 	return *cloneSession(s)
 }

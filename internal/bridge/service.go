@@ -7,8 +7,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"net"
 	"os"
 	"os/exec"
+	osuser "os/user"
 	"strings"
 	"sync"
 	"time"
@@ -41,6 +44,7 @@ type AgentRunRequest struct {
 	Prompt          string
 	WorkDir         string
 	ClaudeSessionID string
+	OnEvent         func(AgentStreamUpdate)
 }
 
 type AgentRunResult struct {
@@ -48,6 +52,14 @@ type AgentRunResult struct {
 	Model           string
 	Tokens          int
 	ClaudeSessionID string
+}
+
+type AgentStreamUpdate struct {
+	Segments        []card.Segment
+	Model           string
+	Tokens          int
+	ClaudeSessionID string
+	Activity        string
 }
 
 type pendingRun struct {
@@ -63,6 +75,7 @@ type activeRun struct {
 	Key           session.Key
 	WorkDir       string
 	Cancel        context.CancelFunc
+	Stream        *agentCardStream
 }
 
 type ActionRequest struct {
@@ -168,16 +181,10 @@ func (s *Service) startRun(ctx context.Context, sess session.Session, input sess
 	}
 	id := runID(sess.ID, input.ReplyToMessageID)
 	runCtx, cancel := context.WithCancel(ctx)
-	s.storeActiveRun(id, activeRun{BaseSessionID: sess.ID, Key: sess.Key, WorkDir: sess.WorkDir, Cancel: cancel})
+	stream := newAgentCardStream(s, id, sess, input)
+	s.storeActiveRun(id, activeRun{BaseSessionID: sess.ID, Key: sess.Key, WorkDir: sess.WorkDir, Cancel: cancel, Stream: stream})
 	s.Audit.Record(input.Sender, "run_input", sess.ID, input.Text)
-	_ = s.Cards.Render(card.Event{
-		Type:             "stream",
-		SessionID:        id,
-		ReplyToMessageID: input.ReplyToMessageID,
-		Segments:         []card.Segment{{Kind: card.SegmentText, Text: "正在执行 Claude 请求..."}},
-		Meta:             metaFromSession(sess),
-		StopButton:       card.StopButton{Visible: true},
-	})
+	_ = stream.Start()
 	go s.executeRun(runCtx, sess, input)
 }
 
@@ -189,21 +196,26 @@ func (s *Service) executeRun(ctx context.Context, sess session.Session, input se
 		Prompt:          input.Text,
 		WorkDir:         sess.WorkDir,
 		ClaudeSessionID: sess.ClaudeSessionID,
+		OnEvent: func(update AgentStreamUpdate) {
+			if run, ok := s.activeRun(id); ok && run.Stream != nil {
+				run.Stream.Handle(update)
+			}
+		},
 	})
 	if errors.Is(ctx.Err(), context.Canceled) {
 		updated := s.Sessions.Stop(sess.Key, sess.WorkDir)
-		_ = s.Cards.Render(card.Event{Type: "stop_button", SessionID: id, StopButton: card.StopButton{Visible: true, Disabled: true}, Message: "stopped", Meta: metaFromSession(updated)})
+		if run, ok := s.activeRun(id); ok && run.Stream != nil {
+			run.Stream.Finish("stopped", metaFromSession(updated), result)
+		}
 		return
 	}
 	if err != nil {
 		updated := s.Sessions.MarkCrashed(sess.Key, sess.WorkDir)
 		s.Audit.Record("system", "run_failed", updated.ID, err.Error())
-		_ = s.Cards.Render(card.Event{
-			Type:      "error",
-			SessionID: id,
-			Segments:  []card.Segment{{Kind: card.SegmentError, Text: err.Error()}},
-			Meta:      metaFromSession(updated),
-		})
+		result.Segments = append(result.Segments, card.Segment{Kind: card.SegmentError, Text: err.Error()})
+		if run, ok := s.activeRun(id); ok && run.Stream != nil {
+			run.Stream.Finish("failed", metaFromSession(updated), result)
+		}
 		return
 	}
 	if result.ClaudeSessionID != "" || result.Model != "" || result.Tokens > 0 {
@@ -217,12 +229,10 @@ func (s *Service) executeRun(ctx context.Context, sess session.Session, input se
 	if len(segments) == 0 {
 		segments = []card.Segment{{Kind: card.SegmentText, Text: "Claude 未返回内容。"}}
 	}
-	_ = s.renderStream(card.Event{
-		Type:      "result",
-		SessionID: id,
-		Segments:  segments,
-		Meta:      metaFromSession(sess),
-	})
+	result.Segments = segments
+	if run, ok := s.activeRun(id); ok && run.Stream != nil {
+		run.Stream.Finish("completed", metaFromSession(sess), result)
+	}
 	if next != nil {
 		s.Audit.Record(next.Sender, "dequeue_input", sess.ID, next.Text)
 		nextSession := s.Sessions.GetOrCreate(sess.Key, sess.WorkDir)
@@ -236,9 +246,12 @@ func (s *Service) HandleAction(ctx context.Context, req ActionRequest) error {
 	case "stop":
 		if run, ok := s.cancelActiveRun(req.SessionID); ok {
 			updated := s.Sessions.Stop(run.Key, run.WorkDir)
-			return s.Cards.Render(card.Event{Type: "stop_button", SessionID: req.SessionID, StopButton: card.StopButton{Visible: true, Disabled: true}, Message: "stopped", Meta: metaFromSession(updated)})
+			if run.Stream != nil {
+				run.Stream.Finish("stopped", metaFromSession(updated), AgentRunResult{})
+			}
+			return nil
 		}
-		return s.Cards.Render(card.Event{Type: "stop_button", SessionID: req.SessionID, StopButton: card.StopButton{Visible: true, Disabled: true}, Message: "stopped"})
+		return s.Cards.Render(card.Event{Type: "stopped", SessionID: req.SessionID, StopButton: card.StopButton{Visible: true, Disabled: true}, Message: "stopped", HeaderTitle: "⏹ 已停止 · ⏱ 0s", HeaderTemplate: "grey"})
 	case "create_workdir":
 		pending, hasPending := s.popPendingRun(req.SessionID)
 		workDir := req.Value
@@ -316,6 +329,13 @@ func (s *Service) clearActiveRun(id string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	delete(s.activeRuns, id)
+}
+
+func (s *Service) activeRun(id string) (activeRun, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	run, ok := s.activeRuns[id]
+	return run, ok
 }
 
 func (s *Service) cancelActiveRun(id string) (activeRun, bool) {
@@ -471,7 +491,67 @@ func (s *Service) sessionKey(kind agent.Kind, msg Message) session.Key {
 }
 
 func metaFromSession(sess session.Session) card.Meta {
-	return card.Meta{Agent: string(sess.Key.Agent), Model: sess.Model, Tokens: sess.Tokens, WorkDir: sess.WorkDir, Status: string(sess.State)}
+	userName, ip := runtimeIdentity()
+	return card.Meta{Agent: string(sess.Key.Agent), Model: sess.Model, Tokens: sess.Tokens, TotalTokens: sess.Tokens, User: userName, IP: ip, WorkDir: sess.WorkDir, Status: string(sess.State)}
+}
+
+var (
+	runtimeIdentityOnce sync.Once
+	runtimeUserName     string
+	runtimeIP           string
+)
+
+func runtimeIdentity() (string, string) {
+	runtimeIdentityOnce.Do(func() {
+		if current, err := osuser.Current(); err == nil && current != nil {
+			runtimeUserName = strings.TrimSpace(current.Username)
+			if idx := strings.LastIndex(runtimeUserName, "\\"); idx >= 0 {
+				runtimeUserName = runtimeUserName[idx+1:]
+			}
+			if idx := strings.LastIndex(runtimeUserName, "/"); idx >= 0 {
+				runtimeUserName = runtimeUserName[idx+1:]
+			}
+		}
+		if runtimeUserName == "" {
+			runtimeUserName = os.Getenv("USER")
+		}
+		runtimeIP = firstNonLoopbackIPv4()
+	})
+	return runtimeUserName, runtimeIP
+}
+
+func firstNonLoopbackIPv4() string {
+	ifaces, err := net.Interfaces()
+	if err != nil {
+		return ""
+	}
+	for _, iface := range ifaces {
+		if iface.Flags&net.FlagUp == 0 || iface.Flags&net.FlagLoopback != 0 {
+			continue
+		}
+		addrs, err := iface.Addrs()
+		if err != nil {
+			continue
+		}
+		for _, addr := range addrs {
+			var ip net.IP
+			switch value := addr.(type) {
+			case *net.IPNet:
+				ip = value.IP
+			case *net.IPAddr:
+				ip = value.IP
+			}
+			if ip == nil {
+				continue
+			}
+			ipv4 := ip.To4()
+			if ipv4 == nil || ipv4.IsLoopback() {
+				continue
+			}
+			return ipv4.String()
+		}
+	}
+	return ""
 }
 
 func runID(baseSessionID, replyToMessageID string) string {
@@ -500,27 +580,43 @@ func (CLIExecRunner) Run(ctx context.Context, req AgentRunRequest) (AgentRunResu
 	var stderr bytes.Buffer
 	cmd := exec.CommandContext(ctx, command[0], command[1:]...)
 	cmd.Dir = req.WorkDir
-	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
-	if err := cmd.Run(); err != nil {
+	pipe, err := cmd.StdoutPipe()
+	if err != nil {
+		return AgentRunResult{}, err
+	}
+	if err := cmd.Start(); err != nil {
+		return AgentRunResult{}, err
+	}
+	result, scanErr := parseClaudeStream(pipe, &stdout, req.OnEvent)
+	waitErr := cmd.Wait()
+	if scanErr != nil {
+		return result, scanErr
+	}
+	if waitErr != nil {
 		detail := strings.TrimSpace(stderr.String())
 		if detail == "" {
 			detail = strings.TrimSpace(stdout.String())
 		}
 		if detail != "" {
-			return AgentRunResult{}, fmt.Errorf("%w: %s", err, detail)
+			return result, fmt.Errorf("%w: %s", waitErr, detail)
 		}
-		return AgentRunResult{}, err
+		return result, waitErr
 	}
-	return ParseClaudeStreamOutput(stdout.Bytes()), nil
+	return result, nil
 }
 
 func ParseClaudeStreamOutput(data []byte) AgentRunResult {
+	result, _ := parseClaudeStream(bytes.NewReader(data), nil, nil)
+	return result
+}
+
+func parseClaudeStream(input io.Reader, copyTo *bytes.Buffer, onEvent func(AgentStreamUpdate)) (AgentRunResult, error) {
 	var result AgentRunResult
 	var answer strings.Builder
 	var thought strings.Builder
 	var tool strings.Builder
-	scanner := bufio.NewScanner(bytes.NewReader(data))
+	scanner := bufio.NewScanner(input)
 	scanner.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
 	parsedJSON := false
 	for scanner.Scan() {
@@ -528,17 +624,31 @@ func ParseClaudeStreamOutput(data []byte) AgentRunResult {
 		if line == "" {
 			continue
 		}
+		if copyTo != nil {
+			copyTo.WriteString(line)
+			copyTo.WriteByte('\n')
+		}
 		var event map[string]any
 		if err := json.Unmarshal([]byte(line), &event); err != nil {
 			answer.WriteString(line)
 			answer.WriteByte('\n')
+			emitStreamUpdate(onEvent, AgentStreamUpdate{
+				Segments: []card.Segment{{Kind: card.SegmentText, Text: line}},
+				Activity: streamActivityAnswering,
+			})
 			continue
 		}
 		parsedJSON = true
+		emitStreamUpdate(onEvent, streamUpdateFromClaudeEvent(event))
 		consumeClaudeEvent(event, &answer, &thought, &tool, &result)
 	}
+	if err := scanner.Err(); err != nil {
+		return result, err
+	}
 	if !parsedJSON && strings.TrimSpace(answer.String()) == "" {
-		answer.Write(data)
+		if copyTo != nil {
+			answer.Write(copyTo.Bytes())
+		}
 	}
 	addSegment := func(kind card.SegmentKind, text string) {
 		text = strings.TrimSpace(text)
@@ -549,7 +659,7 @@ func ParseClaudeStreamOutput(data []byte) AgentRunResult {
 	addSegment(card.SegmentText, answer.String())
 	addSegment(card.SegmentThought, thought.String())
 	addSegment(card.SegmentTool, tool.String())
-	return result
+	return result, nil
 }
 
 func consumeClaudeEvent(event map[string]any, answer, thought, tool *strings.Builder, result *AgentRunResult) {
@@ -596,6 +706,161 @@ func consumeClaudeEvent(event map[string]any, answer, thought, tool *strings.Bui
 			writeToolResult(tool, block)
 		}
 	}
+}
+
+func emitStreamUpdate(onEvent func(AgentStreamUpdate), update AgentStreamUpdate) {
+	if onEvent == nil {
+		return
+	}
+	if update.Model == "" && update.Tokens == 0 && update.ClaudeSessionID == "" && update.Activity == "" && len(update.Segments) == 0 {
+		return
+	}
+	onEvent(update)
+}
+
+func streamUpdateFromClaudeEvent(event map[string]any) AgentStreamUpdate {
+	var update AgentStreamUpdate
+	if id, ok := event["session_id"].(string); ok {
+		update.ClaudeSessionID = id
+	}
+	if model, ok := event["model"].(string); ok {
+		update.Model = model
+	}
+	update.Tokens += tokensFromValue(event["usage"])
+	if eventType, _ := event["type"].(string); eventType == "result" {
+		return update
+	}
+	if message, _ := event["message"].(map[string]any); message != nil {
+		if id, ok := message["session_id"].(string); ok && update.ClaudeSessionID == "" {
+			update.ClaudeSessionID = id
+		}
+		if model, ok := message["model"].(string); ok && update.Model == "" {
+			update.Model = model
+		}
+		update.Tokens += tokensFromValue(message["usage"])
+		if content, _ := message["content"].([]any); len(content) > 0 {
+			for _, raw := range content {
+				if block, _ := raw.(map[string]any); block != nil {
+					update.Segments = append(update.Segments, streamSegmentsFromBlock(block)...)
+				}
+			}
+		}
+		if len(update.Segments) > 0 {
+			update.Activity = activityFromSegments(update.Segments)
+		}
+		return update
+	}
+	update.Segments = append(update.Segments, streamSegmentsFromTopLevelEvent(event)...)
+	if len(update.Segments) > 0 {
+		update.Activity = activityFromSegments(update.Segments)
+	}
+	return update
+}
+
+func streamSegmentsFromBlock(block map[string]any) []card.Segment {
+	blockType, _ := block["type"].(string)
+	switch blockType {
+	case "text":
+		return segmentFromText(card.SegmentText, firstString(block, "text", "content"))
+	case "thinking", "reasoning", "redacted_thinking":
+		return segmentFromText(card.SegmentThought, firstString(block, "thinking", "text", "content"))
+	case "tool_use":
+		var b strings.Builder
+		writeToolUse(&b, block)
+		return segmentFromText(card.SegmentTool, b.String())
+	case "tool_result":
+		var b strings.Builder
+		writeToolResult(&b, block)
+		return segmentFromText(card.SegmentTool, b.String())
+	}
+	return nil
+}
+
+func streamSegmentsFromTopLevelEvent(event map[string]any) []card.Segment {
+	eventType, _ := event["type"].(string)
+	switch eventType {
+	case "content_block_start":
+		if block, _ := event["content_block"].(map[string]any); block != nil {
+			return streamSegmentsFromBlock(block)
+		}
+	case "content_block_delta":
+		if delta, _ := event["delta"].(map[string]any); delta != nil {
+			return streamSegmentsFromDelta(delta)
+		}
+	case "thinking", "reasoning", "reasoning_content":
+		return segmentFromText(card.SegmentThought, firstString(event, "reasoning_content", "thinking", "content", "delta", "text"))
+	case "text":
+		return segmentFromText(card.SegmentText, firstString(event, "text", "content", "delta"))
+	case "tool_use", "tool_use_delta":
+		return segmentFromText(card.SegmentTool, firstString(event, "content", "delta", "tool_input", "input"))
+	case "tool_result":
+		return segmentFromText(card.SegmentTool, firstString(event, "tool_result", "content", "result"))
+	}
+	if text := firstString(event, "reasoning_content", "thinking"); text != "" {
+		return segmentFromText(card.SegmentThought, text)
+	}
+	if text := firstString(event, "text", "content", "delta"); text != "" {
+		return segmentFromText(card.SegmentText, text)
+	}
+	return nil
+}
+
+func streamSegmentsFromDelta(delta map[string]any) []card.Segment {
+	deltaType, _ := delta["type"].(string)
+	switch deltaType {
+	case "text_delta":
+		return segmentFromText(card.SegmentText, firstString(delta, "text"))
+	case "thinking_delta", "reasoning_delta":
+		return segmentFromText(card.SegmentThought, firstString(delta, "thinking", "text", "reasoning"))
+	case "input_json_delta":
+		return segmentFromText(card.SegmentTool, firstString(delta, "partial_json"))
+	}
+	if text := firstString(delta, "thinking", "reasoning"); text != "" {
+		return segmentFromText(card.SegmentThought, text)
+	}
+	if text := firstString(delta, "text", "content", "delta"); text != "" {
+		return segmentFromText(card.SegmentText, text)
+	}
+	if text := firstString(delta, "partial_json"); text != "" {
+		return segmentFromText(card.SegmentTool, text)
+	}
+	return nil
+}
+
+func segmentFromText(kind card.SegmentKind, text string) []card.Segment {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return nil
+	}
+	return []card.Segment{{Kind: kind, Text: text}}
+}
+
+func activityFromSegments(segments []card.Segment) string {
+	for _, segment := range segments {
+		if segment.Kind == card.SegmentTool {
+			return streamActivityTool
+		}
+	}
+	for _, segment := range segments {
+		if segment.Kind == card.SegmentText {
+			return streamActivityAnswering
+		}
+	}
+	for _, segment := range segments {
+		if segment.Kind == card.SegmentThought {
+			return streamActivityReasoning
+		}
+	}
+	return ""
+}
+
+func firstString(m map[string]any, keys ...string) string {
+	for _, key := range keys {
+		if text, ok := m[key].(string); ok && strings.TrimSpace(text) != "" {
+			return text
+		}
+	}
+	return ""
 }
 
 func writeBlockText(b *strings.Builder, block map[string]any) {
