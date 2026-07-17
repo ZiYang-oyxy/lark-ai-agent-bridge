@@ -6,7 +6,7 @@
 
 - 飞书消息通过 SDK 长连接进入 bridge。
 - 第一版只适配 `claude`，暂不适配 `codex`。
-- Claude 以 `claude -p --output-format stream-json --dangerously-skip-permissions` 启动。
+- Claude 以 `claude -p --output-format stream-json --dangerously-skip-permissions --effort low` 启动。
 - 同一 chat/topic 会话串行执行，不同 topic 可并行执行。
 - topic 内普通消息继续当前 Claude session；`/new` 重置当前 topic 会话。
 - 非 topic 普通消息默认创建新 Claude 会话。
@@ -33,4 +33,4 @@ GOCACHE=$PWD/.cache/go-build go run ./cmd/lark-agent-bridge serve --default-work
 
 `serve` 需要 `LARK_APP_ID` 和 `LARK_APP_SECRET`。本地未配置时会明确失败，用于验证启动前置条件。
 
-详细架构见 `docs/framework/architecture.md`，测试流程见 `docs/workflow/testing.md`，当前交付状态与证据链汇总见 `docs/workflow/delivery-summary.md`。
+详细架构见 `docs/framework/architecture.md`，测试流程见 `docs/workflow/testing.md`，真实飞书 E2E 工作流见 `docs/workflow/e2e-real.md`，当前交付状态与证据链汇总见 `docs/workflow/delivery-summary.md`。

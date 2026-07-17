@@ -3,10 +3,11 @@ package feishu
 import "context"
 
 type LongConnConfig struct {
-	AppID         string
-	AppSecret     string
-	BotOpenID     string
-	ActionHandler func(context.Context, CardAction) (*CardActionResponse, error)
+	AppID                  string
+	AppSecret              string
+	BotOpenID              string
+	ActionHandler          func(context.Context, CardAction) (*CardActionResponse, error)
+	MessageRecalledHandler func(context.Context, RecalledMessage) error
 }
 
 type CardActionResponse struct {

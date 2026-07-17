@@ -92,3 +92,42 @@ func TestSDKLongConnReturnsCardActionResponseCard(t *testing.T) {
 		t.Fatalf("response card data = %#v", got.Card.Data)
 	}
 }
+
+func TestSDKLongConnDispatchesMessageRecalled(t *testing.T) {
+	var got RecalledMessage
+	client := NewLongConnClient(LongConnConfig{
+		AppID:     "cli_test",
+		AppSecret: "secret",
+		MessageRecalledHandler: func(_ context.Context, recall RecalledMessage) error {
+			got = recall
+			return nil
+		},
+	})
+	sdk, ok := client.(*SDKLongConnClient)
+	if !ok {
+		t.Fatalf("client type = %T, want *SDKLongConnClient", client)
+	}
+	payload := []byte(`{
+		"schema": "2.0",
+		"header": {
+			"event_type": "im.message.recalled_v1",
+			"app_id": "cli_test",
+			"create_time": "1700000000000"
+		},
+		"event": {
+			"message_id": "<FEISHU_MESSAGE_ID>",
+			"chat_id": "oc_chat",
+			"recall_time": "1700000001000",
+			"recall_type": "user"
+		}
+	}`)
+	if _, err := sdk.dispatcher.Do(context.Background(), payload); err != nil {
+		t.Fatalf("dispatcher.Do error: %v", err)
+	}
+	if got.AppID != "cli_test" || got.ChatID != "oc_chat" || got.MessageID != "<FEISHU_MESSAGE_ID>" || got.RecallType != "user" {
+		t.Fatalf("recall = %#v", got)
+	}
+	if got.OccurredAt.IsZero() {
+		t.Fatalf("recall occurred at is zero: %#v", got)
+	}
+}

@@ -58,6 +58,12 @@ func (c *SDKLongConnClient) newEventDispatcher() *dispatcher.EventDispatcher {
 			return buildCardActionTriggerResponse(resp), nil
 		}).
 		OnP2MessageReadV1(func(context.Context, *larkim.P2MessageReadV1) error { return nil }).
+		OnP2MessageRecalledV1(func(ctx context.Context, event *larkim.P2MessageRecalledV1) error {
+			if c.cfg.MessageRecalledHandler == nil {
+				return nil
+			}
+			return c.cfg.MessageRecalledHandler(ctx, BuildRecalledMessageFromLark(event))
+		}).
 		OnP2MessageReactionCreatedV1(func(context.Context, *larkim.P2MessageReactionCreatedV1) error { return nil }).
 		OnP2MessageReactionDeletedV1(func(context.Context, *larkim.P2MessageReactionDeletedV1) error { return nil })
 }

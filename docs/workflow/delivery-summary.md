@@ -17,7 +17,7 @@
 
 - `/new`、`/help`、`/status` 命令面。
 - `/resume`、`/codex` 等撤回入口不再开放。
-- Claude one-shot 命令构造，固定 `--dangerously-skip-permissions`。
+- Claude one-shot 命令构造，固定 `--dangerously-skip-permissions --effort low`。
 - Claude stream-json 输出解析：正文、思考、工具调用、model、tokens、session id，并支持增量更新卡片。
 - topic 内普通文本续接保存的 Claude session id。
 - `/new` 重置当前 chat/topic 会话。
@@ -37,6 +37,8 @@
 - 已验证真实卡片流式更新：audit 中出现 `cardkit_update event=stream`，最终同一卡片更新为 `event=result`。
 - 已验证真实点击“停止”按钮后，长连接收到 `card.action.trigger`，Claude 子进程被取消，卡片更新为灰色终态且按钮 disabled。
 - 已验证真实点击工作目录“Create directory”和“Cancel”后，确认卡片分别进入绿色/灰色终态并禁用按钮；create 后出现独立 Claude 运行卡片。
+- 已验证 Codex Chrome 插件可以直接操作当前已登录的飞书 Web 标签页，完成真实 `Create directory` 点击和后续 workdir 继承查询。
+- 自写 Chrome/CDP full 路径已移除；真实撤回场景改为通过 `lark-cli im messages delete --as user` 自动验证，按钮类历史证据仍保留在 audit/evidence 中。
 - 已验证群话题内 @bot 续聊进入 `thread:<thread_id>` 会话；当前飞书权限下，群话题内不 @bot 的消息不会推送到 bridge。
 - 单聊 E2E 仍暂缓；需要同 bridge app 用户 OAuth profile，或手动建立 P2P 后记录 chat_id。
 

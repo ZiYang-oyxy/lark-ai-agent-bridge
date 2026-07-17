@@ -13,6 +13,13 @@ type Message struct {
 	Time      time.Time
 }
 
+type MessageRecall struct {
+	MessageID  string
+	ChatID     string
+	RecallType string
+	Time       time.Time
+}
+
 func (m Message) ShouldHandle() bool {
 	if !m.IsGroup {
 		return true

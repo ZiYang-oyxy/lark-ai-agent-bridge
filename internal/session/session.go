@@ -76,6 +76,16 @@ func (m *Manager) GetOrCreate(key Key, workDir string) Session {
 	return *cloneSession(m.ensureLocked(key, workDir))
 }
 
+func (m *Manager) Get(key Key) (Session, bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	s, ok := m.sessions[key.ID()]
+	if !ok {
+		return Session{}, false
+	}
+	return *cloneSession(s), true
+}
+
 func (m *Manager) Reset(key Key, workDir string) Session {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -149,6 +159,7 @@ func (m *Manager) MarkCrashed(key Key, workDir string) Session {
 	defer m.mu.Unlock()
 	s := m.ensureLocked(key, workDir)
 	s.State = StateCrashed
+	s.Queue = nil
 	return *cloneSession(s)
 }
 
@@ -159,6 +170,24 @@ func (m *Manager) Stop(key Key, workDir string) Session {
 	s.State = StateStopped
 	s.Queue = nil
 	return *cloneSession(s)
+}
+
+func (m *Manager) RemoveQueuedInputByMessageID(messageID string) (Session, Input, bool) {
+	if messageID == "" {
+		return Session{}, Input{}, false
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, s := range m.sessions {
+		for i, input := range s.Queue {
+			if input.ReplyToMessageID != messageID {
+				continue
+			}
+			s.Queue = append(s.Queue[:i], s.Queue[i+1:]...)
+			return *cloneSession(s), input, true
+		}
+	}
+	return Session{}, Input{}, false
 }
 
 func (m *Manager) UpdateRunResult(id, claudeSessionID, model string, tokens int) Session {

@@ -188,6 +188,16 @@ set +a
 
 ## 真实飞书 E2E 方法
 
+真实 E2E 已固化为脚本化入口，完整流程见 `docs/workflow/e2e-real.md`：
+
+```bash
+./scripts/e2e-real.sh --list-cases
+./scripts/e2e-real.sh --mode smoke
+./scripts/e2e-real.sh --mode full
+```
+
+下面保留手动排查步骤，便于脚本失败时定位。
+
 1. 载入 `.lark-agent-bridge/e2e.env`。
 2. 启动 bridge：
 

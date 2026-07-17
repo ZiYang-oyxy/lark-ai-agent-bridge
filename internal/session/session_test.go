@@ -60,6 +60,40 @@ func TestResetClearsClaudeSessionAndHistory(t *testing.T) {
 	}
 }
 
+func TestGetReturnsExistingSessionWithoutCreating(t *testing.T) {
+	m := NewManager()
+	key := Key{Agent: agent.Claude, ChatID: "chat"}
+	if _, ok := m.Get(key); ok {
+		t.Fatal("Get before create should return false")
+	}
+	m.Reset(key, "/tmp/work")
+	got, ok := m.Get(key)
+	if !ok {
+		t.Fatal("Get after create should return true")
+	}
+	if got.WorkDir != "/tmp/work" {
+		t.Fatalf("workdir = %q, want /tmp/work", got.WorkDir)
+	}
+}
+
+func TestMarkCrashedClearsQueueAndAllowsNextRun(t *testing.T) {
+	m := NewManager()
+	key := Key{Agent: agent.Claude, ChatID: "chat"}
+	m.Enqueue(key, Input{Sender: "u1", Text: "first"}, "/tmp/work")
+	m.Enqueue(key, Input{Sender: "u1", Text: "second"}, "/tmp/work")
+	crashed := m.MarkCrashed(key, "/tmp/work")
+	if crashed.State != StateCrashed || len(crashed.Queue) != 0 {
+		t.Fatalf("crashed session = %#v, want crashed with empty queue", crashed)
+	}
+	next, queued := m.Enqueue(key, Input{Sender: "u1", Text: "third"}, "/tmp/work")
+	if queued {
+		t.Fatalf("next input queued after crash: %#v", next)
+	}
+	if next.State != StateRunning {
+		t.Fatalf("next state = %s, want running", next.State)
+	}
+}
+
 func TestQueuedResetClearsBeforeNextInput(t *testing.T) {
 	m := NewManager()
 	key := Key{Agent: agent.Claude, ChatID: "chat"}
