@@ -2,6 +2,7 @@ package session
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -109,12 +110,59 @@ type Session struct {
 }
 
 type Manager struct {
-	mu       sync.Mutex
-	sessions map[string]*Session
+	mu             sync.Mutex
+	sessions       map[string]*Session
+	storePath      string
+	revision       uint64
+	lastPersistErr error
+	receipts       []Receipt
 }
 
 func NewManager() *Manager {
 	return &Manager{sessions: map[string]*Session{}}
+}
+
+// NewManagerWithStore creates a manager whose durable queue and batch
+// transitions are atomically persisted to path before becoming observable.
+func NewManagerWithStore(path string) *Manager {
+	return &Manager{sessions: map[string]*Session{}, storePath: path}
+}
+
+// RecoveryNotice is the terminal handoff for a pending input that was cleared
+// during restart recovery. Queue inputs do not have a render reference; active
+// batch inputs receive their own copy of the batch render reference.
+type RecoveryNotice struct {
+	SessionID        string
+	ReplyToMessageID string
+	CardSessionID    string
+	Status           InputState
+	RenderRef        *RenderRef
+}
+
+// Restore loads the last snapshot, preserves session context, and terminates
+// every runnable pending input without replaying it. The cleaned snapshot is
+// saved before it replaces any in-memory manager state.
+func (m *Manager) Restore() ([]RecoveryNotice, error) {
+	if m.storePath == "" {
+		return nil, nil
+	}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	snapshot, err := LoadSnapshot(m.storePath)
+	if err != nil {
+		m.lastPersistErr = err
+		return nil, err
+	}
+
+	candidate, notices := restoredSessions(snapshot.Sessions)
+	receipts := cloneReceipts(snapshot.Receipts)
+
+	if err := m.persistCandidateLocked(candidate, receipts, snapshot.Revision); err != nil {
+		return nil, err
+	}
+	return notices, nil
 }
 
 func (m *Manager) GetOrCreate(key Key, workDir string) Session {
@@ -168,12 +216,17 @@ func (m *Manager) Enqueue(key Key, input Input, workDir string) (Session, bool) 
 }
 
 // EnqueueDurable appends an input to the durable-model queue without starting
-// an agent or changing session history. Persistence is intentionally layered
-// on by a later store-aware manager API.
+// an agent or changing session history. A store-aware manager first persists a
+// fully cloned candidate, so a persistence error leaves the live queue intact.
 func (m *Manager) EnqueueDurable(key Key, input Input, workDir string, limits BatchLimits) (Session, EnqueueResult, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	s := m.ensureLocked(key, workDir)
+
+	sessions := m.sessions
+	if m.storePath != "" {
+		sessions = cloneSessions(m.sessions)
+	}
+	s := ensureSessionIn(sessions, key, workDir)
 	pending := len(s.Queue)
 	if s.ActiveBatch != nil {
 		pending += len(s.ActiveBatch.Inputs)
@@ -191,6 +244,11 @@ func (m *Manager) EnqueueDurable(key Key, input Input, workDir string, limits Ba
 		input.State = InputQueued
 	}
 	s.Queue = append(s.Queue, input)
+	if m.storePath != "" {
+		if err := m.persistCandidateLocked(sessions, m.receipts, m.revision); err != nil {
+			return m.currentSessionLocked(key), EnqueueResult{}, err
+		}
+	}
 	return *cloneSession(s), EnqueueResult{Position: len(s.Queue), Queued: true}, nil
 }
 
@@ -200,19 +258,31 @@ func (m *Manager) EnqueueDurable(key Key, input Input, workDir string, limits Ba
 func (m *Manager) FreezeReadyBatch(key Key, now time.Time, limits BatchLimits) (Session, *Batch, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	s, ok := m.sessions[key.ID()]
+
+	sessions := m.sessions
+	if m.storePath != "" {
+		sessions = cloneSessions(m.sessions)
+	}
+	s, ok := sessions[key.ID()]
 	if !ok {
 		return Session{}, nil, nil
 	}
 	if s.ActiveBatch != nil {
 		return *cloneSession(s), nil, nil
 	}
+	changed := false
 	for i := range s.Queue {
 		if s.Queue[i].State == InputDebouncing && !s.Queue[i].DebounceUntil.After(now) {
 			s.Queue[i].State = InputQueued
+			changed = true
 		}
 	}
 	if len(s.Queue) == 0 || s.Queue[0].State != InputQueued {
+		if changed && m.storePath != "" {
+			if err := m.persistCandidateLocked(sessions, m.receipts, m.revision); err != nil {
+				return m.currentSessionLocked(key), nil, err
+			}
+		}
 		return *cloneSession(s), nil, nil
 	}
 
@@ -256,6 +326,11 @@ func (m *Manager) FreezeReadyBatch(key Key, now time.Time, limits BatchLimits) (
 		Inputs:    cloneInputs(inputs),
 		State:     InputStarting,
 		CreatedAt: now,
+	}
+	if m.storePath != "" {
+		if err := m.persistCandidateLocked(sessions, m.receipts, m.revision); err != nil {
+			return m.currentSessionLocked(key), nil, err
+		}
 	}
 	snapshot := cloneSession(s)
 	return *snapshot, cloneBatch(s.ActiveBatch), nil
@@ -373,17 +448,7 @@ func (m *Manager) History(id string) []Prompt {
 }
 
 func (m *Manager) ensureLocked(key Key, workDir string) *Session {
-	id := key.ID()
-	if s, ok := m.sessions[id]; ok {
-		if s.WorkDir == "" && workDir != "" {
-			s.WorkDir = workDir
-		}
-		return s
-	}
-	now := time.Now()
-	s := &Session{Key: key, ID: id, WorkDir: workDir, State: StateIdle, CreatedAt: now, LastActive: now}
-	m.sessions[id] = s
-	return s
+	return ensureSessionIn(m.sessions, key, workDir)
 }
 
 func resetSessionLocked(s *Session, workDir string, now time.Time) {
@@ -417,6 +482,129 @@ func cloneSession(s *Session) *Session {
 	cp.Queue = cloneInputs(s.Queue)
 	cp.ActiveBatch = cloneBatch(s.ActiveBatch)
 	return &cp
+}
+
+func ensureSessionIn(sessions map[string]*Session, key Key, workDir string) *Session {
+	id := key.ID()
+	if s, ok := sessions[id]; ok {
+		if s.WorkDir == "" && workDir != "" {
+			s.WorkDir = workDir
+		}
+		return s
+	}
+	now := time.Now()
+	s := &Session{Key: key, ID: id, WorkDir: workDir, State: StateIdle, CreatedAt: now, LastActive: now}
+	sessions[id] = s
+	return s
+}
+
+func (m *Manager) currentSessionLocked(key Key) Session {
+	s, ok := m.sessions[key.ID()]
+	if !ok {
+		return Session{}
+	}
+	return *cloneSession(s)
+}
+
+func (m *Manager) persistCandidateLocked(sessions map[string]*Session, receipts []Receipt, revision uint64) error {
+	nextRevision := revision + 1
+	snapshot := Snapshot{
+		Revision: revision + 1,
+		SavedAt:  time.Now().UTC(),
+		Sessions: snapshotSessions(sessions),
+		Receipts: cloneReceipts(receipts),
+	}
+	if err := SaveSnapshot(m.storePath, snapshot); err != nil {
+		m.lastPersistErr = err
+		return err
+	}
+	m.sessions = sessions
+	m.receipts = cloneReceipts(receipts)
+	m.revision = nextRevision
+	m.lastPersistErr = nil
+	return nil
+}
+
+func restoredSessions(sessions []Session) (map[string]*Session, []RecoveryNotice) {
+	candidate := make(map[string]*Session, len(sessions))
+	var notices []RecoveryNotice
+	for i := range sessions {
+		s := cloneSession(&sessions[i])
+		for _, input := range s.Queue {
+			if status, ok := recoveryStatus(input.State, ""); ok {
+				notices = append(notices, RecoveryNotice{
+					SessionID:        s.ID,
+					ReplyToMessageID: input.ReplyToMessageID,
+					CardSessionID:    input.CardSessionID,
+					Status:           status,
+				})
+			}
+		}
+		if s.ActiveBatch != nil {
+			for _, input := range s.ActiveBatch.Inputs {
+				if status, ok := recoveryStatus(input.State, s.ActiveBatch.State); ok {
+					notices = append(notices, RecoveryNotice{
+						SessionID:        s.ID,
+						ReplyToMessageID: input.ReplyToMessageID,
+						CardSessionID:    input.CardSessionID,
+						Status:           status,
+						RenderRef:        cloneRenderRef(s.ActiveBatch.RenderRef),
+					})
+				}
+			}
+		}
+		s.Queue = nil
+		s.ActiveBatch = nil
+		s.State = StateIdle
+		id := s.ID
+		if id == "" {
+			id = s.Key.ID()
+			s.ID = id
+		}
+		candidate[id] = s
+	}
+	return candidate, notices
+}
+
+func recoveryStatus(state, fallback InputState) (InputState, bool) {
+	if state == "" {
+		state = fallback
+	}
+	switch state {
+	case InputDebouncing, InputQueued, InputStarting:
+		return InputCancelled, true
+	case InputRunning:
+		return InputInterrupted, true
+	default:
+		return "", false
+	}
+}
+
+func cloneSessions(sessions map[string]*Session) map[string]*Session {
+	cp := make(map[string]*Session, len(sessions))
+	for id, s := range sessions {
+		cp[id] = cloneSession(s)
+	}
+	return cp
+}
+
+func snapshotSessions(sessions map[string]*Session) []Session {
+	list := make([]Session, 0, len(sessions))
+	for _, s := range sessions {
+		list = append(list, *cloneSession(s))
+	}
+	sort.Slice(list, func(i, j int) bool {
+		left, right := list[i].Key.ID(), list[j].Key.ID()
+		if left == right {
+			return list[i].ID < list[j].ID
+		}
+		return left < right
+	})
+	return list
+}
+
+func cloneReceipts(receipts []Receipt) []Receipt {
+	return append([]Receipt(nil), receipts...)
 }
 
 func compatibleBatchInput(first, next Input) bool {
