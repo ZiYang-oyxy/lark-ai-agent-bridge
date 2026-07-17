@@ -59,8 +59,7 @@ Required event subscriptions:
 - `card.action.trigger`
 - `im.message.recalled_v1` for prompt revoke cancellation.
 
-The bridge app has been verified to receive `im.message.recalled_v1` for an active run in `.cache/e2e-recall-real/recall-20260717-211336/audit.jsonl`.
-The active, pending-workdir, and queued-input revoke cases passed together in `.cache/e2e/real-20260717-214110/summary.md`.
+Recall is an external subscription dependency, not a bridge-generated event. A real run must show a new `message_recalled_*` audit line after each delete. The first Core Task 9 window in `.cache/evidence/1c7d3bf/core-real/` received no recall event at all, so `recall_state` correctly failed instead of treating deletion success as delivery. Check the app's published event subscription/version and tenant installation before rerunning recall cases.
 
 Recommended existing subscriptions for diagnostics:
 
@@ -125,6 +124,8 @@ Keep the bridge process alive after failure:
 ./scripts/e2e-real.sh --mode full --keep-server-on-fail
 ```
 
+Without `--keep-server-on-fail`, a failed non-preflight case restarts the bridge before the next case. This clears any blocking fake child and pending scope state so one failure does not contaminate later evidence.
+
 Use a custom evidence directory or default workdir:
 
 ```bash
@@ -152,16 +153,16 @@ Full-only cases:
 - `message_revoke`: revokes the current `lark-cli` user's own active prompt message and verifies the next request is not blocked by a leaked run.
 - `message_revoke_pending_workdir`: revokes a prompt waiting on workdir creation and verifies the workdir is not created and Claude does not start.
 - `message_revoke_queued_input`: revokes a queued prompt and verifies it is not dequeued after the active run is stopped.
-- `session_restart_context`: completes a request, restarts the bridge with the same session store, then verifies a follow-up CardKit result and the fake child argv contains `--resume fake-e2e-session`.
+- `session_restart_context`: completes `/new` and a follow-up plain message in the same stable root chat scope across restart, then verifies the post-offset fake child invocation contains both the follow-up marker and `--resume fake-e2e-session`.
 - `restart_queued_cancel`: kills a bridge with a queued input, verifies `session_recovery_cancelled`, proves the old marker did not start after restart, and verifies a fresh request completes.
 - `restart_running_interrupted`: kills a bridge while a fake child is running, verifies `session_recovery_interrupted`, proves the old marker did not restart, and verifies a fresh request completes.
-- `debounce_dm`: runs the precise local DM debounce unit test (`250ms`) and verifies the same real CardKit/audit batching lifecycle. It does not claim a P2P Feishu run because the available test identity is group-only.
-- `debounce_group`: sends two group inputs in one debounce window and verifies one fake child argv contains both markers plus the final CardKit result.
-- `busy_merge`: queues two compatible inputs behind a running child, cancels the active prompt, and verifies the next fake child argv contains both queued markers and completes one final card.
-- `queue_full`: restarts with `E2E_QUEUE_MAX_PENDING=2`, verifies `queue_rejected`, the rejection card text, and that the rejected marker never starts a child process.
-- `scope_parallel`: creates two thread scopes, verifies both blocking child processes start before either is cancelled, then verifies both active-cancel audit events.
+- `debounce_dm`: uses `--user-id "$BOT_OPEN_ID"` to concurrently send two real P2P plain messages, then verifies one post-offset fake invocation contains both markers. An invalid cross-app open_id is a recorded nonzero failure; there is no group fallback.
+- `debounce_group`: concurrently sends two plain group messages without `/new` and verifies one post-offset fake invocation contains both markers plus the final CardKit result.
+- `busy_merge`: queues two compatible plain inputs behind a running child, stops the active batch through loopback `stop_card`, and verifies the next fake child argv contains both queued markers and completes one final card.
+- `queue_full`: restarts with `E2E_QUEUE_MAX_PENDING=2`, verifies `queue_rejected`, the rejection card text, that the rejected marker never starts a child process, then uses loopback `stop_card` so the accepted queued input can complete.
+- `scope_parallel`: creates two thread scopes, reads both actual `thread_id` values through `mget`, verifies both blocking child processes start, and constructs exact thread-scoped card session ids for loopback stop cleanup.
 - `stop_preserves_queue`: posts a real stop action to the bridge's local `/card/callback` compatibility endpoint, verifies `batch_stop_requested` and the stopped active card, then verifies the already queued input starts and reaches a final CardKit result. This endpoint is intentionally local to the E2E bridge process; production button delivery remains long connection `card.action.trigger`.
-- `recall_state`: recalls a queued input and then its active input, verifies both recall audit states, the active stopped card, and no result card for the recalled queued marker.
+- `recall_state`: exclusively verifies real `im.message.recalled_v1` delivery by recalling a queued input and then its active input, requiring new offset-bounded recall audit states, the active stopped card, and no result card for the recalled queued marker. Missing subscription delivery is an expected external blocker and remains a nonzero failure.
 
 The restart cases codify the durable contract exactly: context resumes, pending does not. `debouncing`, `queued`, and `starting` inputs become `cancelled`; `running` becomes `interrupted`; old commands are never automatically re-run, so the user must send a new message after restart.
 

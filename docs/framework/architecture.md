@@ -59,8 +59,8 @@ bridge 当前不再托管交互式终端，也不再通过 tmux/PTY 捕获输出
 - 同一 chat/topic 内串行执行。
 - 执行中收到同一 chat/topic 的新输入时进入该 scope 的持久化队列，并产生 `reaction` 事件提示已排队；兼容的运行时排队输入会按 debounce 窗口合并为下一批 Claude 调用，不保证每条输入各自启动一次子进程。
 - 不同 topic 使用不同 key，可以并行运行各自的 Claude 子进程。
-- 非 topic 普通文本默认新建会话。
-- topic 普通文本默认继续当前 topic 会话；`/new` 会重置当前 topic 会话。
+- 普通文本无论是否位于 topic，都续接当前 chat/topic scope；它不会隐式创建 session boundary，因此同一 debounce cohort 可以合并。
+- 只有显式 `/new` 会重置当前 scope 的 Claude session，并作为独占 batch boundary。
 - 队列上限按单一 scope 的 pending input 计算，满时拒绝新输入且不写入去重 receipt。
 - 个人版不设置全局 semaphore、跨 scope FIFO 或公平性调度；唯一的顺序保证是同一 scope 串行，不同 scope 可并行。
 
@@ -99,7 +99,7 @@ CardKit 卡片负责展示一次 Claude 请求的状态：
 
 长输出由 `E2E_CARD_MAX_CHARS` 控制，避免超过飞书卡片限制。
 
-按钮处理生产路径只使用飞书长连接 `card.action.trigger`。stop/create/cancel action 会同步返回终态卡片，让飞书客户端立即置灰按钮；同时 bridge 仍通过 CardKit update 写入同一终态作为兜底和审计证据。设置 `E2E_CALLBACK_ADDR` 后，`serve` 会额外启动 `/card/callback` HTTP 兼容入口；该入口仅用于本地调试和迁移期验证，不作为真实 E2E 依赖。
+按钮处理生产路径只使用飞书长连接 `card.action.trigger`。stop/create/cancel action 会同步返回终态卡片，让飞书客户端立即置灰按钮；同时 bridge 仍通过 CardKit update 写入同一终态作为兜底和审计证据。设置 `E2E_CALLBACK_ADDR` 后，`serve` 会额外启动 `/card/callback` HTTP 兼容入口；该入口仅用于本地调试、迁移期验证和 real-Lark E2E 中对 service stop 生命周期的确定性触发，不替代生产长连接回调。
 
 ## 生命周期
 

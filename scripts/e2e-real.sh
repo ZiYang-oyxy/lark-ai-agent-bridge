@@ -378,6 +378,8 @@ stop_server() {
       return 1
     fi
     if [[ "$force_kill_children" -eq 1 && -n "$child_pids" ]]; then
+      # child_pids intentionally contains one whitespace-separated PID per line.
+      # shellcheck disable=SC2086
       kill -KILL $child_pids >/dev/null 2>&1 || true
       local child_pid
       for child_pid in $child_pids; do
@@ -441,6 +443,62 @@ send_text() {
   printf '%s\n' "$msg_id"
 }
 
+send_group_pair() {
+  local first_text="$1"
+  local second_text="$2"
+  local tag="${first_text//[^A-Za-z0-9._-]/_}"
+  local first_out="$RUN_DIR/group-pair-${tag}-first.out"
+  local second_out="$RUN_DIR/group-pair-${tag}-second.out"
+  local first_err="$RUN_DIR/group-pair-${tag}-first.err"
+  local second_err="$RUN_DIR/group-pair-${tag}-second.err"
+  local first_pid second_pid first_status=0 second_status=0
+  send_at "$first_text" >"$first_out" 2>"$first_err" &
+  first_pid=$!
+  send_at "$second_text" >"$second_out" 2>"$second_err" &
+  second_pid=$!
+  wait "$first_pid" || first_status=$?
+  wait "$second_pid" || second_status=$?
+  if [[ "$first_status" -ne 0 || "$second_status" -ne 0 ]]; then
+    echo "concurrent group send failed: first=$first_status second=$second_status" >&2
+    sed -n '1,80p' "$first_err" "$second_err" >&2
+    return 1
+  fi
+  PAIR_FIRST="$(tail -n 1 "$first_out")"
+  PAIR_SECOND="$(tail -n 1 "$second_out")"
+  if [[ -z "$PAIR_FIRST" || "$PAIR_FIRST" == "null" || -z "$PAIR_SECOND" || "$PAIR_SECOND" == "null" ]]; then
+    echo "concurrent group send returned an empty message id" >&2
+    return 1
+  fi
+}
+
+send_dm_pair() {
+  local first_text="$1"
+  local second_text="$2"
+  local tag="${first_text//[^A-Za-z0-9._-]/_}"
+  local first_out="$RUN_DIR/dm-pair-${tag}-first.out"
+  local second_out="$RUN_DIR/dm-pair-${tag}-second.out"
+  local first_err="$RUN_DIR/dm-pair-${tag}-first.err"
+  local second_err="$RUN_DIR/dm-pair-${tag}-second.err"
+  local first_pid second_pid first_status=0 second_status=0
+  lark-cli im +messages-send --as user --user-id "$BOT_OPEN_ID" --text "$first_text" --jq '.data.message_id // .message_id // .data.message_id' >"$first_out" 2>"$first_err" &
+  first_pid=$!
+  lark-cli im +messages-send --as user --user-id "$BOT_OPEN_ID" --text "$second_text" --jq '.data.message_id // .message_id // .data.message_id' >"$second_out" 2>"$second_err" &
+  second_pid=$!
+  wait "$first_pid" || first_status=$?
+  wait "$second_pid" || second_status=$?
+  if [[ "$first_status" -ne 0 || "$second_status" -ne 0 ]]; then
+    echo "real P2P send to bot open_id failed: first=$first_status second=$second_status; see $first_err and $second_err" >&2
+    sed -n '1,80p' "$first_err" "$second_err" >&2
+    return 1
+  fi
+  PAIR_FIRST="$(tail -n 1 "$first_out")"
+  PAIR_SECOND="$(tail -n 1 "$second_out")"
+  if [[ -z "$PAIR_FIRST" || "$PAIR_FIRST" == "null" || -z "$PAIR_SECOND" || "$PAIR_SECOND" == "null" ]]; then
+    echo "real P2P send returned an empty message id; bot open_id may not be valid as --user-id" >&2
+    return 1
+  fi
+}
+
 reply_thread() {
   local root_msg="$1"
   local text="$2"
@@ -459,6 +517,19 @@ mget() {
   local out="$MGET_DIR/$case_name-$msg_id.json"
   lark-cli im +messages-mget --as user --message-ids "$msg_id" --format json >"$out"
   printf '%s\n' "$out"
+}
+
+thread_id_for_message() {
+  local case_name="$1"
+  local msg_id="$2"
+  local file thread_id
+  file="$(mget "$case_name" "$msg_id")"
+  thread_id="$(jq -r '.data.messages[0].thread_id // empty' "$file")"
+  if [[ -z "$thread_id" || "$thread_id" == "null" ]]; then
+    echo "message has no actual thread_id: $msg_id (evidence: $file)" >&2
+    return 1
+  fi
+  printf '%s\n' "$thread_id"
 }
 
 message_link() {
@@ -527,6 +598,24 @@ wait_audit_since() {
     fi
     sleep 1
   done
+}
+
+result_message_since() {
+  local mark="$1"
+  local first="$2"
+  local second="$3"
+  local line
+  line="$(audit_since "$mark" | grep -E "($first|$second).*event=result" | tail -n 1)"
+  if [[ "$line" == *"$first"* ]]; then
+    printf '%s\n' "$first"
+    return
+  fi
+  if [[ "$line" == *"$second"* ]]; then
+    printf '%s\n' "$second"
+    return
+  fi
+  echo "could not identify batch result anchor for $first / $second" >&2
+  return 1
 }
 
 assert_file_contains() {
@@ -869,39 +958,44 @@ case_restart_running_interrupted() {
 
 case_debounce_dm() {
   require_fake_claude
-  # The available real account is group-only. Keep the 250 ms DM rule covered
-  # locally, then prove the same batch lifecycle through a real CardKit run.
-  go test ./internal/bridge -run '^TestDebounceForMessage$'
   local first_marker="E2E_${RUN_ID}_DM_DEBOUNCE_ONE"
   local second_marker="E2E_${RUN_ID}_DM_DEBOUNCE_TWO"
-  local first second file log_mark
+  local first second anchor file log_mark mark
   log_mark="$(fake_log_mark)"
-  first="$(send_at "/new ${first_marker}")"
-  second="$(send_at "$second_marker")"
-  wait_audit "$second.*event=result" 60
+  mark="$(audit_mark)"
+  send_dm_pair "$first_marker" "$second_marker"
+  first="$PAIR_FIRST"
+  second="$PAIR_SECOND"
+  wait_audit_since "$mark" "($first|$second).*event=result" 60
   wait_file_contains "$FAKE_CLAUDE_LOG" "$second_marker" 60
   assert_fake_batch_contains "$log_mark" "$first_marker" "$second_marker"
-  file="$(mget debounce_dm "$second")"
+  anchor="$(result_message_since "$mark" "$first" "$second")"
+  file="$(mget debounce_dm "$anchor")"
   assert_file_contains "$file" "FAKE_E2E_STARTED"
   record_message debounce_dm first "$first"
-  record_message debounce_dm second "$second" "$file"
+  record_message debounce_dm second "$second"
+  record_message debounce_dm result_anchor "$anchor" "$file"
 }
 
 case_debounce_group() {
   require_fake_claude
   local first_marker="E2E_${RUN_ID}_GROUP_DEBOUNCE_ONE"
   local second_marker="E2E_${RUN_ID}_GROUP_DEBOUNCE_TWO"
-  local first second file log_mark
+  local first second anchor file log_mark mark
   log_mark="$(fake_log_mark)"
-  first="$(send_at "/new ${first_marker}")"
-  second="$(send_at "$second_marker")"
-  wait_audit "$second.*event=result" 60
+  mark="$(audit_mark)"
+  send_group_pair "$first_marker" "$second_marker"
+  first="$PAIR_FIRST"
+  second="$PAIR_SECOND"
+  wait_audit_since "$mark" "($first|$second).*event=result" 60
   wait_file_contains "$FAKE_CLAUDE_LOG" "$second_marker" 60
   assert_fake_batch_contains "$log_mark" "$first_marker" "$second_marker"
-  file="$(mget debounce_group "$second")"
+  anchor="$(result_message_since "$mark" "$first" "$second")"
+  file="$(mget debounce_group "$anchor")"
   assert_file_contains "$file" "FAKE_E2E_STARTED"
   record_message debounce_group first "$first"
-  record_message debounce_group second "$second" "$file"
+  record_message debounce_group second "$second"
+  record_message debounce_group result_anchor "$anchor" "$file"
 }
 
 case_busy_merge() {
@@ -909,22 +1003,25 @@ case_busy_merge() {
   local active_marker="E2E_${RUN_ID}_BUSY_ACTIVE_E2E_BLOCK"
   local first_marker="E2E_${RUN_ID}_BUSY_MERGE_ONE"
   local second_marker="E2E_${RUN_ID}_BUSY_MERGE_TWO"
-  local active first second file log_mark
+  local active first second anchor file log_mark mark
   active="$(send_at "/new ${active_marker}")"
   wait_audit "$active.*event=stream" 60
   log_mark="$(fake_log_mark)"
-  first="$(send_at "$first_marker")"
-  second="$(send_at "$second_marker")"
+  mark="$(audit_mark)"
+  send_group_pair "$first_marker" "$second_marker"
+  first="$PAIR_FIRST"
+  second="$PAIR_SECOND"
   wait_file_contains "$FAKE_CLAUDE_LOG" "$active_marker" 60
-  revoke_message "$active"
-  wait_audit "message_recalled_active_cancelled.*$active" 60
-  wait_audit "$second.*event=result" 60
+  stop_card "claude:${E2E_E2E_CHAT_ID}:message:${active}"
+  wait_audit_since "$mark" '"Action":"batch_stop_requested"' 60
+  wait_audit_since "$mark" "($first|$second).*event=result" 60
   assert_fake_batch_contains "$log_mark" "$first_marker" "$second_marker"
-  file="$(mget busy_merge "$second")"
+  anchor="$(result_message_since "$mark" "$first" "$second")"
+  file="$(mget busy_merge "$anchor")"
   assert_file_contains "$file" "FAKE_E2E_STARTED"
   record_message busy_merge active "$active"
   record_message busy_merge first "$first"
-  record_message busy_merge merged "$second" "$file"
+  record_message busy_merge merged "$anchor" "$file"
 }
 
 case_queue_full() {
@@ -932,7 +1029,7 @@ case_queue_full() {
   local active_marker="E2E_${RUN_ID}_QUEUE_FULL_ACTIVE_E2E_BLOCK"
   local queued_marker="E2E_${RUN_ID}_QUEUE_FULL_QUEUED"
   local rejected_marker="E2E_${RUN_ID}_QUEUE_FULL_REJECTED"
-  local active queued rejected file mark
+  local active queued rejected file mark stop_mark
   SERVER_QUEUE_MAX_PENDING=2
   restart_server TERM
   active="$(send_at "/new ${active_marker}")"
@@ -950,8 +1047,9 @@ case_queue_full() {
     echo "queue-full input unexpectedly started a fake Claude process" >&2
     return 1
   fi
-  revoke_message "$active"
-  wait_audit "message_recalled_active_cancelled.*$active" 60
+  stop_mark="$(audit_mark)"
+  stop_card "claude:${E2E_E2E_CHAT_ID}:message:${active}"
+  wait_audit_since "$stop_mark" '"Action":"batch_stop_requested"' 60
   wait_audit "$queued.*event=result" 60
   SERVER_QUEUE_MAX_PENDING=""
   restart_server TERM
@@ -962,7 +1060,7 @@ case_queue_full() {
 
 case_scope_parallel() {
   require_fake_claude
-  local root_one root_two one two
+  local root_one root_two one two thread_one thread_two one_file two_file mark
   local one_marker="E2E_${RUN_ID}_SCOPE_ONE_E2E_BLOCK"
   local two_marker="E2E_${RUN_ID}_SCOPE_TWO_E2E_BLOCK"
   root_one="$(send_text "E2E_${RUN_ID}_SCOPE_ROOT_ONE")"
@@ -974,14 +1072,26 @@ case_scope_parallel() {
   wait_file_contains "$FAKE_CLAUDE_LOG" "$one_marker" 60
   wait_file_contains "$FAKE_CLAUDE_LOG" "$two_marker" 60
   kill -0 "$SERVER_PID" >/dev/null 2>&1
-  revoke_message "$one"
-  revoke_message "$two"
-  wait_audit "message_recalled_active_cancelled.*$one" 60
-  wait_audit "message_recalled_active_cancelled.*$two" 60
+  thread_one="$(thread_id_for_message scope_parallel_thread_one "$one")"
+  thread_two="$(thread_id_for_message scope_parallel_thread_two "$two")"
+  if [[ "$thread_one" == "$thread_two" ]]; then
+    echo "parallel case resolved the same thread twice: $thread_one" >&2
+    return 1
+  fi
+  mark="$(audit_mark)"
+  stop_card "claude:${E2E_E2E_CHAT_ID}:thread:${thread_one}:message:${one}"
+  wait_audit_since "$mark" "batch_stop_requested.*thread:${thread_one}" 60
+  mark="$(audit_mark)"
+  stop_card "claude:${E2E_E2E_CHAT_ID}:thread:${thread_two}:message:${two}"
+  wait_audit_since "$mark" "batch_stop_requested.*thread:${thread_two}" 60
+  one_file="$(mget scope_parallel "$one")"
+  two_file="$(mget scope_parallel "$two")"
+  assert_file_contains "$one_file" "已停止"
+  assert_file_contains "$two_file" "已停止"
   record_message scope_parallel root_one "$root_one"
   record_message scope_parallel root_two "$root_two"
-  record_message scope_parallel scope_one "$one"
-  record_message scope_parallel scope_two "$two"
+  record_message scope_parallel scope_one "$one" "$one_file"
+  record_message scope_parallel scope_two "$two" "$two_file"
 }
 
 case_stop_preserves_queue() {
@@ -1018,10 +1128,12 @@ case_recall_state() {
   mark="$(audit_mark)"
   queued="$(send_at "$queued_marker")"
   wait_audit_since "$mark" '"Action":"queue_input"' 60
+  mark="$(audit_mark)"
   revoke_message "$queued"
-  wait_audit "message_recalled_queued_cancelled.*$queued" 60
+  wait_audit_since "$mark" "message_recalled_queued_cancelled.*$queued" 60
+  mark="$(audit_mark)"
   revoke_message "$active"
-  wait_audit "message_recalled_active_cancelled.*$active" 60
+  wait_audit_since "$mark" "message_recalled_active_cancelled.*$active" 60
   sleep 2
   assert_fake_marker_not_started_after "$queued_marker" "$before"
   file="$(mget recall_state "$active")"
@@ -1043,14 +1155,17 @@ run_case() {
   status=$?
   set -e
   sync_server_pid >/dev/null 2>&1 || true
-  if [[ "$name" == "queue_full" && "$status" -ne 0 ]]; then
+  if [[ "$name" != "preflight" && "$status" -ne 0 && "$KEEP_SERVER_ON_FAIL" -eq 0 ]]; then
     set +e
+    # Recovery output intentionally joins the case-specific evidence log.
+    # shellcheck disable=SC2129
+    echo "case failed; restarting bridge to clear active processes and pending input" >>"$RUN_DIR/$name.log"
     stop_server TERM >>"$RUN_DIR/$name.log" 2>&1
-    restart_server TERM >>"$RUN_DIR/$name.log" 2>&1
-    local reset_status=$?
+    start_server_if_needed recovery >>"$RUN_DIR/$name.log" 2>&1
+    local recovery_status=$?
     set -e
-    if [[ "$reset_status" -ne 0 ]]; then
-      status="$reset_status"
+    if [[ "$recovery_status" -ne 0 ]]; then
+      echo "bridge recovery after failed case also failed" >>"$RUN_DIR/$name.log"
     fi
   fi
   local elapsed=$(( $(date +%s) - start ))

@@ -32,10 +32,10 @@ func TestParseNewAllowsEmptyPrompt(t *testing.T) {
 	}
 }
 
-func TestParsePlainTextOutsideTopicDefaultsToNewRun(t *testing.T) {
+func TestParsePlainTextOutsideTopicContinuesScope(t *testing.T) {
 	cmd := ParseCommand(Message{Text: "hello"}, agent.Claude)
-	if cmd.Type != CommandRun || cmd.Agent != agent.Claude || !cmd.Reset {
-		t.Fatalf("cmd = %#v, want reset claude run", cmd)
+	if cmd.Type != CommandRun || cmd.Agent != agent.Claude || cmd.Reset {
+		t.Fatalf("cmd = %#v, want non-reset claude run", cmd)
 	}
 }
 

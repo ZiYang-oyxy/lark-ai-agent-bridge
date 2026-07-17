@@ -174,6 +174,66 @@ func TestServiceQueuesRunUntilExplicitDrain(t *testing.T) {
 	waitForCalls(t, runner, 1)
 }
 
+func TestServiceBatchesPlainDMInputsWithinDebounceCohort(t *testing.T) {
+	cfg := testConfig(t)
+	renderer := card.NewFakeRenderer()
+	runner := newFakeRunner()
+	svc := NewService(cfg, renderer, runner, audit.NewRecorder())
+	now := time.Now()
+	for _, msg := range []Message{
+		{ID: "dm-1", ChatID: "dm-chat", Sender: "u", Text: "first", Time: now},
+		{ID: "dm-2", ChatID: "dm-chat", Sender: "u", Text: "second", Time: now.Add(100 * time.Millisecond)},
+	} {
+		if err := svc.HandleMessage(context.Background(), msg); err != nil {
+			t.Fatalf("handle %s: %v", msg.ID, err)
+		}
+	}
+	if err := svc.DrainReady(now.Add(349 * time.Millisecond)); err != nil {
+		t.Fatal(err)
+	}
+	if got := len(runner.Calls()); got != 0 {
+		t.Fatalf("runner calls before DM cohort deadline = %d, want 0", got)
+	}
+	if err := svc.DrainReady(now.Add(350 * time.Millisecond)); err != nil {
+		t.Fatal(err)
+	}
+	waitForCalls(t, runner, 1)
+	calls := runner.Calls()
+	if len(calls) != 1 || !containsAll(calls[0].Prompt, "first", "second") || strings.Index(calls[0].Prompt, "first") > strings.Index(calls[0].Prompt, "second") {
+		t.Fatalf("runner calls = %#v, want one ordered DM batch", calls)
+	}
+}
+
+func TestServiceBatchesPlainGroupInputsWithinDebounceCohort(t *testing.T) {
+	cfg := testConfig(t)
+	renderer := card.NewFakeRenderer()
+	runner := newFakeRunner()
+	svc := NewService(cfg, renderer, runner, audit.NewRecorder())
+	now := time.Now()
+	for _, msg := range []Message{
+		{ID: "group-1", ChatID: "group-chat", Sender: "u", Text: "first", Time: now, IsGroup: true, Mentioned: true},
+		{ID: "group-2", ChatID: "group-chat", Sender: "u", Text: "second", Time: now.Add(100 * time.Millisecond), IsGroup: true, Mentioned: true},
+	} {
+		if err := svc.HandleMessage(context.Background(), msg); err != nil {
+			t.Fatalf("handle %s: %v", msg.ID, err)
+		}
+	}
+	if err := svc.DrainReady(now.Add(699 * time.Millisecond)); err != nil {
+		t.Fatal(err)
+	}
+	if got := len(runner.Calls()); got != 0 {
+		t.Fatalf("runner calls before group cohort deadline = %d, want 0", got)
+	}
+	if err := svc.DrainReady(now.Add(700 * time.Millisecond)); err != nil {
+		t.Fatal(err)
+	}
+	waitForCalls(t, runner, 1)
+	calls := runner.Calls()
+	if len(calls) != 1 || !containsAll(calls[0].Prompt, "first", "second") || strings.Index(calls[0].Prompt, "first") > strings.Index(calls[0].Prompt, "second") {
+		t.Fatalf("runner calls = %#v, want one ordered group batch", calls)
+	}
+}
+
 func TestInitialCardRenderFailureDoesNotStartRunnerOrLeakActiveRun(t *testing.T) {
 	cfg := testConfig(t)
 	fake := card.NewFakeRenderer()
@@ -311,7 +371,7 @@ func TestPlainTextAfterReadySessionKeepsWorkDir(t *testing.T) {
 		t.Fatalf("runner workdir = %q, want %q", calls[0].WorkDir, workDir)
 	}
 	if calls[0].ClaudeSessionID != "" {
-		t.Fatalf("plain top-level message should start a fresh Claude session, got %q", calls[0].ClaudeSessionID)
+		t.Fatalf("ready scope has no stored Claude session yet, got %q", calls[0].ClaudeSessionID)
 	}
 	waitForEvents(t, renderer, 3)
 	events := renderer.Events()

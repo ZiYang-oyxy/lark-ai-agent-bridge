@@ -26,8 +26,8 @@ GOCACHE=$PWD/.cache/go-build go test ./...
 - 单 scope queue full 拒绝且不记录 receipt
 - 同 chat/topic 串行、不同 topic 并行；busy scope 的兼容输入合并为下一批，而不是每条排队输入各跑一次
 - stop 和 recall 保留/移除队列输入的对应生命周期
-- topic 普通文本续接内部 Claude session
-- `/new` 重置当前会话
+- 普通文本在根 chat 和 topic 中都续接当前 scope，并可在 DM `250ms` / group `600ms` cohort 内合并
+- 只有 `/new` 重置当前会话并形成独占 batch boundary
 - Claude one-shot 命令构造和 stream-json 解析
 - CardKit 流式更新、标题颜色和 `⏱` 耗时、分栏底部状态栏、折叠面板、停止按钮、工作目录确认按钮
 - 工作目录创建、取消和超时
@@ -257,7 +257,7 @@ lark-cli im +messages-reply --as user \
 
 当前飞书事件权限下，群话题内不 @bot 的普通文本不会推送到 bridge；可作为负向验证。带 @ 的话题回复应进入 `chat_id + thread_id` 对应会话，并创建新的执行卡片。
 
-单聊 E2E 暂缓。当前用户态 `lark-cli` 与 bridge app 不同，直接按 bot open_id 发送 P2P 可能触发 `open_id cross app`；后续需要同 bridge app 用户 OAuth profile，或手动建立 P2P 后记录 chat_id。
+`debounce_dm` 会使用 `lark-cli im +messages-send --as user --user-id "$BOT_OPEN_ID"` 并发发送两条真实 P2P 普通消息。若当前用户态 `lark-cli` 与 bridge app 的 open_id 域不兼容，case 必须非零失败并保留 `dm-pair-*.err`，不得回退到群聊冒充 DM；此时需改用同 bridge app 的用户 OAuth profile 或有效 P2P user id 后重跑。
 
 ## 证据报告
 

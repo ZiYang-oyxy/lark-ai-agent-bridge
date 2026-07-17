@@ -36,7 +36,7 @@ func ParseCommand(msg Message, defaultAgent agent.Kind) Command {
 		return Command{Type: CommandIgnored, Raw: raw}
 	}
 	if !strings.HasPrefix(raw, "/") {
-		return Command{Type: CommandRun, Agent: defaultAgent, Text: raw, Reset: msg.ThreadID == "", Raw: raw}
+		return Command{Type: CommandRun, Agent: defaultAgent, Text: raw, Raw: raw}
 	}
 	name, rest := splitCommand(raw)
 	switch name {
@@ -105,6 +105,6 @@ func HelpText() string {
 		"/status - show the current chat/topic session status",
 		"/help - show this help",
 		"",
-		"Plain text in a topic continues that topic session. Plain text outside a topic starts a new Claude session.",
+		"Plain text continues the current chat/topic session. Use /new to start a new Claude session.",
 	}, "\n")
 }
