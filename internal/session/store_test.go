@@ -57,6 +57,62 @@ func TestSnapshotRoundTrip(t *testing.T) {
 	}
 }
 
+func TestSaveSnapshotRestrictsExistingParentDirectory(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "snapshots")
+	if err := os.Mkdir(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := SaveSnapshot(filepath.Join(dir, "sessions.json"), Snapshot{}); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0o700 {
+		t.Fatalf("parent mode = %v, want 0700", info.Mode().Perm())
+	}
+}
+
+func TestSaveSnapshotRenameFailurePreservesTargetDirectoryAndCleansTempFile(t *testing.T) {
+	parent := t.TempDir()
+	path := filepath.Join(parent, "sessions.json")
+	if err := os.Mkdir(path, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	keepPath := filepath.Join(path, "keep")
+	want := []byte("keep")
+	if err := os.WriteFile(keepPath, want, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := SaveSnapshot(path, Snapshot{}); err == nil {
+		t.Fatal("expected rename error")
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !info.IsDir() {
+		t.Fatalf("target mode = %v, want directory", info.Mode())
+	}
+	got, err := os.ReadFile(keepPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, want) {
+		t.Fatalf("target content = %q, want %q", got, want)
+	}
+	tmpFiles, err := filepath.Glob(filepath.Join(parent, ".sessions-*.tmp"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tmpFiles) != 0 {
+		t.Fatalf("temporary snapshot files remain: %v", tmpFiles)
+	}
+}
+
 func TestLoadSnapshotReturnsCurrentEmptySnapshotWhenMissing(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "sessions.json")
 

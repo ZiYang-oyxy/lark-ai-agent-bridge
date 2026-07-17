@@ -35,6 +35,9 @@ func SaveSnapshot(path string, snapshot Snapshot) error {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return fmt.Errorf("create session snapshot directory: %w", err)
 	}
+	if err := os.Chmod(dir, 0o700); err != nil {
+		return fmt.Errorf("set session snapshot directory permissions: %w", err)
+	}
 	data, err := json.MarshalIndent(snapshot, "", "  ")
 	if err != nil {
 		return fmt.Errorf("encode session snapshot: %w", err)
