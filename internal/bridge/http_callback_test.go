@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"lark-agent-bridge/internal/audit"
 	"lark-agent-bridge/internal/card"
@@ -19,6 +20,9 @@ func TestCallbackHTTPHandlerDispatchesAction(t *testing.T) {
 	runner.block = make(chan struct{})
 	service := NewService(cfg, renderer, runner, audit.NewRecorder())
 	if err := service.HandleMessage(t.Context(), Message{ID: "msg-1", ChatID: "chat", Sender: "u1", Text: "/new hello"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.DrainReady(time.Now().Add(time.Second)); err != nil {
 		t.Fatal(err)
 	}
 	<-runner.started
