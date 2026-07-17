@@ -18,9 +18,11 @@ type Event struct {
 }
 
 type Recorder struct {
-	mu     sync.Mutex
-	events []Event
-	writer io.Writer
+	mu           sync.Mutex
+	events       []Event
+	writer       io.Writer
+	writeErrs    int
+	lastWriteErr error
 }
 
 func NewRecorder() *Recorder {
@@ -43,8 +45,27 @@ func (r *Recorder) Record(actor, action, sessionID, detail string) {
 	}
 	r.events = append(r.events, event)
 	if r.writer != nil {
-		_ = json.NewEncoder(r.writer).Encode(event)
+		if err := json.NewEncoder(r.writer).Encode(event); err != nil {
+			r.writeErrs++
+			r.lastWriteErr = err
+		}
 	}
+}
+
+// WriteErrors reports the total number of audit writer failures observed by
+// this recorder. A later successful write does not clear this history.
+func (r *Recorder) WriteErrors() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.writeErrs
+}
+
+// LastWriteError reports the most recent audit writer failure, if any.
+// A later successful write does not clear this error.
+func (r *Recorder) LastWriteError() error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.lastWriteErr
 }
 
 func (r *Recorder) Events() []Event {

@@ -232,9 +232,6 @@ func runServe(args []string) error {
 	if err != nil {
 		return fmt.Errorf("restore session store: %w", err)
 	}
-	for _, notice := range notices {
-		recorder.Record("system", "session_recovery_"+string(notice.Status), notice.SessionID, "reply="+notice.ReplyToMessageID+" card_session="+notice.CardSessionID)
-	}
 	svc := bridge.NewServiceWithSessions(cfg, renderer, nil, recorder, sessions, notices)
 	client := feishu.NewLongConnClient(feishu.LongConnConfig{
 		AppID:     appID,

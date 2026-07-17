@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"lark-agent-bridge/internal/config"
+	"lark-agent-bridge/internal/session"
 )
 
 type Check struct {
@@ -30,12 +31,56 @@ func Run(cfg config.Config) []Check {
 		{Name: "default_agent", OK: cfg.DefaultAgent != "", Detail: cfg.DefaultAgent},
 		dirExists("default_workdir", cfg.DefaultWorkDir),
 		auditLogWritable(cfg.AuditLogPath),
+		sessionStoreWritable(cfg.SessionStorePath),
 		optionalEnv("E2E_CALLBACK_ADDR"),
 		durationPositive("card_update_every", cfg.CardUpdateEvery),
 		durationPositive("interaction_timeout", cfg.InteractionTimeout),
 		intPositive("card_max_chars", cfg.CardMaxChars),
 	}
 	return checks
+}
+
+func sessionStoreWritable(path string) Check {
+	if path == "" {
+		return Check{Name: "session_store", OK: false, Detail: "empty"}
+	}
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return Check{Name: "session_store", OK: false, Detail: "parent_create_failed: " + path}
+	}
+	if err := os.Chmod(dir, 0o700); err != nil {
+		return Check{Name: "session_store", OK: false, Detail: "parent_permissions_failed: " + path}
+	}
+	probe, err := os.CreateTemp(dir, ".session-store-probe-*")
+	if err != nil {
+		return Check{Name: "session_store", OK: false, Detail: "write_probe_failed: " + path}
+	}
+	probePath := probe.Name()
+	if err := probe.Close(); err != nil {
+		_ = os.Remove(probePath)
+		return Check{Name: "session_store", OK: false, Detail: "write_probe_failed: " + path}
+	}
+	if err := os.Remove(probePath); err != nil {
+		return Check{Name: "session_store", OK: false, Detail: "write_probe_cleanup_failed: " + path}
+	}
+
+	info, err := os.Lstat(path)
+	if os.IsNotExist(err) {
+		return Check{Name: "session_store", OK: true, Detail: path}
+	}
+	if err != nil {
+		return Check{Name: "session_store", OK: false, Detail: "store_stat_failed: " + path}
+	}
+	if !info.Mode().IsRegular() {
+		return Check{Name: "session_store", OK: false, Detail: "not_regular: " + path}
+	}
+	if info.Mode().Perm() != 0o600 {
+		return Check{Name: "session_store", OK: false, Detail: "insecure_permissions: " + path}
+	}
+	if _, err := session.LoadSnapshot(path); err != nil {
+		return Check{Name: "session_store", OK: false, Detail: "invalid_snapshot: " + path}
+	}
+	return Check{Name: "session_store", OK: true, Detail: path}
 }
 
 func Summary(checks []Check) string {

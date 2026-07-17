@@ -132,8 +132,7 @@ func NewService(cfg config.Config, renderer card.Renderer, runner AgentRunner, r
 }
 
 // NewServiceWithSessions attaches the durable session manager that was restored
-// by the caller. Recovery notices are retained for observability; main owns
-// their audit rendering policy so construction never emits cards.
+// by the caller. It records recovery notices but never renders recovery cards.
 func NewServiceWithSessions(cfg config.Config, renderer card.Renderer, runner AgentRunner, recorder *audit.Recorder, sessions *session.Manager, notices []session.RecoveryNotice) *Service {
 	if renderer == nil {
 		renderer = card.NewFakeRenderer()
@@ -147,6 +146,10 @@ func NewServiceWithSessions(cfg config.Config, renderer card.Renderer, runner Ag
 	if sessions == nil {
 		sessions = session.NewManager()
 	}
+	restoreNotices := cloneRecoveryNotices(notices)
+	for _, notice := range restoreNotices {
+		recorder.Record("system", "session_recovery_"+string(notice.Status), notice.SessionID, "reply="+notice.ReplyToMessageID+" card_session="+notice.CardSessionID)
+	}
 	renderer = card.NewLimitRenderer(renderer, cfg.CardMaxChars)
 	return &Service{
 		Config:             cfg,
@@ -159,7 +162,7 @@ func NewServiceWithSessions(cfg config.Config, renderer card.Renderer, runner Ag
 		pendingCompletions: map[string]pendingCompletion{},
 		startedAt:          time.Now(),
 		accepting:          true,
-		RestoreNotices:     cloneRecoveryNotices(notices),
+		RestoreNotices:     restoreNotices,
 	}
 }
 

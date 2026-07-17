@@ -29,6 +29,10 @@ type fakeRunner struct {
 	started chan struct{}
 }
 
+type failingAuditWriter struct{}
+
+func (failingAuditWriter) Write([]byte) (int, error) { return 0, errors.New("audit disk full") }
+
 func newFakeRunner() *fakeRunner {
 	return &fakeRunner{started: make(chan struct{}, 10)}
 }
@@ -1088,6 +1092,57 @@ func TestServiceRestoreDoesNotRunClearedQueue(t *testing.T) {
 	}
 	if got := len(runner.Calls()); got != 0 {
 		t.Fatalf("runner calls = %d, want 0", got)
+	}
+}
+
+func TestNewServiceWithSessionsAuditsRecoveryNoticesWithoutRenderingCards(t *testing.T) {
+	notices := []session.RecoveryNotice{
+		{SessionID: "cancelled-session", ReplyToMessageID: "cancelled-reply", CardSessionID: "cancelled-card", Status: session.InputCancelled},
+		{SessionID: "interrupted-session", ReplyToMessageID: "interrupted-reply", CardSessionID: "interrupted-card", Status: session.InputInterrupted, RenderRef: &session.RenderRef{CardID: "old-card", ReplyMessageID: "old-reply", Version: 3}},
+	}
+	renderer := card.NewFakeRenderer()
+	recorder := audit.NewRecorder()
+	svc := NewServiceWithSessions(testConfig(t), renderer, newFakeRunner(), recorder, session.NewManager(), notices)
+
+	events := recorder.Events()
+	if len(events) != len(notices) {
+		t.Fatalf("audit events = %#v, want one per notice", events)
+	}
+	for i, notice := range notices {
+		if events[i].Actor != "system" || events[i].Action != "session_recovery_"+string(notice.Status) || events[i].SessionID != notice.SessionID {
+			t.Fatalf("audit event %d = %#v for notice %#v", i, events[i], notice)
+		}
+		wantDetail := "reply=" + notice.ReplyToMessageID + " card_session=" + notice.CardSessionID
+		if events[i].Detail != wantDetail {
+			t.Fatalf("audit detail %d = %q, want %q", i, events[i].Detail, wantDetail)
+		}
+	}
+	if got := renderer.Events(); len(got) != 0 {
+		t.Fatalf("recovery rendered cards = %#v, want none", got)
+	}
+
+	notices[0].ReplyToMessageID = "mutated"
+	notices[1].RenderRef.CardID = "mutated-card"
+	if svc.RestoreNotices[0].ReplyToMessageID != "cancelled-reply" || svc.RestoreNotices[1].RenderRef == nil || svc.RestoreNotices[1].RenderRef.CardID != "old-card" {
+		t.Fatalf("service restore notices leaked caller mutations: %#v", svc.RestoreNotices)
+	}
+}
+
+func TestNewServiceWithSessionsKeepsRecoveryAuditWriteErrorsObservable(t *testing.T) {
+	recorder := audit.NewRecorderWithWriter(failingAuditWriter{})
+	renderer := card.NewFakeRenderer()
+	svc := NewServiceWithSessions(testConfig(t), renderer, newFakeRunner(), recorder, session.NewManager(), []session.RecoveryNotice{{
+		SessionID: "session", Status: session.InputInterrupted,
+	}})
+
+	if svc == nil {
+		t.Fatal("service = nil")
+	}
+	if got := recorder.WriteErrors(); got != 1 {
+		t.Fatalf("audit write errors = %d, want 1", got)
+	}
+	if got := renderer.Events(); len(got) != 0 {
+		t.Fatalf("recovery rendered cards = %#v, want none", got)
 	}
 }
 
