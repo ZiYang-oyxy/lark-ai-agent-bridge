@@ -39,3 +39,21 @@ func TestLoadFromEnvDefaultsAuditLogUnderWorkdir(t *testing.T) {
 		t.Fatalf("audit log path = %q, want %q", cfg.AuditLogPath, want)
 	}
 }
+
+func TestLoadFromEnvDurableSchedulerDefaultsAndOverrides(t *testing.T) {
+	t.Setenv("E2E_DEFAULT_WORKDIR", "/tmp/lab-work")
+	t.Setenv("E2E_SESSION_STORE", "")
+	t.Setenv("E2E_QUEUE_MAX_PENDING", "21")
+	t.Setenv("E2E_BATCH_MAX_INPUTS", "11")
+	t.Setenv("E2E_BATCH_MAX_TEXT_CHARS", "65537")
+	t.Setenv("E2E_DEDUP_TTL_HOURS", "25")
+	t.Setenv("E2E_DEDUP_MAX_ENTRIES", "10001")
+	t.Setenv("E2E_SHUTDOWN_GRACE_SEC", "6")
+	cfg := LoadFromEnv()
+	if cfg.SessionStorePath != filepath.Join("/tmp/lab-work", ".lark-agent-bridge", "sessions.json") {
+		t.Fatalf("store path = %q", cfg.SessionStorePath)
+	}
+	if cfg.QueueMaxPending != 21 || cfg.BatchMaxInputs != 11 || cfg.BatchMaxTextRunes != 65537 || cfg.DedupTTL != 25*time.Hour || cfg.DedupMaxEntries != 10001 || cfg.ShutdownGrace != 6*time.Second {
+		t.Fatalf("durable config = %#v", cfg)
+	}
+}

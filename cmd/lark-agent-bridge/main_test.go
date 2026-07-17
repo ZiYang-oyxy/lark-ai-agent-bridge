@@ -46,6 +46,16 @@ func TestApplyDefaultWorkDirPreservesExplicitAuditLog(t *testing.T) {
 	}
 }
 
+func TestApplyDefaultWorkDirRebasesImplicitSessionStore(t *testing.T) {
+	t.Setenv("E2E_AUDIT_LOG", "")
+	t.Setenv("E2E_SESSION_STORE", "")
+	cfg := config.Config{}
+	applyDefaultWorkDir(&cfg, "/tmp/work")
+	if cfg.SessionStorePath != filepath.Join("/tmp/work", ".lark-agent-bridge", "sessions.json") {
+		t.Fatalf("session store = %q", cfg.SessionStorePath)
+	}
+}
+
 func TestRunLongConnUntilStoppedReturnsOnContextCancel(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	started := make(chan struct{})

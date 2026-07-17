@@ -19,6 +19,7 @@ import (
 	"lark-agent-bridge/internal/config"
 	"lark-agent-bridge/internal/doctor"
 	"lark-agent-bridge/internal/feishu"
+	"lark-agent-bridge/internal/session"
 )
 
 func main() {
@@ -78,6 +79,9 @@ func runSimulateAction(args []string) error {
 		if err := svc.HandleMessage(context.Background(), msg); err != nil {
 			return err
 		}
+		if err := svc.DrainReady(time.Now().Add(time.Second)); err != nil {
+			return err
+		}
 	}
 	if err := svc.HandleAction(context.Background(), bridge.ActionRequest{
 		SessionID: *sessionID,
@@ -87,7 +91,11 @@ func runSimulateAction(args []string) error {
 	}); err != nil {
 		return err
 	}
-	time.Sleep(50 * time.Millisecond)
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := svc.Shutdown(shutdownCtx); err != nil && !errors.Is(err, context.DeadlineExceeded) {
+		return err
+	}
 	out := struct {
 		Events []card.Event  `json:"events"`
 		Audit  []audit.Event `json:"audit"`
@@ -171,7 +179,14 @@ func runSimulate(args []string) error {
 			return err
 		}
 	}
-	time.Sleep(50 * time.Millisecond)
+	if err := svc.DrainReady(time.Now().Add(time.Second)); err != nil {
+		return err
+	}
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := svc.Shutdown(shutdownCtx); err != nil && !errors.Is(err, context.DeadlineExceeded) {
+		return err
+	}
 	out := struct {
 		Events []card.Event  `json:"events"`
 		Audit  []audit.Event `json:"audit"`
@@ -212,7 +227,15 @@ func runServe(args []string) error {
 	}
 	defer closeAudit()
 	renderer := feishu.NewReactionCardRenderer(sender, feishu.NewCardKitRouterRendererWithObserver(cardClient, recorder))
-	svc := bridge.NewService(cfg, renderer, nil, recorder)
+	sessions := session.NewManagerWithStore(cfg.SessionStorePath)
+	notices, err := sessions.Restore()
+	if err != nil {
+		return fmt.Errorf("restore session store: %w", err)
+	}
+	for _, notice := range notices {
+		recorder.Record("system", "session_recovery_"+string(notice.Status), notice.SessionID, "reply="+notice.ReplyToMessageID+" card_session="+notice.CardSessionID)
+	}
+	svc := bridge.NewServiceWithSessions(cfg, renderer, nil, recorder, sessions, notices)
 	client := feishu.NewLongConnClient(feishu.LongConnConfig{
 		AppID:     appID,
 		AppSecret: appSecret,
@@ -238,9 +261,6 @@ func runServe(args []string) error {
 			})
 		},
 	})
-	defer func() {
-		_ = svc.Cleanup(context.Background())
-	}()
 	if addr := os.Getenv("E2E_CALLBACK_ADDR"); addr != "" {
 		server := &http.Server{Addr: addr, Handler: bridge.NewCallbackHTTPHandler(svc)}
 		go func() {
@@ -256,10 +276,20 @@ func runServe(args []string) error {
 		}()
 	}
 	svc.StartBackgroundLoops(ctx, cfg.CardUpdateEvery)
-	return runLongConnUntilStopped(ctx, client, func(ctx context.Context, in feishu.InboundMessage) error {
+	longConnErr := runLongConnUntilStopped(ctx, client, func(ctx context.Context, in feishu.InboundMessage) error {
 		msg := bridge.MessageFromFeishu(in)
 		return svc.HandleMessage(ctx, msg)
 	})
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), cfg.ShutdownGrace)
+	defer cancel()
+	shutdownErr := svc.Shutdown(shutdownCtx)
+	if longConnErr != nil && shutdownErr != nil {
+		return errors.Join(longConnErr, shutdownErr)
+	}
+	if longConnErr != nil {
+		return longConnErr
+	}
+	return shutdownErr
 }
 
 func runLongConnUntilStopped(ctx context.Context, client feishu.LongConnClient, handler func(context.Context, feishu.InboundMessage) error) error {
@@ -319,6 +349,9 @@ func applyDefaultWorkDir(cfg *config.Config, workDir string) {
 	cfg.DefaultWorkDir = workDir
 	if os.Getenv("E2E_AUDIT_LOG") == "" {
 		cfg.AuditLogPath = filepath.Join(workDir, ".lark-agent-bridge", "audit.jsonl")
+	}
+	if os.Getenv("E2E_SESSION_STORE") == "" {
+		cfg.SessionStorePath = filepath.Join(workDir, ".lark-agent-bridge", "sessions.json")
 	}
 }
 

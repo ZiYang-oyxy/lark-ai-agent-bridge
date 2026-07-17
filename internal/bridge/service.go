@@ -25,15 +25,21 @@ import (
 )
 
 type Service struct {
-	Config   config.Config
-	Sessions *session.Manager
-	Cards    card.Renderer
-	Runner   AgentRunner
-	Audit    *audit.Recorder
+	Config         config.Config
+	Sessions       *session.Manager
+	Cards          card.Renderer
+	Runner         AgentRunner
+	Audit          *audit.Recorder
+	RestoreNotices []session.RecoveryNotice
 
-	mu          sync.Mutex
-	pendingRuns map[string]pendingRun
-	activeRuns  map[string]activeRun
+	mu           sync.Mutex
+	pendingRuns  map[string]pendingRun
+	activeRuns   map[string]activeRun
+	startedAt    time.Time
+	accepting    bool
+	loopsCancel  context.CancelFunc
+	loopsStarted bool
+	runWG        sync.WaitGroup
 }
 
 type AgentRunner interface {
@@ -74,12 +80,13 @@ type pendingRun struct {
 }
 
 type activeRun struct {
-	BaseSessionID   string
-	SourceMessageID string
-	Key             session.Key
-	WorkDir         string
-	Cancel          context.CancelFunc
-	Stream          *agentCardStream
+	BaseSessionID    string
+	BatchID          string
+	SourceMessageIDs []string
+	Key              session.Key
+	WorkDir          string
+	Cancel           context.CancelFunc
+	Stream           *agentCardStream
 }
 
 type ActionRequest struct {
@@ -105,6 +112,13 @@ func (r ActionResult) BuildCard(maxChars int) map[string]any {
 }
 
 func NewService(cfg config.Config, renderer card.Renderer, runner AgentRunner, recorder *audit.Recorder) *Service {
+	return NewServiceWithSessions(cfg, renderer, runner, recorder, session.NewManager(), nil)
+}
+
+// NewServiceWithSessions attaches the durable session manager that was restored
+// by the caller. Recovery notices are retained for observability; main owns
+// their audit rendering policy so construction never emits cards.
+func NewServiceWithSessions(cfg config.Config, renderer card.Renderer, runner AgentRunner, recorder *audit.Recorder, sessions *session.Manager, notices []session.RecoveryNotice) *Service {
 	if renderer == nil {
 		renderer = card.NewFakeRenderer()
 	}
@@ -114,27 +128,60 @@ func NewService(cfg config.Config, renderer card.Renderer, runner AgentRunner, r
 	if recorder == nil {
 		recorder = audit.NewRecorder()
 	}
+	if sessions == nil {
+		sessions = session.NewManager()
+	}
 	renderer = card.NewLimitRenderer(renderer, cfg.CardMaxChars)
 	return &Service{
-		Config:      cfg,
-		Sessions:    session.NewManager(),
-		Cards:       renderer,
-		Runner:      runner,
-		Audit:       recorder,
-		pendingRuns: map[string]pendingRun{},
-		activeRuns:  map[string]activeRun{},
+		Config:         cfg,
+		Sessions:       sessions,
+		Cards:          renderer,
+		Runner:         runner,
+		Audit:          recorder,
+		pendingRuns:    map[string]pendingRun{},
+		activeRuns:     map[string]activeRun{},
+		startedAt:      time.Now(),
+		accepting:      true,
+		RestoreNotices: cloneRecoveryNotices(notices),
 	}
 }
 
+func cloneRecoveryNotices(in []session.RecoveryNotice) []session.RecoveryNotice {
+	out := make([]session.RecoveryNotice, len(in))
+	copy(out, in)
+	for i := range out {
+		if in[i].RenderRef != nil {
+			ref := *in[i].RenderRef
+			out[i].RenderRef = &ref
+		}
+	}
+	return out
+}
+
 func (s *Service) HandleMessage(ctx context.Context, msg Message) error {
+	if !msg.Time.IsZero() && msg.Time.Before(s.startedAt.Add(-2*time.Second)) {
+		s.Audit.Record(msg.Sender, "old_message_skipped", "", msg.ID)
+		return nil
+	}
 	defaultKind, ok := agent.ParseKind(s.Config.DefaultAgent)
 	if !ok {
 		defaultKind = agent.Claude
 	}
 	cmd := ParseCommand(msg, defaultKind)
-	switch cmd.Type {
-	case CommandIgnored:
+	if cmd.Type == CommandIgnored {
 		return nil
+	}
+	if cmd.Type != CommandRun {
+		accepted, err := s.Sessions.AcceptMessage(msg.ID, effectiveMessageTime(msg), s.dedupTTL(), s.dedupMaxEntries())
+		if err != nil {
+			s.Audit.Record(msg.Sender, "command_persist_failed", "", err.Error())
+			return s.renderText("storage", msg.ID, card.SegmentError, "持久化失败，未执行。")
+		}
+		if !accepted {
+			return nil
+		}
+	}
+	switch cmd.Type {
 	case CommandHelp:
 		return s.renderText("help", msg.ID, card.SegmentText, HelpText())
 	case CommandUnknown:
@@ -158,18 +205,14 @@ func (s *Service) HandleMessageRecalled(_ context.Context, recall MessageRecall)
 		return err
 	}
 	if run, ok := s.cancelActiveRunByMessageID(recall.MessageID); ok {
-		updated := s.Sessions.Stop(run.Key, run.WorkDir)
 		s.Audit.Record("system", "message_recalled_active_cancelled", run.BaseSessionID, recall.MessageID)
-		if run.Stream != nil {
-			_, err := run.Stream.Finish("stopped", metaFromSession(updated), AgentRunResult{
-				Segments: []card.Segment{{Kind: card.SegmentText, Text: "原始消息已撤回，已停止本轮执行。"}},
-			})
-			return err
-		}
 		return nil
 	}
-	if sess, input, ok := s.Sessions.RemoveQueuedInputByMessageID(recall.MessageID); ok {
-		s.Audit.Record("system", "message_recalled_queued_cancelled", sess.ID, input.Text)
+	if sess, input, ok, err := s.Sessions.CancelQueuedInputByMessageID(recall.MessageID); err != nil {
+		s.Audit.Record("system", "message_recalled_queued_persist_failed", sess.ID, err.Error())
+		return s.renderText("storage", recall.MessageID, card.SegmentError, "持久化失败，未执行。")
+	} else if ok {
+		s.Audit.Record("system", "message_recalled_queued_cancelled", sess.ID, input.ID)
 		return s.Cards.Render(card.Event{Type: "reaction", SessionID: runID(sess.ID, recall.MessageID), Message: "cancelled"})
 	}
 	s.Audit.Record("system", "message_recalled_ignored", recall.ChatID, recall.MessageID)
@@ -181,6 +224,9 @@ func (s *Service) run(ctx context.Context, cmd Command, msg Message) error {
 }
 
 func (s *Service) runWithCardSessionID(ctx context.Context, cmd Command, msg Message, cardSessionID string) error {
+	if !s.isAccepting() {
+		return s.renderText("service-stopping", msg.ID, card.SegmentError, "服务正在停止，暂不接受新的执行请求。")
+	}
 	if cmd.Agent == "" {
 		cmd.Agent = agent.Claude
 	}
@@ -203,28 +249,28 @@ func (s *Service) runWithCardSessionID(ctx context.Context, cmd Command, msg Mes
 		return nil
 	}
 	text := strings.TrimSpace(cmd.Text)
-	if text == "" {
-		if cmd.Reset {
-			sess := s.Sessions.Reset(key, workDir)
-			s.Audit.Record(msg.Sender, "new_session", sess.ID, workDir)
-			return s.Cards.Render(card.Event{
-				Type:             "status",
-				SessionID:        sess.ID,
-				ReplyToMessageID: msg.ID,
-				Segments:         []card.Segment{{Kind: card.SegmentText, Text: "Claude session is ready. Send a message in this chat/topic to continue."}},
-				Meta:             metaFromSession(sess),
-			})
-		}
+	if text == "" && !cmd.Reset {
 		return s.renderText("empty", msg.ID, card.SegmentError, "empty prompt")
 	}
-	input := session.Input{Sender: msg.Sender, Text: text, ReplyToMessageID: msg.ID, CardSessionID: cardSessionID, WorkDir: workDir, Time: msg.Time, Reset: cmd.Reset}
-	sess, queued := s.Sessions.Enqueue(key, input, workDir)
-	if queued {
-		s.Audit.Record(msg.Sender, "queue_input", sess.ID, text)
-		return s.Cards.Render(card.Event{Type: "reaction", SessionID: runID(sess.ID, msg.ID), ReplyToMessageID: msg.ID, Message: "queued"})
+	now := effectiveMessageTime(msg)
+	input := session.Input{ID: msg.ID, Sender: msg.Sender, Text: text, ReplyToMessageID: msg.ID, CardSessionID: cardSessionID, WorkDir: workDir, Time: now, DebounceUntil: now.Add(DebounceFor(msg)), State: session.InputDebouncing, Reset: cmd.Reset}
+	accepted, queued, err := s.Sessions.AcceptAndEnqueue(key, input, now, s.dedupTTL(), s.dedupMaxEntries(), s.batchLimits())
+	if err != nil {
+		action := "queue_rejected"
+		message := "队列已满，未执行。"
+		if !strings.Contains(err.Error(), "pending input limit") {
+			action = "queue_persist_failed"
+			message = "持久化失败，未执行。"
+		}
+		s.Audit.Record(msg.Sender, action, key.ID(), err.Error())
+		return s.renderText("queue-error", msg.ID, card.SegmentError, message)
 	}
-	s.startRun(ctx, sess, input)
-	return nil
+	if !accepted {
+		return nil
+	}
+	sess, _ := s.Sessions.Get(key)
+	s.Audit.Record(msg.Sender, "queue_input", sess.ID, fmt.Sprintf("position=%d", queued.Position))
+	return s.Cards.Render(card.Event{Type: "reaction", SessionID: runID(sess.ID, msg.ID), ReplyToMessageID: msg.ID, Message: fmt.Sprintf("queued (%d)", queued.Position)})
 }
 
 func (s *Service) effectiveWorkDir(key session.Key, cmd Command) string {
@@ -237,80 +283,150 @@ func (s *Service) effectiveWorkDir(key session.Key, cmd Command) string {
 	return s.Config.DefaultWorkDir
 }
 
-func (s *Service) startRun(ctx context.Context, sess session.Session, input session.Input) {
-	if input.Time.IsZero() {
-		input.Time = time.Now()
+// DrainReady freezes due queues and starts each independent scope concurrently.
+func (s *Service) DrainReady(now time.Time) error {
+	if !s.isAccepting() {
+		return nil
 	}
-	id := runCardSessionID(sess.ID, input)
-	runCtx, cancel := context.WithCancel(ctx)
-	stream := newAgentCardStream(s, id, sess, input)
-	s.storeActiveRun(id, activeRun{BaseSessionID: sess.ID, SourceMessageID: input.ReplyToMessageID, Key: sess.Key, WorkDir: sess.WorkDir, Cancel: cancel, Stream: stream})
-	s.Audit.Record(input.Sender, "run_input", sess.ID, input.Text)
-	if err := stream.Start(); err != nil {
-		cancel()
-		s.clearActiveRun(id)
-		updated := s.Sessions.MarkCrashed(sess.Key, sess.WorkDir)
-		s.Audit.Record("system", "card_render_failed", updated.ID, err.Error())
-		return
+	for _, key := range s.Sessions.ReadyKeys(now) {
+		sess, batch, err := s.Sessions.FreezeReadyBatch(key, now, s.batchLimits())
+		if err != nil {
+			return err
+		}
+		if batch != nil {
+			s.startBatch(context.Background(), sess, *batch)
+		}
 	}
-	go s.executeRun(runCtx, sess, input)
+	return nil
 }
 
-func (s *Service) executeRun(ctx context.Context, sess session.Session, input session.Input) {
-	id := runCardSessionID(sess.ID, input)
-	defer s.clearActiveRun(id)
-	result, err := s.Runner.Run(ctx, AgentRunRequest{
-		Kind:            sess.Key.Agent,
-		ClaudeBin:       s.Config.ClaudeBin,
-		Prompt:          input.Text,
-		WorkDir:         sess.WorkDir,
-		ClaudeSessionID: sess.ClaudeSessionID,
-		OnEvent: func(update AgentStreamUpdate) {
-			if run, ok := s.activeRun(id); ok && run.Stream != nil {
-				run.Stream.Handle(update)
-			}
-		},
-	})
-	if errors.Is(ctx.Err(), context.Canceled) {
-		updated := s.Sessions.Stop(sess.Key, sess.WorkDir)
-		if run, ok := s.activeRun(id); ok && run.Stream != nil {
-			run.Stream.Finish("stopped", metaFromSession(updated), result)
-		}
+func (s *Service) startBatch(parent context.Context, sess session.Session, batch session.Batch) {
+	if !s.isAccepting() {
 		return
 	}
+	if len(batch.Inputs) == 0 {
+		return
+	}
+	anchor := batch.Inputs[len(batch.Inputs)-1]
+	id := runCardSessionID(sess.ID, anchor)
+	runCtx, cancel := context.WithCancel(parent)
+	sources := make([]string, 0, len(batch.Inputs)*2)
+	for _, in := range batch.Inputs {
+		sources = append(sources, in.ID, in.ReplyToMessageID)
+	}
+	stream := newAgentCardStream(s, id, sess, anchor)
+	s.storeActiveRun(id, activeRun{BaseSessionID: sess.ID, BatchID: batch.ID, SourceMessageIDs: sources, Key: sess.Key, WorkDir: sess.WorkDir, Cancel: cancel, Stream: stream})
+	if runCtx.Err() != nil {
+		s.finishStartingBatch(sess, batch, id, session.InputCancelled, "cancelled", AgentRunResult{})
+		return
+	}
+	if err := stream.Start(); err != nil {
+		cancel()
+		s.finishStartingBatch(sess, batch, id, session.InputFailed, "failed", AgentRunResult{})
+		s.Audit.Record("system", "card_render_failed", sess.ID, err.Error())
+		return
+	}
+	marked, _, err := s.Sessions.MarkBatchRunning(batchKey(sess, batch), batch.ID, nil, time.Now())
 	if err != nil {
-		updated := s.Sessions.MarkCrashed(sess.Key, sess.WorkDir)
-		s.Audit.Record("system", "run_failed", updated.ID, err.Error())
-		result.Segments = append(result.Segments, card.Segment{Kind: card.SegmentError, Text: err.Error()})
-		if run, ok := s.activeRun(id); ok && run.Stream != nil {
-			run.Stream.Finish("failed", metaFromSession(updated), result)
+		cancel()
+		s.finishStartingBatch(sess, batch, id, session.InputFailed, "failed", AgentRunResult{})
+		s.Audit.Record("system", "batch_start_persist_failed", sess.ID, err.Error())
+		return
+	}
+	if runCtx.Err() != nil {
+		s.finishStartingBatch(marked, batch, id, session.InputCancelled, "stopped", AgentRunResult{})
+		return
+	}
+	s.runWG.Add(1)
+	go s.executeBatch(runCtx, marked, batch, id)
+}
+
+func batchKey(sess session.Session, _ session.Batch) session.Key { return sess.Key }
+
+func (s *Service) finishStartingBatch(sess session.Session, batch session.Batch, id string, status session.InputState, cardStatus string, result AgentRunResult) {
+	updated, err := s.Sessions.FinishBatch(sess.Key, batch.ID, session.BatchCompletion{Status: status, At: time.Now()})
+	if err != nil {
+		s.Audit.Record("system", "batch_finish_failed", sess.ID, err.Error())
+	}
+	if run, ok := s.activeRun(id); ok && run.BatchID == batch.ID && run.Stream != nil {
+		_, _ = run.Stream.Finish(cardStatus, metaFromSession(updated), result)
+	}
+	s.clearActiveRun(id)
+	_ = s.DrainReady(time.Now())
+}
+
+func (s *Service) executeBatch(ctx context.Context, sess session.Session, batch session.Batch, id string) {
+	defer s.runWG.Done()
+	defer func() { s.clearActiveRun(id); _ = s.DrainReady(time.Now()) }()
+	prompt := BuildBatchPrompt(batch.Inputs)
+	if batch.Inputs[0].Reset && strings.TrimSpace(prompt) == "" {
+		updated, err := s.Sessions.FinishBatch(sess.Key, batch.ID, session.BatchCompletion{Status: session.InputCompleted, At: time.Now()})
+		if err != nil {
+			s.Audit.Record("system", "completion_persist_failed", sess.ID, err.Error())
+		}
+		if run, ok := s.activeRun(id); ok && run.BatchID == batch.ID && run.Stream != nil {
+			_, _ = run.Stream.Finish("completed", metaFromSession(updated), AgentRunResult{Segments: []card.Segment{{Kind: card.SegmentText, Text: "Claude session is ready. Send a message in this chat/topic to continue."}}})
 		}
 		return
 	}
-	if result.ClaudeSessionID != "" || result.Model != "" || result.Tokens > 0 {
-		sess = s.Sessions.UpdateRunResult(sess.ID, result.ClaudeSessionID, result.Model, result.Tokens)
-	}
-	updated, next := s.Sessions.Complete(sess.Key, sess.WorkDir)
-	if updated.ID != "" {
-		sess = updated
-	}
-	segments := result.Segments
-	if len(segments) == 0 {
-		segments = []card.Segment{{Kind: card.SegmentText, Text: "Claude 未返回内容。"}}
-	}
-	result.Segments = segments
-	if run, ok := s.activeRun(id); ok && run.Stream != nil {
-		run.Stream.Finish("completed", metaFromSession(sess), result)
-	}
-	if next != nil {
-		s.Audit.Record(next.Sender, "dequeue_input", sess.ID, next.Text)
-		nextWorkDir := next.WorkDir
-		if nextWorkDir == "" {
-			nextWorkDir = sess.WorkDir
+	result, err := s.Runner.Run(ctx, AgentRunRequest{Kind: sess.Key.Agent, ClaudeBin: s.Config.ClaudeBin, Prompt: prompt, WorkDir: sess.WorkDir, ClaudeSessionID: sess.ClaudeSessionID, OnEvent: func(update AgentStreamUpdate) {
+		if run, ok := s.activeRun(id); ok && run.BatchID == batch.ID && run.Stream != nil {
+			run.Stream.Handle(update)
 		}
-		nextSession := s.Sessions.GetOrCreate(sess.Key, nextWorkDir)
-		s.startRun(context.Background(), nextSession, *next)
+	}})
+	status, cardStatus := session.InputCompleted, "completed"
+	if errors.Is(ctx.Err(), context.Canceled) {
+		status, cardStatus = session.InputCancelled, "stopped"
+	} else if err != nil {
+		status, cardStatus = session.InputFailed, "failed"
+		result.Segments = append(result.Segments, card.Segment{Kind: card.SegmentError, Text: err.Error()})
 	}
+	if len(result.Segments) == 0 && status == session.InputCompleted {
+		result.Segments = []card.Segment{{Kind: card.SegmentText, Text: "Claude 未返回内容。"}}
+	}
+	updated, finishErr := s.Sessions.FinishBatch(sess.Key, batch.ID, session.BatchCompletion{Status: status, ClaudeSessionID: result.ClaudeSessionID, Model: result.Model, Tokens: result.Tokens, At: time.Now()})
+	if finishErr != nil {
+		s.Audit.Record("system", "completion_persist_failed", sess.ID, finishErr.Error())
+		updated = sess
+	}
+	if run, ok := s.activeRun(id); ok && run.BatchID == batch.ID && run.Stream != nil {
+		_, _ = run.Stream.Finish(cardStatus, metaFromSession(updated), result)
+	}
+}
+
+func effectiveMessageTime(msg Message) time.Time {
+	if msg.Time.IsZero() {
+		return time.Now()
+	}
+	return msg.Time
+}
+
+func (s *Service) batchLimits() session.BatchLimits {
+	limits := session.BatchLimits{MaxInputs: s.Config.BatchMaxInputs, MaxTextRunes: s.Config.BatchMaxTextRunes, MaxPending: s.Config.QueueMaxPending}
+	if limits.MaxInputs <= 0 {
+		limits.MaxInputs = 10
+	}
+	if limits.MaxTextRunes <= 0 {
+		limits.MaxTextRunes = 64 << 10
+	}
+	if limits.MaxPending <= 0 {
+		limits.MaxPending = 20
+	}
+	return limits
+}
+
+func (s *Service) dedupTTL() time.Duration {
+	if s.Config.DedupTTL <= 0 {
+		return 24 * time.Hour
+	}
+	return s.Config.DedupTTL
+}
+
+func (s *Service) dedupMaxEntries() int {
+	if s.Config.DedupMaxEntries <= 0 {
+		return 10000
+	}
+	return s.Config.DedupMaxEntries
 }
 
 func runCardSessionID(baseSessionID string, input session.Input) string {
@@ -330,11 +446,7 @@ func (s *Service) HandleActionResult(ctx context.Context, req ActionRequest) (Ac
 	switch req.ActionID {
 	case "stop":
 		if run, ok := s.cancelActiveRun(req.SessionID); ok {
-			updated := s.Sessions.Stop(run.Key, run.WorkDir)
-			if run.Stream != nil {
-				event, err := run.Stream.Finish("stopped", metaFromSession(updated), AgentRunResult{})
-				return actionResultFromEvent(event), err
-			}
+			s.Audit.Record(req.Actor, "batch_stop_requested", run.BaseSessionID, run.BatchID)
 			event := stoppedActionEvent(req.SessionID)
 			return s.renderActionEvent(event)
 		}
@@ -412,14 +524,30 @@ func workDirActionEvent(eventType, sessionID, workDir string) card.Event {
 }
 
 func (s *Service) Cleanup(ctx context.Context) error {
-	s.Audit.Record("system", "cleanup", "", "oneshot")
+	return s.Shutdown(ctx)
+}
+
+// Shutdown is idempotent. It first prevents new durable intake and scheduler
+// starts, then waits for active batches. Once its deadline expires it cancels
+// every remaining run and waits for their terminal persistence path.
+func (s *Service) Shutdown(ctx context.Context) error {
 	s.mu.Lock()
-	defer s.mu.Unlock()
-	for id, run := range s.activeRuns {
-		run.Cancel()
-		delete(s.activeRuns, id)
+	s.accepting = false
+	if s.loopsCancel != nil {
+		s.loopsCancel()
+		s.loopsCancel = nil
 	}
-	return nil
+	s.mu.Unlock()
+	done := make(chan struct{})
+	go func() { s.runWG.Wait(); close(done) }()
+	select {
+	case <-done:
+		return nil
+	case <-ctx.Done():
+		s.cancelAllActiveRuns()
+		<-done
+		return ctx.Err()
+	}
 }
 
 func (s *Service) RenderPendingRunTimeouts(now time.Time) error {
@@ -440,18 +568,55 @@ func (s *Service) StartBackgroundLoops(ctx context.Context, outputEvery time.Dur
 	if outputEvery <= 0 {
 		outputEvery = time.Second
 	}
+	pendingTicker := time.NewTicker(outputEvery)
+	readyTicker := time.NewTicker(50 * time.Millisecond)
+	s.mu.Lock()
+	if s.loopsStarted {
+		s.mu.Unlock()
+		pendingTicker.Stop()
+		readyTicker.Stop()
+		return
+	}
+	loopCtx, cancel := context.WithCancel(ctx)
+	s.loopsCancel, s.loopsStarted = cancel, true
+	s.mu.Unlock()
+	s.startBackgroundLoopsWithTicks(loopCtx, pendingTicker.C, readyTicker.C)
 	go func() {
-		ticker := time.NewTicker(outputEvery)
-		defer ticker.Stop()
+		<-loopCtx.Done()
+		pendingTicker.Stop()
+		readyTicker.Stop()
+	}()
+}
+
+// startBackgroundLoopsWithTicks is the package-level deterministic test seam.
+// The caller has already made the loop unique and owns both tick channels.
+func (s *Service) startBackgroundLoopsWithTicks(ctx context.Context, pendingTicks, readyTicks <-chan time.Time) {
+	go func() {
 		for {
 			select {
 			case <-ctx.Done():
 				return
-			case now := <-ticker.C:
+			case now := <-pendingTicks:
 				_ = s.RenderPendingRunTimeouts(now)
+			case now := <-readyTicks:
+				_ = s.DrainReady(now)
 			}
 		}
 	}()
+}
+
+func (s *Service) isAccepting() bool { s.mu.Lock(); defer s.mu.Unlock(); return s.accepting }
+
+func (s *Service) cancelAllActiveRuns() {
+	s.mu.Lock()
+	runs := make([]activeRun, 0, len(s.activeRuns))
+	for _, run := range s.activeRuns {
+		runs = append(runs, run)
+	}
+	s.mu.Unlock()
+	for _, run := range runs {
+		run.Cancel()
+	}
 }
 
 func (s *Service) storeActiveRun(id string, run activeRun) {
@@ -479,7 +644,6 @@ func (s *Service) cancelActiveRun(id string) (activeRun, bool) {
 	run, ok := s.activeRuns[id]
 	if ok {
 		run.Cancel()
-		delete(s.activeRuns, id)
 	}
 	return run, ok
 }
@@ -490,12 +654,18 @@ func (s *Service) cancelActiveRunByMessageID(messageID string) (activeRun, bool)
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	for id, run := range s.activeRuns {
-		if run.SourceMessageID != messageID {
+	for _, run := range s.activeRuns {
+		matched := false
+		for _, sourceID := range run.SourceMessageIDs {
+			if sourceID == messageID {
+				matched = true
+				break
+			}
+		}
+		if !matched {
 			continue
 		}
 		run.Cancel()
-		delete(s.activeRuns, id)
 		return run, true
 	}
 	return activeRun{}, false

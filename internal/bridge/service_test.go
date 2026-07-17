@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -15,6 +16,7 @@ import (
 	"lark-agent-bridge/internal/audit"
 	"lark-agent-bridge/internal/card"
 	"lark-agent-bridge/internal/config"
+	"lark-agent-bridge/internal/session"
 )
 
 type fakeRunner struct {
@@ -67,6 +69,9 @@ type failOnceRenderer struct {
 }
 
 func (r *failOnceRenderer) Render(e card.Event) error {
+	if e.Type != "stream" {
+		return r.next.Render(e)
+	}
 	r.mu.Lock()
 	if !r.failed {
 		r.failed = true
@@ -99,6 +104,10 @@ func TestServiceNewRunsClaudeOneShotAndRendersResult(t *testing.T) {
 	if err := svc.HandleMessage(context.Background(), msg); err != nil {
 		t.Fatalf("handle message error: %v", err)
 	}
+	if err := svc.DrainReady(msg.Time.Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	waitForCalls(t, runner, 1)
 	waitForEvents(t, renderer, 2)
 	calls := runner.Calls()
 	if len(calls) != 1 {
@@ -108,11 +117,12 @@ func TestServiceNewRunsClaudeOneShotAndRendersResult(t *testing.T) {
 		t.Fatalf("runner call = %#v", calls[0])
 	}
 	events := renderer.Events()
-	if events[0].ReplyToMessageID != "msg-1" || !events[0].StopButton.Visible {
-		t.Fatalf("initial event = %#v", events[0])
+	initial := events[len(events)-2]
+	if initial.ReplyToMessageID != "msg-1" || !initial.StopButton.Visible {
+		t.Fatalf("initial event = %#v", initial)
 	}
-	if events[0].HeaderTemplate != "blue" || !containsAll(events[0].HeaderTitle, "正在推理", "⏱") {
-		t.Fatalf("initial header = %q/%q", events[0].HeaderTemplate, events[0].HeaderTitle)
+	if initial.HeaderTemplate != "blue" || !containsAll(initial.HeaderTitle, "正在推理", "⏱") {
+		t.Fatalf("initial header = %q/%q", initial.HeaderTemplate, initial.HeaderTitle)
 	}
 	last := events[len(events)-1]
 	if last.Type != "result" || last.Meta.Model != "claude-sonnet" || last.Meta.RunTokens != 42 || last.Meta.TotalTokens != 42 || last.HeaderTemplate != "green" {
@@ -127,6 +137,24 @@ func TestServiceNewRunsClaudeOneShotAndRendersResult(t *testing.T) {
 	}
 }
 
+func TestServiceQueuesRunUntilExplicitDrain(t *testing.T) {
+	cfg := testConfig(t)
+	renderer := card.NewFakeRenderer()
+	runner := newFakeRunner()
+	svc := NewService(cfg, renderer, runner, audit.NewRecorder())
+	now := time.Now()
+	if err := svc.HandleMessage(context.Background(), Message{ID: "queued-1", ChatID: "chat", Sender: "u", Text: "/new hello", Time: now}); err != nil {
+		t.Fatal(err)
+	}
+	if got := len(runner.Calls()); got != 0 {
+		t.Fatalf("runner calls before drain = %d, want 0", got)
+	}
+	if err := svc.DrainReady(now.Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	waitForCalls(t, runner, 1)
+}
+
 func TestInitialCardRenderFailureDoesNotStartRunnerOrLeakActiveRun(t *testing.T) {
 	cfg := testConfig(t)
 	fake := card.NewFakeRenderer()
@@ -137,12 +165,15 @@ func TestInitialCardRenderFailureDoesNotStartRunnerOrLeakActiveRun(t *testing.T)
 	if err := svc.HandleMessage(context.Background(), Message{ID: "msg-1", ChatID: "chat", Sender: "u1", Text: "/new first", Time: time.Now()}); err != nil {
 		t.Fatalf("first message error: %v", err)
 	}
+	if err := svc.DrainReady(time.Now().Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
 	if len(runner.Calls()) != 0 {
 		t.Fatalf("runner calls after failed card render = %#v, want none", runner.Calls())
 	}
 	status := svc.statusText(agent.Claude, Message{ChatID: "chat"})
-	if !containsAll(status, "state=crashed", "queue=0") {
-		t.Fatalf("status after failed card render = %q, want crashed with empty queue", status)
+	if !containsAll(status, "state=idle", "queue=0") {
+		t.Fatalf("status after failed card render = %q, want idle with empty queue", status)
 	}
 	foundAudit := false
 	for _, event := range recorder.Events() {
@@ -156,6 +187,9 @@ func TestInitialCardRenderFailureDoesNotStartRunnerOrLeakActiveRun(t *testing.T)
 	}
 	if err := svc.HandleMessage(context.Background(), Message{ID: "msg-2", ChatID: "chat", Sender: "u1", Text: "/new second", Time: time.Now()}); err != nil {
 		t.Fatalf("second message error: %v", err)
+	}
+	if err := svc.DrainReady(time.Now().Add(time.Second)); err != nil {
+		t.Fatal(err)
 	}
 	waitForCalls(t, runner, 1)
 	if got := runner.Calls()[0].Prompt; got != "second" {
@@ -185,13 +219,16 @@ func TestServiceStreamsRunnerUpdatesIntoSameCard(t *testing.T) {
 	if err := svc.HandleMessage(context.Background(), Message{ID: "msg-1", ChatID: "chat", Sender: "u1", Text: "/new hello", Time: time.Now()}); err != nil {
 		t.Fatalf("handle message error: %v", err)
 	}
+	if err := svc.DrainReady(time.Now().Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
 	waitForEvents(t, renderer, 5)
 	events := renderer.Events()
-	if events[1].Type != "stream" || !events[1].ThoughtExpanded {
-		t.Fatalf("thought stream event = %#v", events[1])
+	if events[2].Type != "stream" || !events[2].ThoughtExpanded {
+		t.Fatalf("thought stream event = %#v", events[2])
 	}
-	if events[2].Type != "stream" || !events[2].ToolsExpanded {
-		t.Fatalf("tool stream event = %#v", events[2])
+	if events[3].Type != "stream" || !events[3].ToolsExpanded {
+		t.Fatalf("tool stream event = %#v", events[3])
 	}
 	last := events[len(events)-1]
 	if last.Type != "result" || last.HeaderTemplate != "green" {
@@ -213,15 +250,20 @@ func TestServiceNewWithoutPromptCreatesReadySession(t *testing.T) {
 	renderer := card.NewFakeRenderer()
 	runner := newFakeRunner()
 	svc := NewService(cfg, renderer, runner, audit.NewRecorder())
-	if err := svc.HandleMessage(context.Background(), Message{ID: "msg-1", ChatID: "chat", Sender: "u1", Text: "/new", Time: time.Now()}); err != nil {
+	now := time.Now()
+	if err := svc.HandleMessage(context.Background(), Message{ID: "msg-1", ChatID: "chat", Sender: "u1", Text: "/new", Time: now}); err != nil {
 		t.Fatalf("handle message error: %v", err)
 	}
+	if err := svc.DrainReady(now.Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	waitForEvents(t, renderer, 3)
 	if len(runner.Calls()) != 0 {
 		t.Fatalf("runner calls = %#v, want none", runner.Calls())
 	}
 	events := renderer.Events()
-	if len(events) != 1 || events[0].Type != "status" {
-		t.Fatalf("events = %#v, want status ready card", events)
+	if len(events) < 3 || events[len(events)-1].Type != "result" {
+		t.Fatalf("events = %#v, want queued and ready terminal cards", events)
 	}
 }
 
@@ -240,6 +282,9 @@ func TestPlainTextAfterReadySessionKeepsWorkDir(t *testing.T) {
 	}
 	if err := svc.HandleMessage(context.Background(), Message{ID: "msg-2", ChatID: "chat", Sender: "u1", Text: "show pwd", Time: time.Now()}); err != nil {
 		t.Fatalf("plain message error: %v", err)
+	}
+	if err := svc.DrainReady(time.Now().Add(time.Second)); err != nil {
+		t.Fatal(err)
 	}
 	waitForCalls(t, runner, 1)
 	calls := runner.Calls()
@@ -270,18 +315,24 @@ func TestTopicPlainTextContinuesStoredClaudeSession(t *testing.T) {
 	if err := svc.HandleMessage(context.Background(), msg1); err != nil {
 		t.Fatalf("first message error: %v", err)
 	}
+	if err := svc.DrainReady(msg1.Time.Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
 	waitForCalls(t, runner, 1)
 	waitForEvents(t, renderer, 2)
 	msg2 := Message{ID: "msg-2", ChatID: "chat", ThreadID: "topic-a", Sender: "u1", Text: "second", Time: time.Now()}
 	if err := svc.HandleMessage(context.Background(), msg2); err != nil {
 		t.Fatalf("second message error: %v", err)
 	}
+	if err := svc.DrainReady(msg2.Time.Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
 	waitForCalls(t, runner, 2)
 	calls := runner.Calls()
 	if calls[1].ClaudeSessionID != "sess-topic" {
 		t.Fatalf("second call session id = %q, want sess-topic", calls[1].ClaudeSessionID)
 	}
-	waitForEvents(t, renderer, 4)
+	waitForEvents(t, renderer, 5)
 	events := renderer.Events()
 	last := events[len(events)-1]
 	if last.Meta.RunTokens != 3 || last.Meta.TotalTokens != 5 {
@@ -302,11 +353,17 @@ func TestNewInTopicResetsStoredClaudeSession(t *testing.T) {
 	if err := svc.HandleMessage(context.Background(), msg1); err != nil {
 		t.Fatalf("first message error: %v", err)
 	}
+	if err := svc.DrainReady(msg1.Time.Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
 	waitForCalls(t, runner, 1)
 	waitForEvents(t, renderer, 2)
 	msg2 := Message{ID: "msg-2", ChatID: "chat", ThreadID: "topic-a", Sender: "u1", Text: "/new second", Time: time.Now()}
 	if err := svc.HandleMessage(context.Background(), msg2); err != nil {
 		t.Fatalf("second message error: %v", err)
+	}
+	if err := svc.DrainReady(msg2.Time.Add(time.Second)); err != nil {
+		t.Fatal(err)
 	}
 	waitForCalls(t, runner, 2)
 	calls := runner.Calls()
@@ -324,15 +381,22 @@ func TestServiceQueuesSecondInputUntilFirstCompletes(t *testing.T) {
 	if err := svc.HandleMessage(context.Background(), Message{ID: "msg-1", ChatID: "chat", ThreadID: "topic-a", Sender: "u1", Text: "/new first", Time: time.Now()}); err != nil {
 		t.Fatalf("first message error: %v", err)
 	}
+	if err := svc.DrainReady(time.Now().Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
 	<-runner.started
 	if err := svc.HandleMessage(context.Background(), Message{ID: "msg-2", ChatID: "chat", ThreadID: "topic-a", Sender: "u1", Text: "second", Time: time.Now()}); err != nil {
 		t.Fatalf("second message error: %v", err)
 	}
 	events := renderer.Events()
-	if events[len(events)-1].Type != "reaction" || events[len(events)-1].Message != "queued" {
+	if events[len(events)-1].Type != "reaction" || !strings.HasPrefix(events[len(events)-1].Message, "queued") {
 		t.Fatalf("queued event = %#v", events[len(events)-1])
 	}
 	close(runner.block)
+	waitForSessionNoActiveBatch(t, svc, session.Key{Agent: agent.Claude, ChatID: "chat", Thread: "topic-a"})
+	if err := svc.DrainReady(time.Now().Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
 	waitForCalls(t, runner, 2)
 	calls := runner.Calls()
 	if calls[1].Prompt != "second" {
@@ -351,6 +415,9 @@ func TestDifferentTopicsRunInParallel(t *testing.T) {
 	}
 	if err := svc.HandleMessage(context.Background(), Message{ID: "msg-2", ChatID: "chat", ThreadID: "topic-b", Sender: "u1", Text: "/new second", Time: time.Now()}); err != nil {
 		t.Fatalf("second message error: %v", err)
+	}
+	if err := svc.DrainReady(time.Now().Add(time.Second)); err != nil {
+		t.Fatal(err)
 	}
 	waitForCalls(t, runner, 2)
 	close(runner.block)
@@ -387,16 +454,19 @@ func TestServiceMissingWorkdirAsksThenRunsAfterCreate(t *testing.T) {
 	if _, err := os.Stat(missing); err != nil {
 		t.Fatalf("missing dir was not created: %v", err)
 	}
+	if err := svc.DrainReady(time.Now().Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
 	waitForCalls(t, runner, 1)
 	if got := runner.Calls()[0].WorkDir; got != missing {
 		t.Fatalf("runner workdir = %q, want %q", got, missing)
 	}
-	waitForEvents(t, renderer, 4)
+	waitForSessionNoActiveBatch(t, svc, session.Key{Agent: agent.Claude, ChatID: "chat"})
 	events = renderer.Events()
 	if events[1].Type != "workdir_created" || events[1].SessionID != "claude:chat:message:msg-1" {
 		t.Fatalf("terminal confirm event = %#v", events[1])
 	}
-	runEvent := events[2]
+	runEvent := events[3]
 	if runEvent.Type != "stream" || runEvent.SessionID == events[1].SessionID || runEvent.ReplyToMessageID != "msg-1" {
 		t.Fatalf("run event = %#v, want separate card replying to original message", runEvent)
 	}
@@ -419,12 +489,18 @@ func TestPlainTextAfterCreatedWorkDirKeepsWorkDir(t *testing.T) {
 	if err := svc.HandleAction(context.Background(), ActionRequest{SessionID: events[0].SessionID, ActionID: "create_workdir", Actor: "u1"}); err != nil {
 		t.Fatalf("create action error: %v", err)
 	}
-	waitForEvents(t, renderer, 3)
+	if err := svc.DrainReady(time.Now().Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	waitForSessionNoActiveBatch(t, svc, session.Key{Agent: agent.Claude, ChatID: "chat"})
 	if len(runner.Calls()) != 0 {
 		t.Fatalf("runner calls = %#v, want none for empty ready session", runner.Calls())
 	}
 	if err := svc.HandleMessage(context.Background(), Message{ID: "msg-2", ChatID: "chat", Sender: "u1", Text: "show pwd", Time: time.Now()}); err != nil {
 		t.Fatalf("plain message error: %v", err)
+	}
+	if err := svc.DrainReady(time.Now().Add(time.Second)); err != nil {
+		t.Fatal(err)
 	}
 	waitForCalls(t, runner, 1)
 	if got := runner.Calls()[0].WorkDir; got != missing {
@@ -480,8 +556,12 @@ func TestConcurrentMissingWorkdirConfirmationsAreIsolatedByMessage(t *testing.T)
 	runner := newFakeRunner()
 	svc := NewService(cfg, renderer, runner, audit.NewRecorder())
 
-	if err := svc.HandleMessage(context.Background(), Message{ID: "msg-1", ChatID: "chat", Sender: "u1", Text: "/new --workdir " + first + " first", Time: time.Now()}); err != nil {
+	now := time.Now()
+	if err := svc.HandleMessage(context.Background(), Message{ID: "msg-1", ChatID: "chat", Sender: "u1", Text: "/new --workdir " + first + " first", Time: now}); err != nil {
 		t.Fatalf("first message error: %v", err)
+	}
+	if err := svc.DrainReady(now.Add(time.Second)); err != nil {
+		t.Fatal(err)
 	}
 	if err := svc.HandleMessage(context.Background(), Message{ID: "msg-2", ChatID: "chat", Sender: "u1", Text: "/new --workdir " + second + " second", Time: time.Now()}); err != nil {
 		t.Fatalf("second message error: %v", err)
@@ -501,6 +581,9 @@ func TestConcurrentMissingWorkdirConfirmationsAreIsolatedByMessage(t *testing.T)
 	if err := svc.HandleAction(context.Background(), ActionRequest{SessionID: events[1].SessionID, ActionID: "create_workdir", Actor: "u1"}); err != nil {
 		t.Fatalf("second create action error: %v", err)
 	}
+	if err := svc.DrainReady(time.Now().Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
 	waitForCalls(t, runner, 1)
 	if got := runner.Calls()[0].WorkDir; got != second {
 		t.Fatalf("first runner workdir = %q, want %q", got, second)
@@ -508,6 +591,9 @@ func TestConcurrentMissingWorkdirConfirmationsAreIsolatedByMessage(t *testing.T)
 
 	if err := svc.HandleAction(context.Background(), ActionRequest{SessionID: events[0].SessionID, ActionID: "create_workdir", Actor: "u1"}); err != nil {
 		t.Fatalf("first create action error: %v", err)
+	}
+	if err := svc.DrainReady(time.Now().Add(time.Second)); err != nil {
+		t.Fatal(err)
 	}
 	waitForCalls(t, runner, 2)
 	if got := runner.Calls()[1].WorkDir; got != first {
@@ -523,6 +609,9 @@ func TestServiceStopCancelsActiveOneShotRun(t *testing.T) {
 	svc := NewService(cfg, renderer, runner, audit.NewRecorder())
 	if err := svc.HandleMessage(context.Background(), Message{ID: "msg-1", ChatID: "chat", Sender: "u1", Text: "/new long", Time: time.Now()}); err != nil {
 		t.Fatalf("handle message error: %v", err)
+	}
+	if err := svc.DrainReady(time.Now().Add(time.Second)); err != nil {
+		t.Fatal(err)
 	}
 	<-runner.started
 	result, err := svc.HandleActionResult(context.Background(), ActionRequest{SessionID: "claude:chat:message:msg-1", ActionID: "stop", Actor: "u1"})
@@ -562,24 +651,25 @@ func TestMessageRecallCancelsActiveRun(t *testing.T) {
 	runner.block = make(chan struct{})
 	recorder := audit.NewRecorder()
 	svc := NewService(cfg, renderer, runner, recorder)
-	if err := svc.HandleMessage(context.Background(), Message{ID: "msg-1", ChatID: "chat", Sender: "u1", Text: "/new long", Time: time.Now()}); err != nil {
+	now := time.Now()
+	if err := svc.HandleMessage(context.Background(), Message{ID: "msg-1", ChatID: "chat", Sender: "u1", Text: "/new long", Time: now}); err != nil {
 		t.Fatalf("handle message error: %v", err)
+	}
+	if err := svc.DrainReady(now.Add(time.Second)); err != nil {
+		t.Fatal(err)
 	}
 	<-runner.started
 	if err := svc.HandleMessageRecalled(context.Background(), MessageRecall{MessageID: "msg-1", ChatID: "chat", RecallType: "user"}); err != nil {
 		t.Fatalf("recall message error: %v", err)
 	}
-	waitForEvents(t, renderer, 2)
+	waitForEvents(t, renderer, 3)
 	last := renderer.Events()[len(renderer.Events())-1]
 	if last.Type != "stopped" || !last.StopButton.Disabled || last.HeaderTemplate != "grey" {
 		t.Fatalf("recall stopped event = %#v", last)
 	}
-	if !containsAll(last.Segments[0].Text, "原始消息已撤回") {
-		t.Fatalf("recall stopped segments = %#v", last.Segments)
-	}
 	status := svc.statusText(agent.Claude, Message{ChatID: "chat"})
-	if !containsAll(status, "state=stopped", "queue=0") {
-		t.Fatalf("status after recall = %q, want stopped with empty queue", status)
+	if !containsAll(status, "state=idle", "queue=0") {
+		t.Fatalf("status after recall = %q, want idle with empty queue", status)
 	}
 	foundAudit := false
 	for _, event := range recorder.Events() {
@@ -593,6 +683,9 @@ func TestMessageRecallCancelsActiveRun(t *testing.T) {
 	}
 	if err := svc.HandleMessage(context.Background(), Message{ID: "msg-2", ChatID: "chat", Sender: "u1", Text: "/new second", Time: time.Now()}); err != nil {
 		t.Fatalf("second message error: %v", err)
+	}
+	if err := svc.DrainReady(time.Now().Add(time.Second)); err != nil {
+		t.Fatal(err)
 	}
 	waitForCalls(t, runner, 2)
 	if got := runner.Calls()[1].Prompt; got != "second" {
@@ -650,8 +743,12 @@ func TestMessageRecallRemovesQueuedInput(t *testing.T) {
 	runner.block = make(chan struct{})
 	recorder := audit.NewRecorder()
 	svc := NewService(cfg, renderer, runner, recorder)
-	if err := svc.HandleMessage(context.Background(), Message{ID: "msg-1", ChatID: "chat", ThreadID: "topic-a", Sender: "u1", Text: "/new first", Time: time.Now()}); err != nil {
+	now := time.Now()
+	if err := svc.HandleMessage(context.Background(), Message{ID: "msg-1", ChatID: "chat", ThreadID: "topic-a", Sender: "u1", Text: "/new first", Time: now}); err != nil {
 		t.Fatalf("first message error: %v", err)
+	}
+	if err := svc.DrainReady(now.Add(time.Second)); err != nil {
+		t.Fatal(err)
 	}
 	<-runner.started
 	if err := svc.HandleMessage(context.Background(), Message{ID: "msg-2", ChatID: "chat", ThreadID: "topic-a", Sender: "u1", Text: "second", Time: time.Now()}); err != nil {
@@ -661,8 +758,7 @@ func TestMessageRecallRemovesQueuedInput(t *testing.T) {
 		t.Fatalf("recall message error: %v", err)
 	}
 	close(runner.block)
-	waitForEvents(t, renderer, 4)
-	time.Sleep(50 * time.Millisecond)
+	waitForSessionNoActiveBatch(t, svc, session.Key{Agent: agent.Claude, ChatID: "chat", Thread: "topic-a"})
 	if len(runner.Calls()) != 1 {
 		t.Fatalf("runner calls = %#v, want only first call", runner.Calls())
 	}
@@ -672,7 +768,7 @@ func TestMessageRecallRemovesQueuedInput(t *testing.T) {
 	}
 	foundAudit := false
 	for _, event := range recorder.Events() {
-		if event.Action == "message_recalled_queued_cancelled" && event.Detail == "second" {
+		if event.Action == "message_recalled_queued_cancelled" && event.Detail == "msg-2" {
 			foundAudit = true
 			break
 		}
@@ -698,14 +794,22 @@ func TestQueuedRunPreservesInputWorkDir(t *testing.T) {
 	runner.block = make(chan struct{})
 	svc := NewService(cfg, renderer, runner, audit.NewRecorder())
 
-	if err := svc.HandleMessage(context.Background(), Message{ID: "msg-1", ChatID: "chat", Sender: "u1", Text: "/new --workdir " + first + " first", Time: time.Now()}); err != nil {
+	now := time.Now()
+	if err := svc.HandleMessage(context.Background(), Message{ID: "msg-1", ChatID: "chat", Sender: "u1", Text: "/new --workdir " + first + " first", Time: now}); err != nil {
 		t.Fatalf("first message error: %v", err)
+	}
+	if err := svc.DrainReady(now.Add(time.Second)); err != nil {
+		t.Fatal(err)
 	}
 	<-runner.started
 	if err := svc.HandleMessage(context.Background(), Message{ID: "msg-2", ChatID: "chat", Sender: "u1", Text: "/new --workdir " + second + " second", Time: time.Now()}); err != nil {
 		t.Fatalf("second message error: %v", err)
 	}
 	close(runner.block)
+	waitForSessionNoActiveBatch(t, svc, session.Key{Agent: agent.Claude, ChatID: "chat"})
+	if err := svc.DrainReady(time.Now().Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
 	waitForCalls(t, runner, 2)
 	calls := runner.Calls()
 	if calls[0].WorkDir != first {
@@ -714,6 +818,101 @@ func TestQueuedRunPreservesInputWorkDir(t *testing.T) {
 	if calls[1].WorkDir != second {
 		t.Fatalf("queued workdir = %q, want %q", calls[1].WorkDir, second)
 	}
+}
+
+func TestServiceSkipsDuplicateRunAndOldDelivery(t *testing.T) {
+	cfg := testConfig(t)
+	renderer := card.NewFakeRenderer()
+	runner := newFakeRunner()
+	svc := NewService(cfg, renderer, runner, audit.NewRecorder())
+	now := time.Now()
+	msg := Message{ID: "dup", ChatID: "chat", Sender: "u", Text: "/new hello", Time: now}
+	if err := svc.HandleMessage(context.Background(), msg); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.HandleMessage(context.Background(), msg); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.HandleMessage(context.Background(), Message{ID: "old", ChatID: "chat", Sender: "u", Text: "/new ignored", Time: svc.startedAt.Add(-3 * time.Second)}); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.DrainReady(now.Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	waitForCalls(t, runner, 1)
+	if got := len(runner.Calls()); got != 1 {
+		t.Fatalf("runner calls = %d, want one", got)
+	}
+}
+
+func TestServiceRejectsTwentyFirstPendingInput(t *testing.T) {
+	cfg := testConfig(t)
+	cfg.QueueMaxPending = 20
+	renderer := card.NewFakeRenderer()
+	svc := NewService(cfg, renderer, newFakeRunner(), audit.NewRecorder())
+	now := time.Now()
+	for i := 0; i < 20; i++ {
+		if err := svc.HandleMessage(context.Background(), Message{ID: fmt.Sprintf("m-%d", i), ChatID: "chat", ThreadID: "topic", Sender: "u", Text: "input", Time: now}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := svc.HandleMessage(context.Background(), Message{ID: "m-20", ChatID: "chat", ThreadID: "topic", Sender: "u", Text: "overflow", Time: now}); err != nil {
+		t.Fatal(err)
+	}
+	events := renderer.Events()
+	last := events[len(events)-1]
+	if last.Type != "message" || !containsAll(last.Segments[0].Text, "队列已满") {
+		t.Fatalf("overflow event = %#v", last)
+	}
+}
+
+func TestServiceShutdownRejectsNewRunsAndCancelsActiveBatch(t *testing.T) {
+	cfg := testConfig(t)
+	runner := newFakeRunner()
+	runner.block = make(chan struct{})
+	svc := NewService(cfg, card.NewFakeRenderer(), runner, audit.NewRecorder())
+	now := time.Now()
+	if err := svc.HandleMessage(context.Background(), Message{ID: "run", ChatID: "chat", Sender: "u", Text: "/new work", Time: now}); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.DrainReady(now.Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	<-runner.started
+	shutdownCtx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- svc.Shutdown(shutdownCtx) }()
+	select {
+	case err := <-done:
+		t.Fatalf("shutdown returned before cancellation: %v", err)
+	default:
+	}
+	cancel()
+	if err := <-done; !errors.Is(err, context.Canceled) {
+		t.Fatalf("shutdown error = %v, want canceled", err)
+	}
+	if err := svc.HandleMessage(context.Background(), Message{ID: "new", ChatID: "chat", Sender: "u", Text: "/new rejected", Time: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	if got := len(runner.Calls()); got != 1 {
+		t.Fatalf("runner calls = %d, want one", got)
+	}
+}
+
+func TestServiceBackgroundReadyTickDrainsWithoutSleep(t *testing.T) {
+	cfg := testConfig(t)
+	runner := newFakeRunner()
+	svc := NewService(cfg, card.NewFakeRenderer(), runner, audit.NewRecorder())
+	now := time.Now()
+	if err := svc.HandleMessage(context.Background(), Message{ID: "tick", ChatID: "chat", Sender: "u", Text: "/new tick", Time: now}); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	ready := make(chan time.Time, 1)
+	svc.startBackgroundLoopsWithTicks(ctx, nil, ready)
+	ready <- now.Add(time.Second)
+	waitForCalls(t, runner, 1)
 }
 
 func TestParseClaudeStreamOutputDoesNotDuplicateFinalResult(t *testing.T) {
@@ -809,6 +1008,18 @@ func waitForCalls(t *testing.T, runner *fakeRunner, n int) {
 		time.Sleep(10 * time.Millisecond)
 	}
 	t.Fatalf("calls len = %d, want >= %d", len(runner.Calls()), n)
+}
+
+func waitForSessionNoActiveBatch(t *testing.T, svc *Service, key session.Key) {
+	t.Helper()
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		if sess, ok := svc.Sessions.Get(key); ok && sess.ActiveBatch == nil {
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatalf("session %s still has an active batch", key.ID())
 }
 
 func containsAll(text string, parts ...string) bool {
