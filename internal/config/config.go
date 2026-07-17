@@ -10,6 +10,7 @@ import (
 type Config struct {
 	DefaultAgent       string
 	DefaultWorkDir     string
+	ClaudeBin          string
 	CardUpdateEvery    time.Duration
 	CardMaxChars       int
 	InteractionTimeout time.Duration
@@ -21,6 +22,7 @@ func LoadFromEnv() Config {
 	cfg := Config{
 		DefaultAgent:       "claude",
 		DefaultWorkDir:     workDir,
+		ClaudeBin:          "claude",
 		CardUpdateEvery:    800 * time.Millisecond,
 		CardMaxChars:       12000,
 		InteractionTimeout: 120 * time.Second,
@@ -28,6 +30,9 @@ func LoadFromEnv() Config {
 	}
 	if v := os.Getenv("E2E_DEFAULT_AGENT"); v != "" {
 		cfg.DefaultAgent = v
+	}
+	if v := os.Getenv("E2E_CLAUDE_BIN"); v != "" {
+		cfg.ClaudeBin = v
 	}
 	if v := os.Getenv("E2E_DEFAULT_WORKDIR"); v != "" {
 		cfg.DefaultWorkDir = v

@@ -42,6 +42,7 @@ type AgentRunner interface {
 
 type AgentRunRequest struct {
 	Kind            agent.Kind
+	ClaudeBin       string
 	Prompt          string
 	WorkDir         string
 	ClaudeSessionID string
@@ -218,6 +219,7 @@ func (s *Service) executeRun(ctx context.Context, sess session.Session, input se
 	defer s.clearActiveRun(id)
 	result, err := s.Runner.Run(ctx, AgentRunRequest{
 		Kind:            sess.Key.Agent,
+		ClaudeBin:       s.Config.ClaudeBin,
 		Prompt:          input.Text,
 		WorkDir:         sess.WorkDir,
 		ClaudeSessionID: sess.ClaudeSessionID,
@@ -657,6 +659,7 @@ type CLIExecRunner struct{}
 func (CLIExecRunner) Run(ctx context.Context, req AgentRunRequest) (AgentRunResult, error) {
 	command, err := agent.BuildOneShotCommand(agent.OneShotConfig{
 		Kind:            req.Kind,
+		Bin:             req.ClaudeBin,
 		WorkDir:         req.WorkDir,
 		Prompt:          req.Prompt,
 		ClaudeSessionID: req.ClaudeSessionID,

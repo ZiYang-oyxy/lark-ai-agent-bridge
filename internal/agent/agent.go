@@ -15,6 +15,7 @@ const ApprovalFull ApprovalMode = "full"
 
 type OneShotConfig struct {
 	Kind            Kind
+	Bin             string
 	WorkDir         string
 	Prompt          string
 	ClaudeSessionID string
@@ -43,7 +44,11 @@ func buildClaudeOneShotCommand(cfg OneShotConfig) ([]string, error) {
 	if prompt == "" {
 		return nil, fmt.Errorf("claude prompt is empty")
 	}
-	args := []string{"claude", "-p", "--output-format", "stream-json", "--verbose", "--dangerously-skip-permissions"}
+	bin := strings.TrimSpace(cfg.Bin)
+	if bin == "" {
+		bin = "claude"
+	}
+	args := []string{bin, "-p", "--output-format", "stream-json", "--verbose", "--dangerously-skip-permissions"}
 	if sessionID := strings.TrimSpace(cfg.ClaudeSessionID); sessionID != "" {
 		args = append(args, "--resume", sessionID)
 	}
