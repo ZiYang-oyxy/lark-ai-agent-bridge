@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -421,6 +422,174 @@ func TestRestoreMissingSnapshotPersistsAnEmptyCurrentSnapshot(t *testing.T) {
 	}
 	if persisted.SchemaVersion != SnapshotVersion || persisted.Revision != 1 || len(persisted.Sessions) != 0 {
 		t.Fatalf("persisted snapshot = %#v", persisted)
+	}
+}
+
+func TestAcceptAndEnqueuePersistsReceiptAtomicallyAndRejectsAfterRestart(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "sessions.json")
+	key := Key{Agent: agent.Claude, ChatID: "dedup-restart"}
+	now := time.Unix(10, 0).UTC()
+	m := NewManagerWithStore(path)
+
+	accepted, result, err := m.AcceptAndEnqueue(key, Input{ID: "m1", State: InputDebouncing}, now, 24*time.Hour, 10_000, BatchLimits{MaxPending: 20})
+	if err != nil || !accepted || !result.Queued {
+		t.Fatalf("first accept accepted=%t result=%#v err=%v", accepted, result, err)
+	}
+	persisted, err := LoadSnapshot(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if persisted.Revision != 1 || len(persisted.Receipts) != 1 || persisted.Receipts[0].MessageID != "m1" || len(persisted.Sessions) != 1 || len(persisted.Sessions[0].Queue) != 1 {
+		t.Fatalf("snapshot = %#v", persisted)
+	}
+
+	m2 := NewManagerWithStore(path)
+	if _, err := m2.Restore(); err != nil {
+		t.Fatal(err)
+	}
+	accepted, _, err = m2.AcceptAndEnqueue(key, Input{ID: "m1", State: InputDebouncing}, now.Add(time.Second), 24*time.Hour, 10_000, BatchLimits{MaxPending: 20})
+	if err != nil || accepted {
+		t.Fatalf("duplicate accepted=%t err=%v", accepted, err)
+	}
+}
+
+func TestAcceptAndEnqueueDuplicateDoesNotAdvanceRevision(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "sessions.json")
+	key := Key{Agent: agent.Claude, ChatID: "dedup-revision"}
+	now := time.Unix(10, 0).UTC()
+	m := NewManagerWithStore(path)
+	if accepted, _, err := m.AcceptAndEnqueue(key, Input{ID: "m1"}, now, time.Hour, 10, BatchLimits{}); err != nil || !accepted {
+		t.Fatalf("first accept accepted=%t err=%v", accepted, err)
+	}
+	revision := m.revision
+	if accepted, _, err := m.AcceptAndEnqueue(key, Input{ID: "m1"}, now.Add(time.Second), time.Hour, 10, BatchLimits{}); err != nil || accepted {
+		t.Fatalf("duplicate accepted=%t err=%v", accepted, err)
+	}
+	if m.revision != revision {
+		t.Fatalf("revision = %d, want %d", m.revision, revision)
+	}
+}
+
+func TestAcceptAndEnqueueExpiredReceiptCanBeAcceptedAndReplaced(t *testing.T) {
+	key := Key{Agent: agent.Claude, ChatID: "dedup-expired"}
+	now := time.Unix(10, 0).UTC()
+	m := NewManager()
+	if accepted, _, err := m.AcceptAndEnqueue(key, Input{ID: "m1"}, now, time.Second, 10, BatchLimits{}); err != nil || !accepted {
+		t.Fatalf("first accept accepted=%t err=%v", accepted, err)
+	}
+	later := now.Add(time.Second)
+	if accepted, _, err := m.AcceptAndEnqueue(key, Input{ID: "m1"}, later, time.Hour, 10, BatchLimits{}); err != nil || !accepted {
+		t.Fatalf("expired accept accepted=%t err=%v", accepted, err)
+	}
+	if len(m.receipts) != 1 || m.receipts[0].MessageID != "m1" || !m.receipts[0].ExpiresAt.Equal(later.Add(time.Hour)) {
+		t.Fatalf("receipts = %#v", m.receipts)
+	}
+}
+
+func TestAcceptMessagePersistsReceiptOnlyAndRejectsDuplicate(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "sessions.json")
+	m := NewManagerWithStore(path)
+	now := time.Unix(10, 0).UTC()
+	if accepted, err := m.AcceptMessage("help-1", now, time.Hour, 10); err != nil || !accepted {
+		t.Fatalf("first accept accepted=%t err=%v", accepted, err)
+	}
+	if len(m.sessions) != 0 || m.revision != 1 {
+		t.Fatalf("receipt-only mutation changed sessions=%#v revision=%d", m.sessions, m.revision)
+	}
+	if accepted, err := m.AcceptMessage("help-1", now.Add(time.Second), time.Hour, 10); err != nil || accepted {
+		t.Fatalf("duplicate accepted=%t err=%v", accepted, err)
+	}
+	if m.revision != 1 {
+		t.Fatalf("duplicate revision = %d, want 1", m.revision)
+	}
+	persisted, err := LoadSnapshot(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(persisted.Sessions) != 0 || len(persisted.Receipts) != 1 || persisted.Receipts[0].MessageID != "help-1" {
+		t.Fatalf("snapshot = %#v", persisted)
+	}
+}
+
+func TestAcceptAndEnqueueQueueFullDoesNotRecordReceipt(t *testing.T) {
+	key := Key{Agent: agent.Claude, ChatID: "dedup-full"}
+	now := time.Unix(10, 0).UTC()
+	m := NewManager()
+	if accepted, _, err := m.AcceptAndEnqueue(key, Input{ID: "first"}, now, time.Hour, 10, BatchLimits{MaxPending: 1}); err != nil || !accepted {
+		t.Fatalf("first accept accepted=%t err=%v", accepted, err)
+	}
+	if accepted, _, err := m.AcceptAndEnqueue(key, Input{ID: "full"}, now, time.Hour, 10, BatchLimits{MaxPending: 1}); err == nil || accepted {
+		t.Fatalf("queue full accepted=%t err=%v", accepted, err)
+	}
+	for _, receipt := range m.receipts {
+		if receipt.MessageID == "full" {
+			t.Fatalf("queue-full message recorded a receipt: %#v", m.receipts)
+		}
+	}
+}
+
+func TestAcceptAndEnqueueSaveFailureDoesNotPublishReceiptOrInput(t *testing.T) {
+	key := Key{Agent: agent.Claude, ChatID: "dedup-save-failure"}
+	m := NewManagerWithStore(t.TempDir())
+	if accepted, _, err := m.AcceptAndEnqueue(key, Input{ID: "m1"}, time.Unix(10, 0), time.Hour, 10, BatchLimits{}); err == nil || accepted {
+		t.Fatalf("accepted=%t err=%v, want false persistence error", accepted, err)
+	}
+	if _, ok := m.Get(key); ok || len(m.receipts) != 0 || m.revision != 0 || m.lastPersistErr == nil {
+		t.Fatalf("save failure published sessions=%#v receipts=%#v revision=%d err=%v", m.sessions, m.receipts, m.revision, m.lastPersistErr)
+	}
+}
+
+func TestAcceptMessagePrunesReceiptsLimitsEntriesAndIgnoresEmptyID(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "sessions.json")
+	now := time.Unix(10, 0).UTC()
+	m := NewManagerWithStore(path)
+	m.receipts = []Receipt{
+		{MessageID: "expired", ExpiresAt: now},
+		{MessageID: "a", ExpiresAt: now.Add(time.Hour)},
+		{MessageID: "b", ExpiresAt: now.Add(time.Hour)},
+	}
+	if accepted, err := m.AcceptMessage("z", now, time.Hour, 2); err != nil || !accepted {
+		t.Fatalf("accepted=%t err=%v", accepted, err)
+	}
+	if len(m.receipts) != 2 || m.receipts[0].MessageID != "b" || m.receipts[1].MessageID != "z" {
+		t.Fatalf("receipts = %#v, want b then current z", m.receipts)
+	}
+	revision := m.revision
+	if accepted, err := m.AcceptMessage("", now, time.Hour, 2); err != nil || !accepted {
+		t.Fatalf("empty ID accepted=%t err=%v", accepted, err)
+	}
+	if m.revision != revision {
+		t.Fatalf("empty ID revision = %d, want %d", m.revision, revision)
+	}
+}
+
+func TestAcceptMessageConcurrentSameIDAcceptsExactlyOnce(t *testing.T) {
+	m := NewManager()
+	now := time.Unix(10, 0).UTC()
+	const callers = 32
+	accepted := make(chan bool, callers)
+	var wg sync.WaitGroup
+	for range callers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			ok, err := m.AcceptMessage("same", now, time.Hour, 10)
+			if err != nil {
+				t.Errorf("AcceptMessage: %v", err)
+			}
+			accepted <- ok
+		}()
+	}
+	wg.Wait()
+	close(accepted)
+	count := 0
+	for ok := range accepted {
+		if ok {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Fatalf("accepted count = %d, want 1", count)
 	}
 }
 

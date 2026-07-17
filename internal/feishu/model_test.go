@@ -34,3 +34,22 @@ func TestMessageDeduper(t *testing.T) {
 		t.Fatalf("expired seen=%v err=%v, want false nil", seen, err)
 	}
 }
+
+func TestIsOldMessage(t *testing.T) {
+	startedAt := time.Unix(10, 0).UTC()
+	for _, test := range []struct {
+		name      string
+		createdAt time.Time
+		want      bool
+	}{
+		{name: "more than two seconds old", createdAt: startedAt.Add(-3 * time.Second), want: true},
+		{name: "exactly two seconds old", createdAt: startedAt.Add(-2 * time.Second), want: false},
+		{name: "zero timestamp", want: false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if got := IsOldMessage(test.createdAt, startedAt); got != test.want {
+				t.Fatalf("IsOldMessage(%s, %s) = %t, want %t", test.createdAt, startedAt, got, test.want)
+			}
+		})
+	}
+}

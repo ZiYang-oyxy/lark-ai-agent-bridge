@@ -38,3 +38,10 @@ func (d *MessageDeduper) sweepLocked(now time.Time) {
 		}
 	}
 }
+
+// IsOldMessage reports whether a delivery predates the service start guard.
+// A message at the exact two-second boundary, or without a creation time, is
+// still eligible for normal receipt deduplication and handling.
+func IsOldMessage(createdAt, startedAt time.Time) bool {
+	return !createdAt.IsZero() && createdAt.Before(startedAt.Add(-2*time.Second))
+}
