@@ -43,9 +43,11 @@ export LARK_BOT_OPEN_ID="ou_xxx"
 export E2E_REAL_E2E_TIMEOUT_SEC="420"
 export E2E_REAL_E2E_DEFAULT_WORKDIR="/tmp/lark-agent-bridge-real"
 export E2E_REAL_E2E_FAKE_CLAUDE="1"
+export E2E_REAL_E2E_CALLBACK_ADDR="127.0.0.1:28080"
 ```
 
 `LARK_BOT_OPEN_ID` is optional. If it is omitted, `scripts/e2e-real.sh` queries `bot/v3/info` with the bridge app token. The script must never print app secret or tenant token.
+`E2E_REAL_E2E_CALLBACK_ADDR` is optional; it pins the local callback port used only by the `stop_preserves_queue` case. Without it, the script selects a loopback port for that run.
 
 ## Feishu App Prerequisites
 
@@ -87,7 +89,7 @@ lark-cli im +messages-send --as user \
   --text "lark-agent-bridge e2e probe"
 ```
 
-For full revoke mode, set `E2E_REAL_E2E_FAKE_CLAUDE=1` when you want deterministic long-running Claude behavior without spending model tokens. The fake Claude only affects the bridge process started by the E2E script; Feishu message delivery, long connection events, CardKit create/update, and message revoke events are still real.
+For full reliability mode, set `E2E_REAL_E2E_FAKE_CLAUDE=1`. The durable restart, batching, queue-capacity and scope-parallel cases require it so they can assert a deterministic child-process argv and lifecycle without spending model tokens. The fake Claude only affects the bridge process started by the E2E script; Feishu message delivery, long connection events, CardKit create/update, audit logging, and message revoke events are still real.
 
 ## Commands
 
@@ -150,6 +152,20 @@ Full-only cases:
 - `message_revoke`: revokes the current `lark-cli` user's own active prompt message and verifies the next request is not blocked by a leaked run.
 - `message_revoke_pending_workdir`: revokes a prompt waiting on workdir creation and verifies the workdir is not created and Claude does not start.
 - `message_revoke_queued_input`: revokes a queued prompt and verifies it is not dequeued after the active run is stopped.
+- `session_restart_context`: completes a request, restarts the bridge with the same session store, then verifies a follow-up CardKit result and the fake child argv contains `--resume fake-e2e-session`.
+- `restart_queued_cancel`: kills a bridge with a queued input, verifies `session_recovery_cancelled`, proves the old marker did not start after restart, and verifies a fresh request completes.
+- `restart_running_interrupted`: kills a bridge while a fake child is running, verifies `session_recovery_interrupted`, proves the old marker did not restart, and verifies a fresh request completes.
+- `debounce_dm`: runs the precise local DM debounce unit test (`250ms`) and verifies the same real CardKit/audit batching lifecycle. It does not claim a P2P Feishu run because the available test identity is group-only.
+- `debounce_group`: sends two group inputs in one debounce window and verifies one fake child argv contains both markers plus the final CardKit result.
+- `busy_merge`: queues two compatible inputs behind a running child, cancels the active prompt, and verifies the next fake child argv contains both queued markers and completes one final card.
+- `queue_full`: restarts with `E2E_QUEUE_MAX_PENDING=2`, verifies `queue_rejected`, the rejection card text, and that the rejected marker never starts a child process.
+- `scope_parallel`: creates two thread scopes, verifies both blocking child processes start before either is cancelled, then verifies both active-cancel audit events.
+- `stop_preserves_queue`: posts a real stop action to the bridge's local `/card/callback` compatibility endpoint, verifies `batch_stop_requested` and the stopped active card, then verifies the already queued input starts and reaches a final CardKit result. This endpoint is intentionally local to the E2E bridge process; production button delivery remains long connection `card.action.trigger`.
+- `recall_state`: recalls a queued input and then its active input, verifies both recall audit states, the active stopped card, and no result card for the recalled queued marker.
+
+The restart cases codify the durable contract exactly: context resumes, pending does not. `debouncing`, `queued`, and `starting` inputs become `cancelled`; `running` becomes `interrupted`; old commands are never automatically re-run, so the user must send a new message after restart.
+
+The personal bridge deliberately has no global semaphore, FIFO, or fairness policy. The E2E suite checks only the intended boundary: serial execution within one chat/topic scope and parallel execution for distinct scopes.
 
 ## Evidence
 

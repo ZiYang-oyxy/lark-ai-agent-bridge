@@ -57,10 +57,12 @@ bridge 当前不再托管交互式终端，也不再通过 tmux/PTY 捕获输出
 并发规则：
 
 - 同一 chat/topic 内串行执行。
-- 执行中收到同一 chat/topic 的新输入时进入内存队列，并产生 `reaction` 事件提示已排队。
+- 执行中收到同一 chat/topic 的新输入时进入该 scope 的持久化队列，并产生 `reaction` 事件提示已排队；兼容的运行时排队输入会按 debounce 窗口合并为下一批 Claude 调用，不保证每条输入各自启动一次子进程。
 - 不同 topic 使用不同 key，可以并行运行各自的 Claude 子进程。
 - 非 topic 普通文本默认新建会话。
 - topic 普通文本默认继续当前 topic 会话；`/new` 会重置当前 topic 会话。
+- 队列上限按单一 scope 的 pending input 计算，满时拒绝新输入且不写入去重 receipt。
+- 个人版不设置全局 semaphore、跨 scope FIFO 或公平性调度；唯一的顺序保证是同一 scope 串行，不同 scope 可并行。
 
 ## Claude 输出解析
 
@@ -101,14 +103,20 @@ CardKit 卡片负责展示一次 Claude 请求的状态：
 
 ## 生命周期
 
-bridge 主进程退出时会取消仍在运行的 Claude 子进程，并释放内存中的 pending action、队列和卡片路由状态。当前不做 SQLite/重启恢复，会话状态和 prompt 历史只保存在内存中。
+会话 snapshot 保存 chat/topic context（Claude session id、workdir、history、model、token 和去重 receipt）以及当时的队列/活动 batch。恢复的语义是**只恢复 context，不恢复 pending 工作**：旧命令不会自动重跑，用户需要重新发送。
+
+- 恢复时 `debouncing`、`queued`、`starting` input 一律变为 `cancelled`；`running` input 一律变为 `interrupted`。
+- 这些终态只生成 recovery audit notice，不会重建旧卡、重新调度或重新启动 Claude。
+- 恢复后队列和 active batch 均为空，新的输入从空闲 scope 重新进入正常 debounce/批处理流程。
+
+正常 shutdown 仍会取消正在运行的 Claude 子进程，并释放进程内 pending action 和卡片路由状态；持久化 snapshot 负责让下一次启动保留 context，并明确清理未完成工作。
 
 ## 暂缓项
 
-- `/resume` 和历史会话恢复
+- `/resume` 命令（内部 Claude context 可由 durable snapshot 自动续接，但不开放用户命令）
 - `codex` agent 适配
 - tmux/PTY/WebTTY/共享终端
 - 文件/图片输入
 - 权限与用户映射
 - metrics 观测
-- SQLite/重启恢复
+- SQLite、全局 FIFO / 公平调度和企业级多租户队列

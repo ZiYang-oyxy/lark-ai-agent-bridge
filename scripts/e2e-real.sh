@@ -19,6 +19,16 @@ FULL_EXTRA_CASES=(
   message_revoke
   message_revoke_pending_workdir
   message_revoke_queued_input
+  session_restart_context
+  restart_queued_cancel
+  restart_running_interrupted
+  debounce_dm
+  debounce_group
+  busy_merge
+  queue_full
+  scope_parallel
+  stop_preserves_queue
+  recall_state
 )
 
 MODE="smoke"
@@ -143,6 +153,10 @@ MESSAGES="$RUN_DIR/messages.jsonl"
 AUDIT="$RUN_DIR/audit.jsonl"
 MGET_DIR="$RUN_DIR/mget"
 SERVER_LOG="$RUN_DIR/server.log"
+SESSION_STORE="$RUN_DIR/sessions.json"
+FAKE_CLAUDE_LOG="$RUN_DIR/fake-claude.log"
+CALLBACK_ADDR="${E2E_REAL_E2E_CALLBACK_ADDR:-127.0.0.1:$((20000 + RANDOM % 20000))}"
+SERVER_QUEUE_MAX_PENDING=""
 
 mkdir -p "$RUN_DIR" "$MGET_DIR" "$ROOT/.cache/go-build"
 : >"$MESSAGES"
@@ -160,6 +174,7 @@ summary_init() {
     echo "- mode: $MODE"
     echo "- run_dir: $RUN_DIR"
     echo "- audit: $AUDIT"
+    echo "- callback_addr: $CALLBACK_ADDR"
     echo "- default_workdir: $DEFAULT_WORKDIR"
     echo "- fake_claude: $USE_FAKE_CLAUDE"
     echo "- secrets: not printed"
@@ -239,8 +254,13 @@ prepare_fake_claude_if_needed() {
   mkdir -p "$FAKE_BIN_DIR"
   cat >"$FAKE_BIN_DIR/claude" <<'EOF'
 #!/usr/bin/env sh
-printf '%s\n' '{"type":"assistant","message":{"model":"fake-claude-e2e","content":[{"type":"text","text":"FAKE_E2E_STARTED"}],"usage":{"output_tokens":1},"session_id":"fake-e2e-session"}}'
-sleep 300
+set -eu
+args="$(printf '%s' "$*" | tr '\n' ' ')"
+printf 'pid=%s args=%s\n' "$$" "$args" >>"${FAKE_CLAUDE_LOG:?FAKE_CLAUDE_LOG is required}"
+printf '%s\n' '{"type":"result","result":"FAKE_E2E_STARTED","model":"fake-claude-e2e","usage":{"output_tokens":1},"session_id":"fake-e2e-session"}'
+case "$args" in
+  *E2E_BLOCK*) sleep 300 ;;
+esac
 EOF
   chmod +x "$FAKE_BIN_DIR/claude"
 }
@@ -255,7 +275,15 @@ start_server_if_needed() {
   mkdir -p "$DEFAULT_WORKDIR"
   prepare_fake_claude_if_needed
   log "starting bridge serve"
-  PATH="$FAKE_BIN_DIR:$PATH" E2E_AUDIT_LOG="$AUDIT" GOCACHE="$GOCACHE" go run ./cmd/lark-agent-bridge serve --default-workdir "$DEFAULT_WORKDIR" >"$SERVER_LOG" 2>&1 &
+  local -a server_env
+  server_env=("PATH=$FAKE_BIN_DIR:$PATH" "E2E_AUDIT_LOG=$AUDIT" "E2E_SESSION_STORE=$SESSION_STORE" "E2E_CALLBACK_ADDR=$CALLBACK_ADDR" "GOCACHE=$GOCACHE")
+  if [[ "$USE_FAKE_CLAUDE" == "1" ]]; then
+    server_env+=("E2E_CLAUDE_BIN=$FAKE_BIN_DIR/claude" "FAKE_CLAUDE_LOG=$FAKE_CLAUDE_LOG")
+  fi
+  if [[ -n "$SERVER_QUEUE_MAX_PENDING" ]]; then
+    server_env+=("E2E_QUEUE_MAX_PENDING=$SERVER_QUEUE_MAX_PENDING")
+  fi
+  env "${server_env[@]}" go run ./cmd/lark-agent-bridge serve --default-workdir "$DEFAULT_WORKDIR" >>"$SERVER_LOG" 2>&1 &
   SERVER_PID=$!
   summary "- bridge_pid: $SERVER_PID"
   sleep 5
@@ -266,14 +294,35 @@ start_server_if_needed() {
   fi
 }
 
+stop_server() {
+  local signal="${1:-TERM}"
+  if [[ -z "${SERVER_PID:-}" ]]; then
+    return
+  fi
+  if kill -0 "$SERVER_PID" >/dev/null 2>&1; then
+    kill "-$signal" "$SERVER_PID" >/dev/null 2>&1 || true
+    wait "$SERVER_PID" >/dev/null 2>&1 || true
+  fi
+  SERVER_PID=""
+}
+
+restart_server() {
+  local signal="${1:-TERM}"
+  stop_server "$signal"
+  start_server_if_needed restart
+  if ! kill -0 "$SERVER_PID" >/dev/null 2>&1; then
+    echo "bridge did not survive restart; see $SERVER_LOG" >&2
+    return 1
+  fi
+}
+
 cleanup() {
   local status=$?
   if [[ -n "${SERVER_PID:-}" ]] && kill -0 "$SERVER_PID" >/dev/null 2>&1; then
     if [[ "$status" -ne 0 && "$KEEP_SERVER_ON_FAIL" -eq 1 ]]; then
       echo "keeping bridge process $SERVER_PID for diagnosis"
     else
-      kill "$SERVER_PID" >/dev/null 2>&1 || true
-      wait "$SERVER_PID" >/dev/null 2>&1 || true
+      stop_server TERM
     fi
   fi
 }
@@ -283,6 +332,17 @@ send_at() {
   local text="$1"
   local msg_id
   msg_id="$(lark-cli im +messages-send --as user --chat-id "$E2E_E2E_CHAT_ID" --text "<at user_id=\"$BOT_OPEN_ID\"></at> $text" --jq '.data.message_id // .message_id // .data.message_id' | tail -n 1)"
+  if [[ -z "$msg_id" || "$msg_id" == "null" ]]; then
+    echo "failed to send message: $text" >&2
+    exit 1
+  fi
+  printf '%s\n' "$msg_id"
+}
+
+send_text() {
+  local text="$1"
+  local msg_id
+  msg_id="$(lark-cli im +messages-send --as user --chat-id "$E2E_E2E_CHAT_ID" --text "$text" --jq '.data.message_id // .message_id // .data.message_id' | tail -n 1)"
   if [[ -z "$msg_id" || "$msg_id" == "null" ]]; then
     echo "failed to send message: $text" >&2
     exit 1
@@ -383,10 +443,74 @@ assert_no_error_event() {
   fi
 }
 
+wait_file_contains() {
+  local file="$1"
+  local needle="$2"
+  local timeout="${3:-$WAIT_TIMEOUT}"
+  local start
+  start="$(date +%s)"
+  while true; do
+    if [[ -f "$file" ]] && grep -F -- "$needle" "$file" >/dev/null 2>&1; then
+      return 0
+    fi
+    if (( $(date +%s) - start >= timeout )); then
+      echo "timed out waiting for $file to contain: $needle" >&2
+      return 1
+    fi
+    sleep 1
+  done
+}
+
+require_fake_claude() {
+  if [[ "$USE_FAKE_CLAUDE" != "1" ]]; then
+    echo "case requires E2E_REAL_E2E_FAKE_CLAUDE=1 for deterministic process assertions" >&2
+    return 1
+  fi
+}
+
+assert_fake_batch_contains() {
+  local first="$1"
+  local second="$2"
+  if ! awk -v first="$first" -v second="$second" '
+    index($0, first) { seen_first = 1 }
+    index($0, second) { seen_second = 1 }
+    seen_first && seen_second { found = 1; exit }
+    END { exit found ? 0 : 1 }
+  ' "$FAKE_CLAUDE_LOG"; then
+    echo "no fake Claude invocation contained both batch markers: $first, $second" >&2
+    return 1
+  fi
+}
+
+assert_fake_marker_not_started_after() {
+  local marker="$1"
+  local before="$2"
+  local after
+  after="$(grep -F -c -- "$marker" "$FAKE_CLAUDE_LOG" 2>/dev/null || true)"
+  if [[ "$after" -ne "$before" ]]; then
+    echo "cleared input unexpectedly started after restart: $marker" >&2
+    return 1
+  fi
+}
+
+fake_marker_count() {
+  local marker="$1"
+  grep -F -c -- "$marker" "$FAKE_CLAUDE_LOG" 2>/dev/null || true
+}
+
 revoke_message() {
   local msg_id="$1"
   local out="$RUN_DIR/revoke-$msg_id.json"
   lark-cli im messages delete --as user --yes --params "{\"message_id\":\"$msg_id\"}" >"$out"
+}
+
+stop_card() {
+  local session_id="$1"
+  local out="$RUN_DIR/stop-${session_id//[^A-Za-z0-9._-]/_}.json"
+  local payload
+  payload="$(jq -nc --arg session "$session_id" '{operator:{open_id:"e2e"},action:{value:{session:$session,action_id:"stop"}}}')"
+  curl -fsS -X POST "http://$CALLBACK_ADDR/card/callback" -H 'Content-Type: application/json' -d "$payload" >"$out"
+  jq -e '.ok == true and .card != null' "$out" >/dev/null
 }
 
 case_preflight() {
@@ -544,6 +668,225 @@ case_message_revoke_queued_input() {
   record_message message_revoke_queued_input active "$first"
   record_message message_revoke_queued_input queued_revoked "$second"
   record_message message_revoke_queued_input followup "$follow"
+}
+
+case_session_restart_context() {
+  require_fake_claude
+  local first_marker="E2E_${RUN_ID}_RESTART_CONTEXT_FIRST"
+  local second_marker="E2E_${RUN_ID}_RESTART_CONTEXT_SECOND"
+  local first second file
+  first="$(send_at "/new ${first_marker}")"
+  wait_audit "$first.*event=result" 60
+  wait_file_contains "$FAKE_CLAUDE_LOG" "$first_marker" 60
+  restart_server TERM
+  second="$(send_at "$second_marker")"
+  wait_audit "$second.*event=result" 60
+  wait_file_contains "$FAKE_CLAUDE_LOG" "$second_marker" 60
+  wait_file_contains "$FAKE_CLAUDE_LOG" "--resume fake-e2e-session" 60
+  file="$(mget session_restart_context "$second")"
+  assert_file_contains "$file" "FAKE_E2E_STARTED"
+  record_message session_restart_context first "$first"
+  record_message session_restart_context resumed "$second" "$file"
+}
+
+case_restart_queued_cancel() {
+  require_fake_claude
+  local active_marker="E2E_${RUN_ID}_RESTART_QUEUE_ACTIVE_E2E_BLOCK"
+  local queued_marker="E2E_${RUN_ID}_RESTART_QUEUE_CANCEL"
+  local follow_marker="E2E_${RUN_ID}_RESTART_QUEUE_FOLLOW"
+  local active queued follow file before
+  active="$(send_at "/new ${active_marker}")"
+  wait_audit "$active.*event=stream" 60
+  queued="$(send_at "$queued_marker")"
+  wait_audit "queue_input.*position=" 60
+  before="$(fake_marker_count "$queued_marker")"
+  restart_server KILL
+  wait_audit "session_recovery_cancelled" 60
+  sleep 2
+  assert_fake_marker_not_started_after "$queued_marker" "$before"
+  follow="$(send_at "/new ${follow_marker}")"
+  wait_audit "$follow.*event=result" 60
+  file="$(mget restart_queued_cancel "$follow")"
+  assert_file_contains "$file" "FAKE_E2E_STARTED"
+  record_message restart_queued_cancel active "$active"
+  record_message restart_queued_cancel cleared_queue "$queued"
+  record_message restart_queued_cancel followup "$follow" "$file"
+}
+
+case_restart_running_interrupted() {
+  require_fake_claude
+  local running_marker="E2E_${RUN_ID}_RESTART_RUNNING_E2E_BLOCK"
+  local follow_marker="E2E_${RUN_ID}_RESTART_RUNNING_FOLLOW"
+  local running follow file before
+  running="$(send_at "/new ${running_marker}")"
+  wait_audit "$running.*event=stream" 60
+  wait_file_contains "$FAKE_CLAUDE_LOG" "$running_marker" 60
+  before="$(fake_marker_count "$running_marker")"
+  restart_server KILL
+  wait_audit "session_recovery_interrupted" 60
+  sleep 2
+  assert_fake_marker_not_started_after "$running_marker" "$before"
+  follow="$(send_at "/new ${follow_marker}")"
+  wait_audit "$follow.*event=result" 60
+  file="$(mget restart_running_interrupted "$follow")"
+  assert_file_contains "$file" "FAKE_E2E_STARTED"
+  record_message restart_running_interrupted interrupted "$running"
+  record_message restart_running_interrupted followup "$follow" "$file"
+}
+
+case_debounce_dm() {
+  require_fake_claude
+  # The available real account is group-only. Keep the 250 ms DM rule covered
+  # locally, then prove the same batch lifecycle through a real CardKit run.
+  go test ./internal/bridge -run '^TestDebounceForMessage$'
+  local first_marker="E2E_${RUN_ID}_DM_DEBOUNCE_ONE"
+  local second_marker="E2E_${RUN_ID}_DM_DEBOUNCE_TWO"
+  local first second file
+  first="$(send_at "/new ${first_marker}")"
+  second="$(send_at "$second_marker")"
+  wait_audit "$second.*event=result" 60
+  wait_file_contains "$FAKE_CLAUDE_LOG" "$second_marker" 60
+  assert_fake_batch_contains "$first_marker" "$second_marker"
+  file="$(mget debounce_dm "$second")"
+  assert_file_contains "$file" "FAKE_E2E_STARTED"
+  record_message debounce_dm first "$first"
+  record_message debounce_dm second "$second" "$file"
+}
+
+case_debounce_group() {
+  require_fake_claude
+  local first_marker="E2E_${RUN_ID}_GROUP_DEBOUNCE_ONE"
+  local second_marker="E2E_${RUN_ID}_GROUP_DEBOUNCE_TWO"
+  local first second file
+  first="$(send_at "/new ${first_marker}")"
+  second="$(send_at "$second_marker")"
+  wait_audit "$second.*event=result" 60
+  wait_file_contains "$FAKE_CLAUDE_LOG" "$second_marker" 60
+  assert_fake_batch_contains "$first_marker" "$second_marker"
+  file="$(mget debounce_group "$second")"
+  assert_file_contains "$file" "FAKE_E2E_STARTED"
+  record_message debounce_group first "$first"
+  record_message debounce_group second "$second" "$file"
+}
+
+case_busy_merge() {
+  require_fake_claude
+  local active_marker="E2E_${RUN_ID}_BUSY_ACTIVE_E2E_BLOCK"
+  local first_marker="E2E_${RUN_ID}_BUSY_MERGE_ONE"
+  local second_marker="E2E_${RUN_ID}_BUSY_MERGE_TWO"
+  local active first second file
+  active="$(send_at "/new ${active_marker}")"
+  wait_audit "$active.*event=stream" 60
+  first="$(send_at "$first_marker")"
+  second="$(send_at "$second_marker")"
+  wait_file_contains "$FAKE_CLAUDE_LOG" "$active_marker" 60
+  revoke_message "$active"
+  wait_audit "message_recalled_active_cancelled.*$active" 60
+  wait_audit "$second.*event=result" 60
+  assert_fake_batch_contains "$first_marker" "$second_marker"
+  file="$(mget busy_merge "$second")"
+  assert_file_contains "$file" "FAKE_E2E_STARTED"
+  record_message busy_merge active "$active"
+  record_message busy_merge first "$first"
+  record_message busy_merge merged "$second" "$file"
+}
+
+case_queue_full() {
+  require_fake_claude
+  local active_marker="E2E_${RUN_ID}_QUEUE_FULL_ACTIVE_E2E_BLOCK"
+  local queued_marker="E2E_${RUN_ID}_QUEUE_FULL_QUEUED"
+  local rejected_marker="E2E_${RUN_ID}_QUEUE_FULL_REJECTED"
+  local active queued rejected file
+  SERVER_QUEUE_MAX_PENDING=2
+  restart_server TERM
+  active="$(send_at "/new ${active_marker}")"
+  wait_audit "$active.*event=stream" 60
+  queued="$(send_at "$queued_marker")"
+  wait_file_contains "$FAKE_CLAUDE_LOG" "$active_marker" 60
+  rejected="$(send_at "$rejected_marker")"
+  wait_audit "queue_rejected" 60
+  file="$(mget queue_full "$rejected")"
+  assert_file_contains "$file" "队列已满，未执行。"
+  if grep -F -- "$rejected_marker" "$FAKE_CLAUDE_LOG" >/dev/null 2>&1; then
+    echo "queue-full input unexpectedly started a fake Claude process" >&2
+    return 1
+  fi
+  revoke_message "$active"
+  wait_audit "message_recalled_active_cancelled.*$active" 60
+  wait_audit "$queued.*event=result" 60
+  SERVER_QUEUE_MAX_PENDING=""
+  restart_server TERM
+  record_message queue_full active "$active"
+  record_message queue_full queued "$queued"
+  record_message queue_full rejected "$rejected" "$file"
+}
+
+case_scope_parallel() {
+  require_fake_claude
+  local root_one root_two one two
+  local one_marker="E2E_${RUN_ID}_SCOPE_ONE_E2E_BLOCK"
+  local two_marker="E2E_${RUN_ID}_SCOPE_TWO_E2E_BLOCK"
+  root_one="$(send_text "E2E_${RUN_ID}_SCOPE_ROOT_ONE")"
+  root_two="$(send_text "E2E_${RUN_ID}_SCOPE_ROOT_TWO")"
+  one="$(reply_thread "$root_one" "<at user_id=\"${BOT_OPEN_ID}\"></at> /new ${one_marker}")"
+  two="$(reply_thread "$root_two" "<at user_id=\"${BOT_OPEN_ID}\"></at> /new ${two_marker}")"
+  wait_audit "$one.*event=stream" 60
+  wait_audit "$two.*event=stream" 60
+  wait_file_contains "$FAKE_CLAUDE_LOG" "$one_marker" 60
+  wait_file_contains "$FAKE_CLAUDE_LOG" "$two_marker" 60
+  kill -0 "$SERVER_PID" >/dev/null 2>&1
+  revoke_message "$one"
+  revoke_message "$two"
+  wait_audit "message_recalled_active_cancelled.*$one" 60
+  wait_audit "message_recalled_active_cancelled.*$two" 60
+  record_message scope_parallel root_one "$root_one"
+  record_message scope_parallel root_two "$root_two"
+  record_message scope_parallel scope_one "$one"
+  record_message scope_parallel scope_two "$two"
+}
+
+case_stop_preserves_queue() {
+  require_fake_claude
+  local active_marker="E2E_${RUN_ID}_STOP_ACTIVE_E2E_BLOCK"
+  local queued_marker="E2E_${RUN_ID}_STOP_QUEUE_PRESERVED"
+  local active queued active_file queued_file
+  active="$(send_at "/new ${active_marker}")"
+  wait_audit "$active.*event=stream" 60
+  queued="$(send_at "$queued_marker")"
+  wait_audit "queue_input" 60
+  stop_card "claude:${E2E_E2E_CHAT_ID}:message:${active}"
+  wait_audit "batch_stop_requested" 60
+  wait_audit "$queued.*event=result" 60
+  queued_file="$(mget stop_preserves_queue "$queued")"
+  assert_file_contains "$queued_file" "FAKE_E2E_STARTED"
+  wait_file_contains "$FAKE_CLAUDE_LOG" "$queued_marker" 60
+  active_file="$(mget stop_preserves_queue "$active")"
+  assert_file_contains "$active_file" "已停止"
+  record_message stop_preserves_queue stopped_active "$active" "$active_file"
+  record_message stop_preserves_queue preserved_queue "$queued" "$queued_file"
+}
+
+case_recall_state() {
+  require_fake_claude
+  local active_marker="E2E_${RUN_ID}_RECALL_ACTIVE_E2E_BLOCK"
+  local queued_marker="E2E_${RUN_ID}_RECALL_QUEUED_CANCEL"
+  local active queued file
+  active="$(send_at "/new ${active_marker}")"
+  wait_audit "$active.*event=stream" 60
+  queued="$(send_at "$queued_marker")"
+  wait_audit "queue_input" 60
+  revoke_message "$queued"
+  wait_audit "message_recalled_queued_cancelled.*$queued" 60
+  revoke_message "$active"
+  wait_audit "message_recalled_active_cancelled.*$active" 60
+  if grep -F "$queued_marker" "$AUDIT" | grep -F "event=result" >/dev/null 2>&1; then
+    echo "recalled queued input unexpectedly produced a result card" >&2
+    return 1
+  fi
+  file="$(mget recall_state "$active")"
+  assert_file_contains "$file" "已停止"
+  record_message recall_state active_cancelled "$active" "$file"
+  record_message recall_state queued_cancelled "$queued"
 }
 
 run_case() {

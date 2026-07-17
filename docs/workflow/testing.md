@@ -21,8 +21,11 @@ GOCACHE=$PWD/.cache/go-build go test ./...
 - `/help`、`/new`、`/status` 命令面
 - `/resume`、`/codex` 等撤回命令不再开放
 - 群聊未 @ 过滤
-- 同 chat/topic 串行排队
-- 不同 topic 并行
+- durable snapshot restore：只恢复 context，清理 pending；`debouncing`/`queued`/`starting` 变为 `cancelled`，`running` 变为 `interrupted`
+- duplicate delivery skip，且重复输入不推进 snapshot revision
+- 单 scope queue full 拒绝且不记录 receipt
+- 同 chat/topic 串行、不同 topic 并行；busy scope 的兼容输入合并为下一批，而不是每条排队输入各跑一次
+- stop 和 recall 保留/移除队列输入的对应生命周期
 - topic 普通文本续接内部 Claude session
 - `/new` 重置当前会话
 - Claude one-shot 命令构造和 stream-json 解析
@@ -165,6 +168,18 @@ GOCACHE=$PWD/.cache/go-build go run ./cmd/lark-agent-bridge simulate-action \
 - `/new --workdir <path>` 下 fake Claude 进程看到的 `pwd` 和 `$PWD` 都等于 `<path>`。
 - 同一会话排队输入 dequeue 后仍使用各自输入携带的 workdir。
 - 最终 result 只替换自身带回来的正文/思考/工具分区，保留流式阶段已解析到但最终 result 缺失的思考或工具内容。
+
+## Durable Session 与队列验证
+
+`E2E_SESSION_STORE` 默认位于 `<default-workdir>/.lark-agent-bridge/sessions.json`。本地验证必须覆盖以下恢复边界：
+
+- restart 仅恢复 context（例如 Claude session id），不自动重放旧命令。
+- pending 不会恢复到 scheduler：`debouncing`、`queued`、`starting` 恢复为 `cancelled`，`running` 恢复为 `interrupted`。
+- 同一 scope 的运行时队列可按 debounce 合并，因而“第二条已排队”不代表会获得独立 Claude 子进程。
+- 个人版没有全局 semaphore/FIFO/公平性；验证只要求同 scope 串行及不同 scope 并行。
+- `/resume` 必须保持禁用；恢复后的后续普通消息由内部 Claude `--resume <stored session id>` 续接。
+
+`./scripts/verify.sh` 选择精确 Go 测试覆盖上述 snapshot restore、duplicate skip、queue full、busy merge、scope 串/并行和 `/resume` 禁用行为。真实飞书生命周期覆盖见下节与 `docs/workflow/e2e-real.md`；本地脚本检查不会连接飞书。
 
 ## 飞书 E2E 前置检查
 
