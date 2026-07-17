@@ -8,7 +8,7 @@
 
 ## 核心模型
 
-bridge 当前不再托管交互式终端，也不再通过 tmux/PTY 捕获输出。每条可处理飞书消息会形成一次 Claude 子进程调用：
+bridge 当前不再托管交互式终端，也不再通过 tmux/PTY 捕获输出。每个已调度 batch 会形成一次 Claude 子进程调用；一个 batch 可以包含一条或多条经 debounce 判定兼容的飞书输入：
 
 - 启动命令：`claude -p --output-format stream-json --dangerously-skip-permissions --effort low <prompt>`
 - 子进程 `cmd.Dir` 和 `PWD` 都设置为本轮请求解析出的工作目录；没有 `--workdir` 时使用 `--default-workdir` 或环境默认目录。
