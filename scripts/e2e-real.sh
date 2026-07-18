@@ -308,9 +308,9 @@ record_static_credentials() {
 }
 
 record_static_user_auth() {
-  local response auth_app scope_response login_command="lark-cli auth login --domain im"
+  local response auth_app scope_response login_command="lark-cli auth login --scope im:message.send_as_user"
   if [[ -n "$LARK_CLI_PROFILE" ]]; then
-    login_command="lark-cli --profile $LARK_CLI_PROFILE auth login --domain im"
+    login_command="lark-cli --profile $LARK_CLI_PROFILE auth login --scope im:message.send_as_user"
   fi
   if ! response="$(lark_cli auth status --json --verify 2>/dev/null)"; then
     e2e_cap_record lark_cli_auth BLOCKED lark_cli_auth_missing "lark-cli user authentication is unavailable" "run $login_command"

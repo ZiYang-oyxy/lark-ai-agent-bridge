@@ -131,7 +131,7 @@ verify_user_auth() {
   local response auth_app scope_response
   response="$(lark_cli auth status --json --verify 2>/dev/null)" || {
     echo "BLOCKED lark_cli_auth_missing: authorize the isolated lark-cli profile for this bridge app" >&2
-    echo "Next: lark-cli --profile '$LARK_CLI_PROFILE' auth login --domain im" >&2
+    echo "Next: lark-cli --profile '$LARK_CLI_PROFILE' auth login --scope im:message.send_as_user" >&2
     exit 3
   }
   auth_app="$(printf '%s' "$response" | jq -r '.appId // .app_id // .data.app_id // .auth.app_id // empty')"

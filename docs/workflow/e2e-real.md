@@ -82,7 +82,7 @@ E2E_CLAUDE_BIN=/absolute/path/to/claude
 `E2E_REAL_E2E_CALLBACK_ADDR` is optional; it pins the local callback port used only by the `stop_preserves_queue` case. Without it, the script selects a loopback port for that run.
 `E2E_REAL_E2E_P2P_CHAT_ID` is required only by media file cases. It must be the current user's existing direct-chat `oc_...` with this exact bot; do not substitute a group chat or another similarly named bot.
 When `--p2p-chat-id` is supplied to `e2e-init.sh`, bootstrap verifies that the selected chat contains the resolved bot before saving it.
-`E2E_E2E_LARK_CLI_PROFILE` identifies the local named CLI configuration. If the name already exists for a different App ID, bootstrap returns `BLOCKED:lark_cli_profile_mismatch` and never overwrites or switches it. Authorize it explicitly with `lark-cli --profile <name> auth login --domain im`.
+`E2E_E2E_LARK_CLI_PROFILE` identifies the local named CLI configuration. If the name already exists for a different App ID, bootstrap returns `BLOCKED:lark_cli_profile_mismatch` and never overwrites or switches it. Authorize the required sending permission explicitly with `lark-cli --profile <name> auth login --scope im:message.send_as_user`; avoid requesting the entire `im` domain because unrelated optional scopes can make an otherwise usable authorization report partial failure.
 
 ## Feishu App Prerequisites
 
