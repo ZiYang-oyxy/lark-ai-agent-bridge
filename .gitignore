@@ -1,5 +1,6 @@
 /reference/lark-agent-workspace/
 .DS_Store
 /.cache/
+/.worktrees/
 /.lark-agent-bridge/
 /.superpowers/
