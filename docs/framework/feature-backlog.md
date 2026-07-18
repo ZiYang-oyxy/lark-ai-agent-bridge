@@ -22,13 +22,14 @@ gist 的企业级方案对当前体量**严重过度设计**,近期一律不进�
 |---|---|---|
 | Agent | 仅 claude,one-shot 子进程(非常驻) | `internal/agent/agent.go:42-56`,`ParseKind` 不识别 codex `agent.go:24-30` |
 | 会话 | JSON 原子快照保存上下文;重启恢复 `ClaudeSessionID/history`,但 queued/running 不自动重跑 | `internal/session/store.go`,`internal/bridge/service.go` |
-| session key | `{Agent, ChatID, Thread}` | `internal/session/session.go:11-22` |
+| session key | `/config` 选择 `chat` 时为 `{Agent, ChatID}`；选择 `topic` 时为 `{Agent, ChatID, Thread?}` | `internal/config/preferences.go`,`internal/bridge/service.go` |
 | 鉴权 | **完全无鉴权** + 硬编码 `--dangerously-skip-permissions` | `internal/agent/agent.go:51` |
 | 去重 | 与 session snapshot 一起持久化,带 TTL/容量上限与启动 watermark | `internal/session/store.go`,`internal/bridge/service.go` |
 | 并发 | scope 内串行、不同 scope 并行;busy 输入有界排队并按兼容配置聚合下一批 | `internal/session/session.go`,`internal/bridge/service.go` |
 | 卡片渲染 | 已有 reducer 中间层(`agentCardStream`):流式 append + 终态 replace | `internal/bridge/stream_card.go` |
 | 附件/图片 | 支持图片及纯文本类文件;下载、内容校验、cache/GC 与失败反馈已接线 | `internal/media/`,`internal/feishu/media_downloader.go` |
 | model | `/config` 持久化 requested model/effort;卡片区分 requested 与 CLI 实际报告值 | `internal/config/preferences.go`,`internal/bridge/service.go` |
+| conversation mode | 默认普通聊天；可持久切换 topic，显式控制 `reply_in_thread` 和 session scope | `internal/config/preferences.go`,`internal/bridge/service.go`,`internal/feishu/cardkit_client.go` |
 
 ---
 
@@ -84,6 +85,12 @@ gist 的企业级方案对当前体量**严重过度设计**,近期一律不进�
 - **回复语义**:`append` 每轮新建卡;`append-clean-card` 终态隐藏思考/工具过程区;`latest-card` 按 conversation scope 复用卡片,跨重启继续递增 sequence。旧卡 ID 失效时清除 mapping 并新建卡,真实飞书返回的 `10002 cardid invalid` 已纳入 stale 判定。
 - **流式体验**:preview 同时满足时间间隔与新增字符门限,终态不截断;等待输入使用 `OneSecond`,运行使用 `Typing`,所有完成/停止/重启/竞态路径统一清理 reaction。
 - **证据**:`.cache/evidence/dee05c5/reply-final-summary.md` 汇总六个最终通过的 Reply E2E,并链接保留首轮失败现场与两次定向绿色重跑。
+
+### P1-4 · 普通聊天 / 话题模式可配
+
+- **状态(2026-07-18)**:✅ 已完成。默认 `chat` 模式使用 `reply_in_thread=false` 并按 chat 共用 session；`/config` 可切到 `topic`，使用 `reply_in_thread=true` 并按非空 `ThreadID` 隔离 session。
+- **配置边界**:`ConversationMode` 与 Reply mode 正交；环境默认来自 `E2E_CONVERSATION_MODE`。保存只影响新接收消息，queued input 和 pending workdir 均冻结接收时 mode，旧 session 不迁移、不删除。
+- **实现边界**:SDK 文本 sender 与 CardKit HTTP client 都接收显式 bool，不再硬编码 thread reply；不同 Conversation mode 的输入不能合并为同一 batch。
 
 ---
 

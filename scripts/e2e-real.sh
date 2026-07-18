@@ -1216,18 +1216,20 @@ submit_config() {
   local session_id="$2"
   local model="$3"
   local effort="$4"
-  local reply_mode="${5:-append}"
-  local out="$RUN_DIR/${case_name}-${model}-${effort}-${reply_mode}.json"
-  local payload mark
-  payload="$(jq -nc --arg session "$session_id" --arg model "$model" --arg effort "$effort" --arg reply_mode "$reply_mode" \
-    '{operator:{open_id:"e2e"},action:{value:{session:$session,action_id:"config.save"},form_value:{model:$model,effort:$effort,reply_mode:$reply_mode}}}')"
+	local reply_mode="${5:-append}"
+	local conversation_mode="${6:-chat}"
+	local out="$RUN_DIR/${case_name}-${model}-${effort}-${reply_mode}-${conversation_mode}.json"
+	local payload mark
+	payload="$(jq -nc --arg session "$session_id" --arg model "$model" --arg effort "$effort" --arg reply_mode "$reply_mode" --arg conversation_mode "$conversation_mode" \
+		'{operator:{open_id:"e2e"},action:{value:{session:$session,action_id:"config.save"},form_value:{model:$model,effort:$effort,reply_mode:$reply_mode,conversation_mode:$conversation_mode}}}')"
   mark="$(audit_mark)"
   curl -fsS -X POST "http://$CALLBACK_ADDR/card/callback" -H 'Content-Type: application/json' -d "$payload" >"$out"
   jq -e '.ok == true and .card != null' "$out" >/dev/null
   wait_audit_since "$mark" '"Action":"config_saved"' 60
   assert_file_contains "$out" "model=\`$model\`"
   assert_file_contains "$out" "effort=\`$effort\`"
-  assert_file_contains "$out" "reply mode=\`$reply_mode\`"
+	assert_file_contains "$out" "reply mode=\`$reply_mode\`"
+	assert_file_contains "$out" "conversation mode=\`$conversation_mode\`"
 }
 
 submit_invalid_config() {
@@ -1236,7 +1238,7 @@ submit_invalid_config() {
   local out="$RUN_DIR/${case_name}-invalid.json"
   local payload mark
   payload="$(jq -nc --arg session "$session_id" \
-    '{operator:{open_id:"e2e"},action:{value:{session:$session,action_id:"config.save"},form_value:{model:"not-allowed",effort:"extreme",reply_mode:"replace"}}}')"
+		'{operator:{open_id:"e2e"},action:{value:{session:$session,action_id:"config.save"},form_value:{model:"not-allowed",effort:"extreme",reply_mode:"replace",conversation_mode:"invalid"}}}')"
   mark="$(audit_mark)"
   curl -fsS -X POST "http://$CALLBACK_ADDR/card/callback" -H 'Content-Type: application/json' -d "$payload" >"$out"
   jq -e '.ok == true and .card != null' "$out" >/dev/null
@@ -1247,9 +1249,18 @@ submit_invalid_config() {
 assert_persisted_config() {
   local model="$1"
   local effort="$2"
-  local reply_mode="${3:-append}"
-  jq -e --arg model "$model" --arg effort "$effort" --arg reply_mode "$reply_mode" \
-    '.schema_version == 1 and .override.model == $model and .override.effort == $effort and .override.reply_mode == $reply_mode' "$PREFERENCE_STORE" >/dev/null
+	local reply_mode="${3:-append}"
+	local conversation_mode="${4:-chat}"
+	jq -e --arg model "$model" --arg effort "$effort" --arg reply_mode "$reply_mode" --arg conversation_mode "$conversation_mode" \
+		'.schema_version == 1 and .override.model == $model and .override.effort == $effort and .override.reply_mode == $reply_mode and .override.conversation_mode == $conversation_mode' "$PREFERENCE_STORE" >/dev/null
+}
+
+set_conversation_mode() {
+	local case_name="$1"
+	local mode="$2"
+	local config_msg
+	config_msg="$(open_config "${case_name}_${mode}")"
+	submit_config "$case_name" "config:message:${config_msg}" default default append "$mode"
 }
 
 audit_card_id_since() {
@@ -1408,21 +1419,24 @@ case_topic_reply_at() {
   local root_marker="E2E_${RUN_ID}_TOPIC_ROOT"
   local reply_marker="E2E_${RUN_ID}_TOPIC_AT"
   local root reply file
-  root="$(send_at "/new 请只回复 ${root_marker}，不要调用工具。")"
+	set_conversation_mode topic_reply_at topic
+	root="$(send_at "/new 请只回复 ${root_marker}，不要调用工具。")"
   wait_audit "$root.*event=result"
   reply="$(reply_thread "$root" "<at user_id=\"${BOT_OPEN_ID}\"></at> 请只回复 ${reply_marker}，不要调用工具。")"
   wait_audit "$reply.*event=result"
   file="$(mget topic_reply_at "$reply")"
   assert_file_contains "$file" "$reply_marker"
   record_message topic_reply_at root "$root"
-  record_message topic_reply_at reply "$reply" "$file"
+	record_message topic_reply_at reply "$reply" "$file"
+	set_conversation_mode topic_reply_at_restore chat
 }
 
 case_topic_reply_without_at_negative() {
   local root_marker="E2E_${RUN_ID}_TOPIC_NEG_ROOT"
   local neg_marker="E2E_${RUN_ID}_TOPIC_NEG"
   local root reply
-  root="$(send_at "/new 请只回复 ${root_marker}，不要调用工具。")"
+	set_conversation_mode topic_reply_without_at_negative topic
+	root="$(send_at "/new 请只回复 ${root_marker}，不要调用工具。")"
   wait_audit "$root.*event=result"
   reply="$(reply_thread "$root" "请只回复 ${neg_marker}，不要调用工具。")"
   sleep 8
@@ -1431,7 +1445,8 @@ case_topic_reply_without_at_negative() {
     return 1
   fi
   record_message topic_reply_without_at_negative root "$root"
-  record_message topic_reply_without_at_negative reply_without_at "$reply"
+	record_message topic_reply_without_at_negative reply_without_at "$reply"
+	set_conversation_mode topic_reply_without_at_negative_restore chat
 }
 
 case_message_revoke() {
@@ -1676,7 +1691,8 @@ case_scope_parallel() {
   local root_one root_two one two thread_one thread_two one_file two_file mark
   local one_marker="E2E_${RUN_ID}_SCOPE_ONE_E2E_BLOCK"
   local two_marker="E2E_${RUN_ID}_SCOPE_TWO_E2E_BLOCK"
-  root_one="$(send_text "E2E_${RUN_ID}_SCOPE_ROOT_ONE")"
+	set_conversation_mode scope_parallel topic
+	root_one="$(send_text "E2E_${RUN_ID}_SCOPE_ROOT_ONE")"
   root_two="$(send_text "E2E_${RUN_ID}_SCOPE_ROOT_TWO")"
   one="$(reply_thread "$root_one" "<at user_id=\"${BOT_OPEN_ID}\"></at> /new ${one_marker}")"
   two="$(reply_thread "$root_two" "<at user_id=\"${BOT_OPEN_ID}\"></at> /new ${two_marker}")"
@@ -1704,7 +1720,8 @@ case_scope_parallel() {
   record_message scope_parallel root_one "$root_one"
   record_message scope_parallel root_two "$root_two"
   record_message scope_parallel scope_one "$one" "$one_file"
-  record_message scope_parallel scope_two "$two" "$two_file"
+	record_message scope_parallel scope_two "$two" "$two_file"
+	set_conversation_mode scope_parallel_restore chat
 }
 
 case_stop_preserves_queue() {

@@ -226,8 +226,8 @@ Smoke cases:
 - `help`: verifies `/help`.
 - `status`: verifies `/status`.
 - `workdir_existing`: sends `/new --workdir <existing>` and verifies Claude `pwd`.
-- `topic_reply_at`: replies in thread with `@bot` and verifies topic continuation.
-- `topic_reply_without_at_negative`: replies in thread without `@bot` and verifies bridge ignores it.
+- `topic_reply_at`: uses `/config` to switch to `topic`, replies in thread with `@bot`, verifies topic continuation, then restores `chat`.
+- `topic_reply_without_at_negative`: switches to `topic`, replies in thread without `@bot`, verifies bridge ignores it, then restores `chat`.
 
 Full-only cases:
 
@@ -241,7 +241,7 @@ Full-only cases:
 - `debounce_group`: concurrently sends two plain group messages without `/new` and verifies one post-offset fake invocation contains both markers plus the final CardKit result.
 - `busy_merge`: queues two compatible plain inputs behind a running child, stops the active batch through loopback `stop_card`, and verifies the next fake child argv contains both queued markers and completes one final card.
 - `queue_full`: restarts with `E2E_QUEUE_MAX_PENDING=2`, verifies `queue_rejected`, the rejection card text, that the rejected marker never starts a child process, then uses loopback `stop_card` so the accepted queued input can complete.
-- `scope_parallel`: creates two thread scopes, reads both actual `thread_id` values through `mget`, verifies both blocking child processes start, and constructs exact thread-scoped card session ids for loopback stop cleanup.
+- `scope_parallel`: switches to `topic`, creates two thread scopes, reads both actual `thread_id` values through `mget`, verifies both blocking child processes start, constructs exact thread-scoped card session ids for loopback stop cleanup, then restores `chat`.
 - `stop_preserves_queue`: posts a real stop action to the bridge's local `/card/callback` compatibility endpoint, verifies `batch_stop_requested` and the stopped active card, then verifies the already queued input starts and reaches a final CardKit result. This endpoint is intentionally local to the E2E bridge process; production button delivery remains long connection `card.action.trigger`.
 - `recall_state`: exclusively verifies real `im.message.recalled_v1` delivery by recalling a queued input and then its active input, requiring new offset-bounded recall audit states, the active stopped card, and no result card for the recalled queued marker. Missing subscription delivery is an expected external blocker and remains a nonzero failure.
 - `media_attachment_only`: sends an attachment-only JPEG through an `@bot + img` post and verifies its SHA-256 cache path reaches the Agent prompt.
@@ -249,7 +249,7 @@ Full-only cases:
 - `media_text_files`: sends `.txt/.md/.json/.csv` as native P2P file messages and verifies each canonical cache path reaches the Agent prompt.
 - `media_partial`: verifies mixed text+image succeeds, then verifies an unsupported peer file gets a user-visible failure without starting another Agent process.
 - `media_rejected`: verifies forged image content, a 26 MiB file, PDF, DOCX, audio-as-file, and unknown binary all fail visibly and never reach the Agent prompt.
-- `config_roundtrip`: opens the real `/config` card, saves default/sonnet/opus/haiku plus one custom allowed model across all four effort values, then verifies persistence, exact frozen argv and result-card metadata.
+- `config_roundtrip`: opens the real `/config` card, saves default/sonnet/opus/haiku plus one custom allowed model across all four effort values while preserving `conversation_mode=chat`, then verifies persistence, exact frozen argv and result-card metadata.
 - `config_reset`: saves an override, resets it, restarts the bridge and verifies the persisted override stays absent while `E2E_MODEL`/`E2E_EFFORT` defaults drive the next run.
 - `config_frozen_queue`: queues one input under sonnet/low, changes preferences to opus/high, queues another input and verifies the two later Agent invocations retain their enqueue-time values.
 - `requested_actual_model`: verifies the result card distinguishes requested `opus` from fake CLI actual `fake-claude-e2e`, and requires the mismatch audit event.
