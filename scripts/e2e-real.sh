@@ -448,7 +448,7 @@ args="$(printf '%s' "$*" | tr '\n' ' ')"
 printf 'pid=%s args=%s\n' "$$" "$args" >>"${FAKE_CLAUDE_LOG:?FAKE_CLAUDE_LOG is required}"
 marker="$(printf '%s\n' "$args" | grep -Eo 'E2E_[A-Za-z0-9_-]+' | tail -n 1 || true)"
 case "$args" in
-  *E2E_NATIVE_TEXT_STREAM_STOP_E2E_BLOCK*)
+  *E2E_*_NATIVE_TEXT_STREAM_STOP_E2E_BLOCK*)
     printf '%s\n' '{"type":"content_block_delta","delta":{"type":"text_delta","text":"native-stop-one "}}'
     sleep 1.2
     printf '%s\n' '{"type":"content_block_delta","delta":{"type":"text_delta","text":"native-stop-two "}}'
@@ -456,7 +456,7 @@ case "$args" in
     printf '%s\n' '{"type":"content_block_delta","delta":{"type":"text_delta","text":"native-stop-three "}}'
     exec sleep 300
     ;;
-  *E2E_NATIVE_TEXT_STREAM_NORMAL*)
+  *E2E_*_NATIVE_TEXT_STREAM_NORMAL*)
     printf '%s\n' '{"type":"content_block_delta","delta":{"type":"text_delta","text":"native-normal-one "}}'
     sleep 1.2
     printf '%s\n' '{"type":"content_block_delta","delta":{"type":"text_delta","text":"native-normal-two "}}'

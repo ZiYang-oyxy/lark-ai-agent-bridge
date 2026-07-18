@@ -290,7 +290,11 @@ fi
 if ! printf '%s\n' "$fake_claude_source" | rg -F '*E2E_*_STREAM*)' >/dev/null; then
   fail "fake Claude must emit an intermediate delta for streaming_card"
 fi
-native_fake_source="$(printf '%s\n' "$fake_claude_source" | sed -n '/\*E2E_NATIVE_TEXT_STREAM_NORMAL\*)/,/;;/p')"
+native_fake_source="$(printf '%s\n' "$fake_claude_source" | sed -n '/\*E2E_\*_NATIVE_TEXT_STREAM_NORMAL\*)/,/;;/p')"
+if ! printf '%s\n' "$fake_claude_source" | rg -F '*E2E_*_NATIVE_TEXT_STREAM_NORMAL*)' >/dev/null || \
+  ! printf '%s\n' "$fake_claude_source" | rg -F '*E2E_*_NATIVE_TEXT_STREAM_STOP_E2E_BLOCK*)' >/dev/null; then
+  fail "native text stream fake patterns must include the run-id segment"
+fi
 if ! printf '%s\n' "$native_fake_source" | awk '
   /native-normal-three/ { third = NR }
   third && /sleep / { pause = NR }
