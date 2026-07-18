@@ -14,13 +14,21 @@ e2e_profile_dir() {
 }
 
 e2e_profile_mode() {
-  local path="$1"
-  stat -f '%Lp' "$path" 2>/dev/null || stat -c '%a' "$path" 2>/dev/null
+	local path="$1" value
+	if value="$(stat -c '%a' "$path" 2>/dev/null)"; then
+		printf '%s\n' "$value"
+		return
+	fi
+	stat -f '%Lp' "$path" 2>/dev/null
 }
 
 e2e_profile_owner_uid() {
-  local path="$1"
-  stat -f '%u' "$path" 2>/dev/null || stat -c '%u' "$path" 2>/dev/null
+	local path="$1" value
+	if value="$(stat -c '%u' "$path" 2>/dev/null)"; then
+		printf '%s\n' "$value"
+		return
+	fi
+	stat -f '%u' "$path" 2>/dev/null
 }
 
 e2e_profile_allowed_key() {
