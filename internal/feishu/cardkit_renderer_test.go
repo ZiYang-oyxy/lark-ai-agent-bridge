@@ -86,6 +86,28 @@ func TestPreparedAccessorBoundary(t *testing.T) {
 	_ = prepared.NativeReady()
 }
 
+func TestCardKitRouterInteractionFenceIsScopedAndIdempotent(t *testing.T) {
+	router := NewCardKitRouterRenderer(&fakeCardKitClient{})
+	renderer, err := router.NewStreaming(context.Background(), "session", "message")
+	if err != nil {
+		t.Fatal(err)
+	}
+	concrete := renderer.(*CardKitRenderer)
+	release := router.BeginCardInteraction("session")
+	concrete.mu.Lock()
+	if concrete.interactionDepth != 1 {
+		t.Fatalf("interactionDepth=%d", concrete.interactionDepth)
+	}
+	concrete.mu.Unlock()
+	release()
+	release()
+	concrete.mu.Lock()
+	defer concrete.mu.Unlock()
+	if concrete.interactionDepth != 0 {
+		t.Fatalf("interactionDepth=%d after release", concrete.interactionDepth)
+	}
+}
+
 func TestCardKitRendererPreparesOversizedCreateAndUpdate(t *testing.T) {
 	client := &fakeCardKitClient{}
 	renderer := NewCardKitRenderer(client, "message-1")
@@ -127,6 +149,10 @@ func TestCardKitRendererRetriesLocalCapacityRejectionWithEmergencyAtSameSequence
 }
 
 func (f *fakeCardKitClient) UpdateSettings(context.Context, CardKitUpdateSettingsRequest) error {
+	return nil
+}
+
+func (f *fakeCardKitClient) UpdateElementContent(context.Context, CardKitUpdateElementContentRequest) error {
 	return nil
 }
 

@@ -88,6 +88,10 @@ type RenderRef struct {
 	PendingSequence int  `json:"pending_sequence,omitempty"`
 }
 
+type RenderRefSequenceResolver interface {
+	RenderRefSequenceUnknown(RenderRef) bool
+}
+
 type BatchLimits struct {
 	MaxInputs          int
 	MaxTextRunes       int
@@ -447,6 +451,33 @@ func (m *Manager) MarkBatchRunning(key Key, batchID string, renderRef *RenderRef
 		}
 	}
 	return *cloneSession(s), cloneBatch(batch), nil
+}
+
+// ReplaceActiveBatchRenderRef durably replaces the complete render reference
+// for one active batch before publishing the new value in memory.
+func (m *Manager) ReplaceActiveBatchRenderRef(sessionID, batchID string, ref RenderRef) error {
+	if strings.TrimSpace(sessionID) == "" || strings.TrimSpace(batchID) == "" || strings.TrimSpace(ref.CardID) == "" || ref.PendingSequence < 0 {
+		return fmt.Errorf("session: invalid active batch render ref replacement")
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	sessions := m.sessions
+	if m.storePath != "" {
+		sessions = cloneSessions(m.sessions)
+	}
+	s, ok := sessions[sessionID]
+	if !ok || s.ActiveBatch == nil {
+		return fmt.Errorf("session: active batch %q not found for %s", batchID, sessionID)
+	}
+	if s.ActiveBatch.ID != batchID {
+		return fmt.Errorf("session: active batch mismatch for %s: got %q, want %q", sessionID, batchID, s.ActiveBatch.ID)
+	}
+	s.ActiveBatch.RenderRef = cloneRenderRef(&ref)
+	if m.storePath != "" {
+		return m.persistCandidateLocked(sessions, m.receipts, m.revision)
+	}
+	return nil
 }
 
 // FinishBatch records a terminal active-batch outcome and releases the scope

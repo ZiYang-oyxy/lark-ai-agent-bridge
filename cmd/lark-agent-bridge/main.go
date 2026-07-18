@@ -280,8 +280,14 @@ func runServe(args []string) error {
 		return fmt.Errorf("open reply store: %w", err)
 	}
 	svc.Replies = replies
+	sequenceJournal, err := bridge.NewNativeSequenceJournal(filepath.Join(filepath.Dir(cfg.SessionStorePath), "native-sequence-journal.json"), sessions, replies)
+	if err != nil {
+		return fmt.Errorf("open native sequence journal: %w", err)
+	}
+	svc.SequenceResolver = sequenceJournal
 	svc.CardTarget = cardRouter
 	svc.Reactions = sender
+	actionGateway := bridge.ActionGateway{Service: svc, Fencer: cardRouter}
 	svc.ProcessRecoveryNotices(ctx)
 	mediaWiring := newServeMedia(cfg, tokens)
 	svc.MediaCache = mediaWiring.cache
@@ -293,7 +299,7 @@ func runServe(args []string) error {
 		AppSecret: appSecret,
 		BotOpenID: botOpenID,
 		ActionHandler: func(ctx context.Context, action feishu.CardAction) (*feishu.CardActionResponse, error) {
-			result, err := svc.HandleActionResult(ctx, actionRequestFromFeishu(action))
+			result, err := actionGateway.Handle(ctx, actionRequestFromFeishu(action))
 			if err != nil {
 				return nil, err
 			}
@@ -313,7 +319,7 @@ func runServe(args []string) error {
 		},
 	})
 	if addr := os.Getenv("E2E_CALLBACK_ADDR"); addr != "" {
-		server := &http.Server{Addr: addr, Handler: bridge.NewCallbackHTTPHandler(svc)}
+		server := &http.Server{Addr: addr, Handler: bridge.NewCallbackHTTPHandler(actionGateway)}
 		go func() {
 			if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 				fmt.Fprintln(os.Stderr, "callback server:", err)

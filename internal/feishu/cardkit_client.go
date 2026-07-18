@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"lark-agent-bridge/internal/card"
+	"lark-agent-bridge/internal/session"
 )
 
 const (
@@ -62,11 +63,34 @@ type CardKitUpdateSettingsRequest struct {
 	UUID     string
 }
 
+type CardKitUpdateElementContentRequest struct {
+	CardID    string
+	ElementID string
+	Content   string
+	Sequence  int
+	UUID      string
+}
+
+type NativeSequenceIntent struct {
+	SessionID   string
+	BatchID     string
+	LatestScope string
+	Ref         session.RenderRef
+	Candidate   int
+}
+
+type NativeSequenceJournal interface {
+	PrepareNative(context.Context, NativeSequenceIntent) error
+	ConfirmNative(context.Context, NativeSequenceIntent) error
+	AbortNative(context.Context, NativeSequenceIntent) error
+}
+
 type CardKitClientAPI interface {
 	CreateCard(ctx context.Context, req CardKitCreateRequest) (CardKitCreateResult, error)
 	ReplyCard(ctx context.Context, req CardKitReplyRequest) (CardKitReplyResult, error)
 	UpdateCard(ctx context.Context, req CardKitUpdateCardRequest) error
 	UpdateSettings(ctx context.Context, req CardKitUpdateSettingsRequest) error
+	UpdateElementContent(ctx context.Context, req CardKitUpdateElementContentRequest) error
 }
 
 type CardKitClient struct {
@@ -82,7 +106,10 @@ type FeishuAPIError struct {
 	Message    string
 }
 
-var ErrStaleRenderRef = errors.New("stale card render ref")
+var (
+	ErrStaleRenderRef            = errors.New("stale card render ref")
+	ErrCardInteractionInProgress = errors.New("card interaction in progress")
+)
 
 type StaleRenderRefError struct {
 	Cause error
@@ -199,6 +226,40 @@ func (c *CardKitClient) UpdateSettings(ctx context.Context, req CardKitUpdateSet
 	body := map[string]any{"settings": string(settings), "uuid": req.UUID, "sequence": req.Sequence}
 	path := "/open-apis/cardkit/v1/cards/" + url.PathEscape(req.CardID) + "/settings"
 	return c.doTenantJSON(ctx, http.MethodPatch, path, body, nil)
+}
+
+func (c *CardKitClient) UpdateElementContent(ctx context.Context, req CardKitUpdateElementContentRequest) error {
+	if strings.TrimSpace(req.CardID) == "" || strings.TrimSpace(req.ElementID) == "" || req.Sequence <= 0 || strings.TrimSpace(req.UUID) == "" {
+		return fmt.Errorf("invalid cardkit element content request")
+	}
+	body := map[string]any{"content": req.Content, "sequence": req.Sequence, "uuid": req.UUID}
+	payload, err := json.Marshal(body)
+	if err != nil {
+		return fmt.Errorf("marshal cardkit element content request: %w", err)
+	}
+	// Until a real endpoint probe freezes a larger endpoint-specific ceiling, use
+	// the established CardKit 28 KiB safety budget. Native streaming remains
+	// disabled in production, so this is a conservative client boundary only.
+	if len(payload) > card.LarkCardSoftMaxJSONBytes {
+		return &card.CardPayloadOversizeError{Capacity: card.CardCapacity{
+			Scope: "element_content_request", JSONBytes: len(payload), Components: 0,
+			MaxJSONBytes: card.LarkCardSoftMaxJSONBytes, MaxComponents: 0,
+		}}
+	}
+	if c == nil || c.tokens == nil {
+		return fmt.Errorf("missing feishu app credentials for cardkit")
+	}
+	token, err := c.tokens.Token(ctx)
+	if err != nil {
+		return err
+	}
+	path := "/open-apis/cardkit/v1/cards/" + url.PathEscape(req.CardID) + "/elements/" + url.PathEscape(req.ElementID) + "/content"
+	err = c.doWithRetry(ctx, http.MethodPut, path, token, payload, nil)
+	var apiErr *FeishuAPIError
+	if errors.As(err, &apiErr) && apiErr.Code == 200810 {
+		return fmt.Errorf("%w: %v", ErrCardInteractionInProgress, err)
+	}
+	return err
 }
 
 func (c *CardKitClient) doTenantJSON(ctx context.Context, method, path string, body any, out any) error {

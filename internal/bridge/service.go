@@ -30,19 +30,20 @@ import (
 const recoveryNoticesTimeout = 5 * time.Second
 
 type Service struct {
-	Config          config.Config
-	Sessions        *session.Manager
-	Cards           card.Renderer
-	Runner          AgentRunner
-	Audit           *audit.Recorder
-	MediaCache      mediaResolver
-	MediaDownloader media.Downloader
-	MediaGC         mediaSweeper
-	Preferences     *config.PreferenceStore
-	Replies         *reply.Store
-	CardTarget      reply.CardTarget
-	Reactions       feishu.ReactionSink
-	RestoreNotices  []session.RecoveryNotice
+	Config           config.Config
+	Sessions         *session.Manager
+	Cards            card.Renderer
+	Runner           AgentRunner
+	Audit            *audit.Recorder
+	MediaCache       mediaResolver
+	MediaDownloader  media.Downloader
+	MediaGC          mediaSweeper
+	Preferences      *config.PreferenceStore
+	Replies          *reply.Store
+	CardTarget       reply.CardTarget
+	Reactions        feishu.ReactionSink
+	SequenceResolver session.RenderRefSequenceResolver
+	RestoreNotices   []session.RecoveryNotice
 
 	mu                 sync.Mutex
 	pendingRuns        map[string]pendingRun
@@ -234,7 +235,7 @@ func (s *Service) ProcessRecoveryNotices(ctx context.Context) {
 			continue
 		}
 		seenCards[notice.RenderRef.CardID] = struct{}{}
-		if notice.RenderRef.SequenceUnknown {
+		if notice.RenderRef.SequenceUnknown || (s.SequenceResolver != nil && s.SequenceResolver.RenderRefSequenceUnknown(*notice.RenderRef)) {
 			s.Audit.Record(
 				"system",
 				"recovery_card_update_skipped_sequence_unknown",
@@ -532,7 +533,9 @@ func (s *Service) startBatch(parent context.Context, sess session.Session, batch
 	stream := newAgentCardStream(s, id, sess, anchor)
 	if s.CardTarget != nil {
 		mode := s.runtimePreference().ReplyMode
-		policyRun, err := reply.NewPolicy(s.CardTarget, s.Replies).Begin(runCtx, mode, sess.ID, id, anchor.ReplyToMessageID)
+		policy := reply.NewPolicy(s.CardTarget, s.Replies)
+		policy.Resolver = s.SequenceResolver
+		policyRun, err := policy.Begin(runCtx, mode, sess.ID, id, anchor.ReplyToMessageID)
 		if err != nil {
 			cancel()
 			typing.Close()

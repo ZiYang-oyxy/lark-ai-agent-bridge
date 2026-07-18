@@ -545,6 +545,56 @@ func TestRenderRefJSONKeepsCreatedAtAndOmitsInactiveP2Fields(t *testing.T) {
 	}
 }
 
+func TestReplaceActiveBatchRenderRefPersistsBeforePublishing(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "sessions.json")
+	m := NewManagerWithStore(path)
+	key := Key{Agent: agent.Claude, ChatID: "chat"}
+	now := time.Now().UTC()
+	if _, _, err := m.EnqueueDurable(key, Input{ID: "input", Text: "hello", Time: now}, "/tmp", BatchLimits{}); err != nil {
+		t.Fatal(err)
+	}
+	_, batch, err := m.FreezeReadyBatch(key, now, BatchLimits{})
+	if err != nil || batch == nil {
+		t.Fatalf("freeze batch=%#v err=%v", batch, err)
+	}
+	initial := &RenderRef{CardID: "card", ReplyMessageID: "reply", Version: 3, CreatedAt: now}
+	if _, _, err := m.MarkBatchRunning(key, batch.ID, initial, now); err != nil {
+		t.Fatal(err)
+	}
+	pending := *initial
+	pending.SequenceUnknown = true
+	pending.PendingSequence = 4
+	if err := m.ReplaceActiveBatchRenderRef(key.ID(), batch.ID, pending); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := m.Get(key)
+	if got.ActiveBatch == nil || got.ActiveBatch.RenderRef == nil || !got.ActiveBatch.RenderRef.SequenceUnknown || got.ActiveBatch.RenderRef.PendingSequence != 4 {
+		t.Fatalf("active ref = %#v", got.ActiveBatch)
+	}
+	reopened := NewManagerWithStore(path)
+	// Restore converts an active batch to a notice; the persisted ref must be the pending value.
+	notices, err := reopened.Restore()
+	if err != nil || len(notices) == 0 || notices[0].RenderRef == nil || !notices[0].RenderRef.SequenceUnknown || notices[0].RenderRef.PendingSequence != 4 {
+		t.Fatalf("notices=%#v err=%v", notices, err)
+	}
+}
+
+func TestReplaceActiveBatchRenderRefRejectsInvalidIdentity(t *testing.T) {
+	m := NewManager()
+	for _, tc := range []struct {
+		sessionID, batchID string
+		ref                RenderRef
+	}{
+		{"missing", "batch", RenderRef{CardID: "card"}},
+		{"missing", "batch", RenderRef{}},
+		{"missing", "batch", RenderRef{CardID: "card", PendingSequence: -1}},
+	} {
+		if err := m.ReplaceActiveBatchRenderRef(tc.sessionID, tc.batchID, tc.ref); err == nil {
+			t.Fatalf("ReplaceActiveBatchRenderRef(%#v) error=nil", tc)
+		}
+	}
+}
+
 func TestReadyKeysFiltersActiveAndFutureSessionsWithoutMutation(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "sessions.json")
 	m := NewManagerWithStore(path)

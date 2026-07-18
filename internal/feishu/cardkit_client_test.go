@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"strings"
@@ -22,12 +23,16 @@ func (s *countingTokenSource) Token(context.Context) (string, error) {
 }
 
 type recordingCardKitHTTP struct {
-	body  []byte
-	calls int
+	body   []byte
+	calls  int
+	method string
+	path   string
 }
 
 func (h *recordingCardKitHTTP) Do(req *http.Request) (*http.Response, error) {
 	h.calls++
+	h.method = req.Method
+	h.path = req.URL.EscapedPath()
 	var err error
 	h.body, err = io.ReadAll(req.Body)
 	if err != nil {
@@ -35,6 +40,86 @@ func (h *recordingCardKitHTTP) Do(req *http.Request) (*http.Response, error) {
 	}
 	return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"code":0,"data":{"card_id":"card-1"}}`))}, nil
 }
+
+func TestCardKitClientUpdateElementContentRequestShape(t *testing.T) {
+	tokens := &countingTokenSource{}
+	httpClient := &recordingCardKitHTTP{}
+	client := NewCardKitClientWithTokenSource(tokens)
+	client.http = httpClient
+	client.limiter = nil
+	err := client.UpdateElementContent(context.Background(), CardKitUpdateElementContentRequest{
+		CardID: "card / 1", ElementID: "answer / 1", Content: "完整正文", Sequence: 7, UUID: "native-7",
+	})
+	if err != nil {
+		t.Fatalf("UpdateElementContent() error: %v", err)
+	}
+	if httpClient.method != http.MethodPut || httpClient.path != "/open-apis/cardkit/v1/cards/card%20%2F%201/elements/answer%20%2F%201/content" {
+		t.Fatalf("request = %s %s", httpClient.method, httpClient.path)
+	}
+	var body map[string]any
+	if err := json.Unmarshal(httpClient.body, &body); err != nil {
+		t.Fatal(err)
+	}
+	if body["content"] != "完整正文" || body["sequence"] != float64(7) || body["uuid"] != "native-7" || len(body) != 3 {
+		t.Fatalf("body = %#v", body)
+	}
+	if tokens.calls != 1 || httpClient.calls != 1 {
+		t.Fatalf("calls token=%d http=%d", tokens.calls, httpClient.calls)
+	}
+}
+
+func TestCardKitClientUpdateElementContentRejectsInvalidOrOversizeBeforeSideEffects(t *testing.T) {
+	cases := []CardKitUpdateElementContentRequest{
+		{ElementID: "answer", Content: "x", Sequence: 1, UUID: "u"},
+		{CardID: "card", Content: "x", Sequence: 1, UUID: "u"},
+		{CardID: "card", ElementID: "answer", Content: "x", Sequence: 0, UUID: "u"},
+		{CardID: "card", ElementID: "answer", Content: "x", Sequence: 1},
+		{CardID: "card", ElementID: "answer", Content: strings.Repeat("界", card.LarkCardSoftMaxJSONBytes), Sequence: 1, UUID: "u"},
+	}
+	for i, req := range cases {
+		tokens := &countingTokenSource{}
+		httpClient := &recordingCardKitHTTP{}
+		client := NewCardKitClientWithTokenSource(tokens)
+		client.http = httpClient
+		client.limiter = newSerialRateLimiter(time.Hour)
+		err := client.UpdateElementContent(context.Background(), req)
+		if err == nil {
+			t.Fatalf("case %d: error = nil", i)
+		}
+		if i == len(cases)-1 && !errors.Is(err, card.ErrCardPayloadOversize) {
+			t.Fatalf("case %d: error = %v, want oversize", i, err)
+		}
+		if tokens.calls != 0 || httpClient.calls != 0 || !client.limiter.next.IsZero() {
+			t.Fatalf("case %d side effects token=%d http=%d limiter=%v", i, tokens.calls, httpClient.calls, client.limiter.next)
+		}
+	}
+}
+
+func TestCardKitClientUpdateElementContentClassifiesInteractionOnly(t *testing.T) {
+	for _, tc := range []struct {
+		code            int
+		wantInteraction bool
+	}{
+		{code: 200810, wantInteraction: true},
+		{code: 300317, wantInteraction: false},
+		{code: 200740, wantInteraction: false},
+	} {
+		client := NewCardKitClientWithTokenSource(&countingTokenSource{})
+		client.limiter = nil
+		client.http = HTTPDoerFunc(func(*http.Request) (*http.Response, error) {
+			body := fmt.Sprintf(`{"code":%d,"msg":"rejected"}`, tc.code)
+			return &http.Response{StatusCode: http.StatusBadRequest, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(body))}, nil
+		})
+		err := client.UpdateElementContent(context.Background(), CardKitUpdateElementContentRequest{CardID: "card", ElementID: "answer", Content: "x", Sequence: 1, UUID: "u"})
+		if errors.Is(err, ErrCardInteractionInProgress) != tc.wantInteraction {
+			t.Fatalf("code %d error=%v interaction=%t", tc.code, err, tc.wantInteraction)
+		}
+	}
+}
+
+type HTTPDoerFunc func(*http.Request) (*http.Response, error)
+
+func (f HTTPDoerFunc) Do(req *http.Request) (*http.Response, error) { return f(req) }
 
 func TestCardKitClientCapacityRejectsDirectCreateAndUpdateBeforeTokenLookup(t *testing.T) {
 	for _, method := range []struct {
