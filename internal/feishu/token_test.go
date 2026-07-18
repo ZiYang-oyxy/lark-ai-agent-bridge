@@ -119,8 +119,13 @@ func TestTenantTokenSourceWaiterHonorsContextWhileRefreshIsInFlight(t *testing.T
 	}()
 	defer func() {
 		releaseLeader()
-		if err := <-leaderDone; err != nil {
-			t.Errorf("leader refresh: %v", err)
+		select {
+		case err := <-leaderDone:
+			if err != nil {
+				t.Errorf("leader refresh: %v", err)
+			}
+		case <-time.After(100 * time.Millisecond):
+			t.Errorf("leader did not exit after release")
 		}
 	}()
 	select {
