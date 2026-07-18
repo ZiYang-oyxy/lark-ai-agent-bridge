@@ -18,7 +18,8 @@ func TestRealCardKitCreatesBridgeCard(t *testing.T) {
 	if appID == "" || appSecret == "" {
 		t.Fatal("LARK_APP_ID and LARK_APP_SECRET are required")
 	}
-	client := NewCardKitClient(appID, appSecret)
+	tokens := NewTenantTokenSource(appID, appSecret)
+	client := NewCardKitClientWithTokenSource(tokens)
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	events := []card.Event{

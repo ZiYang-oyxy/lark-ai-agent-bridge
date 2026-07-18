@@ -66,19 +66,10 @@ type CardKitClientAPI interface {
 }
 
 type CardKitClient struct {
-	appID     string
-	appSecret string
-	baseURL   string
-	http      HTTPDoer
-	limiter   *serialRateLimiter
-
-	tokenMu sync.Mutex
-	token   tenantToken
-}
-
-type tenantToken struct {
-	Value     string
-	ExpiresAt time.Time
+	baseURL string
+	http    HTTPDoer
+	limiter *serialRateLimiter
+	tokens  TenantTokenSource
 }
 
 type FeishuAPIError struct {
@@ -95,12 +86,15 @@ func (e *FeishuAPIError) Error() string {
 }
 
 func NewCardKitClient(appID, appSecret string) *CardKitClient {
+	return NewCardKitClientWithTokenSource(NewTenantTokenSource(appID, appSecret))
+}
+
+func NewCardKitClientWithTokenSource(tokens TenantTokenSource) *CardKitClient {
 	return &CardKitClient{
-		appID:     appID,
-		appSecret: appSecret,
-		baseURL:   defaultFeishuOpenAPIBaseURL,
-		http:      http.DefaultClient,
-		limiter:   newSerialRateLimiter(time.Second / defaultCardKitGlobalQPS),
+		baseURL: defaultFeishuOpenAPIBaseURL,
+		http:    http.DefaultClient,
+		limiter: newSerialRateLimiter(time.Second / defaultCardKitGlobalQPS),
+		tokens:  tokens,
 	}
 }
 
@@ -173,10 +167,10 @@ func (c *CardKitClient) doTenantJSON(ctx context.Context, method, path string, b
 	if c == nil {
 		return fmt.Errorf("feishu cardkit client unavailable")
 	}
-	if c.appID == "" || c.appSecret == "" {
+	if c.tokens == nil {
 		return fmt.Errorf("missing feishu app credentials for cardkit")
 	}
-	token, err := c.tenantAccessToken(ctx)
+	token, err := c.tokens.Token(ctx)
 	if err != nil {
 		return err
 	}
@@ -244,52 +238,6 @@ func (c *CardKitClient) doOnce(ctx context.Context, method, path, token string, 
 		}
 	}
 	return nil
-}
-
-func (c *CardKitClient) tenantAccessToken(ctx context.Context) (string, error) {
-	c.tokenMu.Lock()
-	if c.token.Value != "" && time.Until(c.token.ExpiresAt) > 2*time.Minute {
-		value := c.token.Value
-		c.tokenMu.Unlock()
-		return value, nil
-	}
-	c.tokenMu.Unlock()
-
-	payload, err := json.Marshal(map[string]string{"app_id": c.appID, "app_secret": c.appSecret})
-	if err != nil {
-		return "", err
-	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimRight(c.baseURL, "/")+"/open-apis/auth/v3/tenant_access_token/internal", bytes.NewReader(payload))
-	if err != nil {
-		return "", err
-	}
-	req.Header.Set("Content-Type", "application/json; charset=utf-8")
-	resp, err := c.httpClient().Do(req)
-	if err != nil {
-		return "", err
-	}
-	defer resp.Body.Close()
-	respBody, readErr := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-	if readErr != nil {
-		return "", readErr
-	}
-	var out struct {
-		Code              int    `json:"code"`
-		Msg               string `json:"msg"`
-		TenantAccessToken string `json:"tenant_access_token"`
-		Expire            int64  `json:"expire"`
-	}
-	if err := json.Unmarshal(respBody, &out); err != nil {
-		return "", fmt.Errorf("decode tenant token response: %w", err)
-	}
-	if resp.StatusCode >= 400 || out.Code != 0 || out.TenantAccessToken == "" {
-		return "", &FeishuAPIError{HTTPStatus: resp.StatusCode, Code: out.Code, Message: out.Msg}
-	}
-	expiresAt := time.Now().Add(time.Duration(out.Expire) * time.Second)
-	c.tokenMu.Lock()
-	c.token = tenantToken{Value: out.TenantAccessToken, ExpiresAt: expiresAt}
-	c.tokenMu.Unlock()
-	return out.TenantAccessToken, nil
 }
 
 func (c *CardKitClient) httpClient() HTTPDoer {
