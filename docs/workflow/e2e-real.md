@@ -207,6 +207,8 @@ E2E_REAL_CARDKIT=1 GOCACHE=$PWD/.cache/go-build go test ./internal/feishu -run '
 ./scripts/e2e-real.sh --profile <name> --case native_text_stream
 ```
 
+`e2e-real.sh` injects `E2E_CALLBACK_ADDR` only when the selected cases require the local action gateway. A non-action-only run reports `callback_addr: disabled` and does not start or probe the callback listener. Action evidence produced through this compatibility endpoint is `gateway_injected`; it proves gateway/service/card behavior, not Feishu `card.action.trigger` delivery.
+
 `native_text_stream` lowers only its own E2E bridge's preview interval and delta threshold so one normal long-form answer produces more than two previews. It requires at least one `cardkit_text_stream` audit event before the terminal `cardkit_update`. It then starts a second long answer, invokes the local compatibility stop callback, requires that callback to return within three seconds, and checks that no native preview appears after the callback. If that run has no `cardkit_sequence_unknown` audit event, the terminal update must be `stopped`, with disabled buttons and `streaming_mode=false`.
 
 Production `serve` always injects the durable native sequence journal into the CardKit router. The `native_text_stream` case only lowers its isolated process's preview interval and delta threshold. Real boundary evidence freezes 100,000 content characters as accepted and 100,001 as `HTTP 400 / 99992402`; the rejected update does not consume its sequence. The client retains the stricter 28 KiB encoded-body lifecycle budget shared with terminal full-card rendering.

@@ -174,6 +174,25 @@ selected_cases_array() {
   done < <(cases_for_mode)
 }
 
+enable_callback() {
+  if [[ -z "$CALLBACK_ADDR" ]]; then
+    CALLBACK_ADDR="${E2E_REAL_E2E_CALLBACK_ADDR:-127.0.0.1:$((20000 + RANDOM % 20000))}"
+  fi
+}
+
+configure_callback_for_cases() {
+  local case_name
+  CALLBACK_ADDR=""
+  for case_name in "${RUN_CASES[@]}"; do
+    case "$case_name" in
+      native_text_stream|latest_restart_fallback)
+        enable_callback
+        return
+        ;;
+    esac
+  done
+}
+
 if [[ "$LIST_CASES" -eq 1 ]]; then
   all_cases
   exit 0
@@ -213,7 +232,7 @@ FAKE_BIN_DIR="$RUN_DIR/bin"
 SERVER_BIN="$RUN_DIR/lark-agent-bridge-e2e"
 SERVER_PID_FILE="$RUN_DIR/server.pid"
 RUN_TOKEN="${RUN_ID}-$RANDOM-$$"
-CALLBACK_ADDR="${E2E_REAL_E2E_CALLBACK_ADDR:-127.0.0.1:$((20000 + RANDOM % 20000))}"
+CALLBACK_ADDR=""
 SERVER_QUEUE_MAX_PENDING=""
 
 mkdir -p "$RUN_DIR" "$MGET_DIR" "$STATE_DIR" "$ROOT/.cache/go-build"
@@ -237,7 +256,12 @@ summary_init() {
     echo "- mode: $MODE"
     echo "- run_dir: $RUN_DIR"
     echo "- audit: $AUDIT"
-    echo "- callback_addr: $CALLBACK_ADDR"
+    echo "- callback_addr: ${CALLBACK_ADDR:-disabled}"
+    if [[ -n "$CALLBACK_ADDR" ]]; then
+      echo "- action_transport: gateway_injected"
+    else
+      echo "- action_transport: not_applicable"
+    fi
     echo "- default_workdir: $DEFAULT_WORKDIR"
     echo "- fake_claude: $USE_FAKE_CLAUDE"
     echo "- secrets: not printed"
@@ -550,10 +574,12 @@ start_server_if_needed() {
     "E2E_PREFERENCE_STORE=$PREFERENCE_STORE"
     "E2E_REPLY_STORE=$REPLY_STORE"
     "E2E_MEDIA_CACHE_DIR=$MEDIA_CACHE_DIR"
-    "E2E_CALLBACK_ADDR=$CALLBACK_ADDR"
     "E2E_ALLOWED_MODELS=${E2E_ALLOWED_MODELS:+$E2E_ALLOWED_MODELS,}$CONFIG_CUSTOM_MODEL"
     "GOCACHE=$GOCACHE"
   )
+  if [[ -n "$CALLBACK_ADDR" ]]; then
+    server_env+=("E2E_CALLBACK_ADDR=$CALLBACK_ADDR")
+  fi
   if [[ "$USE_FAKE_CLAUDE" == "1" ]]; then
     server_env+=("E2E_CLAUDE_BIN=$FAKE_BIN_DIR/claude" "FAKE_CLAUDE_LOG=$FAKE_CLAUDE_LOG")
   fi
@@ -596,6 +622,10 @@ start_server_if_needed() {
 
 wait_callback_ready() {
   local start response
+  if [[ -z "$CALLBACK_ADDR" ]]; then
+    echo "callback is disabled for the selected E2E cases" >&2
+    return 1
+  fi
   start="$(date +%s)"
   while true; do
     response="$(curl -fsS -X POST "http://$CALLBACK_ADDR/card/callback" -H 'Content-Type: application/json' -d '{"challenge":"e2e-ready"}' 2>/dev/null || true)"
@@ -2676,6 +2706,7 @@ run_active_capability_preflight() {
   }
   e2e_cap_record exclusive_runtime PASS ready "active run acquired the local profile lock" ""
   USE_FAKE_CLAUDE=1
+  enable_callback
   go build -o "$SERVER_BIN" ./cmd/lark-agent-bridge
   fetch_bot_open_id
   start_server_if_needed capability
@@ -2709,6 +2740,7 @@ run_active_capability_preflight() {
 RUN_CASES=()
 selected_cases_array
 validate_selected_cases
+configure_callback_for_cases
 require_cmd jq
 require_cmd lark-cli
 require_cmd curl

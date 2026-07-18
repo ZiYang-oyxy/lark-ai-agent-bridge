@@ -279,6 +279,14 @@ callback_probe_source="$(sed -n '/^wait_callback_ready() {/,/^}/p' "$ROOT/script
 if ! printf '%s\n' "$callback_probe_source" | rg -F '"challenge":"e2e-ready"' >/dev/null; then
   fail "action cases must retain the callback challenge probe"
 fi
+callback_selection_source="$(sed -n '/^configure_callback_for_cases() {/,/^}/p' "$ROOT/scripts/e2e-real.sh")"
+if ! printf '%s\n' "$callback_selection_source" | rg -F 'native_text_stream|latest_restart_fallback' >/dev/null; then
+  fail "callback must be enabled only for selected action cases"
+fi
+server_start_source="$(sed -n '/^start_server_if_needed() {/,/^}/p' "$ROOT/scripts/e2e-real.sh")"
+if ! printf '%s\n' "$server_start_source" | rg -F '[[ -n "$CALLBACK_ADDR" ]]' >/dev/null; then
+  fail "non-action E2E servers must not receive E2E_CALLBACK_ADDR"
+fi
 mget_source="$(sed -n '/^mget() {/,/^}/p' "$ROOT/scripts/e2e-real.sh")"
 if ! printf '%s\n' "$mget_source" | rg -F 'audit_reply_message_id' >/dev/null; then
   fail "mget must resolve non-thread CardKit replies from the reply audit"

@@ -221,7 +221,7 @@ profile 和 evidence 位于 `/.lark-agent-bridge/`、`/.cache/`，均已 Git ign
 ./scripts/e2e-real.sh --profile personal --mode full --strict-capabilities
 ```
 
-`e2e-real.sh` 的 bridge readiness 只观察本次启动后 serve 日志新增的 `connected to wss`,不依赖 `/card/callback`。callback challenge 仅在 stop/config 等 gateway 注入 action 前作为额外探针；因此非 action case 可在后续关闭 callback listener 后继续独立启动。真实飞书 `new_basic` 已验证该 readiness 通常约 2 秒内完成,并能继续走到 CardKit `event=result`。
+`e2e-real.sh` 的 bridge readiness 只观察本次启动后 serve 日志新增的 `connected to wss`,不依赖 `/card/callback`。只有选中 stop/config 等 action case 时才注入 `E2E_CALLBACK_ADDR` 并在 gateway 注入 action 前做 callback challenge 探针；非 action-only run 显示 `callback_addr: disabled`。本地 callback 产生的 action 证据属于 `gateway_injected`,不代表已验证飞书 `card.action.trigger` 平台投递。真实飞书 `new_basic` 已验证该 readiness 通常约 2 秒内完成,并能继续走到 CardKit `event=result`。
 
 下面保留手动排查步骤，便于脚本失败时定位。
 
