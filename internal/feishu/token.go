@@ -25,13 +25,20 @@ type CachedTenantTokenSource struct {
 	baseURL   string
 	http      HTTPDoer
 
-	mu    sync.Mutex
-	token tenantToken
+	mu      sync.Mutex
+	token   tenantToken
+	refresh *tenantTokenRefresh
 }
 
 type tenantToken struct {
 	Value     string
 	ExpiresAt time.Time
+}
+
+type tenantTokenRefresh struct {
+	done  chan struct{}
+	value string
+	err   error
 }
 
 func NewTenantTokenSource(appID, appSecret string) *CachedTenantTokenSource {
@@ -47,19 +54,52 @@ func (s *CachedTenantTokenSource) Token(ctx context.Context) (string, error) {
 	if s == nil || s.appID == "" || s.appSecret == "" {
 		return "", fmt.Errorf("missing feishu app credentials for tenant token")
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.token.Value != "" && time.Until(s.token.ExpiresAt) > time.Minute {
-		return s.token.Value, nil
+	if err := ctx.Err(); err != nil {
+		return "", err
 	}
+	s.mu.Lock()
+	if s.token.Value != "" && time.Until(s.token.ExpiresAt) > time.Minute {
+		value := s.token.Value
+		s.mu.Unlock()
+		return value, nil
+	}
+	if active := s.refresh; active != nil {
+		s.mu.Unlock()
+		select {
+		case <-ctx.Done():
+			return "", ctx.Err()
+		case <-active.done:
+			if err := ctx.Err(); err != nil {
+				return "", err
+			}
+			return active.value, active.err
+		}
+	}
+	active := &tenantTokenRefresh{done: make(chan struct{})}
+	s.refresh = active
+	s.mu.Unlock()
 
+	token, err := s.refreshToken(ctx)
+	s.mu.Lock()
+	if err == nil {
+		s.token = token
+		active.value = token.Value
+	}
+	active.err = err
+	s.refresh = nil
+	close(active.done)
+	s.mu.Unlock()
+	return active.value, active.err
+}
+
+func (s *CachedTenantTokenSource) refreshToken(ctx context.Context) (tenantToken, error) {
 	payload, err := json.Marshal(map[string]string{"app_id": s.appID, "app_secret": s.appSecret})
 	if err != nil {
-		return "", err
+		return tenantToken{}, err
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimRight(s.baseURL, "/")+"/open-apis/auth/v3/tenant_access_token/internal", bytes.NewReader(payload))
 	if err != nil {
-		return "", err
+		return tenantToken{}, err
 	}
 	req.Header.Set("Content-Type", "application/json; charset=utf-8")
 	client := s.http
@@ -68,12 +108,12 @@ func (s *CachedTenantTokenSource) Token(ctx context.Context) (string, error) {
 	}
 	resp, err := client.Do(req)
 	if err != nil {
-		return "", err
+		return tenantToken{}, err
 	}
 	defer resp.Body.Close()
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if err != nil {
-		return "", err
+		return tenantToken{}, err
 	}
 	var out struct {
 		Code              int    `json:"code"`
@@ -82,14 +122,13 @@ func (s *CachedTenantTokenSource) Token(ctx context.Context) (string, error) {
 		Expire            int64  `json:"expire"`
 	}
 	if err := json.Unmarshal(body, &out); err != nil {
-		return "", fmt.Errorf("decode tenant token response: %w", err)
+		return tenantToken{}, fmt.Errorf("decode tenant token response: %w", err)
 	}
 	if resp.StatusCode >= 400 || out.Code != 0 || out.TenantAccessToken == "" {
-		return "", &FeishuAPIError{HTTPStatus: resp.StatusCode, Code: out.Code, Message: out.Msg}
+		return tenantToken{}, &FeishuAPIError{HTTPStatus: resp.StatusCode, Code: out.Code, Message: out.Msg}
 	}
-	s.token = tenantToken{
+	return tenantToken{
 		Value:     out.TenantAccessToken,
 		ExpiresAt: time.Now().Add(time.Duration(out.Expire) * time.Second),
-	}
-	return s.token.Value, nil
+	}, nil
 }

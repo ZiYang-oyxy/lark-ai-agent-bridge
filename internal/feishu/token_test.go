@@ -3,12 +3,34 @@ package feishu
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 )
+
+type blockingTokenDoer struct {
+	started chan struct{}
+	release chan struct{}
+}
+
+func (d *blockingTokenDoer) Do(*http.Request) (*http.Response, error) {
+	select {
+	case <-d.started:
+	default:
+		close(d.started)
+	}
+	<-d.release
+	return &http.Response{
+		StatusCode: http.StatusOK,
+		Body:       io.NopCloser(strings.NewReader(`{"code":0,"msg":"ok","tenant_access_token":"tenant-token","expire":7200}`)),
+		Header:     make(http.Header),
+	}, nil
+}
 
 func TestTenantTokenSourceSerializesRefreshAndCachesToken(t *testing.T) {
 	var requests atomic.Int32
@@ -70,5 +92,40 @@ func TestTenantTokenSourceRejectsAPIError(t *testing.T) {
 
 	if _, err := source.Token(context.Background()); err == nil {
 		t.Fatal("Token error = nil")
+	}
+}
+
+func TestTenantTokenSourceWaiterHonorsContextWhileRefreshIsInFlight(t *testing.T) {
+	doer := &blockingTokenDoer{started: make(chan struct{}), release: make(chan struct{})}
+	source := NewTenantTokenSource("app", "secret")
+	source.http = doer
+	leaderDone := make(chan error, 1)
+	go func() {
+		_, err := source.Token(context.Background())
+		leaderDone <- err
+	}()
+	<-doer.started
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	waiterDone := make(chan error, 1)
+	go func() {
+		_, err := source.Token(ctx)
+		waiterDone <- err
+	}()
+
+	select {
+	case err := <-waiterDone:
+		if err != context.Canceled {
+			t.Fatalf("waiter error = %v, want context.Canceled", err)
+		}
+	case <-time.After(100 * time.Millisecond):
+		close(doer.release)
+		<-leaderDone
+		t.Fatal("waiter did not honor canceled context while refresh was in flight")
+	}
+	close(doer.release)
+	if err := <-leaderDone; err != nil {
+		t.Fatal(err)
 	}
 }
