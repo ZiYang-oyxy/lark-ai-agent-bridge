@@ -38,6 +38,8 @@ The command writes only to gitignored local paths:
 
 The env and metadata files are `0600`; their directories are `0700`. They contain real app/bot/chat identity and must never be added to Git, copied into tracked documentation, or pasted into reports.
 
+Bootstrap also creates a named `lark-cli` profile, defaulting to `lab-e2e-<profile>`, without switching the CLI global default. Every auth, chat, message, reply, recall and media command in named-profile runs is forced through that isolated CLI profile. This prevents one developer or concurrent session from replacing another developer's app binding or OAuth token.
+
 One checkout may contain multiple profiles:
 
 ```bash
@@ -63,6 +65,7 @@ LARK_APP_SECRET=xxx
 LARK_BOT_OPEN_ID=ou_xxx
 E2E_E2E_CHAT_ID=oc_xxx
 E2E_REAL_E2E_P2P_CHAT_ID=oc_xxx
+E2E_E2E_LARK_CLI_PROFILE=lab-e2e-personal
 ```
 
 Optional:
@@ -79,6 +82,7 @@ E2E_CLAUDE_BIN=/absolute/path/to/claude
 `E2E_REAL_E2E_CALLBACK_ADDR` is optional; it pins the local callback port used only by the `stop_preserves_queue` case. Without it, the script selects a loopback port for that run.
 `E2E_REAL_E2E_P2P_CHAT_ID` is required only by media file cases. It must be the current user's existing direct-chat `oc_...` with this exact bot; do not substitute a group chat or another similarly named bot.
 When `--p2p-chat-id` is supplied to `e2e-init.sh`, bootstrap verifies that the selected chat contains the resolved bot before saving it.
+`E2E_E2E_LARK_CLI_PROFILE` identifies the local named CLI configuration. If the name already exists for a different App ID, bootstrap returns `BLOCKED:lark_cli_profile_mismatch` and never overwrites or switches it. Authorize it explicitly with `lark-cli --profile <name> auth login --domain im`.
 
 ## Feishu App Prerequisites
 

@@ -43,6 +43,7 @@ export LARK_APP_SECRET="secret-do-not-print"
 export LARK_BOT_OPEN_ID="ou_profile_secret_bot"
 export E2E_E2E_CHAT_ID="oc_profile_secret_group"
 export E2E_REAL_E2E_P2P_CHAT_ID="oc_profile_secret_p2p"
+export E2E_E2E_LARK_CLI_PROFILE="lab-e2e-personal"
 e2e_profile_write "$TEST_ROOT" personal
 
 personal_env="$TEST_ROOT/.lark-agent-bridge/e2e/profiles/personal.env"
@@ -54,11 +55,12 @@ assert_eq 700 "$(stat -f '%Lp' "$(dirname "$personal_env")")" "profile directory
 selection="$(e2e_profile_select "$TEST_ROOT" personal)"
 assert_eq $'personal\t'"$personal_env"$'\t'"$personal_json" "$selection" "explicit selection"
 
-unset LARK_APP_ID LARK_APP_SECRET LARK_BOT_OPEN_ID E2E_E2E_CHAT_ID E2E_REAL_E2E_P2P_CHAT_ID
+unset LARK_APP_ID LARK_APP_SECRET LARK_BOT_OPEN_ID E2E_E2E_CHAT_ID E2E_REAL_E2E_P2P_CHAT_ID E2E_E2E_LARK_CLI_PROFILE
 e2e_profile_load "$personal_env"
 assert_eq cli_test_app "$LARK_APP_ID" "loaded app id"
 assert_eq secret-do-not-print "$LARK_APP_SECRET" "loaded secret"
 assert_eq ou_profile_secret_bot "$LARK_BOT_OPEN_ID" "loaded bot id"
+assert_eq lab-e2e-personal "$E2E_E2E_LARK_CLI_PROFILE" "loaded isolated CLI profile"
 
 chmod 755 "$(dirname "$personal_env")"
 assert_fail e2e_profile_load "$personal_env"
@@ -141,8 +143,27 @@ esac
 EOF
 cat >"$FAKE_BIN/lark-cli" <<'EOF'
 #!/usr/bin/env bash
+if [[ "${1:-}" == "--profile" ]]; then
+  [[ "${2:-}" == "lab-e2e-developer" ]] || exit 91
+  shift 2
+elif [[ "${1:-} ${2:-}" == "profile add" ]]; then
+  [[ "$*" == *'--name lab-e2e-developer'* ]] || exit 92
+  [[ "$*" != *'--use'* ]] || exit 95
+  IFS= read -r supplied_secret
+  [[ "$supplied_secret" == "bootstrap-secret-do-not-print" ]] || exit 93
+  exit 0
+else
+  exit 94
+fi
 case "$*" in
-  'auth status --json --verify') printf '%s\n' '{"verified":true,"user":{"open_id":"ou_bootstrap_secret_user"}}' ;;
+  'config show')
+    if [[ "${CLI_PROFILE_SCENARIO:-missing}" == "mismatch" ]]; then
+      printf '%s\n' 'App ID: cli_another_app'
+      exit 0
+    fi
+    exit 1
+    ;;
+  'auth status --json --verify') printf '%s\n' '{"verified":true,"app_id":"cli_bootstrap_app","user":{"open_id":"ou_bootstrap_secret_user"}}' ;;
   *'im chats get'*'--chat-id oc_bootstrap_secret_group'*) printf '%s\n' '{"data":{"chat_id":"oc_bootstrap_secret_group"}}' ;;
   *'im +chat-list'*'--types p2p'*)
     case "${P2P_SCENARIO:-unique}" in
@@ -161,6 +182,7 @@ EOF
 chmod +x "$FAKE_BIN/curl" "$FAKE_BIN/lark-cli"
 
 bootstrap_output="$TEST_ROOT/bootstrap-output"
+unset E2E_E2E_LARK_CLI_PROFILE
 if ! PATH="$FAKE_BIN:$PATH" \
   E2E_REPO_ROOT="$BOOT_ROOT" \
   LARK_APP_ID="cli_bootstrap_app" \
@@ -181,10 +203,25 @@ if rg -e 'bootstrap-secret-do-not-print|ou_bootstrap_secret_bot|oc_bootstrap_sec
   fail "bootstrap output leaked a secret or full ID"
 fi
 
-unset LARK_APP_ID LARK_APP_SECRET LARK_BOT_OPEN_ID E2E_E2E_CHAT_ID E2E_REAL_E2E_P2P_CHAT_ID
+unset LARK_APP_ID LARK_APP_SECRET LARK_BOT_OPEN_ID E2E_E2E_CHAT_ID E2E_REAL_E2E_P2P_CHAT_ID E2E_E2E_LARK_CLI_PROFILE
 PATH="$FAKE_BIN:$PATH" E2E_REPO_ROOT="$BOOT_ROOT" \
   bash "$ROOT/scripts/e2e-init.sh" --profile developer --non-interactive >"$bootstrap_output" 2>&1
 assert_ok rg -q '^LARK_APP_ID=cli_bootstrap_app$' "$bootstrap_env"
+
+mismatch_root="$TEST_ROOT/bootstrap-cli-profile-mismatch"
+mismatch_output="$TEST_ROOT/bootstrap-cli-profile-mismatch.out"
+mkdir -p "$mismatch_root"
+set +e
+PATH="$FAKE_BIN:$PATH" E2E_REPO_ROOT="$mismatch_root" CLI_PROFILE_SCENARIO=mismatch \
+  LARK_APP_ID="cli_bootstrap_app" LARK_APP_SECRET="bootstrap-secret-do-not-print" \
+  LARK_BOT_OPEN_ID="" E2E_E2E_CHAT_ID="oc_bootstrap_secret_group" E2E_REAL_E2E_P2P_CHAT_ID="" \
+  bash "$ROOT/scripts/e2e-init.sh" --profile developer --non-interactive >"$mismatch_output" 2>&1
+mismatch_status=$?
+set -e
+assert_eq 3 "$mismatch_status" "existing CLI profile app mismatch status"
+if rg -e 'bootstrap-secret-do-not-print|ou_bootstrap_secret_bot|oc_bootstrap_secret_group' "$mismatch_output" >/dev/null 2>&1; then
+  fail "CLI profile mismatch output leaked a secret or full ID"
+fi
 
 for scenario in none multiple; do
   blocked_root="$TEST_ROOT/bootstrap-$scenario"

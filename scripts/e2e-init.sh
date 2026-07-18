@@ -8,6 +8,7 @@ source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/e2e-profile.sh"
 PROFILE=""
 NON_INTERACTIVE=0
 P2P_CHAT_ID="${E2E_REAL_E2E_P2P_CHAT_ID:-}"
+LARK_CLI_PROFILE=""
 
 usage() {
   cat <<'EOF'
@@ -54,6 +55,26 @@ require_cmd() {
     echo "missing required command: $1" >&2
     exit 1
   }
+}
+
+lark_cli() {
+  command lark-cli --profile "$LARK_CLI_PROFILE" "$@"
+}
+
+ensure_lark_cli_profile() {
+  local config_output
+  if config_output="$(lark_cli config show 2>/dev/null)"; then
+    if ! printf '%s' "$config_output" | grep -Fq "$LARK_APP_ID"; then
+      echo "BLOCKED lark_cli_profile_mismatch: the isolated CLI profile belongs to another app" >&2
+      exit 3
+    fi
+    return
+  fi
+  if ! printf '%s\n' "$LARK_APP_SECRET" | command lark-cli profile add \
+    --name "$LARK_CLI_PROFILE" --app-id "$LARK_APP_ID" --app-secret-stdin >/dev/null 2>&1; then
+    echo "FAIL lark_cli_profile_init: could not create the isolated CLI profile" >&2
+    exit 1
+  fi
 }
 
 prompt_value() {
@@ -108,8 +129,9 @@ fetch_bot_open_id() {
 
 verify_user_auth() {
   local response auth_app
-  response="$(lark-cli auth status --json --verify 2>/dev/null)" || {
-    echo "BLOCKED lark_cli_auth_missing: run lark-cli auth login with the bridge app" >&2
+  response="$(lark_cli auth status --json --verify 2>/dev/null)" || {
+    echo "BLOCKED lark_cli_auth_missing: authorize the isolated lark-cli profile for this bridge app" >&2
+    echo "Next: lark-cli --profile '$LARK_CLI_PROFILE' auth login --domain im" >&2
     exit 3
   }
   auth_app="$(printf '%s' "$response" | jq -r '.app_id // .data.app_id // .auth.app_id // empty')"
@@ -120,7 +142,7 @@ verify_user_auth() {
 }
 
 verify_group() {
-  lark-cli im chats get --as user --chat-id "$E2E_E2E_CHAT_ID" --json >/dev/null 2>&1 || {
+  lark_cli im chats get --as user --chat-id "$E2E_E2E_CHAT_ID" --json >/dev/null 2>&1 || {
     echo "BLOCKED group_unavailable: current lark-cli user cannot read the configured test group" >&2
     exit 3
   }
@@ -129,7 +151,7 @@ verify_group() {
 discover_p2p_chat() {
   local list chat members matches=()
   if [[ -n "$P2P_CHAT_ID" ]]; then
-    members="$(lark-cli im +chat-members-list --as user --chat-id "$P2P_CHAT_ID" --member-types bots --json 2>/dev/null)" || {
+    members="$(lark_cli im +chat-members-list --as user --chat-id "$P2P_CHAT_ID" --member-types bots --json 2>/dev/null)" || {
       echo "BLOCKED p2p_unavailable: the selected direct chat is not readable" >&2
       exit 3
     }
@@ -142,13 +164,13 @@ discover_p2p_chat() {
     export E2E_REAL_E2E_P2P_CHAT_ID
     return
   fi
-  list="$(lark-cli im +chat-list --as user --types p2p --json 2>/dev/null)" || {
+  list="$(lark_cli im +chat-list --as user --types p2p --json 2>/dev/null)" || {
     echo "BLOCKED p2p_list_unavailable: current user cannot list P2P chats" >&2
     exit 3
   }
   while IFS= read -r chat; do
     [[ -n "$chat" ]] || continue
-    members="$(lark-cli im +chat-members-list --as user --chat-id "$chat" --member-types bots --json 2>/dev/null || true)"
+    members="$(lark_cli im +chat-members-list --as user --chat-id "$chat" --member-types bots --json 2>/dev/null || true)"
     if printf '%s' "$members" | jq -e --arg bot "$LARK_BOT_OPEN_ID" \
       '[(.bots // .data.bots // .items // .data.items // [])[] | (.member_id // .open_id // .member.open_id // empty)] | index($bot) != null' >/dev/null 2>&1; then
       matches+=("$chat")
@@ -170,9 +192,9 @@ discover_p2p_chat() {
 load_existing_profile_defaults() {
   local env_path="$ROOT/.lark-agent-bridge/e2e/profiles/$PROFILE.env"
   local app_set="${LARK_APP_ID+x}" secret_set="${LARK_APP_SECRET+x}" bot_set="${LARK_BOT_OPEN_ID+x}"
-  local group_set="${E2E_E2E_CHAT_ID+x}" p2p_set="${E2E_REAL_E2E_P2P_CHAT_ID+x}"
+  local group_set="${E2E_E2E_CHAT_ID+x}" p2p_set="${E2E_REAL_E2E_P2P_CHAT_ID+x}" cli_profile_set="${E2E_E2E_LARK_CLI_PROFILE+x}"
   local app_value="${LARK_APP_ID-}" secret_value="${LARK_APP_SECRET-}" bot_value="${LARK_BOT_OPEN_ID-}"
-  local group_value="${E2E_E2E_CHAT_ID-}" p2p_value="${E2E_REAL_E2E_P2P_CHAT_ID-}"
+  local group_value="${E2E_E2E_CHAT_ID-}" p2p_value="${E2E_REAL_E2E_P2P_CHAT_ID-}" cli_profile_value="${E2E_E2E_LARK_CLI_PROFILE-}"
   [[ -f "$env_path" ]] || return 0
   e2e_profile_load "$env_path"
   if [[ -n "$app_set" ]]; then LARK_APP_ID="$app_value"; export LARK_APP_ID; fi
@@ -180,6 +202,7 @@ load_existing_profile_defaults() {
   if [[ -n "$bot_set" ]]; then LARK_BOT_OPEN_ID="$bot_value"; export LARK_BOT_OPEN_ID; fi
   if [[ -n "$group_set" ]]; then E2E_E2E_CHAT_ID="$group_value"; export E2E_E2E_CHAT_ID; fi
   if [[ -n "$p2p_set" ]]; then E2E_REAL_E2E_P2P_CHAT_ID="$p2p_value"; export E2E_REAL_E2E_P2P_CHAT_ID; fi
+  if [[ -n "$cli_profile_set" ]]; then E2E_E2E_LARK_CLI_PROFILE="$cli_profile_value"; export E2E_E2E_LARK_CLI_PROFILE; fi
   if [[ -z "$P2P_CHAT_ID" && -n "${E2E_REAL_E2E_P2P_CHAT_ID:-}" ]]; then
     P2P_CHAT_ID="$E2E_REAL_E2E_P2P_CHAT_ID"
   fi
@@ -192,6 +215,14 @@ load_existing_profile_defaults
 prompt_value LARK_APP_ID "Feishu app ID"
 prompt_value LARK_APP_SECRET "Feishu app secret" 1
 prompt_value E2E_E2E_CHAT_ID "Test group chat ID"
+LARK_CLI_PROFILE="${E2E_E2E_LARK_CLI_PROFILE:-lab-e2e-$PROFILE}"
+e2e_profile_validate_name "$LARK_CLI_PROFILE" || {
+  echo "invalid isolated lark-cli profile name" >&2
+  exit 2
+}
+E2E_E2E_LARK_CLI_PROFILE="$LARK_CLI_PROFILE"
+export E2E_E2E_LARK_CLI_PROFILE
+ensure_lark_cli_profile
 verify_user_auth
 fetch_bot_open_id
 verify_group

@@ -193,6 +193,8 @@ GOCACHE=$PWD/.cache/go-build go run ./cmd/lark-agent-bridge simulate-action \
 
 profile 和 evidence 位于 `/.lark-agent-bridge/`、`/.cache/`，均已 Git ignore。真实 `App ID`、`App Secret`、bot/chat/message ID 和 OAuth 元数据不得写入 tracked 文件。
 
+每个命名 E2E profile 同时绑定独立的 `lark-cli --profile lab-e2e-<name>`；runner 不切换全局默认 profile，避免多个开发者或并行会话互相覆盖 App 配置和用户 OAuth。
+
 `--doctor` 不发送消息、不启动 bridge，检查：
 
 - `LARK_APP_ID`、`LARK_APP_SECRET`

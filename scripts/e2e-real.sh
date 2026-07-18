@@ -49,6 +49,7 @@ LIST_CASES=0
 PROFILE_ARG=""
 PROFILE_NAME=""
 PROFILE_ENV=""
+LARK_CLI_PROFILE=""
 DOCTOR_MODE=0
 PREFLIGHT_ONLY=0
 STRICT_CAPABILITIES=0
@@ -197,6 +198,7 @@ if [[ "$PROFILE_NAME" == "legacy" ]]; then
   echo "notice: legacy .lark-agent-bridge/e2e.env is in use; run e2e-init.sh to create a named profile" >&2
 else
   e2e_profile_load "$PROFILE_ENV" || exit 2
+  LARK_CLI_PROFILE="${E2E_E2E_LARK_CLI_PROFILE:-lab-e2e-$PROFILE_NAME}"
 fi
 if [[ "$RUN_DIR_SET" -eq 0 ]]; then
   RUN_DIR="$STATE_ROOT/.cache/e2e/$PROFILE_NAME/real-$RUN_ID"
@@ -281,6 +283,14 @@ require_cmd() {
   fi
 }
 
+lark_cli() {
+  if [[ -n "$LARK_CLI_PROFILE" ]]; then
+    command lark-cli --profile "$LARK_CLI_PROFILE" "$@"
+  else
+    command lark-cli "$@"
+  fi
+}
+
 require_env() {
   local name="$1"
   if [[ -z "${!name:-}" ]]; then
@@ -298,9 +308,12 @@ record_static_credentials() {
 }
 
 record_static_user_auth() {
-  local response auth_app
-  if ! response="$(lark-cli auth status --json --verify 2>/dev/null)"; then
-    e2e_cap_record lark_cli_auth BLOCKED lark_cli_auth_missing "lark-cli user authentication is unavailable" "run lark-cli auth login with the bridge app"
+  local response auth_app login_command="lark-cli auth login --domain im"
+  if [[ -n "$LARK_CLI_PROFILE" ]]; then
+    login_command="lark-cli --profile $LARK_CLI_PROFILE auth login --domain im"
+  fi
+  if ! response="$(lark_cli auth status --json --verify 2>/dev/null)"; then
+    e2e_cap_record lark_cli_auth BLOCKED lark_cli_auth_missing "lark-cli user authentication is unavailable" "run $login_command"
     e2e_cap_record oauth_same_app SKIPPED auth_unavailable "OAuth app identity was not checked" "restore lark-cli authentication"
     return
   fi
@@ -316,7 +329,7 @@ record_static_user_auth() {
   elif [[ "$auth_app" == "${LARK_APP_ID:-}" ]]; then
     e2e_cap_record oauth_same_app PASS ready "user OAuth and bridge app identities match" ""
   else
-    e2e_cap_record oauth_same_app BLOCKED oauth_app_mismatch "user OAuth belongs to another app" "login lark-cli through this bridge app"
+    e2e_cap_record oauth_same_app BLOCKED oauth_app_mismatch "user OAuth belongs to another app" "run $login_command"
   fi
 }
 
@@ -332,7 +345,7 @@ record_static_bot() {
 record_static_chats() {
   if [[ -z "${E2E_E2E_CHAT_ID:-}" ]]; then
     e2e_cap_record test_group BLOCKED group_missing "test group is not configured" "rerun e2e-init.sh with a test group"
-  elif lark-cli im chats get --as user --chat-id "$E2E_E2E_CHAT_ID" --json >/dev/null 2>&1; then
+  elif lark_cli im chats get --as user --chat-id "$E2E_E2E_CHAT_ID" --json >/dev/null 2>&1; then
     e2e_cap_record test_group PASS ready "test group is readable by the current user" ""
   else
     e2e_cap_record test_group BLOCKED group_unavailable "test group is not readable by the current user" "check membership and user OAuth"
@@ -340,7 +353,7 @@ record_static_chats() {
 
   if [[ -z "${E2E_REAL_E2E_P2P_CHAT_ID:-}" ]]; then
     e2e_cap_record p2p_chat BLOCKED p2p_not_found "P2P chat is not configured" "start a direct chat with the bot and rerun e2e-init.sh"
-  elif lark-cli im chats get --as user --chat-id "$E2E_REAL_E2E_P2P_CHAT_ID" --json >/dev/null 2>&1; then
+  elif lark_cli im chats get --as user --chat-id "$E2E_REAL_E2E_P2P_CHAT_ID" --json >/dev/null 2>&1; then
     e2e_cap_record p2p_chat PASS ready "P2P chat is readable by the current user" ""
   else
     e2e_cap_record p2p_chat BLOCKED p2p_unavailable "P2P chat is not readable by the current user" "rerun e2e-init.sh and select the intended P2P chat"
@@ -593,7 +606,7 @@ trap cleanup EXIT
 send_at() {
   local text="$1"
   local msg_id
-  msg_id="$(lark-cli im +messages-send --as user --chat-id "$E2E_E2E_CHAT_ID" --text "<at user_id=\"$BOT_OPEN_ID\"></at> $text" --jq '.data.message_id // .message_id // .data.message_id' | tail -n 1)"
+  msg_id="$(lark_cli im +messages-send --as user --chat-id "$E2E_E2E_CHAT_ID" --text "<at user_id=\"$BOT_OPEN_ID\"></at> $text" --jq '.data.message_id // .message_id // .data.message_id' | tail -n 1)"
   if [[ -z "$msg_id" || "$msg_id" == "null" ]]; then
     echo "failed to send message: $text" >&2
     exit 1
@@ -604,7 +617,7 @@ send_at() {
 send_text() {
   local text="$1"
   local msg_id
-  msg_id="$(lark-cli im +messages-send --as user --chat-id "$E2E_E2E_CHAT_ID" --text "$text" --jq '.data.message_id // .message_id // .data.message_id' | tail -n 1)"
+  msg_id="$(lark_cli im +messages-send --as user --chat-id "$E2E_E2E_CHAT_ID" --text "$text" --jq '.data.message_id // .message_id // .data.message_id' | tail -n 1)"
   if [[ -z "$msg_id" || "$msg_id" == "null" ]]; then
     echo "failed to send message: $text" >&2
     exit 1
@@ -660,10 +673,10 @@ upload_media_key() {
   relative="$(media_relative_path "$path")"
   case "$kind" in
     image)
-      msg_id="$(lark-cli im +messages-send --as user --chat-id "$E2E_E2E_CHAT_ID" --image "$relative" --jq '.data.message_id // .message_id // .data.message_id' | tail -n 1)"
+      msg_id="$(lark_cli im +messages-send --as user --chat-id "$E2E_E2E_CHAT_ID" --image "$relative" --jq '.data.message_id // .message_id // .data.message_id' | tail -n 1)"
       ;;
     file)
-      msg_id="$(lark-cli im +messages-send --as user --chat-id "$E2E_E2E_CHAT_ID" --file "$relative" --jq '.data.message_id // .message_id // .data.message_id' | tail -n 1)"
+      msg_id="$(lark_cli im +messages-send --as user --chat-id "$E2E_E2E_CHAT_ID" --file "$relative" --jq '.data.message_id // .message_id // .data.message_id' | tail -n 1)"
       ;;
     *) echo "unsupported media upload kind: $kind" >&2; return 1 ;;
   esac
@@ -693,7 +706,7 @@ send_media_post() {
   local content msg_id
   content="$(jq -nc --arg bot "$BOT_OPEN_ID" --argjson elements "$elements" \
     '{zh_cn:{title:"",content:[([{tag:"at",user_id:$bot}] + $elements)]}}')"
-  msg_id="$(lark-cli im +messages-send --as user --chat-id "$E2E_E2E_CHAT_ID" --msg-type post --content "$content" --jq '.data.message_id // .message_id // .data.message_id' | tail -n 1)"
+  msg_id="$(lark_cli im +messages-send --as user --chat-id "$E2E_E2E_CHAT_ID" --msg-type post --content "$content" --jq '.data.message_id // .message_id // .data.message_id' | tail -n 1)"
   if [[ -z "$msg_id" || "$msg_id" == "null" ]]; then
     echo "failed to send media post" >&2
     return 1
@@ -716,10 +729,10 @@ send_direct_media() {
   relative="$(media_relative_path "$path")"
   case "$kind" in
     image)
-      msg_id="$(lark-cli im +messages-send --as user --chat-id "$MEDIA_P2P_CHAT_ID" --image "$relative" --jq '.data.message_id // .message_id // .data.message_id' | tail -n 1)"
+      msg_id="$(lark_cli im +messages-send --as user --chat-id "$MEDIA_P2P_CHAT_ID" --image "$relative" --jq '.data.message_id // .message_id // .data.message_id' | tail -n 1)"
       ;;
     file)
-      msg_id="$(lark-cli im +messages-send --as user --chat-id "$MEDIA_P2P_CHAT_ID" --file "$relative" --jq '.data.message_id // .message_id // .data.message_id' | tail -n 1)"
+      msg_id="$(lark_cli im +messages-send --as user --chat-id "$MEDIA_P2P_CHAT_ID" --file "$relative" --jq '.data.message_id // .message_id // .data.message_id' | tail -n 1)"
       ;;
     *) echo "unsupported direct media kind: $kind" >&2; return 1 ;;
   esac
@@ -775,9 +788,9 @@ send_dm_pair() {
   local first_err="$RUN_DIR/dm-pair-${tag}-first.err"
   local second_err="$RUN_DIR/dm-pair-${tag}-second.err"
   local first_pid second_pid first_status=0 second_status=0
-  lark-cli im +messages-send --as user --user-id "$BOT_OPEN_ID" --text "$first_text" --jq '.data.message_id // .message_id // .data.message_id' >"$first_out" 2>"$first_err" &
+  lark_cli im +messages-send --as user --user-id "$BOT_OPEN_ID" --text "$first_text" --jq '.data.message_id // .message_id // .data.message_id' >"$first_out" 2>"$first_err" &
   first_pid=$!
-  lark-cli im +messages-send --as user --user-id "$BOT_OPEN_ID" --text "$second_text" --jq '.data.message_id // .message_id // .data.message_id' >"$second_out" 2>"$second_err" &
+  lark_cli im +messages-send --as user --user-id "$BOT_OPEN_ID" --text "$second_text" --jq '.data.message_id // .message_id // .data.message_id' >"$second_out" 2>"$second_err" &
   second_pid=$!
   wait "$first_pid" || first_status=$?
   wait "$second_pid" || second_status=$?
@@ -798,7 +811,7 @@ reply_thread() {
   local root_msg="$1"
   local text="$2"
   local msg_id
-  msg_id="$(lark-cli im +messages-reply --as user --message-id "$root_msg" --reply-in-thread --text "$text" --jq '.data.message_id // .message_id // .data.message_id' | tail -n 1)"
+  msg_id="$(lark_cli im +messages-reply --as user --message-id "$root_msg" --reply-in-thread --text "$text" --jq '.data.message_id // .message_id // .data.message_id' | tail -n 1)"
   if [[ -z "$msg_id" || "$msg_id" == "null" ]]; then
     echo "failed to reply thread: $root_msg" >&2
     exit 1
@@ -810,7 +823,7 @@ mget() {
   local case_name="$1"
   local msg_id="$2"
   local out="$MGET_DIR/$case_name-$msg_id.json"
-  lark-cli im +messages-mget --as user --message-ids "$msg_id" --format json >"$out"
+  lark_cli im +messages-mget --as user --message-ids "$msg_id" --format json >"$out"
   printf '%s\n' "$out"
 }
 
@@ -1092,7 +1105,7 @@ fake_marker_count() {
 revoke_message() {
   local msg_id="$1"
   local out="$RUN_DIR/revoke-$msg_id.json"
-  lark-cli im messages delete --as user --yes --params "{\"message_id\":\"$msg_id\"}" >"$out"
+  lark_cli im messages delete --as user --yes --params "{\"message_id\":\"$msg_id\"}" >"$out"
 }
 
 stop_card() {

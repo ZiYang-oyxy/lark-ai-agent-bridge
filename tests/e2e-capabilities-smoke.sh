@@ -84,6 +84,11 @@ mkdir -p "$DOCTOR_STATE/.lark-agent-bridge/e2e/profiles" "$DOCTOR_BIN"
 chmod 700 "$DOCTOR_STATE/.lark-agent-bridge" "$DOCTOR_STATE/.lark-agent-bridge/e2e" "$DOCTOR_STATE/.lark-agent-bridge/e2e/profiles"
 cat >"$DOCTOR_BIN/lark-cli" <<'EOF'
 #!/usr/bin/env bash
+if [[ "${1:-}" == "--profile" ]]; then
+  [[ "${2:-}" == lab-e2e-* ]] || exit 91
+  printf 'profile=%s ' "$2" >>"${DOCTOR_LOG:?}"
+  shift 2
+fi
 printf '%s\n' "$*" >>"${DOCTOR_LOG:?}"
 case "$*" in
   'auth status --json --verify') printf '%s\n' '{"verified":true,"app_id":"cli_doctor_app"}' ;;
@@ -121,6 +126,7 @@ LARK_APP_SECRET=doctor-secret
 LARK_BOT_OPEN_ID=ou_doctor_bot
 E2E_E2E_CHAT_ID=oc_doctor_group
 E2E_REAL_E2E_P2P_CHAT_ID=$p2p
+E2E_E2E_LARK_CLI_PROFILE=lab-e2e-$name
 EOF
   printf '%s\n' '{"schema_version":1}' >"$dir/$name.json"
   chmod 600 "$dir/$name.env" "$dir/$name.json"
@@ -145,6 +151,9 @@ if rg -q 'messages-send|serve|unexpectedly invoked claude' "$DOCTOR_LOG"; then
   fail "static doctor performed an active operation"
 fi
 jq -e '.capabilities[] | select(.name == "p2p_chat" and .status == "PASS")' "$TEST_ROOT/doctor-pass/capabilities.json" >/dev/null
+if rg -v '^profile=lab-e2e-pass ' "$DOCTOR_LOG" | rg -q .; then
+  fail "named profile doctor used the global lark-cli profile"
+fi
 
 write_doctor_profile blocked ''
 run_expect_exit 0 env \
