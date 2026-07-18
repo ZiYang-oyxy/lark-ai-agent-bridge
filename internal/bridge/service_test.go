@@ -2178,16 +2178,25 @@ func TestNewServiceWithSessionsKeepsRecoveryAuditWriteErrorsObservable(t *testin
 }
 
 func TestServiceProcessesRestartCardRecoveryOnceWithoutReplacement(t *testing.T) {
-	ref := &session.RenderRef{CardID: "old-card", ReplyMessageID: "old-reply", Version: 4}
+	created := time.Date(2026, 7, 4, 12, 0, 0, 0, time.UTC)
+	ref := &session.RenderRef{CardID: "old-card", ReplyMessageID: "old-reply", Version: 4, CreatedAt: created}
 	notices := []session.RecoveryNotice{
 		{SessionID: "claude:chat", ReplyToMessageID: "queued-source", Status: session.InputCancelled},
 		{SessionID: "claude:chat", ReplyToMessageID: "running-source", Status: session.InputInterrupted, RenderRef: ref},
 		{SessionID: "claude:chat", ReplyToMessageID: "batched-source", Status: session.InputInterrupted, RenderRef: ref},
 	}
 	runner := newFakeRunner()
-	target := &bridgeReplyTarget{renderErr: feishu.ErrStaleRenderRef}
+	target := &bridgeReplyTarget{}
 	recorder := audit.NewRecorder()
 	svc := NewServiceWithSessions(testConfig(t), card.NewFakeRenderer(), runner, recorder, session.NewManager(), notices)
+	replies, err := reply.OpenStore(filepath.Join(t.TempDir(), "replies.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := replies.SetLatest("claude:chat", ref); err != nil {
+		t.Fatal(err)
+	}
+	svc.Replies = replies
 	svc.CardTarget = target
 	svc.ProcessRecoveryNotices(context.Background())
 	svc.ProcessRecoveryNotices(context.Background())
@@ -2199,14 +2208,104 @@ func TestServiceProcessesRestartCardRecoveryOnceWithoutReplacement(t *testing.T)
 	if newCalls != 0 || rehydrateCalls != 1 || len(events) != 1 {
 		t.Fatalf("recovery target new/rehydrate/events = %d/%d/%#v", newCalls, rehydrateCalls, events)
 	}
-	if len(events[0].Segments) != 1 || events[0].Segments[0].Text != "服务重启,已中断,请重新发送" || events[0].Streaming {
+	if len(events[0].Segments) != 1 || events[0].Segments[0].Text != "服务重启，已中断，请重新发送" || events[0].Streaming || events[0].Type != "interrupted" || events[0].Actions != nil || events[0].StopButton != (card.StopButton{Visible: true, Disabled: true}) || events[0].Meta.Status != string(session.InputInterrupted) || !events[0].HideAgentPanels {
 		t.Fatalf("recovery event = %#v", events[0])
+	}
+	if target.rehydratedRef.Version != 4 || !target.rehydratedRef.CreatedAt.Equal(created) {
+		t.Fatalf("rehydrated ref = %#v", target.rehydratedRef)
+	}
+	if saved := replies.GetLatest("claude:chat"); saved == nil || saved.Version != 5 || !saved.CreatedAt.Equal(created) {
+		t.Fatalf("saved latest = %#v", saved)
 	}
 	if len(runner.Calls()) != 0 {
 		t.Fatalf("recovery runner calls = %#v", runner.Calls())
 	}
-	if !auditContainsAction(recorder.Events(), "recovery_card_update_failed") {
-		t.Fatalf("recovery audit = %#v", recorder.Events())
+	if auditContainsAction(recorder.Events(), "recovery_card_update_failed") {
+		t.Fatalf("unexpected recovery failure audit = %#v", recorder.Events())
+	}
+}
+
+func TestServiceRecoverySkipsSequenceUnknownCardOnce(t *testing.T) {
+	ref := &session.RenderRef{CardID: "unknown-card", ReplyMessageID: "old-reply", Version: 4, SequenceUnknown: true, PendingSequence: 9}
+	notices := []session.RecoveryNotice{
+		{SessionID: "claude:chat", ReplyToMessageID: "source", Status: session.InputInterrupted, RenderRef: ref},
+		{SessionID: "claude:chat", ReplyToMessageID: "source-duplicate", Status: session.InputInterrupted, RenderRef: ref},
+	}
+	target := &bridgeReplyTarget{}
+	recorder := audit.NewRecorder()
+	svc := NewServiceWithSessions(testConfig(t), card.NewFakeRenderer(), newFakeRunner(), recorder, session.NewManager(), notices)
+	replies, err := reply.OpenStore(filepath.Join(t.TempDir(), "replies.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := replies.SetLatest("claude:chat", ref); err != nil {
+		t.Fatal(err)
+	}
+	svc.Replies = replies
+	svc.CardTarget = target
+	svc.ProcessRecoveryNotices(context.Background())
+	svc.ProcessRecoveryNotices(context.Background())
+	target.mu.Lock()
+	newCalls, rehydrateCalls, events := target.newCalls, target.rehydrateCalls, append([]card.Event(nil), target.events...)
+	target.mu.Unlock()
+	if newCalls != 0 || rehydrateCalls != 0 || len(events) != 0 {
+		t.Fatalf("unknown recovery new/rehydrate/events = %d/%d/%#v", newCalls, rehydrateCalls, events)
+	}
+	if got := replies.GetLatest("claude:chat"); got == nil || *got != *ref {
+		t.Fatalf("unknown latest = %#v, want %#v", got, ref)
+	}
+	var skipped []audit.Event
+	for _, event := range recorder.Events() {
+		if event.Action == "recovery_card_update_skipped_sequence_unknown" {
+			skipped = append(skipped, event)
+		}
+	}
+	if len(skipped) != 1 || skipped[0].Detail != "pending_sequence=9" {
+		t.Fatalf("sequence unknown audits = %#v", skipped)
+	}
+}
+
+func TestServiceRecoveryFailureDoesNotCreateOrMutateLatest(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		target *bridgeReplyTarget
+	}{
+		{name: "stale renderer", target: &bridgeReplyTarget{renderErr: feishu.ErrStaleRenderRef}},
+		{name: "no card target"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ref := &session.RenderRef{CardID: "old-card", ReplyMessageID: "old-reply", Version: 4}
+			recorder := audit.NewRecorder()
+			svc := NewServiceWithSessions(testConfig(t), card.NewFakeRenderer(), newFakeRunner(), recorder, session.NewManager(), []session.RecoveryNotice{{
+				SessionID: "claude:chat", ReplyToMessageID: "source", Status: session.InputInterrupted, RenderRef: ref,
+			}})
+			replies, err := reply.OpenStore(filepath.Join(t.TempDir(), "replies.json"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := replies.SetLatest("claude:chat", ref); err != nil {
+				t.Fatal(err)
+			}
+			svc.Replies = replies
+			if tc.target != nil {
+				svc.CardTarget = tc.target
+			}
+			svc.ProcessRecoveryNotices(context.Background())
+			if tc.target != nil {
+				tc.target.mu.Lock()
+				newCalls := tc.target.newCalls
+				tc.target.mu.Unlock()
+				if newCalls != 0 {
+					t.Fatalf("new calls = %d, want 0", newCalls)
+				}
+			}
+			if got := replies.GetLatest("claude:chat"); got == nil || *got != *ref {
+				t.Fatalf("latest = %#v, want %#v", got, ref)
+			}
+			if !auditContainsAction(recorder.Events(), "recovery_card_update_failed") {
+				t.Fatalf("audit = %#v", recorder.Events())
+			}
+		})
 	}
 }
 
