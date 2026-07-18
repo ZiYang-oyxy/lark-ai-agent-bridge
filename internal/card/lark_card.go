@@ -136,6 +136,9 @@ func splitCardSections(segments []Segment) (string, string, string) {
 }
 
 func shouldShowAgentPanels(e Event, thought, tools string) bool {
+	if e.HideAgentPanels {
+		return false
+	}
 	if strings.TrimSpace(thought) != "" || strings.TrimSpace(tools) != "" {
 		return true
 	}

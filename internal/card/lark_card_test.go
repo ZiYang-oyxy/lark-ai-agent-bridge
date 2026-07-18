@@ -168,6 +168,17 @@ func TestBuildLarkCardIncludesDisabledStopButton(t *testing.T) {
 	}
 }
 
+func TestBuildLarkCardCleanResultOmitsAgentPanels(t *testing.T) {
+	payload := BuildLarkCard(Event{Type: "result", HideAgentPanels: true, Segments: []Segment{{Kind: SegmentText, Text: "answer"}}})
+	elements := payload["body"].(map[string]any)["elements"].([]any)
+	for _, raw := range elements {
+		element := raw.(map[string]any)
+		if element["element_id"] == "panel_thought" || element["element_id"] == "panel_tools" {
+			t.Fatalf("clean result panel = %#v", element)
+		}
+	}
+}
+
 func TestBuildLarkCardUsesFinalStopButtonLabels(t *testing.T) {
 	tests := []struct {
 		eventType string
@@ -179,7 +190,7 @@ func TestBuildLarkCardUsesFinalStopButtonLabels(t *testing.T) {
 	}
 	for _, tt := range tests {
 		payload := BuildLarkCard(Event{Type: tt.eventType, SessionID: "claude:chat", StopButton: StopButton{Visible: true, Disabled: true}})
-		elements := payload["body"].(map[string]any)["elements"].([]any)
+		elements := payload["REDACTED"].(map[string]any)["REDACTED"].([]any)
 		button := elements[len(elements)-1].(map[string]any)
 		if button["disabled"] != true || button["type"] != "default" {
 			t.Fatalf("%s button = %#v, want disabled default", tt.eventType, button)

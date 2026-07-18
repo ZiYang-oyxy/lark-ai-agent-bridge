@@ -59,6 +59,7 @@ func (h *reactionLifecycle) add() {
 		h.record("reaction_add_failed", "empty reaction id")
 		return
 	}
+	h.record("reaction_added", "reaction_id="+reactionID)
 
 	h.mu.Lock()
 	if !h.closed {
@@ -95,7 +96,9 @@ func (h *reactionLifecycle) Close() {
 func (h *reactionLifecycle) delete(reactionID string) {
 	if err := h.sink.DeleteReaction(context.Background(), h.messageID, reactionID); err != nil {
 		h.record("reaction_delete_failed", err.Error())
+		return
 	}
+	h.record("reaction_deleted", "reaction_id="+reactionID)
 }
 
 func (h *reactionLifecycle) record(action, detail string) {

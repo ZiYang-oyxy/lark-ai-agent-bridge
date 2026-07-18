@@ -139,6 +139,7 @@ func cleanTerminalEvent(event card.Event) card.Event {
 	event.Activity = ""
 	event.ThoughtExpanded = false
 	event.ToolsExpanded = false
+	event.HideAgentPanels = true
 	return event
 }
 

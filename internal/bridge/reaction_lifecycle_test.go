@@ -40,6 +40,17 @@ func TestReactionLifecycleAuditsDeleteFailure(t *testing.T) {
 	waitForAuditAction(t, recorder, "reaction_delete_failed")
 }
 
+func TestReactionLifecycleAuditsSuccessfulAddAndDelete(t *testing.T) {
+	sink := &fakeReactionSink{}
+	recorder := audit.NewRecorder()
+	handle := newReactionLifecycle(sink, recorder, "message", feishu.ReactionTypeTyping, 0)
+	waitForReactionCounts(t, sink, 1, 0)
+	waitForAuditAction(t, recorder, "reaction_added")
+	handle.Close()
+	waitForReactionCounts(t, sink, 1, 1)
+	waitForAuditAction(t, recorder, "reaction_deleted")
+}
+
 func TestServiceDeletesTypingOnRunTerminalPaths(t *testing.T) {
 	for _, tc := range []struct {
 		name   string

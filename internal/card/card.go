@@ -76,6 +76,7 @@ type Event struct {
 	Activity         string
 	ThoughtExpanded  bool
 	ToolsExpanded    bool
+	HideAgentPanels  bool
 	ConfigForm       *ConfigForm
 }
 

@@ -110,6 +110,9 @@ func TestPolicyAppendCleanCardRemovesProcessPanelsAndFallsBackOnce(t *testing.T)
 	if clean.Meta.ModelInfo.Actual != "actual" || clean.Meta.Tokens != 7 || clean.Meta.WorkDir != "/work" || clean.Meta.Status != "completed" {
 		t.Fatalf("clean terminal meta = %#v", clean.Meta)
 	}
+	if !clean.HideAgentPanels {
+		t.Fatal("clean terminal did not hide thought/tool panels")
+	}
 }
 
 func TestPolicyLatestCardRehydratesAndPersistsAdvancedRef(t *testing.T) {
