@@ -13,6 +13,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"lark-agent-bridge/internal/card"
 )
 
 const (
@@ -25,7 +27,8 @@ type HTTPDoer interface {
 }
 
 type CardKitCreateRequest struct {
-	Card map[string]any
+	Card     map[string]any
+	Prepared *card.PreparedLarkCard
 }
 
 type CardKitCreateResult struct {
@@ -46,6 +49,7 @@ type CardKitReplyResult struct {
 
 type CardKitUpdateCardRequest struct {
 	Card     map[string]any
+	Prepared *card.PreparedLarkCard
 	CardID   string
 	Sequence int
 	UUID     string
@@ -116,11 +120,11 @@ func NewCardKitClientWithTokenSource(tokens TenantTokenSource) *CardKitClient {
 }
 
 func (c *CardKitClient) CreateCard(ctx context.Context, req CardKitCreateRequest) (CardKitCreateResult, error) {
-	card, err := json.Marshal(req.Card)
+	cardJSON, err := cardJSONForRequest(req.Card, req.Prepared)
 	if err != nil {
-		return CardKitCreateResult{}, fmt.Errorf("marshal card json: %w", err)
+		return CardKitCreateResult{}, err
 	}
-	body := map[string]string{"type": "card_json", "data": string(card)}
+	body := map[string]string{"type": "card_json", "data": string(cardJSON)}
 	var out struct {
 		CardID string `json:"card_id"`
 	}
@@ -157,17 +161,34 @@ func (c *CardKitClient) ReplyCard(ctx context.Context, req CardKitReplyRequest) 
 }
 
 func (c *CardKitClient) UpdateCard(ctx context.Context, req CardKitUpdateCardRequest) error {
-	card, err := json.Marshal(req.Card)
+	cardJSON, err := cardJSONForRequest(req.Card, req.Prepared)
 	if err != nil {
-		return fmt.Errorf("marshal card json: %w", err)
+		return err
 	}
 	body := map[string]any{
-		"card":     map[string]string{"type": "card_json", "data": string(card)},
+		"card":     map[string]string{"type": "card_json", "data": string(cardJSON)},
 		"uuid":     req.UUID,
 		"sequence": req.Sequence,
 	}
 	path := "/open-apis/cardkit/v1/cards/" + url.PathEscape(req.CardID)
 	return classifyRenderUpdateError(c.doTenantJSON(ctx, http.MethodPut, path, body, nil))
+}
+
+func cardJSONForRequest(raw map[string]any, prepared *card.PreparedLarkCard) ([]byte, error) {
+	if (raw == nil) == (prepared == nil) {
+		return nil, fmt.Errorf("cardkit request requires exactly one of Card or Prepared")
+	}
+	if prepared != nil {
+		if err := card.ValidatePreparedLarkCard(*prepared); err != nil {
+			return nil, err
+		}
+		return prepared.CardJSON(), nil
+	}
+	encoded, _, err := card.MarshalLarkCard(raw)
+	if err != nil {
+		return nil, err
+	}
+	return encoded, nil
 }
 
 func (c *CardKitClient) UpdateSettings(ctx context.Context, req CardKitUpdateSettingsRequest) error {
