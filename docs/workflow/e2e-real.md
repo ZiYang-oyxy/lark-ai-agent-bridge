@@ -209,6 +209,8 @@ E2E_REAL_CARDKIT=1 GOCACHE=$PWD/.cache/go-build go test ./internal/feishu -run '
 
 `native_text_stream` lowers only its own E2E bridge's preview interval and delta threshold so one normal long-form answer produces more than two previews. It requires at least one `cardkit_text_stream` audit event before the terminal `cardkit_update`. It then starts a second long answer, invokes the local compatibility stop callback, requires that callback to return within three seconds, and checks that no native preview appears after the callback. If that run has no `cardkit_sequence_unknown` audit event, the terminal update must be `stopped`, with disabled buttons and `streaming_mode=false`.
 
+This case also sets `E2E_REAL_CARDKIT=1` only on its isolated bridge process, which injects the durable native sequence journal into the CardKit router. The next non-native case forcibly restarts without that variable, so the validation gate cannot leak into unrelated cases or a normal deployment. Until the remote smoke and this profile case pass, ordinary `serve` remains on full-card previews.
+
 For deterministic agent timing while retaining real Feishu message delivery and CardKit APIs, prepend `E2E_REAL_E2E_FAKE_CLAUDE=1` to the final command. The profile E2E evidence is private: it stays under the existing gitignored `.cache/e2e/<profile>/...` path and must never be staged or copied into a commit.
 
 Keep the bridge process alive after failure:

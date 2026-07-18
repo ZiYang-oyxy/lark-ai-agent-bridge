@@ -1,6 +1,6 @@
 # CardKit 能力评估与演进路线
 
-> 状态：P0 容量保护与 recovery 收尾已完成；P2 原生文本流式的安全实现链已落地，但 production 接线仍停在真实端点 smoke gate。
+> 状态：P0 容量保护与 recovery 收尾已完成；P2 原生文本流式的安全实现链、真实 smoke 和 profile E2E harness 已落地，显式验证 gate 待远端执行，默认 production 仍关闭。
 >
 > 更新时间：2026-07-18（依据真实代码核实修订：优先级重排，纠正两处过时现状）
 
@@ -252,7 +252,7 @@ P3 安全收口的验收条件：
 
 ### P2：原生文本流式更新（性能优化，非功能补齐）
 
-> 当前进度：安全实现链已完成：稳定 `answer` target、opaque prepared accessor、严格 `NativeReady`、带稳定 `uuid` 的 guarded `UpdateElementContent`、durable two-phase `NativeSequenceJournal`、active/latest/recovery unknown 隔离、长连接与 HTTP 共用的 interaction fence、完整 `RenderBinding` 传播，以及 renderer 内 native/full 共用单一 `sequence`。production native 路径尚未启用；剩余 gate 是用真实飞书凭据冻结元素端点 body 上限与错误语义，并完成 create/reply/native/final-card smoke 和 profile E2E。
+> 当前进度：安全实现链已完成：稳定 `answer` target、opaque prepared accessor、严格 `NativeReady`、带稳定 `uuid` 的 guarded `UpdateElementContent`、durable two-phase `NativeSequenceJournal`、active/latest/recovery unknown 隔离、长连接与 HTTP 共用的 interaction fence、完整 `RenderBinding` 传播，以及 renderer 内 native/full 共用单一 `sequence`。create/reply/native/final-card smoke 与 `native_text_stream` profile E2E harness 已实现；只有显式 `E2E_REAL_CARDKIT=1` 的隔离验证进程注入 journal。剩余 gate 是在远端真实飞书环境冻结元素端点 body 上限与错误语义并取得 E2E evidence；普通 production native 路径仍未启用。
 
 > 原列为 P0。降级理由：用户借由现有「节流全卡刷新 + `streaming_mode`」已能看到打字机式增量，本项优化的是**网络开销**而非用户可感知能力；且它是整份 roadmap 里实现最复杂、最易引入乱序 / `invalid sequence` 回归的一项（要引入 element 级接口、处理全卡与文本流式共享 `sequence` 的竞争、以及「交互进行中不能并发流式」的官方限制）。收益/风险比最差，应等真实 E2E 观测到全卡刷新造成明显限流或卡顿再做。
 
