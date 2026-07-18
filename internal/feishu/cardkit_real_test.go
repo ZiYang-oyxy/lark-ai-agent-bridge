@@ -1,13 +1,139 @@
 package feishu
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+	"net/url"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
 	"lark-agent-bridge/internal/card"
 )
+
+type rawElementContentProbeStage uint8
+
+const (
+	rawElementContentProbePrepareCard rawElementContentProbeStage = iota
+	rawElementContentProbeCreateCard
+	rawElementContentProbeMarshalRequest
+	rawElementContentProbeGetToken
+	rawElementContentProbeBuildRequest
+	rawElementContentProbeSendRequest
+)
+
+func rawElementContentProbeFailureMessage(stage rawElementContentProbeStage) string {
+	switch stage {
+	case rawElementContentProbePrepareCard:
+		return "raw element-content probe failed while preparing the probe card"
+	case rawElementContentProbeCreateCard:
+		return "raw element-content probe failed while creating the probe card"
+	case rawElementContentProbeMarshalRequest:
+		return "raw element-content probe failed while encoding the request"
+	case rawElementContentProbeGetToken:
+		return "raw element-content probe failed while obtaining a tenant token"
+	case rawElementContentProbeBuildRequest:
+		return "raw element-content probe failed while building the request"
+	case rawElementContentProbeSendRequest:
+		return "raw element-content probe failed while sending the request"
+	default:
+		return "raw element-content probe failed at an unknown stage"
+	}
+}
+
+func rawElementContentProbeFailureMessages() []string {
+	stages := []rawElementContentProbeStage{
+		rawElementContentProbePrepareCard,
+		rawElementContentProbeCreateCard,
+		rawElementContentProbeMarshalRequest,
+		rawElementContentProbeGetToken,
+		rawElementContentProbeBuildRequest,
+		rawElementContentProbeSendRequest,
+	}
+	messages := make([]string, 0, len(stages))
+	for _, stage := range stages {
+		messages = append(messages, rawElementContentProbeFailureMessage(stage))
+	}
+	return messages
+}
+
+func rawElementContentProbeMetadataFailureMessage(status int) string {
+	return fmt.Sprintf("raw element-content probe failed while decoding response metadata: http=%d", status)
+}
+
+func TestRawElementContentProbeFailureMessagesExcludeSensitiveData(t *testing.T) {
+	sensitive := []string{"card-sensitive-id", "https://sensitive.example", "server message sentinel", "tenant-token-sentinel"}
+	messages := append(rawElementContentProbeFailureMessages(), rawElementContentProbeMetadataFailureMessage(599))
+	for _, message := range messages {
+		for _, value := range sensitive {
+			if strings.Contains(message, value) {
+				t.Fatalf("probe failure message leaked %q: %q", value, message)
+			}
+		}
+	}
+}
+
+func TestRealCardKitElementContentRequestShape(t *testing.T) {
+	if os.Getenv("E2E_REAL_CARDKIT") != "1" {
+		t.Skip("set E2E_REAL_CARDKIT=1 with LARK_APP_ID/LARK_APP_SECRET to run the raw CardKit element-content probe")
+	}
+	appID := os.Getenv("LARK_APP_ID")
+	appSecret := os.Getenv("LARK_APP_SECRET")
+	if appID == "" || appSecret == "" {
+		t.Skip("LARK_APP_ID and LARK_APP_SECRET are required for the raw CardKit element-content probe")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	tokens := NewTenantTokenSource(appID, appSecret)
+	client := NewCardKitClientWithTokenSource(tokens)
+	prepared, err := card.PrepareLarkCard(card.Event{Type: "stream", Streaming: true, SessionID: "cardkit-element-content-probe"})
+	if err != nil {
+		t.Fatal(rawElementContentProbeFailureMessage(rawElementContentProbePrepareCard))
+	}
+	created, err := client.CreateCard(ctx, CardKitCreateRequest{Prepared: &prepared})
+	if err != nil {
+		t.Fatal(rawElementContentProbeFailureMessage(rawElementContentProbeCreateCard))
+	}
+
+	body, err := json.Marshal(map[string]any{"content": "native probe", "sequence": 1})
+	if err != nil {
+		t.Fatal(rawElementContentProbeFailureMessage(rawElementContentProbeMarshalRequest))
+	}
+	token, err := tokens.Token(ctx)
+	if err != nil {
+		t.Fatal(rawElementContentProbeFailureMessage(rawElementContentProbeGetToken))
+	}
+	endpoint := defaultFeishuOpenAPIBaseURL + "/open-apis/cardkit/v1/cards/" + url.PathEscape(created.CardID) + "/elements/answer/content"
+	req, err := http.NewRequestWithContext(ctx, http.MethodPut, endpoint, bytes.NewReader(body))
+	if err != nil {
+		t.Fatal(rawElementContentProbeFailureMessage(rawElementContentProbeBuildRequest))
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Content-Type", "application/json; charset=utf-8")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(rawElementContentProbeFailureMessage(rawElementContentProbeSendRequest))
+	}
+	defer resp.Body.Close()
+	var envelope struct {
+		Code int `json:"code"`
+	}
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 64<<10)).Decode(&envelope); err != nil {
+		t.Fatal(rawElementContentProbeMetadataFailureMessage(resp.StatusCode))
+	}
+
+	// 2026-07-18: no endpoint-specific encoded-body ceiling or proven-unapplied
+	// response code is frozen. This probe must be run with deliberate credentials,
+	// then its non-sensitive status/code/byte evidence must be reviewed before
+	// adding production constants or enabling UpdateElementContent.
+	t.Fatalf("raw element-content probe observed http=%d code=%d encoded_bytes=%d; evidence is not frozen, native streaming remains disabled", resp.StatusCode, envelope.Code, len(body))
+}
 
 func TestRealCardKitCreatesBridgeCard(t *testing.T) {
 	if os.Getenv("E2E_REAL_CARDKIT") != "1" {
