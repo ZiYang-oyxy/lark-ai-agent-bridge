@@ -5,12 +5,15 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"time"
 
 	"lark-agent-bridge/internal/card"
 	"lark-agent-bridge/internal/config"
 	"lark-agent-bridge/internal/feishu"
 	"lark-agent-bridge/internal/session"
 )
+
+const latestCardTTL = 14 * 24 * time.Hour
 
 type CardTarget interface {
 	NewStreaming(context.Context, string, string) (feishu.ResumableRenderer, error)
@@ -21,10 +24,11 @@ type CardTarget interface {
 type Policy struct {
 	target CardTarget
 	store  *Store
+	now    func() time.Time
 }
 
 func NewPolicy(target CardTarget, store *Store) *Policy {
-	return &Policy{target: target, store: store}
+	return &Policy{target: target, store: store, now: func() time.Time { return time.Now().UTC() }}
 }
 
 type Run struct {
@@ -54,7 +58,13 @@ func (p *Policy) Begin(ctx context.Context, mode config.ReplyMode, scope, sessio
 	run := &Run{ctx: ctx, mode: mode, target: p.target, store: p.store, scope: scope, sessionID: sessionID, replyTo: replyTo}
 	if mode == config.ReplyModeLatestCard && p.store != nil {
 		if ref := p.store.GetLatest(scope); ref != nil {
-			run.renderer = p.target.Rehydrate(sessionID, *ref)
+			if p.discardLatestRef(*ref) {
+				if err := p.store.SetLatest(scope, nil); err != nil {
+					return nil, err
+				}
+			} else {
+				run.renderer = p.target.Rehydrate(sessionID, *ref)
+			}
 		}
 	}
 	if run.renderer == nil {
@@ -65,6 +75,16 @@ func (p *Policy) Begin(ctx context.Context, mode config.ReplyMode, scope, sessio
 		run.renderer = renderer
 	}
 	return run, nil
+}
+
+func (p *Policy) discardLatestRef(ref session.RenderRef) bool {
+	if ref.SequenceUnknown {
+		return true
+	}
+	if ref.CreatedAt.IsZero() {
+		return false
+	}
+	return !p.now().UTC().Before(ref.CreatedAt.UTC().Add(latestCardTTL))
 }
 
 func (r *Run) Render(event card.Event) error {
