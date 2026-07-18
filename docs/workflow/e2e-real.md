@@ -21,7 +21,7 @@ Media file E2E uses the existing P2P chat between the current `lark-cli` user an
 
 ## Developer-local profiles
 
-Every developer must use their own Feishu app, bot, test group and P2P chat. Bootstrap a named profile:
+Every developer must use their own Feishu app, bot and test group. Bootstrap a named profile:
 
 ```bash
 ./scripts/e2e-init.sh --profile personal
@@ -64,7 +64,6 @@ LARK_APP_ID=cli_xxx
 LARK_APP_SECRET=xxx
 LARK_BOT_OPEN_ID=ou_xxx
 E2E_E2E_CHAT_ID=oc_xxx
-E2E_REAL_E2E_P2P_CHAT_ID=oc_xxx
 E2E_E2E_LARK_CLI_PROFILE=lab-e2e-personal
 ```
 
@@ -72,6 +71,7 @@ Optional:
 
 ```bash
 E2E_REAL_E2E_TIMEOUT_SEC=420
+E2E_REAL_E2E_P2P_CHAT_ID=oc_xxx
 E2E_REAL_E2E_DEFAULT_WORKDIR=/tmp/lark-agent-bridge-real
 E2E_REAL_E2E_FAKE_CLAUDE=1
 E2E_REAL_E2E_CALLBACK_ADDR=127.0.0.1:28080
@@ -80,9 +80,9 @@ E2E_CLAUDE_BIN=/absolute/path/to/claude
 
 `LARK_BOT_OPEN_ID` is optional. If it is omitted, `scripts/e2e-real.sh` queries `bot/v3/info` with the bridge app token. The script must never print app secret or tenant token.
 `E2E_REAL_E2E_CALLBACK_ADDR` is optional; it pins the local callback port used only by the `stop_preserves_queue` case. Without it, the script selects a loopback port for that run.
-`E2E_REAL_E2E_P2P_CHAT_ID` is required only by media file cases. It must be the current user's existing direct-chat `oc_...` with this exact bot; do not substitute a group chat or another similarly named bot.
+`E2E_REAL_E2E_P2P_CHAT_ID` is optional at bootstrap and required by native media file cases. `debounce_dm` can create the direct chat by sending through the bot open_id and does not require a pre-existing chat ID. Bootstrap paginates the user's P2P chats before matching bot membership; if no unique match exists, it still creates a group-only profile and reports a `NOTICE`. It must never substitute a group chat or another similarly named bot.
 When `--p2p-chat-id` is supplied to `e2e-init.sh`, bootstrap verifies that the selected chat contains the resolved bot before saving it.
-`E2E_E2E_LARK_CLI_PROFILE` identifies the local named CLI configuration. If the name already exists for a different App ID, bootstrap returns `BLOCKED:lark_cli_profile_mismatch` and never overwrites or switches it. Authorize the required sending permission explicitly with `lark-cli --profile <name> auth login --scope im:message.send_as_user`; avoid requesting the entire `im` domain because unrelated optional scopes can make an otherwise usable authorization report partial failure.
+`E2E_E2E_LARK_CLI_PROFILE` identifies the local named CLI configuration. If the name already exists for a different App ID, bootstrap returns `BLOCKED:lark_cli_profile_mismatch` and never overwrites or switches it. Bootstrap and doctor validate the complete E2E user-scope bundle once: send, group/P2P message observation, reaction observation, recall, resource access, and chat/member reads. A missing member produces `BLOCKED:user_e2e_scopes_missing` with one copy-pasteable authorization command.
 
 ## Feishu App Prerequisites
 
@@ -94,14 +94,20 @@ Required event subscriptions:
 - `card.action.trigger`
 - `im.message.recalled_v1` for prompt revoke cancellation.
 
-The developer's user OAuth must include `im:message.send_as_user`; this is distinct from the bot's tenant permissions. Bootstrap and `--doctor` verify it with:
+The developer's user OAuth scope bundle is distinct from the bot's tenant permissions. Bootstrap and `--doctor` verify all of the following before an active run:
 
 ```bash
-lark-cli --profile <lab-e2e-profile> auth check \
-  --scope im:message.send_as_user --json
+im:message
+im:message.group_msg:get_as_user
+im:message.p2p_msg:get_as_user
+im:message.reactions:read
+im:message:recall
+im:resource
+im:chat:read
+im:chat.members:read
 ```
 
-If the App has not enabled and published that user scope, authorization cannot grant it. The result is `BLOCKED:user_send_scope_missing`; enable the permission in Feishu Open Platform, publish/install the updated App version, and then authorize the isolated CLI profile again. Repeated OAuth login without enabling the App permission does not fix it.
+If the App has not enabled and published every scope in this bundle, authorization cannot grant it. Enable and publish the missing App permissions, then run the exact command printed by bootstrap or doctor. Repeated OAuth login without enabling the App permission does not fix it.
 
 Recall is an external subscription dependency, not a bridge-generated event. A real run must show a new `message_recalled_*` audit line after each delete. The first Core Task 9 window in `.cache/evidence/1c7d3bf/core-real/` received no recall event at all, so `recall_state` correctly failed instead of treating deletion success as delivery. Check the app's published event subscription/version and tenant installation before rerunning recall cases.
 
@@ -231,7 +237,7 @@ Full-only cases:
 - `session_restart_context`: completes `/new` and a follow-up plain message in the same stable root chat scope across restart, then verifies the post-offset fake child invocation contains both the follow-up marker and `--resume fake-e2e-session`.
 - `restart_queued_cancel`: kills a bridge with a queued input, verifies `session_recovery_cancelled`, proves the old marker did not start after restart, and verifies a fresh request completes.
 - `restart_running_interrupted`: kills a bridge while a fake child is running, verifies `session_recovery_interrupted`, proves the old marker did not restart, and verifies a fresh request completes.
-- `debounce_dm`: uses `--user-id "$BOT_OPEN_ID"` to concurrently send two real P2P plain messages, then verifies one post-offset fake invocation contains both markers. An invalid cross-app open_id is a recorded nonzero failure; there is no group fallback.
+- `debounce_dm`: uses `--user-id "$BOT_OPEN_ID"` to concurrently send two real P2P plain messages, then verifies one post-offset fake invocation contains both markers. Its 250 ms quiet window starts at local bridge receipt time, matching LCAB's local timer behavior; platform `create_time` remains ordering metadata and cannot expire the debounce window before delivery. An invalid cross-app open_id is a recorded nonzero failure; there is no group fallback.
 - `debounce_group`: concurrently sends two plain group messages without `/new` and verifies one post-offset fake invocation contains both markers plus the final CardKit result.
 - `busy_merge`: queues two compatible plain inputs behind a running child, stops the active batch through loopback `stop_card`, and verifies the next fake child argv contains both queued markers and completes one final card.
 - `queue_full`: restarts with `E2E_QUEUE_MAX_PENDING=2`, verifies `queue_rejected`, the rejection card text, that the rejected marker never starts a child process, then uses loopback `stop_card` so the accepted queued input can complete.

@@ -308,9 +308,11 @@ record_static_credentials() {
 }
 
 record_static_user_auth() {
-  local response auth_app scope_response login_command="lark-cli auth login --scope im:message.send_as_user"
+  local response auth_app scope_response scope scope_argument missing_scopes=() login_command
+  scope_argument="$(e2e_user_auth_scope_argument)"
+  login_command="lark-cli auth login --scope '$scope_argument'"
   if [[ -n "$LARK_CLI_PROFILE" ]]; then
-    login_command="lark-cli --profile $LARK_CLI_PROFILE auth login --scope im:message.send_as_user"
+    login_command="lark-cli --profile $LARK_CLI_PROFILE auth login --scope '$scope_argument'"
   fi
   if ! response="$(lark_cli auth status --json --verify 2>/dev/null)"; then
     e2e_cap_record lark_cli_auth BLOCKED lark_cli_auth_missing "lark-cli user authentication is unavailable" "run $login_command"
@@ -330,18 +332,25 @@ record_static_user_auth() {
   else
     e2e_cap_record oauth_same_app BLOCKED oauth_app_mismatch "user OAuth belongs to another app" "run $login_command"
   fi
-  if scope_response="$(lark_cli auth check --scope im:message.send_as_user --json 2>/dev/null)"; then
-    if printf '%s' "$scope_response" | jq -e --arg scope im:message.send_as_user \
-      '.ok == true and ((.granted == true) or ((.granted | type) == "array" and (.granted | index($scope) != null)))' >/dev/null 2>&1; then
-      e2e_cap_record lark_cli_auth PASS ready "lark-cli user authentication can send messages" ""
-      return
+  while IFS= read -r scope; do
+    if scope_response="$(lark_cli auth check --scope "$scope" --json 2>/dev/null)" && \
+      printf '%s' "$scope_response" | jq -e --arg scope "$scope" \
+        '.ok == true and ((.granted == true) or ((.granted | type) == "array" and (.granted | index($scope) != null)))' >/dev/null 2>&1; then
+      continue
     fi
-  elif printf '%s' "$scope_response" | jq -e --arg scope im:message.send_as_user \
-    '(.missing | type) == "array" and (.missing | index($scope) != null)' >/dev/null 2>&1; then
-    e2e_cap_record lark_cli_auth BLOCKED user_send_scope_missing "user OAuth cannot send E2E messages" "enable and publish im:message.send_as_user, then run $login_command"
+    if printf '%s' "${scope_response:-}" | jq -e --arg scope "$scope" \
+      '(.missing | type) == "array" and (.missing | index($scope) != null)' >/dev/null 2>&1; then
+      missing_scopes+=("$scope")
+      continue
+    fi
+    e2e_cap_record lark_cli_auth FAIL user_e2e_scope_check_failed "lark-cli could not verify $scope" "inspect lark-cli auth check output"
+    return
+  done < <(e2e_user_auth_scopes)
+  if (( ${#missing_scopes[@]} > 0 )); then
+    e2e_cap_record lark_cli_auth BLOCKED user_e2e_scopes_missing "user OAuth is missing E2E observation or control scopes" "enable and publish the E2E scope bundle, then run $login_command"
     return
   fi
-  e2e_cap_record lark_cli_auth FAIL user_send_scope_check_failed "lark-cli could not verify the send-as-user scope" "inspect lark-cli auth check output"
+  e2e_cap_record lark_cli_auth PASS ready "lark-cli user authentication covers E2E send, observation and control" ""
 }
 
 record_static_bot() {
@@ -616,8 +625,12 @@ trap cleanup EXIT
 
 send_at() {
   local text="$1"
-  local msg_id
-  msg_id="$(lark_cli im +messages-send --as user --chat-id "$E2E_E2E_CHAT_ID" --text "<at user_id=\"$BOT_OPEN_ID\"></at> $text" --jq '.data.message_id // .message_id // .data.message_id' | tail -n 1)"
+  local content msg_id
+  content="$(jq -nc --arg bot "$BOT_OPEN_ID" --arg text "$text" \
+    '{zh_cn:{title:"",content:[[{tag:"at",user_id:$bot},{tag:"text",text:$text}]]}}')"
+  msg_id="$(lark_cli im +messages-send --as user --chat-id "$E2E_E2E_CHAT_ID" \
+    --msg-type post --content "$content" \
+    --jq '.data.message_id // .message_id // .data.message_id' | tail -n 1)"
   if [[ -z "$msg_id" || "$msg_id" == "null" ]]; then
     echo "failed to send message: $text" >&2
     exit 1
@@ -1716,11 +1729,7 @@ case_prerequisites() {
   local name="$1"
   case "$name" in
     debounce_dm)
-      if e2e_cap_index dm_delivery >/dev/null 2>&1; then
-        printf '%s\n' credentials lark_cli_auth bot_identity p2p_chat dm_delivery wrapper exclusive_runtime
-      else
-        printf '%s\n' credentials lark_cli_auth bot_identity p2p_chat wrapper exclusive_runtime
-      fi
+      printf '%s\n' credentials lark_cli_auth bot_identity wrapper exclusive_runtime
       ;;
     media_attachment_only|media_images)
       if e2e_cap_index media_image >/dev/null 2>&1; then
@@ -1915,7 +1924,7 @@ run_active_capability_preflight() {
   if capability_prerequisites_ready group_delivery credentials bot_identity test_group; then
     run_capability_case group_delivery new_basic || true
   fi
-  if capability_prerequisites_ready dm_delivery credentials lark_cli_auth bot_identity p2p_chat; then
+  if capability_prerequisites_ready dm_delivery credentials lark_cli_auth bot_identity; then
     run_capability_case dm_delivery debounce_dm 'cross app|P2P send|user-id' open_id_cross_app "login lark-cli through the bridge app" || true
     case "$(e2e_cap_status dm_delivery)" in
       PASS) e2e_cap_record oauth_same_app PASS active_probe "DM canary proved OAuth compatibility" "" "$RUN_DIR/capability-dm_delivery.log" ;;

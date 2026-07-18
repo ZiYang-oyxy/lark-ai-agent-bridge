@@ -570,6 +570,30 @@ func TestServiceBatchesPlainDMInputsWithinDebounceCohort(t *testing.T) {
 	}
 }
 
+func TestServiceStartsDMDebounceFromLocalReceiptTime(t *testing.T) {
+	cfg := testConfig(t)
+	svc := NewService(cfg, card.NewFakeRenderer(), newFakeRunner(), audit.NewRecorder())
+	receivedAfter := time.Now()
+	platformTime := receivedAfter.Add(-time.Second)
+	for _, msg := range []Message{
+		{ID: "dm-stale-1", ChatID: "dm-stale-chat", Sender: "u", Text: "first", Time: platformTime},
+		{ID: "dm-stale-2", ChatID: "dm-stale-chat", Sender: "u", Text: "second", Time: platformTime.Add(52 * time.Millisecond)},
+	} {
+		if err := svc.HandleMessage(context.Background(), msg); err != nil {
+			t.Fatalf("handle %s: %v", msg.ID, err)
+		}
+	}
+	sess, ok := svc.Sessions.Get(session.Key{Agent: agent.Claude, ChatID: "dm-stale-chat"})
+	if !ok || len(sess.Queue) != 2 {
+		t.Fatalf("queued session = %#v, want two DM inputs", sess)
+	}
+	for _, input := range sess.Queue {
+		if !input.DebounceUntil.After(receivedAfter) {
+			t.Fatalf("debounce deadline = %s, must start after local receipt %s", input.DebounceUntil, receivedAfter)
+		}
+	}
+}
+
 func TestServiceBatchesPlainGroupInputsWithinDebounceCohort(t *testing.T) {
 	cfg := testConfig(t)
 	renderer := card.NewFakeRenderer()

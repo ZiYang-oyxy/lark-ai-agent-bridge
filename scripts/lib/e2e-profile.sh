@@ -34,6 +34,22 @@ e2e_profile_safe_value() {
   [[ "$1" =~ ^[A-Za-z0-9._:/+=,@%~-]*$ ]]
 }
 
+e2e_user_auth_scopes() {
+  printf '%s\n' \
+    im:message \
+    im:message.group_msg:get_as_user \
+    im:message.p2p_msg:get_as_user \
+    im:message.reactions:read \
+    im:message:recall \
+    im:resource \
+    im:chat:read \
+    im:chat.members:read
+}
+
+e2e_user_auth_scope_argument() {
+  e2e_user_auth_scopes | paste -sd' ' -
+}
+
 e2e_profile_paths() {
   local root="$1" name="$2" dir
   e2e_profile_validate_name "$name" || {

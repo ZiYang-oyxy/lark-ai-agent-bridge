@@ -183,7 +183,7 @@ GOCACHE=$PWD/.cache/go-build go run ./cmd/lark-agent-bridge simulate-action \
 
 ## 飞书 E2E 前置检查
 
-每位开发者先使用自己的 app、bot、测试群和 P2P chat 创建本地命名 profile：
+每位开发者先使用自己的 app、bot 和测试群创建本地命名 profile：
 
 ```bash
 ./scripts/e2e-init.sh --profile personal
@@ -199,8 +199,8 @@ profile 和 evidence 位于 `/.lark-agent-bridge/`、`/.cache/`，均已 Git ign
 
 - `LARK_APP_ID`、`LARK_APP_SECRET`
 - `lark-cli` 用户 OAuth 与 app identity
-- 用户 token 是否实际拥有 `im:message.send_as_user`；App 未启用该权限时返回 `BLOCKED:user_send_scope_missing`
-- bot、测试群和 P2P chat
+- 用户 token 是否实际拥有 `im:message`（`lark-cli im +messages-send` 的实际 scope）；App 未启用该权限时返回 `BLOCKED:user_message_scope_missing`
+- bot、测试群；P2P chat 缺失时仅标记 DM/文件用例为 `BLOCKED`，不阻塞群聊主链
 - Claude wrapper
 - 本地 profile 是否已有 active owner
 
@@ -264,7 +264,7 @@ lark-cli im +messages-reply --as user \
 
 当前飞书事件权限下，群话题内不 @bot 的普通文本不会推送到 bridge；可作为负向验证。带 @ 的话题回复应进入 `chat_id + thread_id` 对应会话，并创建新的执行卡片。
 
-`debounce_dm` 会使用 `lark-cli im +messages-send --as user --user-id "$BOT_OPEN_ID"` 并发发送两条真实 P2P 普通消息。若当前用户态 `lark-cli` 与 bridge app 的 open_id 域不兼容，case 必须非零失败并保留 `dm-pair-*.err`，不得回退到群聊冒充 DM；此时需改用同 bridge app 的用户 OAuth profile 或有效 P2P user id 后重跑。
+`debounce_dm` 会使用 `lark-cli im +messages-send --as user --user-id "$BOT_OPEN_ID"` 并发发送两条真实 P2P 普通消息，因此不要求预先配置 P2P chat ID。bridge 以本机接收时间启动 250ms quiet window，而不是使用可能已经过期的平台 `create_time`。若当前用户态 `lark-cli` 与 bridge app 的 open_id 域不兼容，case 必须非零失败并保留 `dm-pair-*.err`，不得回退到群聊冒充 DM。
 
 ### Media 输入真实 E2E
 

@@ -169,18 +169,26 @@ case "$*" in
     exit 1
     ;;
   'auth status --json --verify') printf '%s\n' '{"verified":true,"app_id":"cli_bootstrap_app","user":{"open_id":"ou_bootstrap_secret_user"}}' ;;
-  'auth check --scope im:message.send_as_user --json')
+  auth\ check\ --scope\ *\ --json)
+    checked_scope="${4:-}"
     if [[ "${SEND_SCOPE_SCENARIO:-granted}" == "missing" ]]; then
-      printf '%s\n' '{"ok":false,"granted":null,"missing":["im:message.send_as_user"]}'
+      printf '%s\n' "{\"ok\":false,\"granted\":null,\"missing\":[\"$checked_scope\"]}"
       exit 1
     fi
-    printf '%s\n' '{"ok":true,"granted":["im:message.send_as_user"],"missing":null}'
+    printf '%s\n' "{\"ok\":true,\"granted\":[\"$checked_scope\"],\"missing\":null}"
     ;;
   *'im chats get'*'--chat-id oc_bootstrap_secret_group'*) printf '%s\n' '{"data":{"chat_id":"oc_bootstrap_secret_group"}}' ;;
   *'im +chat-list'*'--types p2p'*)
     case "${P2P_SCENARIO:-unique}" in
       none) printf '%s\n' '{"items":[{"chat_id":"oc_unrelated"}]}' ;;
       multiple) printf '%s\n' '{"items":[{"chat_id":"oc_bootstrap_secret_p2p"},{"chat_id":"oc_bootstrap_secret_p2p_two"}]}' ;;
+      paginated)
+        if [[ "$*" == *'--page-token next-page'* ]]; then
+          printf '%s\n' '{"data":{"chats":[{"chat_id":"oc_bootstrap_secret_p2p"}],"has_more":false}}'
+        else
+          printf '%s\n' '{"data":{"chats":[{"chat_id":"oc_unrelated"}],"has_more":true,"page_token":"next-page"}}'
+        fi
+        ;;
       *) printf '%s\n' '{"items":[{"chat_id":"oc_unrelated"},{"chat_id":"oc_bootstrap_secret_p2p"}]}' ;;
     esac
     ;;
@@ -246,28 +254,39 @@ PATH="$FAKE_BIN:$PATH" E2E_REPO_ROOT="$missing_scope_root" SEND_SCOPE_SCENARIO=m
   bash "$ROOT/scripts/e2e-init.sh" --profile developer --non-interactive >"$missing_scope_output" 2>&1
 missing_scope_status=$?
 set -e
-assert_eq 3 "$missing_scope_status" "missing send-as-user scope bootstrap status"
-rg -q 'BLOCKED user_send_scope_missing' "$missing_scope_output"
+assert_eq 3 "$missing_scope_status" "missing E2E scope bootstrap status"
+rg -q 'BLOCKED user_e2e_scopes_missing' "$missing_scope_output"
 if rg -e 'bootstrap-secret-do-not-print|ou_bootstrap_secret_bot|oc_bootstrap_secret_group' "$missing_scope_output" >/dev/null 2>&1; then
   fail "missing scope output leaked a secret or full ID"
 fi
 
 for scenario in none multiple; do
-  blocked_root="$TEST_ROOT/bootstrap-$scenario"
-  blocked_output="$TEST_ROOT/bootstrap-$scenario.out"
-  mkdir -p "$blocked_root"
-  set +e
-  PATH="$FAKE_BIN:$PATH" E2E_REPO_ROOT="$blocked_root" P2P_SCENARIO="$scenario" \
+  group_only_root="$TEST_ROOT/bootstrap-$scenario"
+  group_only_output="$TEST_ROOT/bootstrap-$scenario.out"
+  mkdir -p "$group_only_root"
+  if ! PATH="$FAKE_BIN:$PATH" E2E_REPO_ROOT="$group_only_root" P2P_SCENARIO="$scenario" \
     LARK_APP_ID="cli_bootstrap_app" LARK_APP_SECRET="bootstrap-secret-do-not-print" \
     LARK_BOT_OPEN_ID="" E2E_E2E_CHAT_ID="oc_bootstrap_secret_group" E2E_REAL_E2E_P2P_CHAT_ID="" \
-    bash "$ROOT/scripts/e2e-init.sh" --profile developer --non-interactive >"$blocked_output" 2>&1
-  blocked_status=$?
-  set -e
-  assert_eq 3 "$blocked_status" "$scenario P2P bootstrap status"
-  if rg -e 'bootstrap-secret-do-not-print|ou_bootstrap_secret_bot|oc_bootstrap_secret_group|oc_bootstrap_secret_p2p' "$blocked_output" >/dev/null 2>&1; then
-    fail "$scenario P2P bootstrap leaked a secret or full ID"
+    bash "$ROOT/scripts/e2e-init.sh" --profile developer --non-interactive >"$group_only_output" 2>&1; then
+    fail "$scenario group-only bootstrap failed"
+  fi
+  rg -q "NOTICE p2p_${scenario}" "$group_only_output"
+  rg -q '^E2E_REAL_E2E_P2P_CHAT_ID=$' "$group_only_root/.lark-agent-bridge/e2e/profiles/developer.env"
+  if rg -e 'bootstrap-secret-do-not-print|ou_bootstrap_secret_bot|oc_bootstrap_secret_group|oc_bootstrap_secret_p2p' "$group_only_output" >/dev/null 2>&1; then
+    fail "$scenario group-only bootstrap leaked a secret or full ID"
   fi
 done
+
+paginated_root="$TEST_ROOT/bootstrap-paginated"
+paginated_output="$TEST_ROOT/bootstrap-paginated.out"
+mkdir -p "$paginated_root"
+if ! PATH="$FAKE_BIN:$PATH" E2E_REPO_ROOT="$paginated_root" P2P_SCENARIO=paginated \
+  LARK_APP_ID="cli_bootstrap_app" LARK_APP_SECRET="bootstrap-secret-do-not-print" \
+  LARK_BOT_OPEN_ID="" E2E_E2E_CHAT_ID="oc_bootstrap_secret_group" E2E_REAL_E2E_P2P_CHAT_ID="" \
+  bash "$ROOT/scripts/e2e-init.sh" --profile developer --non-interactive >"$paginated_output" 2>&1; then
+  fail "paginated P2P bootstrap failed"
+fi
+rg -q '^E2E_REAL_E2E_P2P_CHAT_ID=oc_bootstrap_secret_p2p$' "$paginated_root/.lark-agent-bridge/e2e/profiles/developer.env"
 
 wrong_p2p_root="$TEST_ROOT/bootstrap-wrong-p2p"
 wrong_p2p_output="$TEST_ROOT/bootstrap-wrong-p2p.out"

@@ -93,12 +93,13 @@ fi
 printf '%s\n' "$*" >>"${DOCTOR_LOG:?}"
 case "$*" in
   'auth status --json --verify') printf '%s\n' '{"verified":true,"app_id":"cli_doctor_app"}' ;;
-  'auth check --scope im:message.send_as_user --json')
+  auth\ check\ --scope\ *\ --json)
+    checked_scope="${4:-}"
     if [[ "${cli_profile:-}" == "lab-e2e-no-send" ]]; then
-      printf '%s\n' '{"ok":false,"granted":null,"missing":["im:message.send_as_user"]}'
+      printf '%s\n' "{\"ok\":false,\"granted\":null,\"missing\":[\"$checked_scope\"]}"
       exit 1
     fi
-    printf '%s\n' '{"ok":true,"granted":["im:message.send_as_user"],"missing":null}'
+    printf '%s\n' "{\"ok\":true,\"granted\":[\"$checked_scope\"],\"missing\":null}"
     ;;
   *'im chats get'*'--chat-id oc_doctor_group'*) printf '%s\n' '{"data":{"chat_id":"oc_doctor_group"}}' ;;
   *'im chats get'*'--chat-id oc_doctor_p2p'*) printf '%s\n' '{"data":{"chat_id":"oc_doctor_p2p","chat_mode":"p2p"}}' ;;
@@ -167,7 +168,7 @@ write_doctor_profile no-send oc_doctor_p2p
 run_expect_exit 3 env \
   E2E_STATE_ROOT="$DOCTOR_STATE" DOCTOR_LOG="$DOCTOR_LOG" PATH="$DOCTOR_BIN:$PATH" E2E_CLAUDE_BIN="$DOCTOR_BIN/claude" \
   bash "$ROOT/scripts/e2e-real.sh" --profile no-send --doctor --strict-capabilities --run-dir "$TEST_ROOT/doctor-no-send"
-jq -e '.capabilities[] | select(.name == "lark_cli_auth" and .status == "BLOCKED" and .reason_code == "user_send_scope_missing")' \
+jq -e '.capabilities[] | select(.name == "lark_cli_auth" and .status == "BLOCKED" and .reason_code == "user_e2e_scopes_missing")' \
   "$TEST_ROOT/doctor-no-send/capabilities.json" >/dev/null
 
 write_doctor_profile blocked ''
@@ -245,6 +246,26 @@ assert_eq "$legacy_before" "$(shasum -a 256 "$LEGACY_STATE/.lark-agent-bridge/e2
 rg -q 'legacy .lark-agent-bridge/e2e.env is in use' "$legacy_output"
 if rg -q 'legacy-doctor-secret|ou_doctor_bot|oc_doctor_' "$legacy_output"; then
   fail "legacy doctor output leaked a secret or full ID"
+fi
+
+send_at_source="$(sed -n '/^send_at() {/,/^}/p' "$ROOT/scripts/e2e-real.sh")"
+if ! printf '%s\n' "$send_at_source" | rg -q -- '--msg-type post'; then
+  fail "group trigger must use a real post mention, not text that resembles an @ tag"
+fi
+if ! printf '%s\n' "$send_at_source" | rg -q 'tag:"at"'; then
+  fail "group trigger post must contain a Feishu at element"
+fi
+
+debounce_prerequisite_source="$(sed -n '/^case_prerequisites() {/,/^}/p' "$ROOT/scripts/e2e-real.sh" | sed -n '/debounce_dm)/,/;;/p')"
+if printf '%s\n' "$debounce_prerequisite_source" | rg -q 'p2p_chat'; then
+  fail "debounce_dm must be able to create the P2P chat through bot open_id"
+fi
+if printf '%s\n' "$debounce_prerequisite_source" | rg -q 'dm_delivery'; then
+  fail "debounce_dm is the DM delivery probe and must not depend on a cached DM result"
+fi
+active_dm_source="$(sed -n '/^run_active_capability_preflight() {/,/^}/p' "$ROOT/scripts/e2e-real.sh" | sed -n '/dm_delivery credentials/,/fi/p')"
+if printf '%s\n' "$active_dm_source" | head -n 1 | rg -q 'p2p_chat'; then
+  fail "active DM canary must not require a pre-existing P2P chat_id"
 fi
 
 echo "e2e capability smoke ok"

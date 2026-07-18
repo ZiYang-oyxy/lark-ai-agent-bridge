@@ -298,9 +298,9 @@ func (s *Service) runWithCardSessionID(ctx context.Context, cmd Command, msg Mes
 	if len(msg.Attachments) > 0 && len(attachments) == 0 && text == "" {
 		return summaryErr
 	}
-	now := effectiveMessageTime(msg)
-	input := session.Input{ID: msg.ID, Sender: msg.Sender, Text: text, Attachments: attachments, ReplyToMessageID: msg.ID, CardSessionID: cardSessionID, WorkDir: workDir, Time: now, DebounceUntil: now.Add(DebounceFor(msg)), State: session.InputDebouncing, Reset: cmd.Reset}
-	accepted, queued, err := s.Sessions.AcceptAndEnqueue(key, input, now, s.dedupTTL(), s.dedupMaxEntries(), s.batchLimits())
+	receivedAt := time.Now()
+	input := session.Input{ID: msg.ID, Sender: msg.Sender, Text: text, Attachments: attachments, ReplyToMessageID: msg.ID, CardSessionID: cardSessionID, WorkDir: workDir, Time: effectiveMessageTime(msg), DebounceUntil: receivedAt.Add(DebounceFor(msg)), State: session.InputDebouncing, Reset: cmd.Reset}
+	accepted, queued, err := s.Sessions.AcceptAndEnqueue(key, input, receivedAt, s.dedupTTL(), s.dedupMaxEntries(), s.batchLimits())
 	if err != nil {
 		action := "queue_rejected"
 		message := "队列已满，未执行。"

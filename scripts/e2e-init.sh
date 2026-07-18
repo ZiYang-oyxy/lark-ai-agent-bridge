@@ -15,7 +15,9 @@ usage() {
 Usage: scripts/e2e-init.sh --profile <name> [--non-interactive] [--p2p-chat-id <oc_...>]
 
 Creates or updates a developer-local E2E profile under the gitignored
-.lark-agent-bridge/e2e/profiles directory. Secrets are never printed.
+.lark-agent-bridge/e2e/profiles directory. Core real E2E needs only the
+dedicated bot and test group. P2P is optional and used only by DM/file cases.
+Secrets are never printed.
 EOF
 }
 
@@ -128,10 +130,11 @@ fetch_bot_open_id() {
 }
 
 verify_user_auth() {
-  local response auth_app scope_response
+  local response auth_app scope_response scope missing_scopes=() scope_argument
+  scope_argument="$(e2e_user_auth_scope_argument)"
   response="$(lark_cli auth status --json --verify 2>/dev/null)" || {
     echo "BLOCKED lark_cli_auth_missing: authorize the isolated lark-cli profile for this bridge app" >&2
-    echo "Next: lark-cli --profile '$LARK_CLI_PROFILE' auth login --scope im:message.send_as_user" >&2
+    echo "Next: lark-cli --profile '$LARK_CLI_PROFILE' auth login --scope '$scope_argument'" >&2
     exit 3
   }
   auth_app="$(printf '%s' "$response" | jq -r '.appId // .app_id // .data.app_id // .auth.app_id // empty')"
@@ -139,18 +142,25 @@ verify_user_auth() {
     echo "BLOCKED oauth_app_mismatch: lark-cli user OAuth belongs to another app" >&2
     exit 3
   fi
-  if scope_response="$(lark_cli auth check --scope im:message.send_as_user --json 2>/dev/null)"; then
-    if printf '%s' "$scope_response" | jq -e --arg scope im:message.send_as_user \
-      '.ok == true and ((.granted == true) or ((.granted | type) == "array" and (.granted | index($scope) != null)))' >/dev/null 2>&1; then
-      return
+  while IFS= read -r scope; do
+    if scope_response="$(lark_cli auth check --scope "$scope" --json 2>/dev/null)" && \
+      printf '%s' "$scope_response" | jq -e --arg scope "$scope" \
+        '.ok == true and ((.granted == true) or ((.granted | type) == "array" and (.granted | index($scope) != null)))' >/dev/null 2>&1; then
+      continue
     fi
-  elif printf '%s' "$scope_response" | jq -e --arg scope im:message.send_as_user \
-    '(.missing | type) == "array" and (.missing | index($scope) != null)' >/dev/null 2>&1; then
-    echo "BLOCKED user_send_scope_missing: enable and publish im:message.send_as_user, then authorize again" >&2
+    if printf '%s' "${scope_response:-}" | jq -e --arg scope "$scope" \
+      '(.missing | type) == "array" and (.missing | index($scope) != null)' >/dev/null 2>&1; then
+      missing_scopes+=("$scope")
+      continue
+    fi
+    echo "FAIL user_e2e_scope_check: lark-cli could not verify $scope" >&2
+    exit 1
+  done < <(e2e_user_auth_scopes)
+  if (( ${#missing_scopes[@]} > 0 )); then
+    echo "BLOCKED user_e2e_scopes_missing: enable and publish the E2E user scopes, then authorize again" >&2
+    echo "Next: lark-cli --profile '$LARK_CLI_PROFILE' auth login --scope '$scope_argument'" >&2
     exit 3
   fi
-  echo "FAIL user_send_scope_check: lark-cli could not verify im:message.send_as_user" >&2
-  exit 1
 }
 
 verify_group() {
@@ -160,8 +170,8 @@ verify_group() {
   }
 }
 
-discover_p2p_chat() {
-  local list chat members matches=()
+discover_optional_p2p_chat() {
+  local list chat members page_token="" has_more matches=() chat_ids=() args=()
   if [[ -n "$P2P_CHAT_ID" ]]; then
     members="$(lark_cli im +chat-members-list --as user --chat-id "$P2P_CHAT_ID" --member-types bot --json 2>/dev/null)" || {
       echo "BLOCKED p2p_unavailable: the selected direct chat is not readable" >&2
@@ -176,26 +186,48 @@ discover_p2p_chat() {
     export E2E_REAL_E2E_P2P_CHAT_ID
     return
   fi
-  list="$(lark_cli im +chat-list --as user --types p2p --json 2>/dev/null)" || {
-    echo "BLOCKED p2p_list_unavailable: current user cannot list P2P chats" >&2
-    exit 3
-  }
-  while IFS= read -r chat; do
+  while true; do
+    args=(im +chat-list --as user --types p2p --page-size 100 --json)
+    if [[ -n "$page_token" ]]; then
+      args+=(--page-token "$page_token")
+    fi
+    list="$(lark_cli "${args[@]}" 2>/dev/null)" || {
+      E2E_REAL_E2E_P2P_CHAT_ID=""
+      export E2E_REAL_E2E_P2P_CHAT_ID
+      echo "NOTICE p2p_list_unavailable: group E2E profile will be created; DM/file cases remain blocked" >&2
+      return
+    }
+    while IFS= read -r chat; do
+      [[ -n "$chat" ]] && chat_ids+=("$chat")
+    done < <(printf '%s' "$list" | jq -r '(.items // .data.items // .data.chats // [])[] | .chat_id // empty')
+    has_more="$(printf '%s' "$list" | jq -r '.has_more // .data.has_more // false')"
+    [[ "$has_more" == "true" ]] || break
+    page_token="$(printf '%s' "$list" | jq -r '.page_token // .data.page_token // empty')"
+    [[ -n "$page_token" ]] || {
+      echo "FAIL p2p_pagination: chat list reported more pages without a page token" >&2
+      exit 1
+    }
+  done
+  for chat in "${chat_ids[@]}"; do
     [[ -n "$chat" ]] || continue
     members="$(lark_cli im +chat-members-list --as user --chat-id "$chat" --member-types bot --json 2>/dev/null || true)"
     if printf '%s' "$members" | jq -e --arg bot "$LARK_BOT_OPEN_ID" --arg app "$LARK_APP_ID" \
       '[(.bots // .data.bots // .items // .data.items // [])[] | select(((.member_id // .open_id // .member.open_id // "") == $bot) or ((.app_id // .member.app_id // "") == $app))] | length > 0' >/dev/null 2>&1; then
       matches+=("$chat")
     fi
-  done < <(printf '%s' "$list" | jq -r '(.items // .data.items // .data.chats // [])[] | .chat_id // empty')
+  done
 
   if (( ${#matches[@]} == 0 )); then
-    echo "BLOCKED p2p_not_found: start a direct chat with this bot, then rerun bootstrap" >&2
-    exit 3
+    E2E_REAL_E2E_P2P_CHAT_ID=""
+    export E2E_REAL_E2E_P2P_CHAT_ID
+    echo "NOTICE p2p_none: group E2E profile will be created; DM/file cases remain blocked" >&2
+    return
   fi
   if (( ${#matches[@]} > 1 )); then
-    echo "BLOCKED p2p_ambiguous: pass --p2p-chat-id to select the intended direct chat" >&2
-    exit 3
+    E2E_REAL_E2E_P2P_CHAT_ID=""
+    export E2E_REAL_E2E_P2P_CHAT_ID
+    echo "NOTICE p2p_multiple: group E2E profile will be created; pass --p2p-chat-id later to enable DM/file cases" >&2
+    return
   fi
   E2E_REAL_E2E_P2P_CHAT_ID="${matches[0]}"
   export E2E_REAL_E2E_P2P_CHAT_ID
@@ -238,7 +270,7 @@ ensure_lark_cli_profile
 verify_user_auth
 fetch_bot_open_id
 verify_group
-discover_p2p_chat
+discover_optional_p2p_chat
 e2e_profile_write "$ROOT" "$PROFILE"
 
 echo "E2E profile '$PROFILE' initialized in the local gitignored profile directory."
