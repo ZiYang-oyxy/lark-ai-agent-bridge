@@ -59,6 +59,54 @@ func TestLoadFromEnvDurableSchedulerDefaultsAndOverrides(t *testing.T) {
 	}
 }
 
+func TestLoadFromEnvRuntimePreferenceDefaultsAndOverrides(t *testing.T) {
+	workDir := filepath.Join(t.TempDir(), "work")
+	t.Setenv("E2E_DEFAULT_WORKDIR", workDir)
+	t.Setenv("E2E_MODEL", "opus")
+	t.Setenv("E2E_EFFORT", "high")
+	t.Setenv("E2E_ALLOWED_MODELS", "claude-custom-1, sonnet,claude-custom-2")
+	cfg := LoadFromEnv()
+	if cfg.PreferenceStorePath != filepath.Join(workDir, ".lark-agent-bridge", "preferences.json") {
+		t.Fatalf("preference store path = %q", cfg.PreferenceStorePath)
+	}
+	if cfg.Model != "opus" || cfg.Effort != "high" {
+		t.Fatalf("runtime defaults = model %q effort %q", cfg.Model, cfg.Effort)
+	}
+	wantModels := []string{"default", "sonnet", "opus", "haiku", "claude-custom-1", "claude-custom-2"}
+	if len(cfg.AllowedModels) != len(wantModels) {
+		t.Fatalf("allowed models = %#v, want %#v", cfg.AllowedModels, wantModels)
+	}
+	for i := range wantModels {
+		if cfg.AllowedModels[i] != wantModels[i] {
+			t.Fatalf("allowed models = %#v, want %#v", cfg.AllowedModels, wantModels)
+		}
+	}
+
+	customPath := filepath.Join(t.TempDir(), "custom-preferences.json")
+	t.Setenv("E2E_PREFERENCE_STORE", customPath)
+	if got := LoadFromEnv().PreferenceStorePath; got != customPath {
+		t.Fatalf("preference store override = %q, want %q", got, customPath)
+	}
+}
+
+func TestLoadFromEnvStrictRejectsInvalidRuntimePreferenceDefaults(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		env   string
+		value string
+	}{
+		{name: "unknown_model", env: "E2E_MODEL", value: "unknown"},
+		{name: "invalid_effort", env: "E2E_EFFORT", value: "extreme"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv(tc.env, tc.value)
+			if _, err := LoadFromEnvStrict(); err == nil {
+				t.Fatalf("LoadFromEnvStrict() error = nil for %s=%q", tc.env, tc.value)
+			}
+		})
+	}
+}
+
 func TestLoadFromEnvStrictMediaDefaultsFollowWorkdir(t *testing.T) {
 	workDir := filepath.Join(t.TempDir(), "work")
 	t.Setenv("E2E_DEFAULT_WORKDIR", workDir)

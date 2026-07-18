@@ -10,49 +10,57 @@ import (
 )
 
 type Config struct {
-	DefaultAgent       string
-	DefaultWorkDir     string
-	ClaudeBin          string
-	CardUpdateEvery    time.Duration
-	CardMaxChars       int
-	InteractionTimeout time.Duration
-	AuditLogPath       string
-	SessionStorePath   string
-	QueueMaxPending    int
-	BatchMaxInputs     int
-	BatchMaxTextRunes  int
-	DedupTTL           time.Duration
-	DedupMaxEntries    int
-	ShutdownGrace      time.Duration
-	MediaCacheDir      string
-	MediaMaxFileBytes  int64
-	MediaMaxBatchBytes int64
-	MediaCacheMaxBytes int64
-	MediaRetention     time.Duration
+	DefaultAgent        string
+	DefaultWorkDir      string
+	ClaudeBin           string
+	CardUpdateEvery     time.Duration
+	CardMaxChars        int
+	InteractionTimeout  time.Duration
+	AuditLogPath        string
+	SessionStorePath    string
+	PreferenceStorePath string
+	Model               string
+	Effort              string
+	AllowedModels       []string
+	QueueMaxPending     int
+	BatchMaxInputs      int
+	BatchMaxTextRunes   int
+	DedupTTL            time.Duration
+	DedupMaxEntries     int
+	ShutdownGrace       time.Duration
+	MediaCacheDir       string
+	MediaMaxFileBytes   int64
+	MediaMaxBatchBytes  int64
+	MediaCacheMaxBytes  int64
+	MediaRetention      time.Duration
 }
 
 func LoadFromEnv() Config {
 	workDir := mustGetwd()
 	cfg := Config{
-		DefaultAgent:       "claude",
-		DefaultWorkDir:     workDir,
-		ClaudeBin:          "claude",
-		CardUpdateEvery:    800 * time.Millisecond,
-		CardMaxChars:       12000,
-		InteractionTimeout: 120 * time.Second,
-		AuditLogPath:       filepath.Join(workDir, ".lark-agent-bridge", "audit.jsonl"),
-		SessionStorePath:   filepath.Join(workDir, ".lark-agent-bridge", "sessions.json"),
-		QueueMaxPending:    20,
-		BatchMaxInputs:     10,
-		BatchMaxTextRunes:  64 << 10,
-		DedupTTL:           24 * time.Hour,
-		DedupMaxEntries:    10000,
-		ShutdownGrace:      5 * time.Second,
-		MediaMaxFileBytes:  25 << 20,
-		MediaMaxBatchBytes: 100 << 20,
-		MediaCacheMaxBytes: 500 << 20,
-		MediaRetention:     72 * time.Hour,
+		DefaultAgent:        "claude",
+		DefaultWorkDir:      workDir,
+		ClaudeBin:           "claude",
+		CardUpdateEvery:     800 * time.Millisecond,
+		CardMaxChars:        12000,
+		InteractionTimeout:  120 * time.Second,
+		AuditLogPath:        filepath.Join(workDir, ".lark-agent-bridge", "audit.jsonl"),
+		SessionStorePath:    filepath.Join(workDir, ".lark-agent-bridge", "sessions.json"),
+		PreferenceStorePath: filepath.Join(workDir, ".lark-agent-bridge", "preferences.json"),
+		Model:               "default",
+		Effort:              "low",
+		QueueMaxPending:     20,
+		BatchMaxInputs:      10,
+		BatchMaxTextRunes:   64 << 10,
+		DedupTTL:            24 * time.Hour,
+		DedupMaxEntries:     10000,
+		ShutdownGrace:       5 * time.Second,
+		MediaMaxFileBytes:   25 << 20,
+		MediaMaxBatchBytes:  100 << 20,
+		MediaCacheMaxBytes:  500 << 20,
+		MediaRetention:      72 * time.Hour,
 	}
+	cfg.AllowedModels = append([]string(nil), builtinModels...)
 	cfg.MediaCacheDir = defaultMediaCacheDir(cfg.DefaultWorkDir)
 	if v := os.Getenv("E2E_DEFAULT_AGENT"); v != "" {
 		cfg.DefaultAgent = v
@@ -64,6 +72,7 @@ func LoadFromEnv() Config {
 		cfg.DefaultWorkDir = v
 		cfg.AuditLogPath = filepath.Join(v, ".lark-agent-bridge", "audit.jsonl")
 		cfg.SessionStorePath = filepath.Join(v, ".lark-agent-bridge", "sessions.json")
+		cfg.PreferenceStorePath = filepath.Join(v, ".lark-agent-bridge", "preferences.json")
 		cfg.MediaCacheDir = defaultMediaCacheDir(v)
 	}
 	if v := os.Getenv("E2E_CARD_MAX_CHARS"); v != "" {
@@ -86,6 +95,21 @@ func LoadFromEnv() Config {
 	}
 	if v := os.Getenv("E2E_SESSION_STORE"); v != "" {
 		cfg.SessionStorePath = v
+	}
+	if v := os.Getenv("E2E_PREFERENCE_STORE"); v != "" {
+		cfg.PreferenceStorePath = v
+	}
+	if v := os.Getenv("E2E_MODEL"); v != "" {
+		cfg.Model = strings.TrimSpace(v)
+	}
+	if v := os.Getenv("E2E_EFFORT"); v != "" {
+		cfg.Effort = strings.ToLower(strings.TrimSpace(v))
+	}
+	if v := os.Getenv("E2E_ALLOWED_MODELS"); v != "" {
+		additions := strings.Split(v, ",")
+		if models, err := modelCatalog(additions); err == nil {
+			cfg.AllowedModels = models
+		}
 	}
 	if v := os.Getenv("E2E_QUEUE_MAX_PENDING"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n > 0 {
@@ -126,6 +150,14 @@ func LoadFromEnv() Config {
 func LoadFromEnvStrict() (Config, error) {
 	cfg := LoadFromEnv()
 	var err error
+	if raw := os.Getenv("E2E_ALLOWED_MODELS"); raw != "" {
+		if _, err := modelCatalog(strings.Split(raw, ",")); err != nil {
+			return Config{}, fmt.Errorf("parse E2E_ALLOWED_MODELS: %w", err)
+		}
+	}
+	if err := ValidateRuntimePreference(RuntimePreference{Model: cfg.Model, Effort: cfg.Effort}, cfg.AllowedModels...); err != nil {
+		return Config{}, fmt.Errorf("validate runtime preference defaults: %w", err)
+	}
 	if cfg.MediaCacheDir, err = explicitMediaDir("E2E_MEDIA_CACHE_DIR", cfg.MediaCacheDir); err != nil {
 		return Config{}, err
 	}
