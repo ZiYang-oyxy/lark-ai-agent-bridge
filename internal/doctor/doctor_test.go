@@ -1,6 +1,7 @@
 package doctor
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -15,24 +16,30 @@ func TestRunChecksRuntimeConfig(t *testing.T) {
 	workDir := canonicalTempDir(t)
 	auditPath := filepath.Join(workDir, ".lark-agent-bridge", "audit.jsonl")
 	storePath := filepath.Join(workDir, ".lark-agent-bridge", "sessions.json")
+	preferencePath := filepath.Join(workDir, ".lark-agent-bridge", "preferences.json")
 	cachePath := filepath.Join(workDir, ".lark-agent-bridge", "media")
 	t.Setenv("E2E_CALLBACK_ADDR", ":18080")
 
 	checks := Run(config.Config{
-		DefaultAgent:       "claude",
-		DefaultWorkDir:     workDir,
-		CardUpdateEvery:    time.Second,
-		InteractionTimeout: 2 * time.Second,
-		CardMaxChars:       12000,
-		AuditLogPath:       auditPath,
-		SessionStorePath:   storePath,
-		MediaCacheDir:      cachePath,
+		DefaultAgent:        "claude",
+		DefaultWorkDir:      workDir,
+		CardUpdateEvery:     time.Second,
+		InteractionTimeout:  2 * time.Second,
+		CardMaxChars:        12000,
+		AuditLogPath:        auditPath,
+		SessionStorePath:    storePath,
+		PreferenceStorePath: preferencePath,
+		Model:               "default",
+		Effort:              "low",
+		AllowedModels:       []string{"default", "sonnet", "opus", "haiku"},
+		MediaCacheDir:       cachePath,
 	})
 
 	assertCheck(t, checks, "default_agent", true, "claude")
 	assertCheck(t, checks, "default_workdir", true, workDir)
 	assertCheck(t, checks, "audit_log", true, auditPath)
 	assertCheck(t, checks, "session_store", true, storePath)
+	assertCheck(t, checks, "preference_store", true, preferencePath)
 	assertCheck(t, checks, "media_cache", true, cachePath)
 	assertCheck(t, checks, "E2E_CALLBACK_ADDR", true, ":18080")
 	assertCheck(t, checks, "card_update_every", true, "1s")
@@ -54,6 +61,93 @@ func TestRunChecksRuntimeConfig(t *testing.T) {
 	}
 	if probes, err := filepath.Glob(filepath.Join(cachePath, ".media-cache-probe-*")); err != nil || len(probes) != 0 {
 		t.Fatalf("media cache probe files = %q, err = %v; want none", probes, err)
+	}
+}
+
+func TestPreferenceStoreWritableValidatesExistingSnapshotWithoutLeakingContents(t *testing.T) {
+	workDir := canonicalTempDir(t)
+	path := filepath.Join(workDir, ".lark-agent-bridge", "preferences.json")
+	store, err := config.OpenPreferenceStore(path, config.RuntimePreference{Model: "default", Effort: "low"}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Set(config.RuntimePreference{Model: "opus", Effort: "high"}); err != nil {
+		t.Fatal(err)
+	}
+	cfg := doctorTestConfig(workDir, filepath.Join(workDir, ".lark-agent-bridge", "sessions.json"))
+	cfg.PreferenceStorePath = path
+	if check := findCheck(t, Run(cfg), "preference_store"); !check.OK {
+		t.Fatalf("preference_store = %#v, want success", check)
+	}
+	const secret = "DO_NOT_PRINT_PREFERENCE_SECRET"
+	if err := os.WriteFile(path, []byte(`{"schema_version":1,"override":{"model":"`+secret+`"}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	check := findCheck(t, Run(cfg), "preference_store")
+	if check.OK || strings.Contains(check.Detail, secret) || strings.Contains(Summary([]Check{check}), secret) {
+		t.Fatalf("malformed preference check leaked or passed: %#v", check)
+	}
+}
+
+func TestClaudeWrapperPreflightUsesBoundedHarmlessInvocation(t *testing.T) {
+	dir := t.TempDir()
+	argsPath := filepath.Join(dir, "args")
+	pwdPath := filepath.Join(dir, "pwd")
+	bin := writeDoctorExecutable(t, dir, `#!/bin/sh
+printf '%s\n' "$@" > "$DOCTOR_ARGS_FILE"
+pwd > "$DOCTOR_PWD_FILE"
+printf '%s\n' '{"type":"result","result":"PRIVATE_OUTPUT_MUST_NOT_APPEAR"}'
+`)
+	t.Setenv("DOCTOR_ARGS_FILE", argsPath)
+	t.Setenv("DOCTOR_PWD_FILE", pwdPath)
+	cfg := doctorTestConfig(dir, filepath.Join(dir, "sessions.json"))
+	cfg.ClaudeBin = bin
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	check := ClaudeWrapperPreflight(ctx, cfg)
+	if !check.OK || check.Warning || check.Name != "wrapper-preflight" || strings.Contains(check.Detail, "PRIVATE_OUTPUT") {
+		t.Fatalf("preflight check = %#v", check)
+	}
+	args, err := os.ReadFile(argsPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	joined := strings.ReplaceAll(strings.TrimSpace(string(args)), "\n", " ")
+	if !strings.Contains(joined, "-p --output-format stream-json --verbose --effort low") || !strings.Contains(joined, "Reply with exactly OK") {
+		t.Fatalf("preflight args = %q", joined)
+	}
+	pwd, err := os.ReadFile(pwdPath)
+	if err != nil || strings.TrimSpace(string(pwd)) != dir {
+		t.Fatalf("preflight pwd = %q, err=%v, want %q", pwd, err, dir)
+	}
+}
+
+func TestClaudeWrapperPreflightClassifiesExit78WithoutOutputLeak(t *testing.T) {
+	dir := t.TempDir()
+	bin := writeDoctorExecutable(t, dir, "#!/bin/sh\nprintf 'PRIVATE_ENV_VALUE' >&2\nexit 78\n")
+	cfg := doctorTestConfig(dir, filepath.Join(dir, "sessions.json"))
+	cfg.ClaudeBin = bin
+	check := ClaudeWrapperPreflight(context.Background(), cfg)
+	if !check.OK || !check.Warning || !strings.Contains(check.Detail, "exit 78") || strings.Contains(check.Detail, "PRIVATE_ENV_VALUE") {
+		t.Fatalf("exit 78 check = %#v", check)
+	}
+	strict := RunWithOptions(context.Background(), cfg, RunOptions{WrapperPreflight: true, Strict: true, PreflightTimeout: time.Second})
+	strictCheck := findCheck(t, strict, "wrapper-preflight")
+	if strictCheck.OK || strictCheck.Warning {
+		t.Fatalf("strict wrapper preflight = %#v, want failure", strictCheck)
+	}
+}
+
+func TestClaudeWrapperPreflightHonorsContextTimeout(t *testing.T) {
+	dir := t.TempDir()
+	bin := writeDoctorExecutable(t, dir, "#!/bin/sh\nsleep 2\n")
+	cfg := doctorTestConfig(dir, filepath.Join(dir, "sessions.json"))
+	cfg.ClaudeBin = bin
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	check := ClaudeWrapperPreflight(ctx, cfg)
+	if !check.OK || !check.Warning || !strings.Contains(check.Detail, "timed out") {
+		t.Fatalf("timeout check = %#v", check)
 	}
 }
 
@@ -388,15 +482,28 @@ func canonicalTempDir(t *testing.T) string {
 
 func doctorTestConfig(workDir, storePath string) config.Config {
 	return config.Config{
-		DefaultAgent:       "claude",
-		DefaultWorkDir:     workDir,
-		CardUpdateEvery:    time.Second,
-		InteractionTimeout: time.Second,
-		CardMaxChars:       12000,
-		AuditLogPath:       filepath.Join(workDir, "audit.jsonl"),
-		SessionStorePath:   storePath,
-		MediaCacheDir:      filepath.Join(workDir, "media"),
+		DefaultAgent:        "claude",
+		DefaultWorkDir:      workDir,
+		CardUpdateEvery:     time.Second,
+		InteractionTimeout:  time.Second,
+		CardMaxChars:        12000,
+		AuditLogPath:        filepath.Join(workDir, "audit.jsonl"),
+		SessionStorePath:    storePath,
+		PreferenceStorePath: filepath.Join(workDir, "preferences.json"),
+		Model:               "default",
+		Effort:              "low",
+		AllowedModels:       []string{"default", "sonnet", "opus", "haiku"},
+		MediaCacheDir:       filepath.Join(workDir, "media"),
 	}
+}
+
+func writeDoctorExecutable(t *testing.T, dir, body string) string {
+	t.Helper()
+	path := filepath.Join(dir, "fake-claude")
+	if err := os.WriteFile(path, []byte(body), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	return path
 }
 
 func TestSummaryFormatsChecks(t *testing.T) {

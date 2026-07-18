@@ -133,6 +133,26 @@ func TestRuntimeCommandsRejectInvalidMediaEnvironment(t *testing.T) {
 	}
 }
 
+func TestRunDoctorWrapperPreflightWarningFailsOnlyInStrictMode(t *testing.T) {
+	workDir, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	bin := filepath.Join(workDir, "fake-claude")
+	if err := os.WriteFile(bin, []byte("#!/bin/sh\nprintf 'PRIVATE_WRAPPER_OUTPUT' >&2\nexit 78\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("E2E_CLAUDE_BIN", bin)
+	t.Setenv("LARK_APP_ID", "app")
+	t.Setenv("LARK_APP_SECRET", "secret")
+	if err := runDoctor([]string{"--default-workdir", workDir}); err != nil {
+		t.Fatalf("non-strict doctor error = %v, want warning-only success", err)
+	}
+	if err := runDoctor([]string{"--strict", "--default-workdir", workDir}); err == nil || err.Error() != "doctor strict verification failed" {
+		t.Fatalf("strict doctor error = %v, want strict verification failure", err)
+	}
+}
+
 func TestNewServeMediaUsesConfiguredLimitsAndSharedTokenSource(t *testing.T) {
 	tokens := feishu.NewTenantTokenSource("app", "secret")
 	cfg := config.Config{
