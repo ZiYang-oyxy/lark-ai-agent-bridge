@@ -281,6 +281,7 @@ func runServe(args []string) error {
 	}
 	svc.Replies = replies
 	svc.CardTarget = cardRouter
+	svc.ProcessRecoveryNotices(ctx)
 	mediaWiring := newServeMedia(cfg, tokens)
 	svc.MediaCache = mediaWiring.cache
 	svc.MediaDownloader = mediaWiring.downloader

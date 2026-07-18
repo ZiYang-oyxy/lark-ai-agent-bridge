@@ -200,6 +200,62 @@ func cloneRecoveryNotices(in []session.RecoveryNotice) []session.RecoveryNotice 
 	return out
 }
 
+// ProcessRecoveryNotices best-effort terminalizes cards that belonged to runs
+// interrupted by a restart. Notices are consumed once and stale cards are not
+// replaced, because restart recovery must never create a new reply or rerun an
+// old input.
+func (s *Service) ProcessRecoveryNotices(ctx context.Context) {
+	s.mu.Lock()
+	notices := s.RestoreNotices
+	s.RestoreNotices = nil
+	s.mu.Unlock()
+
+	seenCards := make(map[string]struct{}, len(notices))
+	for _, notice := range notices {
+		if notice.RenderRef == nil || notice.RenderRef.CardID == "" {
+			continue
+		}
+		if _, seen := seenCards[notice.RenderRef.CardID]; seen {
+			continue
+		}
+		seenCards[notice.RenderRef.CardID] = struct{}{}
+		if s.CardTarget == nil {
+			s.Audit.Record("system", "recovery_card_update_failed", notice.SessionID, "reply card target is unavailable")
+			continue
+		}
+		cardSessionID := notice.CardSessionID
+		if cardSessionID == "" {
+			cardSessionID = runID(notice.SessionID, notice.ReplyToMessageID)
+		}
+		renderer := s.CardTarget.Rehydrate(cardSessionID, *notice.RenderRef)
+		if renderer == nil {
+			s.Audit.Record("system", "recovery_card_update_failed", notice.SessionID, "reply card renderer is unavailable")
+			continue
+		}
+		event := card.Event{
+			Type:             "interrupted",
+			SessionID:        cardSessionID,
+			ReplyToMessageID: notice.ReplyToMessageID,
+			Segments:         []card.Segment{{Kind: card.SegmentError, Text: "服务重启,已中断,请重新发送"}},
+			Meta:             card.Meta{Status: string(session.InputInterrupted)},
+			Streaming:        false,
+		}
+		if err := renderer.Render(event); err != nil {
+			s.Audit.Record("system", "recovery_card_update_failed", notice.SessionID, err.Error())
+			continue
+		}
+		if s.Replies != nil {
+			latest := s.Replies.GetLatest(notice.SessionID)
+			if latest != nil && latest.CardID == notice.RenderRef.CardID {
+				advanced := renderer.RenderRef()
+				if err := s.Replies.SetLatest(notice.SessionID, &advanced); err != nil {
+					s.Audit.Record("system", "recovery_reply_ref_persist_failed", notice.SessionID, err.Error())
+				}
+			}
+		}
+	}
+}
+
 func (s *Service) HandleMessage(ctx context.Context, msg Message) error {
 	if !msg.Time.IsZero() && msg.Time.Before(s.startedAt.Add(-2*time.Second)) {
 		s.Audit.Record(msg.Sender, "old_message_skipped", "", msg.ID)

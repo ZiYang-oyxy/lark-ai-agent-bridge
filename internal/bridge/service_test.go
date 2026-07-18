@@ -39,6 +39,7 @@ type bridgeReplyTarget struct {
 	newRef         session.RenderRef
 	rehydratedRef  session.RenderRef
 	events         []card.Event
+	renderErr      error
 }
 
 func (t *bridgeReplyTarget) NewStreaming(context.Context, string, string) (feishu.ResumableRenderer, error) {
@@ -77,7 +78,7 @@ func (r *bridgeReplyRenderer) Render(event card.Event) error {
 	defer r.target.mu.Unlock()
 	r.target.events = append(r.target.events, event)
 	r.ref.Version++
-	return nil
+	return r.target.renderErr
 }
 
 func (r *bridgeReplyRenderer) RenderRef() session.RenderRef { return r.ref }
@@ -2014,6 +2015,39 @@ func TestNewServiceWithSessionsKeepsRecoveryAuditWriteErrorsObservable(t *testin
 	}
 	if got := renderer.Events(); len(got) != 0 {
 		t.Fatalf("recovery rendered cards = %#v, want none", got)
+	}
+}
+
+func TestServiceProcessesRestartCardRecoveryOnceWithoutReplacement(t *testing.T) {
+	ref := &session.RenderRef{CardID: "old-card", ReplyMessageID: "old-reply", Version: 4}
+	notices := []session.RecoveryNotice{
+		{SessionID: "claude:chat", ReplyToMessageID: "queued-source", Status: session.InputCancelled},
+		{SessionID: "claude:chat", ReplyToMessageID: "running-source", Status: session.InputInterrupted, RenderRef: ref},
+		{SessionID: "claude:chat", ReplyToMessageID: "batched-source", Status: session.InputInterrupted, RenderRef: ref},
+	}
+	runner := newFakeRunner()
+	target := &bridgeReplyTarget{renderErr: feishu.ErrStaleRenderRef}
+	recorder := audit.NewRecorder()
+	svc := NewServiceWithSessions(testConfig(t), card.NewFakeRenderer(), runner, recorder, session.NewManager(), notices)
+	svc.CardTarget = target
+	svc.ProcessRecoveryNotices(context.Background())
+	svc.ProcessRecoveryNotices(context.Background())
+
+	target.mu.Lock()
+	newCalls, rehydrateCalls := target.newCalls, target.rehydrateCalls
+	events := append([]card.Event(nil), target.events...)
+	target.mu.Unlock()
+	if newCalls != 0 || rehydrateCalls != 1 || len(events) != 1 {
+		t.Fatalf("recovery target new/rehydrate/events = %d/%d/%#v", newCalls, rehydrateCalls, events)
+	}
+	if len(events[0].Segments) != 1 || events[0].Segments[0].Text != "服务重启,已中断,请重新发送" || events[0].Streaming {
+		t.Fatalf("recovery event = %#v", events[0])
+	}
+	if len(runner.Calls()) != 0 {
+		t.Fatalf("recovery runner calls = %#v", runner.Calls())
+	}
+	if !auditContainsAction(recorder.Events(), "recovery_card_update_failed") {
+		t.Fatalf("recovery audit = %#v", recorder.Events())
 	}
 }
 
