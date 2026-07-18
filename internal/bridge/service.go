@@ -533,9 +533,15 @@ func (s *Service) startBatch(parent context.Context, sess session.Session, batch
 	stream := newAgentCardStream(s, id, sess, anchor)
 	if s.CardTarget != nil {
 		mode := s.runtimePreference().ReplyMode
+		latestScope := ""
+		if mode == config.ReplyModeLatestCard {
+			latestScope = sess.ID
+		}
 		policy := reply.NewPolicy(s.CardTarget, s.Replies)
 		policy.Resolver = s.SequenceResolver
-		policyRun, err := policy.Begin(runCtx, mode, sess.ID, id, anchor.ReplyToMessageID)
+		policyRun, err := policy.BeginBound(runCtx, mode, sess.ID, feishu.RenderBinding{
+			BaseSessionID: sess.ID, BatchID: batch.ID, LatestScope: latestScope, RunCardSessionID: id,
+		}, anchor.ReplyToMessageID)
 		if err != nil {
 			cancel()
 			typing.Close()

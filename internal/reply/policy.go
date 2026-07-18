@@ -21,6 +21,11 @@ type CardTarget interface {
 	Rehydrate(string, session.RenderRef) feishu.ResumableRenderer
 }
 
+type BoundCardTarget interface {
+	NewStreamingBound(context.Context, feishu.RenderBinding, string) (feishu.ResumableRenderer, error)
+	RehydrateBound(feishu.RenderBinding, session.RenderRef) feishu.ResumableRenderer
+}
+
 type Policy struct {
 	target   CardTarget
 	store    *Store
@@ -40,11 +45,16 @@ type Run struct {
 	store     *Store
 	scope     string
 	sessionID string
+	binding   feishu.RenderBinding
 	replyTo   string
 	renderer  feishu.ResumableRenderer
 }
 
 func (p *Policy) Begin(ctx context.Context, mode config.ReplyMode, scope, sessionID, replyTo string) (*Run, error) {
+	return p.BeginBound(ctx, mode, scope, feishu.RenderBinding{RunCardSessionID: sessionID}, replyTo)
+}
+
+func (p *Policy) BeginBound(ctx context.Context, mode config.ReplyMode, scope string, binding feishu.RenderBinding, replyTo string) (*Run, error) {
 	if p == nil || p.target == nil {
 		return nil, errors.New("reply card target is unavailable")
 	}
@@ -56,7 +66,8 @@ func (p *Policy) Begin(ctx context.Context, mode config.ReplyMode, scope, sessio
 	default:
 		return nil, fmt.Errorf("unsupported reply mode %q", mode)
 	}
-	run := &Run{ctx: ctx, mode: mode, target: p.target, store: p.store, scope: scope, sessionID: sessionID, replyTo: replyTo}
+	sessionID := binding.RunCardSessionID
+	run := &Run{ctx: ctx, mode: mode, target: p.target, store: p.store, scope: scope, sessionID: sessionID, binding: binding, replyTo: replyTo}
 	if mode == config.ReplyModeLatestCard && p.store != nil {
 		if ref := p.store.GetLatest(scope); ref != nil {
 			if p.discardLatestRef(*ref) {
@@ -64,12 +75,22 @@ func (p *Policy) Begin(ctx context.Context, mode config.ReplyMode, scope, sessio
 					return nil, err
 				}
 			} else {
-				run.renderer = p.target.Rehydrate(sessionID, *ref)
+				if bound, ok := p.target.(BoundCardTarget); ok {
+					run.renderer = bound.RehydrateBound(binding, *ref)
+				} else {
+					run.renderer = p.target.Rehydrate(sessionID, *ref)
+				}
 			}
 		}
 	}
 	if run.renderer == nil {
-		renderer, err := p.target.NewStreaming(ctx, sessionID, replyTo)
+		var renderer feishu.ResumableRenderer
+		var err error
+		if bound, ok := p.target.(BoundCardTarget); ok {
+			renderer, err = bound.NewStreamingBound(ctx, binding, replyTo)
+		} else {
+			renderer, err = p.target.NewStreaming(ctx, sessionID, replyTo)
+		}
 		if err != nil {
 			return nil, err
 		}
@@ -107,7 +128,13 @@ func (r *Run) Render(event card.Event) error {
 				return clearErr
 			}
 		}
-		renderer, newErr := r.target.NewStreaming(r.ctx, r.sessionID, r.replyTo)
+		var renderer feishu.ResumableRenderer
+		var newErr error
+		if bound, ok := r.target.(BoundCardTarget); ok {
+			renderer, newErr = bound.NewStreamingBound(r.ctx, r.binding, r.replyTo)
+		} else {
+			renderer, newErr = r.target.NewStreaming(r.ctx, r.sessionID, r.replyTo)
+		}
 		if newErr != nil {
 			return newErr
 		}

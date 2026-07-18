@@ -25,6 +25,8 @@ type fakeCardKitClient struct {
 	replyErr    error
 	updateErr   error
 	updateErrs  []error
+	elementReqs []CardKitUpdateElementContentRequest
+	elementErr  error
 }
 
 type fakeCardKitObserver struct {
@@ -152,8 +154,165 @@ func (f *fakeCardKitClient) UpdateSettings(context.Context, CardKitUpdateSetting
 	return nil
 }
 
-func (f *fakeCardKitClient) UpdateElementContent(context.Context, CardKitUpdateElementContentRequest) error {
-	return nil
+func (f *fakeCardKitClient) UpdateElementContent(_ context.Context, req CardKitUpdateElementContentRequest) error {
+	f.elementReqs = append(f.elementReqs, req)
+	return f.elementErr
+}
+
+type fakeNativeJournal struct {
+	prepared, confirmed, aborted     []NativeSequenceIntent
+	prepareErr, confirmErr, abortErr error
+}
+
+func (f *fakeNativeJournal) PrepareNative(_ context.Context, intent NativeSequenceIntent) error {
+	f.prepared = append(f.prepared, intent)
+	return f.prepareErr
+}
+func (f *fakeNativeJournal) ConfirmNative(_ context.Context, intent NativeSequenceIntent) error {
+	f.confirmed = append(f.confirmed, intent)
+	return f.confirmErr
+}
+func (f *fakeNativeJournal) AbortNative(_ context.Context, intent NativeSequenceIntent) error {
+	f.aborted = append(f.aborted, intent)
+	return f.abortErr
+}
+
+func TestCardKitRendererNativeAnswerAndFullCardShareSequence(t *testing.T) {
+	client := &fakeCardKitClient{}
+	journal := &fakeNativeJournal{}
+	renderer := NewCardKitRendererWithNative(client, "source", nil, RenderBinding{
+		BaseSessionID: "claude:chat", BatchID: "batch", LatestScope: "claude:chat", RunCardSessionID: "run-card",
+	}, journal)
+	base := card.Event{Type: "stream", Streaming: true, SessionID: "run-card", Segments: []card.Segment{{Kind: card.SegmentText, Text: "one"}}}
+	if err := renderer.Render(base); err != nil {
+		t.Fatal(err)
+	}
+	next := base
+	next.Segments = []card.Segment{{Kind: card.SegmentText, Text: "two"}}
+	if err := renderer.Render(next); err != nil {
+		t.Fatal(err)
+	}
+	thought := next
+	thought.Segments = append(thought.Segments, card.Segment{Kind: card.SegmentThought, Text: "plan"})
+	if err := renderer.Render(thought); err != nil {
+		t.Fatal(err)
+	}
+	if len(client.elementReqs) != 1 || client.elementReqs[0].Sequence != 1 || client.elementReqs[0].Content != "two" {
+		t.Fatalf("element requests=%#v", client.elementReqs)
+	}
+	if len(client.updateReqs) != 1 || client.updateReqs[0].Sequence != 2 {
+		t.Fatalf("full updates=%#v", client.updateReqs)
+	}
+	if len(journal.prepared) != 1 || len(journal.confirmed) != 1 || journal.prepared[0].SessionID != "claude:chat" || journal.prepared[0].BatchID != "batch" {
+		t.Fatalf("journal prepare=%#v confirm=%#v", journal.prepared, journal.confirmed)
+	}
+	if ref := renderer.RenderRef(); ref.Version != 2 || ref.SequenceUnknown || ref.PendingSequence != 0 {
+		t.Fatalf("render ref=%#v", ref)
+	}
+}
+
+func TestCardKitRendererNativeDeliveryUnknownStopsAllLaterWrites(t *testing.T) {
+	client := &fakeCardKitClient{elementErr: errors.New("response lost")}
+	journal := &fakeNativeJournal{}
+	renderer := NewCardKitRendererWithNative(client, "source", nil, RenderBinding{BaseSessionID: "base", BatchID: "batch", RunCardSessionID: "run"}, journal)
+	first := card.Event{Type: "stream", Streaming: true, SessionID: "run", Segments: []card.Segment{{Kind: card.SegmentText, Text: "one"}}}
+	if err := renderer.Render(first); err != nil {
+		t.Fatal(err)
+	}
+	second := first
+	second.Segments = []card.Segment{{Kind: card.SegmentText, Text: "two"}}
+	if err := renderer.Render(second); err != nil {
+		t.Fatal(err)
+	}
+	terminal := card.Event{Type: "result", SessionID: "run", Segments: second.Segments}
+	if err := renderer.Render(terminal); err != nil {
+		t.Fatal(err)
+	}
+	if len(client.elementReqs) != 1 || len(client.updateReqs) != 0 {
+		t.Fatalf("element/full=%d/%d", len(client.elementReqs), len(client.updateReqs))
+	}
+	if ref := renderer.RenderRef(); !ref.SequenceUnknown || ref.PendingSequence != 1 || ref.Version != 0 {
+		t.Fatalf("unknown ref=%#v", ref)
+	}
+}
+
+func TestCardKitRendererNativeInteractionAbortKeepsSequenceReusable(t *testing.T) {
+	client := &fakeCardKitClient{elementErr: ErrCardInteractionInProgress}
+	journal := &fakeNativeJournal{}
+	renderer := NewCardKitRendererWithNative(client, "source", nil, RenderBinding{BaseSessionID: "base", BatchID: "batch", RunCardSessionID: "run"}, journal)
+	first := card.Event{Type: "stream", Streaming: true, SessionID: "run", Segments: []card.Segment{{Kind: card.SegmentText, Text: "one"}}}
+	if err := renderer.Render(first); err != nil {
+		t.Fatal(err)
+	}
+	second := first
+	second.Segments = []card.Segment{{Kind: card.SegmentText, Text: "two"}}
+	if err := renderer.Render(second); err != nil {
+		t.Fatal(err)
+	}
+	client.elementErr = nil
+	if err := renderer.Render(second); err != nil {
+		t.Fatal(err)
+	}
+	if len(journal.aborted) != 1 || len(client.elementReqs) != 2 || client.elementReqs[0].Sequence != 1 || client.elementReqs[1].Sequence != 1 {
+		t.Fatalf("abort=%#v requests=%#v", journal.aborted, client.elementReqs)
+	}
+	if ref := renderer.RenderRef(); ref.Version != 1 || ref.SequenceUnknown {
+		t.Fatalf("ref=%#v", ref)
+	}
+}
+
+func TestCardKitRendererNativeConfirmFailureStaysUnknown(t *testing.T) {
+	client := &fakeCardKitClient{}
+	journal := &fakeNativeJournal{confirmErr: errors.New("persist failed")}
+	renderer := NewCardKitRendererWithNative(client, "source", nil, RenderBinding{BaseSessionID: "base", BatchID: "batch", RunCardSessionID: "run"}, journal)
+	first := card.Event{Type: "stream", Streaming: true, SessionID: "run", Segments: []card.Segment{{Kind: card.SegmentText, Text: "one"}}}
+	if err := renderer.Render(first); err != nil {
+		t.Fatal(err)
+	}
+	second := first
+	second.Segments = []card.Segment{{Kind: card.SegmentText, Text: "two"}}
+	if err := renderer.Render(second); err != nil {
+		t.Fatal(err)
+	}
+	if ref := renderer.RenderRef(); ref.Version != 0 || !ref.SequenceUnknown || ref.PendingSequence != 1 {
+		t.Fatalf("ref=%#v", ref)
+	}
+}
+
+func TestCardKitRendererNativePrepareFailureFailsClosed(t *testing.T) {
+	client := &fakeCardKitClient{}
+	journal := &fakeNativeJournal{prepareErr: errors.New("intent persistence uncertain")}
+	renderer := NewCardKitRendererWithNative(client, "source", nil, RenderBinding{BaseSessionID: "base", BatchID: "batch", RunCardSessionID: "run"}, journal)
+	first := card.Event{Type: "stream", Streaming: true, SessionID: "run", Segments: []card.Segment{{Kind: card.SegmentText, Text: "one"}}}
+	if err := renderer.Render(first); err != nil {
+		t.Fatal(err)
+	}
+	second := first
+	second.Segments = []card.Segment{{Kind: card.SegmentText, Text: "two"}}
+	if err := renderer.Render(second); err != nil {
+		t.Fatal(err)
+	}
+	if len(client.elementReqs) != 0 || len(client.updateReqs) != 0 {
+		t.Fatalf("client writes element/full=%d/%d", len(client.elementReqs), len(client.updateReqs))
+	}
+	if ref := renderer.RenderRef(); !ref.SequenceUnknown || ref.PendingSequence != 1 || ref.Version != 0 {
+		t.Fatalf("ref=%#v", ref)
+	}
+}
+
+func TestCardKitRouterRehydratePreservesSequenceUnknownAndSuppressesWrites(t *testing.T) {
+	client := &fakeCardKitClient{}
+	ref := session.RenderRef{CardID: "card", ReplyMessageID: "reply", Version: 7, SequenceUnknown: true, PendingSequence: 8}
+	renderer := NewCardKitRouterRenderer(client).Rehydrate("run", ref)
+	if err := renderer.Render(card.Event{Type: "result", SessionID: "run"}); err != nil {
+		t.Fatal(err)
+	}
+	if len(client.updateReqs) != 0 || len(client.elementReqs) != 0 {
+		t.Fatalf("rehydrated unknown wrote full/native: %d/%d", len(client.updateReqs), len(client.elementReqs))
+	}
+	if got := renderer.RenderRef(); got.Version != 7 || !got.SequenceUnknown || got.PendingSequence != 8 {
+		t.Fatalf("rehydrated ref=%#v", got)
+	}
 }
 
 func TestCardKitRendererCreateReplyThenUpdate(t *testing.T) {

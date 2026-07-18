@@ -79,6 +79,13 @@ type NativeSequenceIntent struct {
 	Candidate   int
 }
 
+type RenderBinding struct {
+	BaseSessionID    string
+	BatchID          string
+	LatestScope      string
+	RunCardSessionID string
+}
+
 type NativeSequenceJournal interface {
 	PrepareNative(context.Context, NativeSequenceIntent) error
 	ConfirmNative(context.Context, NativeSequenceIntent) error
