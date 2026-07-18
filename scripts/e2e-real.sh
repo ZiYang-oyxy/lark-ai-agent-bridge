@@ -486,17 +486,17 @@ printf 'pid=%s args=%s\n' "$$" "$args" >>"${FAKE_CLAUDE_LOG:?FAKE_CLAUDE_LOG is 
 case "$args" in
   *E2E_NATIVE_TEXT_STREAM_STOP_E2E_BLOCK*)
     printf '%s\n' '{"type":"content_block_delta","delta":{"type":"text_delta","text":"native-stop-one "}}'
-    sleep 0.12
+    sleep 1.2
     printf '%s\n' '{"type":"content_block_delta","delta":{"type":"text_delta","text":"native-stop-two "}}'
-    sleep 0.12
+    sleep 1.2
     printf '%s\n' '{"type":"content_block_delta","delta":{"type":"text_delta","text":"native-stop-three "}}'
     exec sleep 300
     ;;
   *E2E_NATIVE_TEXT_STREAM_NORMAL*)
     printf '%s\n' '{"type":"content_block_delta","delta":{"type":"text_delta","text":"native-normal-one "}}'
-    sleep 0.12
+    sleep 1.2
     printf '%s\n' '{"type":"content_block_delta","delta":{"type":"text_delta","text":"native-normal-two "}}'
-    sleep 0.12
+    sleep 1.2
     printf '%s\n' '{"type":"content_block_delta","delta":{"type":"text_delta","text":"native-normal-three "}}'
     printf '%s\n' '{"type":"result","result":"native-normal-final","model":"fake-claude-e2e","usage":{"output_tokens":1},"session_id":"fake-e2e-session"}'
     exit 0
