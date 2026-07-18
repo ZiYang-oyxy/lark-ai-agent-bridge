@@ -488,7 +488,8 @@ func TestCardKitRendererNativeAnswerIgnoresElapsedHeaderSuffix(t *testing.T) {
 
 func TestCardKitRendererNativeAnswerPreservesHeaderPhaseChanges(t *testing.T) {
 	client := &fakeCardKitClient{}
-	renderer := NewCardKitRendererWithNative(client, "source", nil, RenderBinding{
+	observer := &fakeCardKitObserver{}
+	renderer := NewCardKitRendererWithNative(client, "source", observer, RenderBinding{
 		BaseSessionID: "claude:chat", BatchID: "batch", LatestScope: "claude:chat", RunCardSessionID: "run-card",
 	}, &fakeNativeJournal{})
 	first := card.Event{
@@ -506,6 +507,15 @@ func TestCardKitRendererNativeAnswerPreservesHeaderPhaseChanges(t *testing.T) {
 	}
 	if len(client.elementReqs) != 0 || len(client.updateReqs) != 1 {
 		t.Fatalf("phase header change wrote element/full=%d/%d", len(client.elementReqs), len(client.updateReqs))
+	}
+	found := false
+	for i, action := range observer.actions {
+		if action == "cardkit_native_fallback" && strings.Contains(observer.details[i], "reason=static_fingerprint_changed") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("native fallback audit actions/details = %#v / %#v", observer.actions, observer.details)
 	}
 }
 

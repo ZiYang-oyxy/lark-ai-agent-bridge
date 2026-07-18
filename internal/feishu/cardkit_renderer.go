@@ -270,8 +270,12 @@ func (r *CardKitRenderer) updatePrepared(ctx context.Context, e card.Event, prep
 		r.recordRender("cardkit_sequence_unknown", e, fmt.Sprintf("key=%s card_id=%s pending_sequence=%d", r.renderKey(e), r.cardID, r.pendingSequence))
 		return nil
 	}
-	if r.nativeCandidate(prepared) {
+	fallbackReason := r.nativeFallbackReason(prepared)
+	if fallbackReason == "" {
 		return r.updateElementContent(ctx, e, prepared)
+	}
+	if prepared.EventCopy().Streaming && r.snapshot != nil {
+		r.recordRender("cardkit_native_fallback", e, fmt.Sprintf("key=%s card_id=%s reason=%s", r.renderKey(e), r.cardID, fallbackReason))
 	}
 	err := r.updateCard(ctx, e, prepared)
 	if err == nil {
@@ -280,13 +284,38 @@ func (r *CardKitRenderer) updatePrepared(ctx context.Context, e card.Event, prep
 	return err
 }
 
-func (r *CardKitRenderer) nativeCandidate(prepared card.PreparedLarkCard) bool {
-	if r.journal == nil || r.snapshot == nil || r.snapshot.nativeDisabled || r.interactionDepth != 0 || !validRenderBinding(r.binding) {
-		return false
+func (r *CardKitRenderer) nativeFallbackReason(prepared card.PreparedLarkCard) string {
+	if r.journal == nil {
+		return "journal_missing"
 	}
-	return prepared.EventCopy().Streaming && r.snapshot.prepared.NativeReady() && prepared.NativeReady() &&
-		r.snapshot.staticFingerprint == staticFingerprint(prepared) &&
-		prepared.Answer() != r.snapshot.prepared.Answer()
+	if r.snapshot == nil {
+		return "snapshot_missing"
+	}
+	if r.snapshot.nativeDisabled {
+		return "snapshot_native_disabled"
+	}
+	if r.interactionDepth != 0 {
+		return "interaction_in_progress"
+	}
+	if !validRenderBinding(r.binding) {
+		return "binding_invalid"
+	}
+	if !prepared.EventCopy().Streaming {
+		return "not_streaming"
+	}
+	if !r.snapshot.prepared.NativeReady() {
+		return "snapshot_not_native_ready"
+	}
+	if !prepared.NativeReady() {
+		return "prepared_not_native_ready"
+	}
+	if r.snapshot.staticFingerprint != staticFingerprint(prepared) {
+		return "static_fingerprint_changed"
+	}
+	if prepared.Answer() == r.snapshot.prepared.Answer() {
+		return "answer_unchanged"
+	}
+	return ""
 }
 
 func (r *CardKitRenderer) updateElementContent(ctx context.Context, e card.Event, prepared card.PreparedLarkCard) error {

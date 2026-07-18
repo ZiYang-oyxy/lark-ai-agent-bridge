@@ -89,6 +89,45 @@ func TestNewServeCardRouterAlwaysInjectsDurableJournal(t *testing.T) {
 	}
 }
 
+func TestServeCardRouterSwitchesToNativeAfterAnswerLayoutStabilizes(t *testing.T) {
+	client := &serveCardKitClientFake{}
+	journal := &serveNativeJournalFake{}
+	router := newServeCardRouter(client, nil, journal)
+	renderer, err := router.NewStreamingBound(t.Context(), feishu.RenderBinding{
+		BaseSessionID: "claude:chat", BatchID: "batch", RunCardSessionID: "run",
+	}, "reply")
+	if err != nil {
+		t.Fatal(err)
+	}
+	base := card.Event{
+		Type: "stream", Streaming: true, SessionID: "run",
+		StopButton: card.StopButton{Visible: true}, HeaderTemplate: "blue",
+	}
+	initial := base
+	initial.Activity = "reasoning"
+	initial.HeaderTitle = "🧠 正在推理 · ⏱ 1s"
+	initial.Message = "正在执行 Claude 请求..."
+	if err := renderer.Render(initial); err != nil {
+		t.Fatal(err)
+	}
+	firstAnswer := base
+	firstAnswer.Activity = "answering"
+	firstAnswer.HeaderTitle = "✍️ 正在回复 · ⏱ 3s"
+	firstAnswer.Segments = []card.Segment{{Kind: card.SegmentText, Text: "first"}}
+	if err := renderer.Render(firstAnswer); err != nil {
+		t.Fatal(err)
+	}
+	nextAnswer := firstAnswer
+	nextAnswer.HeaderTitle = "✍️ 正在回复 · ⏱ 4s"
+	nextAnswer.Segments = []card.Segment{{Kind: card.SegmentText, Text: "first second"}}
+	if err := renderer.Render(nextAnswer); err != nil {
+		t.Fatal(err)
+	}
+	if client.fullUpdates != 1 || client.elementUpdates != 1 || journal.prepares != 1 {
+		t.Fatalf("production router full/element/prepare = %d/%d/%d, want 1/1/1", client.fullUpdates, client.elementUpdates, journal.prepares)
+	}
+}
+
 var _ feishu.CardKitClientAPI = (*serveCardKitClientFake)(nil)
 var _ feishu.NativeSequenceJournal = (*serveNativeJournalFake)(nil)
 
