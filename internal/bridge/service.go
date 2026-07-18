@@ -977,9 +977,9 @@ func (s *Service) ensureWorkDirOrAsk(workDir, sessionID, replyToMessageID string
 
 func (s *Service) renderText(id, replyToMessageID string, kind card.SegmentKind, text string) error {
 	for i, page := range card.SplitLongText(text, s.Config.CardMaxChars) {
-		eventID := id
+		eventID := runID(id, replyToMessageID)
 		if i > 0 {
-			eventID = fmt.Sprintf("%s-page-%d", id, i+1)
+			eventID = fmt.Sprintf("%s-page-%d", eventID, i+1)
 		}
 		if err := s.Cards.Render(card.Event{Type: "message", SessionID: eventID, ReplyToMessageID: replyToMessageID, Segments: []card.Segment{{Kind: kind, Text: page}}}); err != nil {
 			return err

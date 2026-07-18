@@ -213,10 +213,28 @@ var errAttachmentFailureSummary = errors.New("attachment failure summary render 
 type attachmentFailureSummaryRenderer struct{}
 
 func (attachmentFailureSummaryRenderer) Render(event card.Event) error {
-	if event.SessionID == "attachment-failure" {
+	if strings.HasPrefix(event.SessionID, "attachment-failure") {
 		return errAttachmentFailureSummary
 	}
 	return nil
+}
+
+func TestRenderTextUsesDistinctCardSessionPerReply(t *testing.T) {
+	renderer := card.NewFakeRenderer()
+	svc := NewService(testConfig(t), renderer, newFakeRunner(), audit.NewRecorder())
+	if err := svc.renderText("attachment-failure", "message-one", card.SegmentError, "first"); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.renderText("attachment-failure", "message-two", card.SegmentError, "second"); err != nil {
+		t.Fatal(err)
+	}
+	events := renderer.Events()
+	if len(events) != 2 {
+		t.Fatalf("events = %#v", events)
+	}
+	if events[0].SessionID == events[1].SessionID || events[0].SessionID != "attachment-failure:message:message-one" || events[1].SessionID != "attachment-failure:message:message-two" {
+		t.Fatalf("card session IDs = %q, %q", events[0].SessionID, events[1].SessionID)
+	}
 }
 
 func (c *resolutionCacheStub) Resolve(_ context.Context, _ media.Downloader, _ []media.Ref) media.Resolution {

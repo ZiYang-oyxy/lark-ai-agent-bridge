@@ -259,6 +259,24 @@ lark-cli im +messages-reply --as user \
 
 `debounce_dm` 会使用 `lark-cli im +messages-send --as user --user-id "$BOT_OPEN_ID"` 并发发送两条真实 P2P 普通消息。若当前用户态 `lark-cli` 与 bridge app 的 open_id 域不兼容，case 必须非零失败并保留 `dm-pair-*.err`，不得回退到群聊冒充 DM；此时需改用同 bridge app 的用户 OAuth profile 或有效 P2P user id 后重跑。
 
+### Media 输入真实 E2E
+
+Media case 必须设置 `E2E_REAL_E2E_FAKE_CLAUDE=1` 和 `E2E_REAL_E2E_P2P_CHAT_ID`。后者是当前测试用户与该 bot 的真实 P2P `chat_id`,用于发送飞书原生 `file` 消息;群聊 `post` 不支持 `{tag:file}`。
+
+```bash
+./scripts/e2e-real.sh \
+  --case media_attachment_only --case media_images --case media_text_files \
+  --case media_partial --case media_rejected
+```
+
+验收要求:
+
+- JPEG/PNG/WebP/GIF 和 `.txt/.md/.json/.csv` 的 SHA-256 cache path 出现在 fake Claude prompt。
+- mixed text+image 正常执行;不支持附件得到用户可见失败卡。
+- forged MIME/content、26 MiB oversized、PDF、DOCX、audio 和未知二进制均不启动 Agent,其预期 cache path 不得出现在 fake log。
+- 连续失败消息必须各自回复自己的消息;不得因复用 CardKit key 而更新上一张失败卡。
+- evidence 目录至少包含 `summary.md`、`audit.jsonl`、`messages.jsonl`、`fake-claude.log` 和 `mget/*.json`。
+
 ## 证据报告
 
 生成本地证据报告：

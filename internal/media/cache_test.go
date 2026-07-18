@@ -134,6 +134,53 @@ func TestCacheRejectsDeclaredAndDetectedContentMismatch(t *testing.T) {
 	}
 }
 
+func TestCacheAcceptsGenericFeishuFileContentTypeAfterSniffing(t *testing.T) {
+	data := []byte("plain text from a Feishu file resource\n")
+	downloader := &fixtureDownloader{fixtures: map[string]downloadFixture{
+		"notes": fixture("notes.txt", "application/octet-stream", data),
+	}}
+	cache := NewCache(filepath.Join(t.TempDir(), "media"), testLimits())
+
+	resolution := cache.Resolve(context.Background(), downloader, []Ref{{MessageID: "m1", FileKey: "notes", Kind: "file", Name: "notes.txt"}})
+	defer resolution.Release()
+	if len(resolution.Failures) != 0 || len(resolution.Attachments) != 1 {
+		t.Fatalf("resolution = %+v", resolution)
+	}
+	if got := resolution.Attachments[0].MIME; got != "text/plain" {
+		t.Fatalf("canonical MIME = %q, want text/plain", got)
+	}
+}
+
+func TestCacheAcceptsFeishuCSVTransportMIMEAfterSniffing(t *testing.T) {
+	data := []byte("kind,marker\nmedia,e2e\n")
+	downloader := &fixtureDownloader{fixtures: map[string]downloadFixture{
+		"csv": fixture("sample.csv", "application/x-xls", data),
+	}}
+	cache := NewCache(filepath.Join(t.TempDir(), "media"), testLimits())
+
+	resolution := cache.Resolve(context.Background(), downloader, []Ref{{MessageID: "m1", FileKey: "csv", Kind: "file", Name: "sample.csv"}})
+	defer resolution.Release()
+	if len(resolution.Failures) != 0 || len(resolution.Attachments) != 1 {
+		t.Fatalf("resolution = %+v", resolution)
+	}
+	if got := resolution.Attachments[0].MIME; got != "text/csv" {
+		t.Fatalf("canonical MIME = %q, want text/csv", got)
+	}
+}
+
+func TestCacheStillRejectsGenericFeishuFileContentMismatch(t *testing.T) {
+	downloader := &fixtureDownloader{fixtures: map[string]downloadFixture{
+		"forged": fixture("forged.png", "application/octet-stream", []byte("plain text disguised as PNG")),
+	}}
+	cache := NewCache(filepath.Join(t.TempDir(), "media"), testLimits())
+
+	resolution := cache.Resolve(context.Background(), downloader, []Ref{{MessageID: "m1", FileKey: "forged", Kind: "file", Name: "forged.png"}})
+	defer resolution.Release()
+	if len(resolution.Attachments) != 0 || len(resolution.Failures) != 1 || resolution.Failures[0].Code != "content_mismatch" {
+		t.Fatalf("resolution = %+v", resolution)
+	}
+}
+
 func TestCacheAllowsPartialSuccessAndDerivesImageExtensionWithoutName(t *testing.T) {
 	downloader := &fixtureDownloader{fixtures: map[string]downloadFixture{
 		"image": fixture("", "image/png", pngFixture()),

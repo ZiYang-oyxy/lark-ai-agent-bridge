@@ -17,7 +17,7 @@ The E2E suite verifies the bridge as a real user would use it:
 - Stop and workdir button interactions are validated through historical Chrome MCP runs and local CardKit/action tests; the repository no longer keeps a self-written Chrome/CDP helper.
 - Evidence is written locally for later debugging.
 
-Single-chat E2E is currently held. The available local `lark-cli` user token is from a different app than the bridge app, so P2P tests can hit `open_id cross app`.
+Media file E2E uses the existing P2P chat between the current `lark-cli` user and this bot. This avoids the invalid assumption that a Feishu `post` can contain a `{tag:file}` element. The separate `debounce_dm` case still uses `--user-id "$BOT_OPEN_ID"`; if that app-domain identifier is incompatible, that case remains an explicit nonzero external prerequisite rather than falling back to group chat.
 
 ## Configuration
 
@@ -44,10 +44,12 @@ export E2E_REAL_E2E_TIMEOUT_SEC="420"
 export E2E_REAL_E2E_DEFAULT_WORKDIR="/tmp/lark-agent-bridge-real"
 export E2E_REAL_E2E_FAKE_CLAUDE="1"
 export E2E_REAL_E2E_CALLBACK_ADDR="127.0.0.1:28080"
+export E2E_REAL_E2E_P2P_CHAT_ID="oc_xxx"
 ```
 
 `LARK_BOT_OPEN_ID` is optional. If it is omitted, `scripts/e2e-real.sh` queries `bot/v3/info` with the bridge app token. The script must never print app secret or tenant token.
 `E2E_REAL_E2E_CALLBACK_ADDR` is optional; it pins the local callback port used only by the `stop_preserves_queue` case. Without it, the script selects a loopback port for that run.
+`E2E_REAL_E2E_P2P_CHAT_ID` is required only by media file cases. It must be the current user's existing direct-chat `oc_...` with this exact bot; do not substitute a group chat or another similarly named bot.
 
 ## Feishu App Prerequisites
 
@@ -78,6 +80,7 @@ go version
 jq --version
 lark-cli --version
 claude --version
+python3 -c 'from PIL import Image; print(Image.__version__)'
 ```
 
 The `lark-cli` user identity must be logged in and able to send a text message to `E2E_E2E_CHAT_ID`:
@@ -89,6 +92,8 @@ lark-cli im +messages-send --as user \
 ```
 
 For full reliability mode, set `E2E_REAL_E2E_FAKE_CLAUDE=1`. The durable restart, batching, queue-capacity and scope-parallel cases require it so they can assert a deterministic child-process argv and lifecycle without spending model tokens. The fake Claude only affects the bridge process started by the E2E script; Feishu message delivery, long connection events, CardKit create/update, audit logging, and message revoke events are still real.
+
+The five media cases also require fake Claude. They assert exact accepted cache paths in the child prompt and prove rejected paths never start or reach a child. Upload, long-connection delivery, tenant-token resource download, cache validation, CardKit replies, and `mget` verification remain real.
 
 ## Commands
 
@@ -163,6 +168,21 @@ Full-only cases:
 - `scope_parallel`: creates two thread scopes, reads both actual `thread_id` values through `mget`, verifies both blocking child processes start, and constructs exact thread-scoped card session ids for loopback stop cleanup.
 - `stop_preserves_queue`: posts a real stop action to the bridge's local `/card/callback` compatibility endpoint, verifies `batch_stop_requested` and the stopped active card, then verifies the already queued input starts and reaches a final CardKit result. This endpoint is intentionally local to the E2E bridge process; production button delivery remains long connection `card.action.trigger`.
 - `recall_state`: exclusively verifies real `im.message.recalled_v1` delivery by recalling a queued input and then its active input, requiring new offset-bounded recall audit states, the active stopped card, and no result card for the recalled queued marker. Missing subscription delivery is an expected external blocker and remains a nonzero failure.
+- `media_attachment_only`: sends an attachment-only JPEG through an `@bot + img` post and verifies its SHA-256 cache path reaches the Agent prompt.
+- `media_images`: sends JPEG/PNG/WebP/GIF in one real post and verifies all four accepted paths reach one Agent prompt.
+- `media_text_files`: sends `.txt/.md/.json/.csv` as native P2P file messages and verifies each canonical cache path reaches the Agent prompt.
+- `media_partial`: verifies mixed text+image succeeds, then verifies an unsupported peer file gets a user-visible failure without starting another Agent process.
+- `media_rejected`: verifies forged image content, a 26 MiB file, PDF, DOCX, audio-as-file, and unknown binary all fail visibly and never reach the Agent prompt.
+
+Run the media gate serially, with no other bridge process connected to the same app:
+
+```bash
+E2E_REAL_E2E_FAKE_CLAUDE=1 ./scripts/e2e-real.sh \
+  --case media_attachment_only --case media_images --case media_text_files \
+  --case media_partial --case media_rejected
+```
+
+Feishu file resources currently return `application/octet-stream` for ordinary files and `application/x-xls` for CSV. The bridge maps those transport declarations only after an allowlisted extension match, then still requires byte-level content sniffing. A failure card is polled through `mget` because the read API can lag the successful CardKit reply audit by a few seconds.
 
 The restart cases codify the durable contract exactly: context resumes, pending does not. `debouncing`, `queued`, and `starting` inputs become `cancelled`; `running` becomes `interrupted`; old commands are never automatically re-run, so the user must send a new message after restart.
 

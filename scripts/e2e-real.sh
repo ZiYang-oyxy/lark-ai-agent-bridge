@@ -29,6 +29,11 @@ FULL_EXTRA_CASES=(
   scope_parallel
   stop_preserves_queue
   recall_state
+  media_attachment_only
+  media_images
+  media_text_files
+  media_partial
+  media_rejected
 )
 
 MODE="smoke"
@@ -40,6 +45,7 @@ RUN_DIR="$ROOT/.cache/e2e/real-$RUN_ID"
 DEFAULT_WORKDIR="${E2E_REAL_E2E_DEFAULT_WORKDIR:-/tmp/lark-agent-bridge-real-$RUN_ID}"
 WAIT_TIMEOUT="${E2E_REAL_E2E_TIMEOUT_SEC:-420}"
 USE_FAKE_CLAUDE="${E2E_REAL_E2E_FAKE_CLAUDE:-0}"
+MEDIA_P2P_CHAT_ID="${E2E_REAL_E2E_P2P_CHAT_ID:-}"
 FAKE_BIN_DIR=""
 SERVER_PID=""
 FAILURES=0
@@ -63,6 +69,7 @@ Environment:
   .lark-agent-bridge/e2e.env is loaded automatically when present.
   Required for real execution: LARK_APP_ID, LARK_APP_SECRET, E2E_E2E_CHAT_ID.
   Optional: LARK_BOT_OPEN_ID, E2E_REAL_E2E_TIMEOUT_SEC, E2E_REAL_E2E_FAKE_CLAUDE=1.
+  Media file cases also require E2E_REAL_E2E_P2P_CHAT_ID for the user's direct chat with this bot.
 USAGE
 }
 
@@ -155,6 +162,8 @@ MGET_DIR="$RUN_DIR/mget"
 SERVER_LOG="$RUN_DIR/server.log"
 SESSION_STORE="$RUN_DIR/sessions.json"
 FAKE_CLAUDE_LOG="$RUN_DIR/fake-claude.log"
+MEDIA_CACHE_DIR="$RUN_DIR/media-cache"
+MEDIA_FIXTURE_DIR="$RUN_DIR/media-fixtures"
 FAKE_BIN_DIR="$RUN_DIR/bin"
 SERVER_BIN="$RUN_DIR/lark-agent-bridge-e2e"
 SERVER_PID_FILE="$RUN_DIR/server.pid"
@@ -312,7 +321,7 @@ start_server_if_needed() {
   prepare_fake_claude_if_needed
   log "starting bridge serve"
   local -a server_env
-  server_env=("PATH=$FAKE_BIN_DIR:$PATH" "E2E_AUDIT_LOG=$AUDIT" "E2E_SESSION_STORE=$SESSION_STORE" "E2E_CALLBACK_ADDR=$CALLBACK_ADDR" "GOCACHE=$GOCACHE")
+  server_env=("PATH=$FAKE_BIN_DIR:$PATH" "E2E_AUDIT_LOG=$AUDIT" "E2E_SESSION_STORE=$SESSION_STORE" "E2E_MEDIA_CACHE_DIR=$MEDIA_CACHE_DIR" "E2E_CALLBACK_ADDR=$CALLBACK_ADDR" "GOCACHE=$GOCACHE")
   if [[ "$USE_FAKE_CLAUDE" == "1" ]]; then
     server_env+=("E2E_CLAUDE_BIN=$FAKE_BIN_DIR/claude" "FAKE_CLAUDE_LOG=$FAKE_CLAUDE_LOG")
   fi
@@ -443,6 +452,132 @@ send_text() {
   printf '%s\n' "$msg_id"
 }
 
+prepare_media_fixtures() {
+  if [[ -f "$MEDIA_FIXTURE_DIR/.ready" ]]; then
+    return
+  fi
+  require_cmd python3
+  mkdir -p "$MEDIA_FIXTURE_DIR"
+  python3 - "$MEDIA_FIXTURE_DIR" <<'PY'
+from pathlib import Path
+import sys
+from PIL import Image
+
+root = Path(sys.argv[1])
+image = Image.new("RGB", (16, 16), (255, 0, 0))
+for x in range(8, 16):
+    for y in range(16):
+        image.putpixel((x, y), (0, 128, 255))
+for name, format_name in (("sample.jpg", "JPEG"), ("sample.png", "PNG"), ("sample.gif", "GIF"), ("sample.webp", "WEBP")):
+    image.save(root / name, format=format_name)
+PY
+  printf 'MEDIA_TXT_%s\n' "$RUN_ID" >"$MEDIA_FIXTURE_DIR/sample.txt"
+  printf '# MEDIA_MD_%s\n' "$RUN_ID" >"$MEDIA_FIXTURE_DIR/sample.md"
+  jq -nc --arg marker "MEDIA_JSON_$RUN_ID" '{marker:$marker}' >"$MEDIA_FIXTURE_DIR/sample.json"
+  printf 'kind,marker\nmedia,MEDIA_CSV_%s\n' "$RUN_ID" >"$MEDIA_FIXTURE_DIR/sample.csv"
+  printf 'this is text disguised as an image\n' >"$MEDIA_FIXTURE_DIR/forged.png"
+  dd if=/dev/zero bs=1048576 count=26 2>/dev/null | tr '\000' 'a' >"$MEDIA_FIXTURE_DIR/oversized.txt"
+  printf '%%PDF-1.4\n%% E2E unsupported fixture\n' >"$MEDIA_FIXTURE_DIR/unsupported.pdf"
+  printf 'PK\003\004E2E unsupported docx fixture\n' >"$MEDIA_FIXTURE_DIR/unsupported.docx"
+  printf 'RIFF0000WAVEE2E unsupported audio fixture\n' >"$MEDIA_FIXTURE_DIR/unsupported.wav"
+  printf '\000\001\002E2E unknown binary fixture\n' >"$MEDIA_FIXTURE_DIR/unsupported.bin"
+  : >"$MEDIA_FIXTURE_DIR/.ready"
+}
+
+media_relative_path() {
+  local path="$1"
+  case "$path" in
+    "$ROOT"/*) printf './%s\n' "${path#"$ROOT/"}" ;;
+    *) echo "media fixture is outside repo root: $path" >&2; return 1 ;;
+  esac
+}
+
+upload_media_key() {
+  local case_name="$1"
+  local kind="$2"
+  local path="$3"
+  local relative msg_id file key
+  relative="$(media_relative_path "$path")"
+  case "$kind" in
+    image)
+      msg_id="$(lark-cli im +messages-send --as user --chat-id "$E2E_E2E_CHAT_ID" --image "$relative" --jq '.data.message_id // .message_id // .data.message_id' | tail -n 1)"
+      ;;
+    file)
+      msg_id="$(lark-cli im +messages-send --as user --chat-id "$E2E_E2E_CHAT_ID" --file "$relative" --jq '.data.message_id // .message_id // .data.message_id' | tail -n 1)"
+      ;;
+    *) echo "unsupported media upload kind: $kind" >&2; return 1 ;;
+  esac
+  if [[ -z "$msg_id" || "$msg_id" == "null" ]]; then
+    echo "failed to upload media fixture: $path" >&2
+    return 1
+  fi
+  file="$(mget "${case_name}_upload" "$msg_id")"
+  key="$(jq -r '
+    .data.messages[0] as $message |
+    if $message.msg_type == "image" then
+      ($message.content | capture("\\[Image: (?<key>img_[^]]+)\\]").key)
+    elif $message.msg_type == "file" then
+      ($message.content | capture("key=\\\"(?<key>file_[^\\\"]+)\\\"").key)
+    else empty end
+  ' "$file")"
+  if [[ -z "$key" || "$key" == "null" ]]; then
+    echo "uploaded media message has no resource key: $msg_id ($file)" >&2
+    return 1
+  fi
+  record_message "$case_name" fixture_upload "$msg_id" "$file"
+  printf '%s\n' "$key"
+}
+
+send_media_post() {
+  local elements="$1"
+  local content msg_id
+  content="$(jq -nc --arg bot "$BOT_OPEN_ID" --argjson elements "$elements" \
+    '{zh_cn:{title:"",content:[([{tag:"at",user_id:$bot}] + $elements)]}}')"
+  msg_id="$(lark-cli im +messages-send --as user --chat-id "$E2E_E2E_CHAT_ID" --msg-type post --content "$content" --jq '.data.message_id // .message_id // .data.message_id' | tail -n 1)"
+  if [[ -z "$msg_id" || "$msg_id" == "null" ]]; then
+    echo "failed to send media post" >&2
+    return 1
+  fi
+  printf '%s\n' "$msg_id"
+}
+
+require_media_p2p_chat() {
+  if [[ -z "$MEDIA_P2P_CHAT_ID" ]]; then
+    echo "media file cases require E2E_REAL_E2E_P2P_CHAT_ID for the user's direct chat with this bot" >&2
+    return 1
+  fi
+}
+
+send_direct_media() {
+  local kind="$1"
+  local path="$2"
+  local relative msg_id
+  require_media_p2p_chat
+  relative="$(media_relative_path "$path")"
+  case "$kind" in
+    image)
+      msg_id="$(lark-cli im +messages-send --as user --chat-id "$MEDIA_P2P_CHAT_ID" --image "$relative" --jq '.data.message_id // .message_id // .data.message_id' | tail -n 1)"
+      ;;
+    file)
+      msg_id="$(lark-cli im +messages-send --as user --chat-id "$MEDIA_P2P_CHAT_ID" --file "$relative" --jq '.data.message_id // .message_id // .data.message_id' | tail -n 1)"
+      ;;
+    *) echo "unsupported direct media kind: $kind" >&2; return 1 ;;
+  esac
+  if [[ -z "$msg_id" || "$msg_id" == "null" ]]; then
+    echo "failed to send direct media fixture: $path" >&2
+    return 1
+  fi
+  printf '%s\n' "$msg_id"
+}
+
+media_cache_path() {
+  local path="$1"
+  local extension="$2"
+  local digest
+  digest="$(shasum -a 256 "$path" | awk '{print $1}')"
+  printf '%s/%s%s\n' "$MEDIA_CACHE_DIR" "$digest" "$extension"
+}
+
 send_group_pair() {
   local first_text="$1"
   local second_text="$2"
@@ -517,6 +652,28 @@ mget() {
   local out="$MGET_DIR/$case_name-$msg_id.json"
   lark-cli im +messages-mget --as user --message-ids "$msg_id" --format json >"$out"
   printf '%s\n' "$out"
+}
+
+WAIT_MESSAGE_FILE=""
+wait_message_contains() {
+  local case_name="$1"
+  local msg_id="$2"
+  local needle="$3"
+  local timeout="${4:-$WAIT_TIMEOUT}"
+  local start file
+  start="$(date +%s)"
+  while true; do
+    file="$(mget "$case_name" "$msg_id" 2>/dev/null || true)"
+    if [[ -n "$file" && -f "$file" ]] && file_contains "$file" "$needle"; then
+      WAIT_MESSAGE_FILE="$file"
+      return 0
+    fi
+    if (( $(date +%s) - start >= timeout )); then
+      echo "timed out waiting for message $msg_id to contain: $needle" >&2
+      return 1
+    fi
+    sleep 1
+  done
 }
 
 thread_id_for_message() {
@@ -719,6 +876,40 @@ fake_log_mark() {
     wc -l <"$FAKE_CLAUDE_LOG" | tr -d ' '
   else
     printf '0\n'
+  fi
+}
+
+assert_fake_paths_since() {
+  local mark="$1"
+  shift
+  local path
+  for path in "$@"; do
+    if ! tail -n "+$((mark + 1))" "$FAKE_CLAUDE_LOG" | grep -F -- "$path" >/dev/null 2>&1; then
+      echo "fake Claude prompt did not contain accepted media path: $path" >&2
+      return 1
+    fi
+  done
+}
+
+assert_fake_paths_absent_since() {
+  local mark="$1"
+  shift
+  local path
+  for path in "$@"; do
+    if tail -n "+$((mark + 1))" "$FAKE_CLAUDE_LOG" 2>/dev/null | grep -F -- "$path" >/dev/null 2>&1; then
+      echo "rejected media path reached fake Claude prompt: $path" >&2
+      return 1
+    fi
+  done
+}
+
+assert_fake_log_unchanged() {
+  local before="$1"
+  local after
+  after="$(fake_log_mark)"
+  if [[ "$after" -ne "$before" ]]; then
+    echo "rejected attachment unexpectedly started fake Claude: before=$before after=$after" >&2
+    return 1
   fi
 }
 
@@ -1161,6 +1352,140 @@ case_recall_state() {
   assert_file_contains "$file" "已停止"
   record_message recall_state active_cancelled "$active" "$file"
   record_message recall_state queued_cancelled "$queued"
+}
+
+case_media_attachment_only() {
+  require_fake_claude
+  prepare_media_fixtures
+  local source="$MEDIA_FIXTURE_DIR/sample.jpg"
+  local key elements msg file log_mark expected
+  key="$(upload_media_key media_attachment_only image "$source")"
+  elements="$(jq -nc --arg key "$key" '[{tag:"img",image_key:$key}]')"
+  expected="$(media_cache_path "$source" .jpg)"
+  log_mark="$(fake_log_mark)"
+  msg="$(send_media_post "$elements")"
+  wait_audit "$msg.*event=result" 60
+  wait_file_contains "$FAKE_CLAUDE_LOG" "$expected" 60
+  assert_fake_paths_since "$log_mark" "$expected"
+  file="$(mget media_attachment_only "$msg")"
+  assert_file_contains "$file" "FAKE_E2E_STARTED"
+  assert_no_error_event "$msg"
+  record_message media_attachment_only attachment_only_jpeg "$msg" "$file"
+}
+
+case_media_images() {
+  require_fake_claude
+  prepare_media_fixtures
+  local jpg="$MEDIA_FIXTURE_DIR/sample.jpg"
+  local png="$MEDIA_FIXTURE_DIR/sample.png"
+  local webp="$MEDIA_FIXTURE_DIR/sample.webp"
+  local gif="$MEDIA_FIXTURE_DIR/sample.gif"
+  local jpg_key png_key webp_key gif_key elements msg file log_mark
+  local jpg_path png_path webp_path gif_path
+  jpg_key="$(upload_media_key media_images image "$jpg")"
+  png_key="$(upload_media_key media_images image "$png")"
+  webp_key="$(upload_media_key media_images image "$webp")"
+  gif_key="$(upload_media_key media_images image "$gif")"
+  elements="$(jq -nc --arg jpg "$jpg_key" --arg png "$png_key" --arg webp "$webp_key" --arg gif "$gif_key" \
+    '[{tag:"img",image_key:$jpg},{tag:"img",image_key:$png},{tag:"img",image_key:$webp},{tag:"img",image_key:$gif}]')"
+  jpg_path="$(media_cache_path "$jpg" .jpg)"
+  png_path="$(media_cache_path "$png" .png)"
+  webp_path="$(media_cache_path "$webp" .webp)"
+  gif_path="$(media_cache_path "$gif" .gif)"
+  log_mark="$(fake_log_mark)"
+  msg="$(send_media_post "$elements")"
+  wait_audit "$msg.*event=result" 60
+  wait_file_contains "$FAKE_CLAUDE_LOG" "$gif_path" 60
+  assert_fake_paths_since "$log_mark" "$jpg_path" "$png_path" "$webp_path" "$gif_path"
+  file="$(mget media_images "$msg")"
+  assert_file_contains "$file" "FAKE_E2E_STARTED"
+  assert_no_error_event "$msg"
+  record_message media_images image_matrix "$msg" "$file"
+}
+
+case_media_text_files() {
+  require_fake_claude
+  require_media_p2p_chat
+  prepare_media_fixtures
+  local source extension role msg file log_mark expected
+  for extension in txt md json csv; do
+    source="$MEDIA_FIXTURE_DIR/sample.$extension"
+    role="text_file_$extension"
+    expected="$(media_cache_path "$source" ".$extension")"
+    log_mark="$(fake_log_mark)"
+    msg="$(send_direct_media file "$source")"
+    wait_audit "$msg.*event=result" 60
+    wait_file_contains "$FAKE_CLAUDE_LOG" "$expected" 60
+    assert_fake_paths_since "$log_mark" "$expected"
+    file="$(mget "media_text_files_$extension" "$msg")"
+    assert_file_contains "$file" "FAKE_E2E_STARTED"
+    assert_no_error_event "$msg"
+    record_message media_text_files "$role" "$msg" "$file"
+  done
+}
+
+case_media_partial() {
+  require_fake_claude
+  require_media_p2p_chat
+  prepare_media_fixtures
+  local image="$MEDIA_FIXTURE_DIR/sample.png"
+  local rejected="$MEDIA_FIXTURE_DIR/unsupported.pdf"
+  local marker="E2E_${RUN_ID}_MEDIA_MIXED_PARTIAL"
+  local image_key elements msg file log_mark image_path rejected_path rejected_msg rejected_file
+  image_key="$(upload_media_key media_partial image "$image")"
+  elements="$(jq -nc --arg marker "$marker" --arg image "$image_key" \
+    '[{tag:"text",text:$marker},{tag:"img",image_key:$image}]')"
+  image_path="$(media_cache_path "$image" .png)"
+  rejected_path="$(media_cache_path "$rejected" .pdf)"
+  log_mark="$(fake_log_mark)"
+  msg="$(send_media_post "$elements")"
+  wait_audit "$msg.*event=result" 60
+  wait_file_contains "$FAKE_CLAUDE_LOG" "$image_path" 60
+  assert_fake_paths_since "$log_mark" "$image_path"
+  file="$(mget media_partial "$msg")"
+  assert_file_contains "$file" "FAKE_E2E_STARTED"
+  assert_no_error_event "$msg"
+  record_message media_partial mixed_text_image "$msg" "$file"
+
+  log_mark="$(fake_log_mark)"
+  rejected_msg="$(send_direct_media file "$rejected")"
+  wait_audit "reply_to=$rejected_msg event=message" 60
+  wait_message_contains media_partial_rejected "$rejected_msg" "附件处理失败，未执行：" 60
+  rejected_file="$WAIT_MESSAGE_FILE"
+  assert_file_contains "$rejected_file" "unsupported_media"
+  assert_fake_log_unchanged "$log_mark"
+  assert_fake_paths_absent_since "$log_mark" "$rejected_path"
+  record_message media_partial rejected_peer "$rejected_msg" "$rejected_file"
+}
+
+run_media_rejection() {
+  local label="$1"
+  local source="$2"
+  local expected_code="$3"
+  local msg file log_mark rejected_path extension
+  extension=".${source##*.}"
+  rejected_path="$(media_cache_path "$source" "$extension")"
+  log_mark="$(fake_log_mark)"
+  msg="$(send_direct_media file "$source")"
+  wait_audit "reply_to=$msg event=message" 60
+  wait_message_contains "media_rejected_$label" "$msg" "附件处理失败，未执行：" 60
+  file="$WAIT_MESSAGE_FILE"
+  assert_file_contains "$file" "$expected_code"
+  assert_fake_log_unchanged "$log_mark"
+  assert_fake_paths_absent_since "$log_mark" "$rejected_path"
+  record_message media_rejected "$label" "$msg" "$file"
+}
+
+case_media_rejected() {
+  require_fake_claude
+  require_media_p2p_chat
+  prepare_media_fixtures
+  run_media_rejection forged_mismatch "$MEDIA_FIXTURE_DIR/forged.png" content_mismatch
+  run_media_rejection oversized "$MEDIA_FIXTURE_DIR/oversized.txt" file_too_large
+  run_media_rejection pdf "$MEDIA_FIXTURE_DIR/unsupported.pdf" unsupported_media
+  run_media_rejection docx "$MEDIA_FIXTURE_DIR/unsupported.docx" unsupported_media
+  run_media_rejection audio "$MEDIA_FIXTURE_DIR/unsupported.wav" unsupported_media
+  run_media_rejection attachment_only_total_failure "$MEDIA_FIXTURE_DIR/unsupported.bin" unsupported_media
 }
 
 run_case() {

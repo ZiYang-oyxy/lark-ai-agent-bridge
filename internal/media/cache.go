@@ -376,6 +376,13 @@ func (c *Cache) finishDelete(path string, done chan struct{}, generation uint64)
 func validateDeclared(ref Ref, name, contentType string) (string, *Failure) {
 	if name != "" {
 		canonical, err := Validate(name, contentType)
+		if err != nil && ref.Kind == "file" {
+			declared, _, parseErr := mime.ParseMediaType(contentType)
+			policy, allowedExtension := policiesByExtension[strings.ToLower(filepath.Ext(strings.TrimSpace(name)))]
+			if parseErr == nil && strings.EqualFold(declared, "application/octet-stream") && allowedExtension {
+				return policy.canonical, nil
+			}
+		}
 		if err != nil {
 			failed := failure(ref, "unsupported_media", err.Error())
 			return "", &failed

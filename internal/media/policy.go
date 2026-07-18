@@ -31,7 +31,7 @@ var policiesByExtension = map[string]mediaPolicy{
 	".md":       policy("text/markdown", "text/markdown", "text/plain"),
 	".markdown": policy("text/markdown", "text/markdown", "text/plain"),
 	".json":     policy("application/json", "application/json"),
-	".csv":      policy("text/csv", "text/csv", "text/plain"),
+	".csv":      policy("text/csv", "text/csv", "text/plain", "application/x-xls"),
 }
 
 // Validate performs a preliminary allowlist check against the declared MIME
