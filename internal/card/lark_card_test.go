@@ -1,16 +1,59 @@
 package card
 
 import (
+	"regexp"
 	"strings"
 	"testing"
 )
+
+func TestBuildLarkCardUsesValidElementIDs(t *testing.T) {
+	valid := regexp.MustCompile(`^[A-Za-z][A-Za-z0-9_]{0,19}$`)
+	cards := []map[string]any{
+		BuildLarkCard(Event{
+			Type:      "config",
+			SessionID: "REDACTED",
+			ConfigForm: &ConfigForm{
+				Model: "default", Effort: "default", ReplyMode: "append",
+				Models: []string{"default"}, Efforts: []string{"default"}, ReplyModes: []string{"append"},
+			},
+		}),
+		BuildLarkCard(Event{
+			Type: "stream", SessionID: "claude:chat", Streaming: true,
+			Segments: []Segment{{Kind: SegmentText, Text: "answer"}, {Kind: SegmentThought, Text: "thought"}, {Kind: SegmentTool, Text: "tool"}},
+			Actions: WorkDirCreateActions("/tmp/work"), StopButton: StopButton{Visible: true},
+		}),
+	}
+	var walk func(any)
+	walk = func(value any) {
+		switch typed := value.(type) {
+		case map[string]any:
+			if id, ok := typed["element_id"].(string); ok && !valid.MatchString(id) {
+				t.Errorf("invalid Feishu element_id %q", id)
+			}
+			for _, child := range typed {
+				walk(child)
+			}
+		case []any:
+			for _, child := range typed {
+				walk(child)
+			}
+		case []map[string]any:
+			for _, child := range typed {
+				walk(child)
+			}
+		}
+	}
+	for _, payload := range cards {
+		walk(payload)
+	}
+}
 
 func TestBuildLarkCardIncludesActionsAndMeta(t *testing.T) {
 	card := BuildLarkCard(Event{
 		Type:      "workdir_confirm",
 		SessionID: "claude:chat",
 		Segments:  []Segment{{Kind: SegmentText, Text: "Workdir does not exist: /tmp/work"}},
-		Actions:   WorkDirCreateActions("/tmp/work"),
+		Actions:   WorkDirCreateActions("REDACTED"),
 		Meta:      Meta{Agent: "REDACTED", Model: "REDACTED", RunTokens: 42, TotalTokens: 4200, User: "REDACTED", IP: "REDACTED", WorkDir: "REDACTED", Status: "REDACTED"},
 	})
 	if card["schema"] != "2.0" {
@@ -54,7 +97,7 @@ func TestBuildLarkCardIncludesActionsAndMeta(t *testing.T) {
 		t.Fatalf("meta content contains machine prefixes: %q", metaContent)
 	}
 	if !containsAll(metaContent, "REDACTED", "REDACTED", "REDACTED", "REDACTED", "REDACTED", "REDACTED") {
-		t.Fatalf("REDACTED", metaContent)
+		t.Fatalf("meta content = %q", metaContent)
 	}
 	assertColumnWeights(t, columnSets[0], []int{10, 14, 18})
 	assertColumnWeights(t, columnSets[1], []int{10, 12, 30})
@@ -96,15 +139,15 @@ func TestBuildLarkCardRendersRuntimeConfigForm(t *testing.T) {
 			Model:      "opus",
 			Effort:     "high",
 			ReplyMode:  "latest-card",
-			Models:     []string{"REDACTED", "REDACTED", "REDACTED", "REDACTED"},
+			Models:     []string{"default", "sonnet", "opus", "haiku"},
 			Efforts:    []string{"default", "low", "medium", "high"},
 			ReplyModes: []string{"append", "append-clean-card", "latest-card"},
 		},
 		Segments:  []Segment{{Kind: SegmentText, Text: "must not appear beside the form"}},
 		Streaming: true,
 	})
-	body := payload["body"].(map[string]any)
-	elements := body["elements"].([]any)
+	body := payload["REDACTED"].(map[string]any)
+	elements := body["REDACTED"].([]any)
 	var form map[string]any
 	for _, raw := range elements {
 		element := raw.(map[string]any)
@@ -190,7 +233,7 @@ func TestBuildLarkCardUsesFinalStopButtonLabels(t *testing.T) {
 	}
 	for _, tt := range tests {
 		payload := BuildLarkCard(Event{Type: tt.eventType, SessionID: "claude:chat", StopButton: StopButton{Visible: true, Disabled: true}})
-		elements := payload["REDACTED"].(map[string]any)["REDACTED"].([]any)
+		elements := payload["body"].(map[string]any)["elements"].([]any)
 		button := elements[len(elements)-1].(map[string]any)
 		if button["disabled"] != true || button["type"] != "default" {
 			t.Fatalf("%s button = %#v, want disabled default", tt.eventType, button)
