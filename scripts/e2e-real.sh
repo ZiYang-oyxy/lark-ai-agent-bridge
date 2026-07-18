@@ -2446,6 +2446,38 @@ case_wrapper_preflight() {
   summary "- doctor: strict wrapper preflight passed"
 }
 
+soft_recover_after_failure() {
+  local case_name="$1"
+  local child_pids child_pid deadline mark reset_message
+  sync_server_pid || return 1
+  child_pids="$(pgrep -P "$SERVER_PID" 2>/dev/null || true)"
+  if [[ -n "$child_pids" ]]; then
+    # child_pids intentionally contains one whitespace-separated PID per line.
+    # shellcheck disable=SC2086
+    kill -TERM $child_pids >/dev/null 2>&1 || true
+    deadline=$(( $(date +%s) + 10 ))
+    for child_pid in $child_pids; do
+      while kill -0 "$child_pid" >/dev/null 2>&1 && (( $(date +%s) < deadline )); do
+        sleep 0.2
+      done
+      if kill -0 "$child_pid" >/dev/null 2>&1; then
+        kill -KILL "$child_pid" >/dev/null 2>&1 || true
+      fi
+    done
+  fi
+  mark="$(audit_mark)"
+  case "$case_name" in
+    media_text_files|latest_restart_fallback)
+      reset_message="$(send_dm "/new")"
+      ;;
+    *)
+      reset_message="$(send_at "/new")"
+      ;;
+  esac
+  wait_audit_since "$mark" "$reset_message.*event=result" 60
+  summary "- recovery: soft_reset"
+}
+
 run_case() {
   local name="$1"
   start_server_if_needed "$name"
@@ -2458,18 +2490,21 @@ run_case() {
   ( set -e; "case_$name" ) >"$RUN_DIR/$name.log" 2>&1
   status=$?
   set -e
+  if [[ "$status" -eq 0 && "${E2E_E2E_FORCE_FAIL_CASE:-}" == "$name" ]]; then
+    echo "case forced to fail after completion for soft-recovery verification" >>"$RUN_DIR/$name.log"
+    status=97
+  fi
   sync_server_pid >/dev/null 2>&1 || true
   if [[ "$name" != "preflight" && "$status" -ne 0 && "$KEEP_SERVER_ON_FAIL" -eq 0 ]]; then
     set +e
     # Recovery output intentionally joins the case-specific evidence log.
     # shellcheck disable=SC2129
-    echo "case failed; restarting bridge to clear active processes and pending input" >>"$RUN_DIR/$name.log"
-    stop_server TERM >>"$RUN_DIR/$name.log" 2>&1
-    start_server_if_needed recovery >>"$RUN_DIR/$name.log" 2>&1
+    echo "case failed; soft-resetting its session without restarting the bridge" >>"$RUN_DIR/$name.log"
+    soft_recover_after_failure "$name" >>"$RUN_DIR/$name.log" 2>&1
     local recovery_status=$?
     set -e
     if [[ "$recovery_status" -ne 0 ]]; then
-      echo "bridge recovery after failed case also failed" >>"$RUN_DIR/$name.log"
+      echo "bridge soft recovery after failed case also failed" >>"$RUN_DIR/$name.log"
     fi
   fi
   local elapsed=$(( $(date +%s) - start ))

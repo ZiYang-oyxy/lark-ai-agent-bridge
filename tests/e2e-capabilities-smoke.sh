@@ -354,6 +354,12 @@ if printf '%s\n' "$run_case_source" | rg -F 'SERVER_CARD_UPDATE_MS' >/dev/null |
   printf '%s\n' "$run_case_source" | rg -F 'SERVER_CARD_MIN_DELTA_CHARS' >/dev/null; then
   fail "native text stream must run with the shared server timing instead of restarting for case-local parameters"
 fi
+if ! printf '%s\n' "$run_case_source" | rg -F 'soft_recover_after_failure "$name"' >/dev/null; then
+  fail "failed cases must use soft recovery instead of restarting the bridge"
+fi
+if printf '%s\n' "$run_case_source" | rg -F 'start_server_if_needed recovery' >/dev/null; then
+  fail "failed case recovery must not restart the bridge"
+fi
 
 if rg -F 'SERVER_REAL_CARDKIT' "$ROOT/scripts/e2e-real.sh" >/dev/null || rg -F 'E2E_REAL_CARDKIT=$SERVER_REAL_CARDKIT' "$ROOT/scripts/e2e-real.sh" >/dev/null; then
   fail "retired native validation gate is still present"

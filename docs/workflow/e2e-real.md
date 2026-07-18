@@ -221,7 +221,7 @@ Keep the bridge process alive after failure:
 ./scripts/e2e-real.sh --mode full --keep-server-on-fail
 ```
 
-Without `--keep-server-on-fail`, a failed non-preflight case restarts the bridge before the next case. This clears any blocking fake child and pending scope state so one failure does not contaminate later evidence.
+Without `--keep-server-on-fail`, a failed non-preflight case uses soft recovery before the next case. The harness terminates any still-running agent child, sends a promptless `/new` to the failed case's group or DM scope, waits for the reset result, and keeps the same bridge process. The summary records `recovery: soft_reset`. `E2E_E2E_FORCE_FAIL_CASE=<case>` is an internal harness verification hook for deliberately exercising this path; it must not be set for release gates.
 
 Use a custom evidence directory or default workdir:
 

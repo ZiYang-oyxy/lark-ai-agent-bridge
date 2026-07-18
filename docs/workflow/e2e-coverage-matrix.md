@@ -158,7 +158,7 @@ flowchart TD
 这些改动改的是 bash 编排层,改完只能在真实飞书环境端到端验证,不宜盲改:
 
 1. **消除 native_text_stream 中途重启(已完成)**:fake native marker pattern 修正后,1.2s delta 间隔已足以在默认 800ms preview interval 下触发 native update。已删除 `E2E_CARD_UPDATE_MS` / `E2E_CARD_MIN_DELTA_CHARS` 专用切换和 server 重启;`native_text_stream → new_basic` 真实飞书乱序验证共用唯一 bridge PID 且全部通过。
-2. **失败 recovery 从「重启进程」改为「软重置会话」**:当前失败 case 后 `stop_server` + `start_server`(`e2e-real.sh:2434-2446`)。改为新建 topic/chat 隔离,不重启 server。
+2. **失败 recovery 从「重启进程」改为「软重置会话」(已完成)**:失败 case 会终止残留 agent child,在对应 group/DM scope 执行无 prompt `/new` 并等待 reset result,保留同一 bridge PID。故意失败 `new_basic` 后 `streaming_card` 的真实飞书验证已通过。
 3. **隔离性 case 按 chat/topic 分组并发**:`scope_parallel` 已证明不同 topic 互不干扰,DM/不同 topic/不同 chat 的 case 可并发投递。
 
 ### 最大杠杆(阶段 3)
