@@ -18,6 +18,17 @@ type blockingTokenDoer struct {
 	release chan struct{}
 }
 
+type observedDoneContext struct {
+	context.Context
+	observed chan struct{}
+	once     sync.Once
+}
+
+func (c *observedDoneContext) Done() <-chan struct{} {
+	c.once.Do(func() { close(c.observed) })
+	return c.Context.Done()
+}
+
 func (d *blockingTokenDoer) Do(*http.Request) (*http.Response, error) {
 	select {
 	case <-d.started:
@@ -106,13 +117,20 @@ func TestTenantTokenSourceWaiterHonorsContextWhileRefreshIsInFlight(t *testing.T
 	}()
 	<-doer.started
 
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
+	baseCtx, cancel := context.WithCancel(context.Background())
+	ctx := &observedDoneContext{Context: baseCtx, observed: make(chan struct{})}
 	waiterDone := make(chan error, 1)
 	go func() {
 		_, err := source.Token(ctx)
 		waiterDone <- err
 	}()
+	<-ctx.observed
+	select {
+	case err := <-waiterDone:
+		t.Fatalf("waiter returned before cancellation: %v", err)
+	default:
+	}
+	cancel()
 
 	select {
 	case err := <-waiterDone:
