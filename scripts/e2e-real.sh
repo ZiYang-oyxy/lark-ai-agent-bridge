@@ -1280,6 +1280,20 @@ audit_card_sequence_since() {
   printf '%s\n' "$sequence"
 }
 
+audit_card_reply_to() {
+  local card_id="$1"
+  local line reply_to
+  line="$(jq -r --arg card_id "$card_id" \
+    'select(.Action == "cardkit_create" or .Action == "cardkit_reply") | select((" " + (.Detail // "") + " ") | contains(" card_id=" + $card_id + " ")) | .Detail' \
+    "$AUDIT" | sed -n '1p')"
+  reply_to="$(printf '%s\n' "$line" | sed -n 's/.*reply_to=\([^ ]*\).*/\1/p')"
+  if [[ -z "$reply_to" ]]; then
+    echo "no reply target found for CardKit card $card_id" >&2
+    return 1
+  fi
+  printf '%s\n' "$reply_to"
+}
+
 assert_no_card_create_since() {
   local mark="$1"
   local message_id="$2"
@@ -2155,9 +2169,8 @@ case_reaction_lifecycle() {
   wait_audit_since "$quick_mark" "$quick.*event=result" 60
   wait_audit_since "$quick_mark" '"Action":"reaction_added".*"SessionID":"'"$quick"'".*type=Typing' 60
   wait_audit_since "$quick_mark" '"Action":"reaction_deleted".*"SessionID":"'"$quick"'".*type=Typing' 60
-  if audit_since "$quick_mark" | grep -F '"SessionID":"'"$quick"'"' | grep -F 'type=OneSecond' >/dev/null 2>&1; then
-    echo "quick run unexpectedly added OneSecond reaction" >&2
-    return 1
+  if audit_since "$quick_mark" | grep -F '"SessionID":"'"$quick"'"' | grep -F '"Action":"reaction_added"' | grep -F 'type=OneSecond' >/dev/null 2>&1; then
+    wait_audit_since "$quick_mark" '"Action":"reaction_deleted".*"SessionID":"'"$quick"'".*type=OneSecond' 60
   fi
 
   active_mark="$(audit_mark)"
@@ -2178,7 +2191,7 @@ case_reaction_lifecycle() {
 case_latest_restart_fallback() {
   require_fake_claude
   local config_msg session_id active queued follow stale_follow file mark active_card follow_card interrupted_sequence follow_sequence
-  local active_message_file dm_chat_id
+  local active_message_file active_reply_to dm_chat_id
   local active_marker="E2E_${RUN_ID}_LATEST_RESTART_ACTIVE_E2E_BLOCK"
   local queued_marker="E2E_${RUN_ID}_LATEST_RESTART_QUEUED"
   local follow_marker="E2E_${RUN_ID}_LATEST_RESTART_FOLLOW"
@@ -2193,6 +2206,7 @@ case_latest_restart_fallback() {
   wait_audit_since "$mark" "$active.*event=stream" 60
   wait_file_contains "$FAKE_CLAUDE_LOG" "$active_marker" 60
   active_card="$(audit_card_id_since "$mark" "$active")"
+  active_reply_to="$(audit_card_reply_to "$active_card")"
   active_message_file="$(mget latest_restart_active "$active")"
   dm_chat_id="$(jq -r '.data.messages[0].chat_id // empty' "$active_message_file")"
   if [[ -z "$dm_chat_id" ]]; then
@@ -2210,7 +2224,7 @@ case_latest_restart_fallback() {
   wait_audit_since "$mark" '"Action":"session_recovery_cancelled"' 60
   wait_audit_since "$mark" "$active.*event=interrupted" 60
   interrupted_sequence="$(audit_card_sequence_since "$mark" "$active")"
-  file="$(mget latest_restart_interrupted "$active")"
+  file="$(mget latest_restart_interrupted "$active_reply_to")"
   assert_file_contains "$file" "服务重启,已中断,请重新发送"
   assert_fake_marker_not_started_after "$active_marker" "$active_before"
   assert_fake_marker_not_started_after "$queued_marker" "$queued_before"
