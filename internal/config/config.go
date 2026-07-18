@@ -15,6 +15,8 @@ type Config struct {
 	ClaudeBin           string
 	CardUpdateEvery     time.Duration
 	CardMaxChars        int
+	CardMinDeltaChars   int
+	CardPreviewMaxChars int
 	InteractionTimeout  time.Duration
 	AuditLogPath        string
 	SessionStorePath    string
@@ -45,6 +47,8 @@ func LoadFromEnv() Config {
 		ClaudeBin:           "claude",
 		CardUpdateEvery:     800 * time.Millisecond,
 		CardMaxChars:        12000,
+		CardMinDeltaChars:   30,
+		CardPreviewMaxChars: 2000,
 		InteractionTimeout:  120 * time.Second,
 		AuditLogPath:        filepath.Join(workDir, ".lark-agent-bridge", "audit.jsonl"),
 		SessionStorePath:    filepath.Join(workDir, ".lark-agent-bridge", "sessions.json"),
@@ -88,6 +92,16 @@ func LoadFromEnv() Config {
 	if v := os.Getenv("E2E_CARD_UPDATE_MS"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n > 0 {
 			cfg.CardUpdateEvery = time.Duration(n) * time.Millisecond
+		}
+	}
+	if v := os.Getenv("E2E_CARD_MIN_DELTA_CHARS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			cfg.CardMinDeltaChars = n
+		}
+	}
+	if v := os.Getenv("E2E_CARD_PREVIEW_MAX_CHARS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			cfg.CardPreviewMaxChars = n
 		}
 	}
 	if v := os.Getenv("E2E_INTERACTION_TIMEOUT_SEC"); v != "" {
@@ -169,6 +183,12 @@ func LoadFromEnvStrict() (Config, error) {
 	if err := ValidateRuntimePreference(RuntimePreference{Model: cfg.Model, Effort: cfg.Effort, ReplyMode: cfg.ReplyMode}, cfg.AllowedModels...); err != nil {
 		return Config{}, fmt.Errorf("validate runtime preference defaults: %w", err)
 	}
+	if cfg.CardMinDeltaChars, err = explicitPositiveInt("E2E_CARD_MIN_DELTA_CHARS", cfg.CardMinDeltaChars); err != nil {
+		return Config{}, err
+	}
+	if cfg.CardPreviewMaxChars, err = explicitPositiveInt("E2E_CARD_PREVIEW_MAX_CHARS", cfg.CardPreviewMaxChars); err != nil {
+		return Config{}, err
+	}
 	if cfg.MediaCacheDir, err = explicitMediaDir("E2E_MEDIA_CACHE_DIR", cfg.MediaCacheDir); err != nil {
 		return Config{}, err
 	}
@@ -189,6 +209,18 @@ func LoadFromEnvStrict() (Config, error) {
 		return Config{}, err
 	}
 	return cfg, nil
+}
+
+func explicitPositiveInt(name string, fallback int) (int, error) {
+	value, ok := os.LookupEnv(name)
+	if !ok {
+		return fallback, nil
+	}
+	n, err := strconv.Atoi(strings.TrimSpace(value))
+	if err != nil || n <= 0 {
+		return 0, fmt.Errorf("%s must be a positive integer", name)
+	}
+	return n, nil
 }
 
 func defaultMediaCacheDir(workDir string) string {

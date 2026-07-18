@@ -10,6 +10,8 @@ import (
 func TestLoadFromEnvParsesRuntimeTuning(t *testing.T) {
 	t.Setenv("E2E_CARD_UPDATE_MS", "250")
 	t.Setenv("E2E_CARD_MAX_CHARS", "4096")
+	t.Setenv("E2E_CARD_MIN_DELTA_CHARS", "31")
+	t.Setenv("E2E_CARD_PREVIEW_MAX_CHARS", "2001")
 	t.Setenv("E2E_INTERACTION_TIMEOUT_SEC", "15")
 	t.Setenv("E2E_DEFAULT_WORKDIR", "/tmp/lab-work")
 	t.Setenv("E2E_AUDIT_LOG", "/tmp/custom-audit.jsonl")
@@ -20,6 +22,9 @@ func TestLoadFromEnvParsesRuntimeTuning(t *testing.T) {
 	if cfg.CardMaxChars != 4096 {
 		t.Fatalf("card max chars = %d, want 4096", cfg.CardMaxChars)
 	}
+	if cfg.CardMinDeltaChars != 31 || cfg.CardPreviewMaxChars != 2001 {
+		t.Fatalf("preview tuning = min delta %d max %d", cfg.CardMinDeltaChars, cfg.CardPreviewMaxChars)
+	}
 	if cfg.InteractionTimeout != 15*time.Second {
 		t.Fatalf("interaction timeout = %s, want 15s", cfg.InteractionTimeout)
 	}
@@ -28,6 +33,24 @@ func TestLoadFromEnvParsesRuntimeTuning(t *testing.T) {
 	}
 	if cfg.AuditLogPath != "/tmp/custom-audit.jsonl" {
 		t.Fatalf("audit log path = %q, want custom path", cfg.AuditLogPath)
+	}
+}
+
+func TestLoadFromEnvPreviewDefaults(t *testing.T) {
+	cfg := LoadFromEnv()
+	if cfg.CardMinDeltaChars != 30 || cfg.CardPreviewMaxChars != 2000 {
+		t.Fatalf("preview defaults = min delta %d max %d", cfg.CardMinDeltaChars, cfg.CardPreviewMaxChars)
+	}
+}
+
+func TestLoadFromEnvStrictRejectsInvalidPreviewTuning(t *testing.T) {
+	for _, name := range []string{"E2E_CARD_MIN_DELTA_CHARS", "E2E_CARD_PREVIEW_MAX_CHARS"} {
+		t.Run(name, func(t *testing.T) {
+			t.Setenv(name, "0")
+			if _, err := LoadFromEnvStrict(); err == nil {
+				t.Fatalf("LoadFromEnvStrict() error = nil for %s=0", name)
+			}
+		})
 	}
 }
 
