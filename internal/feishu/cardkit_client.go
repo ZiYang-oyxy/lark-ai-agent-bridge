@@ -318,7 +318,7 @@ func isInvalidCardIDFeishuError(err error) bool {
 		return false
 	}
 	normalized := strings.NewReplacer("_", "", " ", "", "-", "").Replace(strings.ToLower(apiErr.Message))
-	return apiErr.Code == 230099 &&
+	return (apiErr.Code == 230099 || apiErr.Code == 10002) &&
 		strings.Contains(normalized, "cardid") &&
 		strings.Contains(normalized, "invalid")
 }

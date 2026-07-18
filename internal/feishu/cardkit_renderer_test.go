@@ -130,6 +130,7 @@ func TestCardKitRendererClassifiesOnlyStaleMappingErrors(t *testing.T) {
 		{name: "expired", err: &FeishuAPIError{HTTPStatus: 400, Code: 200750, Message: "card entity has expired"}, stale: true},
 		{name: "sequence", err: &FeishuAPIError{HTTPStatus: 400, Code: 300317, Message: "sequence did not increment"}, stale: true},
 		{name: "legacy invalid card", err: &FeishuAPIError{HTTPStatus: 400, Code: 230099, Message: "invalid card_id"}, stale: true},
+		{name: "cardkit invalid card", err: &FeishuAPIError{HTTPStatus: 200, Code: 10002, Message: "ErrMsg: cardid invalid; "}, stale: true},
 		{name: "server", err: &FeishuAPIError{HTTPStatus: 500, Code: 999, Message: "server"}},
 		{name: "network", err: errors.New("connection reset")},
 	}
