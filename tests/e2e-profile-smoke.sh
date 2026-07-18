@@ -196,6 +196,7 @@ case "$*" in
     ;;
   'auth status --json --verify') printf '%s\n' '{"verified":true,"app_id":"cli_bootstrap_app","user":{"open_id":"ou_bootstrap_secret_user"}}' ;;
   auth\ check\ --scope\ *\ --json)
+    printf '%s\n' "$*" >>"${FAKE_CLI_AUTH_CHECK_LOG:?}"
     checked_scope="${4:-}"
     if [[ "${SEND_SCOPE_SCENARIO:-granted}" == "missing" ]]; then
       printf '%s\n' "{\"ok\":false,\"granted\":null,\"missing\":[\"$checked_scope\"]}"
@@ -229,6 +230,7 @@ EOF
 chmod +x "$FAKE_BIN/curl" "$FAKE_BIN/lark-cli"
 
 bootstrap_output="$TEST_ROOT/bootstrap-output"
+export FAKE_CLI_AUTH_CHECK_LOG="$TEST_ROOT/auth-check.log"
 unset E2E_E2E_LARK_CLI_PROFILE
 if ! PATH="$FAKE_BIN:$PATH" \
   E2E_REPO_ROOT="$BOOT_ROOT" \
@@ -241,6 +243,7 @@ if ! PATH="$FAKE_BIN:$PATH" \
   sed -E 's/(secret|ou_|oc_)[A-Za-z0-9._-]*/[redacted]/g' "$bootstrap_output" >&2
   fail "bootstrap command failed"
 fi
+assert_eq 1 "$(wc -l <"$FAKE_CLI_AUTH_CHECK_LOG" | tr -d ' ')" "bootstrap batches E2E scope verification"
 
 bootstrap_env="$BOOT_ROOT/.lark-agent-bridge/e2e/profiles/developer.env"
 assert_eq 600 "$(e2e_profile_mode "$bootstrap_env")" "bootstrap env mode"

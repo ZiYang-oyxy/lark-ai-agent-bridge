@@ -300,7 +300,7 @@ record_static_credentials() {
 }
 
 record_static_user_auth() {
-  local response auth_app scope_response scope scope_argument missing_scopes=() login_command
+  local response auth_app scope_response scope_status scope_argument login_command
   scope_argument="$(e2e_user_auth_scope_argument)"
   login_command="lark-cli auth login --scope '$scope_argument'"
   if [[ -n "$LARK_CLI_PROFILE" ]]; then
@@ -324,22 +324,15 @@ record_static_user_auth() {
   else
     e2e_cap_record oauth_same_app BLOCKED oauth_app_mismatch "user OAuth belongs to another app" "run $login_command"
   fi
-  while IFS= read -r scope; do
-    if scope_response="$(lark_cli auth check --scope "$scope" --json 2>/dev/null)" && \
-      printf '%s' "$scope_response" | jq -e --arg scope "$scope" \
-        '.ok == true and ((.granted == true) or ((.granted | type) == "array" and (.granted | index($scope) != null)))' >/dev/null 2>&1; then
-      continue
-    fi
-    if printf '%s' "${scope_response:-}" | jq -e --arg scope "$scope" \
-      '(.missing | type) == "array" and (.missing | index($scope) != null)' >/dev/null 2>&1; then
-      missing_scopes+=("$scope")
-      continue
-    fi
-    e2e_cap_record lark_cli_auth FAIL user_e2e_scope_check_failed "lark-cli could not verify $scope" "inspect lark-cli auth check output"
-    return
-  done < <(e2e_user_auth_scopes)
-  if (( ${#missing_scopes[@]} > 0 )); then
+  scope_status=0
+  scope_response="$(lark_cli auth check --scope "$scope_argument" --json 2>/dev/null)" || scope_status=$?
+  if printf '%s' "$scope_response" | jq -e '(.missing | type) == "array" and (.missing | length > 0)' >/dev/null 2>&1; then
     e2e_cap_record lark_cli_auth BLOCKED user_e2e_scopes_missing "user OAuth is missing E2E observation or control scopes" "enable and publish the E2E scope bundle, then run $login_command"
+    return
+  fi
+  if [[ "$scope_status" -ne 0 ]] || ! printf '%s' "$scope_response" | jq -e \
+    '.ok == true and (((.missing // []) | type) != "array" or ((.missing // []) | length == 0))' >/dev/null 2>&1; then
+    e2e_cap_record lark_cli_auth FAIL user_e2e_scope_check_failed "lark-cli could not verify the E2E scope bundle" "inspect lark-cli auth check output"
     return
   fi
   e2e_cap_record lark_cli_auth PASS ready "lark-cli user authentication covers E2E send, observation and control" ""

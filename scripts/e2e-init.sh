@@ -130,7 +130,7 @@ fetch_bot_open_id() {
 }
 
 verify_user_auth() {
-  local response auth_app scope_response scope missing_scopes=() scope_argument
+  local response auth_app scope_response scope_status scope_argument
   scope_argument="$(e2e_user_auth_scope_argument)"
   response="$(lark_cli auth status --json --verify 2>/dev/null)" || {
     echo "BLOCKED lark_cli_auth_missing: authorize the isolated lark-cli profile for this bridge app" >&2
@@ -142,24 +142,17 @@ verify_user_auth() {
     echo "BLOCKED oauth_app_mismatch: lark-cli user OAuth belongs to another app" >&2
     exit 3
   fi
-  while IFS= read -r scope; do
-    if scope_response="$(lark_cli auth check --scope "$scope" --json 2>/dev/null)" && \
-      printf '%s' "$scope_response" | jq -e --arg scope "$scope" \
-        '.ok == true and ((.granted == true) or ((.granted | type) == "array" and (.granted | index($scope) != null)))' >/dev/null 2>&1; then
-      continue
-    fi
-    if printf '%s' "${scope_response:-}" | jq -e --arg scope "$scope" \
-      '(.missing | type) == "array" and (.missing | index($scope) != null)' >/dev/null 2>&1; then
-      missing_scopes+=("$scope")
-      continue
-    fi
-    echo "FAIL user_e2e_scope_check: lark-cli could not verify $scope" >&2
-    exit 1
-  done < <(e2e_user_auth_scopes)
-  if (( ${#missing_scopes[@]} > 0 )); then
+  scope_status=0
+  scope_response="$(lark_cli auth check --scope "$scope_argument" --json 2>/dev/null)" || scope_status=$?
+  if printf '%s' "$scope_response" | jq -e '(.missing | type) == "array" and (.missing | length > 0)' >/dev/null 2>&1; then
     echo "BLOCKED user_e2e_scopes_missing: enable and publish the E2E user scopes, then authorize again" >&2
     echo "Next: lark-cli --profile '$LARK_CLI_PROFILE' auth login --scope '$scope_argument'" >&2
     exit 3
+  fi
+  if [[ "$scope_status" -ne 0 ]] || ! printf '%s' "$scope_response" | jq -e \
+    '.ok == true and (((.missing // []) | type) != "array" or ((.missing // []) | length == 0))' >/dev/null 2>&1; then
+    echo "FAIL user_e2e_scope_check: lark-cli could not verify the E2E scope bundle" >&2
+    exit 1
   fi
 }
 
