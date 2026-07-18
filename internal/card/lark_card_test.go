@@ -1,17 +1,68 @@
 package card
 
 import (
+	"reflect"
 	"regexp"
 	"strings"
 	"testing"
 )
+
+func TestBuildLarkCardStreamingEmptyAnswerReservesSingleNativeTarget(t *testing.T) {
+	payload := BuildLarkCard(Event{Type: "stream", Streaming: true})
+	answers := answerElements(payload)
+	want := []map[string]any{{"tag": "markdown", "element_id": "answer", "content": ""}}
+	if !reflect.DeepEqual(answers, want) {
+		t.Fatalf("answer elements = %#v, want %#v", answers, want)
+	}
+}
+
+func TestBuildLarkCardTerminalEmptyAnswerDoesNotCreateNativeTarget(t *testing.T) {
+	for _, eventType := range []string{"result", "error", "stopped"} {
+		t.Run(eventType, func(t *testing.T) {
+			if answers := answerElements(BuildLarkCard(Event{Type: eventType})); len(answers) != 0 {
+				t.Fatalf("answer elements = %#v, want none", answers)
+			}
+		})
+	}
+}
+
+func TestPrepareLarkCardCapacityFallbackIsNativeIneligible(t *testing.T) {
+	prepared, err := PrepareLarkCard(Event{
+		Type:      "stream",
+		Streaming: true,
+		SessionID: strings.Repeat("session", LarkCardSoftMaxJSONBytes),
+		Actions: []Action{{
+			ID:    "action",
+			Label: strings.Repeat("label", LarkCardSoftMaxJSONBytes),
+			Value: strings.Repeat("value", LarkCardSoftMaxJSONBytes),
+		}},
+	})
+	if err != nil {
+		t.Fatalf("PrepareLarkCard() error: %v", err)
+	}
+	if prepared.NativeReady() {
+		t.Fatal("capacity fallback is native-ready")
+	}
+}
+
+func answerElements(payload map[string]any) []map[string]any {
+	elements, _ := payload["body"].(map[string]any)["elements"].([]any)
+	answers := make([]map[string]any, 0, 1)
+	for _, raw := range elements {
+		element, _ := raw.(map[string]any)
+		if element["element_id"] == "answer" {
+			answers = append(answers, element)
+		}
+	}
+	return answers
+}
 
 func TestBuildLarkCardUsesValidElementIDs(t *testing.T) {
 	valid := regexp.MustCompile(`^[A-Za-z][A-Za-z0-9_]{0,19}$`)
 	cards := []map[string]any{
 		BuildLarkCard(Event{
 			Type:      "config",
-			SessionID: "REDACTED",
+			SessionID: "claude:chat:message:config-1",
 			ConfigForm: &ConfigForm{
 				Model: "default", Effort: "default", ReplyMode: "append",
 				Models: []string{"default"}, Efforts: []string{"default"}, ReplyModes: []string{"append"},
@@ -53,7 +104,7 @@ func TestBuildLarkCardIncludesActionsAndMeta(t *testing.T) {
 		Type:      "workdir_confirm",
 		SessionID: "claude:chat",
 		Segments:  []Segment{{Kind: SegmentText, Text: "Workdir does not exist: /tmp/work"}},
-		Actions:   WorkDirCreateActions("REDACTED"),
+		Actions:   WorkDirCreateActions("/tmp/work"),
 		Meta:      Meta{Agent: "REDACTED", Model: "REDACTED", RunTokens: 42, TotalTokens: 4200, User: "REDACTED", IP: "REDACTED", WorkDir: "REDACTED", Status: "REDACTED"},
 	})
 	if card["schema"] != "2.0" {
@@ -139,15 +190,15 @@ func TestBuildLarkCardRendersRuntimeConfigForm(t *testing.T) {
 			Model:      "opus",
 			Effort:     "high",
 			ReplyMode:  "latest-card",
-			Models:     []string{"default", "sonnet", "opus", "haiku"},
+			Models:     []string{"REDACTED", "REDACTED", "REDACTED", "REDACTED"},
 			Efforts:    []string{"default", "low", "medium", "high"},
 			ReplyModes: []string{"append", "append-clean-card", "latest-card"},
 		},
 		Segments:  []Segment{{Kind: SegmentText, Text: "must not appear beside the form"}},
 		Streaming: true,
 	})
-	body := payload["REDACTED"].(map[string]any)
-	elements := body["REDACTED"].([]any)
+	body := payload["body"].(map[string]any)
+	elements := body["elements"].([]any)
 	var form map[string]any
 	for _, raw := range elements {
 		element := raw.(map[string]any)

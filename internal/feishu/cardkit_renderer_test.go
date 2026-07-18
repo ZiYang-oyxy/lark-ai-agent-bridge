@@ -75,6 +75,17 @@ func (f *fakeCardKitClient) UpdateCard(_ context.Context, req CardKitUpdateCardR
 	return f.updateErr
 }
 
+func TestPreparedAccessorBoundary(t *testing.T) {
+	prepared, err := card.PrepareLarkCard(card.Event{Type: "stream", Streaming: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = prepared.EventCopy()
+	_ = prepared.PayloadCopy()
+	_ = prepared.Answer()
+	_ = prepared.NativeReady()
+}
+
 func TestCardKitRendererPreparesOversizedCreateAndUpdate(t *testing.T) {
 	client := &fakeCardKitClient{}
 	renderer := NewCardKitRenderer(client, "message-1")

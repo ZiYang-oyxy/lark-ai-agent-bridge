@@ -14,7 +14,7 @@ func BuildLarkCard(e Event) map[string]any {
 	} else {
 		elements = make([]any, 0, len(e.Segments)+5)
 		answer, thought, tools := splitCardSections(e.Segments)
-		if strings.TrimSpace(answer) != "" {
+		if strings.TrimSpace(answer) != "" || e.Streaming {
 			elements = append(elements, markdownElement("answer", answer))
 		}
 		if e.Message != "" {
