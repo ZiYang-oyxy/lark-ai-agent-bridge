@@ -2,10 +2,13 @@ package feishu
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
 	"lark-agent-bridge/internal/card"
+	"lark-agent-bridge/internal/session"
 )
 
 type fakeCardKitClient struct {
@@ -15,6 +18,10 @@ type fakeCardKitClient struct {
 	lastCard    map[string]any
 	replyUUIDs  []string
 	nextCardSeq int
+	updateReqs  []CardKitUpdateCardRequest
+	replyResult CardKitReplyResult
+	replyErr    error
+	updateErr   error
 }
 
 type fakeCardKitObserver struct {
@@ -37,13 +44,20 @@ func (f *fakeCardKitClient) CreateCard(_ context.Context, req CardKitCreateReque
 func (f *fakeCardKitClient) ReplyCard(_ context.Context, req CardKitReplyRequest) (CardKitReplyResult, error) {
 	f.replied++
 	f.replyUUIDs = append(f.replyUUIDs, req.UUID)
+	if f.replyErr != nil {
+		return CardKitReplyResult{}, f.replyErr
+	}
+	if f.replyResult.MessageID != "" {
+		return f.replyResult, nil
+	}
 	return CardKitReplyResult{MessageID: "msg-1"}, nil
 }
 
 func (f *fakeCardKitClient) UpdateCard(_ context.Context, req CardKitUpdateCardRequest) error {
 	f.updated++
+	f.updateReqs = append(f.updateReqs, req)
 	f.lastCard = req.Card
-	return nil
+	return f.updateErr
 }
 
 func (f *fakeCardKitClient) UpdateSettings(context.Context, CardKitUpdateSettingsRequest) error {
@@ -60,6 +74,91 @@ func TestCardKitRendererCreateReplyThenUpdate(t *testing.T) {
 		t.Fatalf("second render error: %v", err)
 	}
 	if client.created != 1 || client.replied != 1 || client.updated != 1 {
+		t.Fatalf("created/replied/updated = %d/%d/%d", client.created, client.replied, client.updated)
+	}
+}
+
+func TestCardKitRouterRendererRenderRefRehydratesWithIncreasingSequence(t *testing.T) {
+	client := &fakeCardKitClient{replyResult: CardKitReplyResult{MessageID: "actual-reply-42"}}
+	router := NewCardKitRouterRenderer(client)
+	renderer, err := router.NewStreaming(context.Background(), "claude:chat", "source-message")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, eventType := range []string{"stream", "stream", "result"} {
+		if err := renderer.Render(card.Event{Type: eventType, SessionID: "claude:chat"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	ref := renderer.RenderRef()
+	if ref.CardID != "card-1" || ref.ReplyMessageID != "actual-reply-42" || ref.Version != 2 {
+		t.Fatalf("render ref = %#v", ref)
+	}
+
+	restarted := NewCardKitRouterRenderer(client)
+	rehydrated := restarted.Rehydrate("claude:chat", ref)
+	if err := rehydrated.Render(card.Event{Type: "result", SessionID: "claude:chat"}); err != nil {
+		t.Fatal(err)
+	}
+	if client.created != 1 || client.replied != 1 || len(client.updateReqs) != 3 {
+		t.Fatalf("created/replied/updates = %d/%d/%d", client.created, client.replied, len(client.updateReqs))
+	}
+	last := client.updateReqs[len(client.updateReqs)-1]
+	if last.CardID != "card-1" || last.Sequence != 3 {
+		t.Fatalf("rehydrated update = %#v", last)
+	}
+}
+
+func TestCardKitRendererDoesNotExposeRefBeforeReplyBinding(t *testing.T) {
+	client := &fakeCardKitClient{replyErr: errors.New("reply failed")}
+	renderer := NewCardKitRenderer(client, "source-message")
+	if err := renderer.Render(card.Event{Type: "stream", SessionID: "claude:chat"}); err == nil {
+		t.Fatal("Render() error = nil, want reply failure")
+	}
+	if ref := renderer.RenderRef(); ref != (session.RenderRef{}) {
+		t.Fatalf("render ref exposed before reply binding: %#v", ref)
+	}
+}
+
+func TestCardKitRendererClassifiesOnlyStaleMappingErrors(t *testing.T) {
+	tests := []struct {
+		name  string
+		err   error
+		stale bool
+	}{
+		{name: "not found", err: &FeishuAPIError{HTTPStatus: 400, Code: 200740, Message: "card entity does not exist"}, stale: true},
+		{name: "expired", err: &FeishuAPIError{HTTPStatus: 400, Code: 200750, Message: "card entity has expired"}, stale: true},
+		{name: "sequence", err: &FeishuAPIError{HTTPStatus: 400, Code: 300317, Message: "sequence did not increment"}, stale: true},
+		{name: "legacy invalid card", err: &FeishuAPIError{HTTPStatus: 400, Code: 230099, Message: "invalid card_id"}, stale: true},
+		{name: "server", err: &FeishuAPIError{HTTPStatus: 500, Code: 999, Message: "server"}},
+		{name: "network", err: errors.New("connection reset")},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			client := &fakeCardKitClient{updateErr: tc.err}
+			router := NewCardKitRouterRenderer(client)
+			renderer := router.Rehydrate("scope", session.RenderRef{CardID: "old-card", ReplyMessageID: "old-reply", Version: 7})
+			err := renderer.Render(card.Event{Type: "result", SessionID: "scope"})
+			if err == nil {
+				t.Fatal("Render() error = nil")
+			}
+			if got := errors.Is(err, ErrStaleRenderRef); got != tc.stale {
+				t.Fatalf("errors.Is(%v, ErrStaleRenderRef) = %t, want %t", err, got, tc.stale)
+			}
+			if client.updateReqs[0].Sequence != 8 {
+				t.Fatalf("sequence = %d, want 8", client.updateReqs[0].Sequence)
+			}
+		})
+	}
+}
+
+func TestCardKitRouterAppendTerminalCreatesIndependentCard(t *testing.T) {
+	client := &fakeCardKitClient{}
+	router := NewCardKitRouterRenderer(client)
+	if err := router.AppendTerminal(context.Background(), "source", card.Event{Type: "result", SessionID: "terminal", Message: fmt.Sprint("done")}); err != nil {
+		t.Fatal(err)
+	}
+	if client.created != 1 || client.replied != 1 || client.updated != 0 {
 		t.Fatalf("created/replied/updated = %d/%d/%d", client.created, client.replied, client.updated)
 	}
 }
