@@ -108,6 +108,8 @@ func TestTenantTokenSourceRejectsAPIError(t *testing.T) {
 
 func TestTenantTokenSourceWaiterHonorsContextWhileRefreshIsInFlight(t *testing.T) {
 	doer := &blockingTokenDoer{started: make(chan struct{}), release: make(chan struct{})}
+	var releaseOnce sync.Once
+	releaseLeader := func() { releaseOnce.Do(func() { close(doer.release) }) }
 	source := NewTenantTokenSource("app", "secret")
 	source.http = doer
 	leaderDone := make(chan error, 1)
@@ -115,16 +117,31 @@ func TestTenantTokenSourceWaiterHonorsContextWhileRefreshIsInFlight(t *testing.T
 		_, err := source.Token(context.Background())
 		leaderDone <- err
 	}()
-	<-doer.started
+	defer func() {
+		releaseLeader()
+		if err := <-leaderDone; err != nil {
+			t.Errorf("leader refresh: %v", err)
+		}
+	}()
+	select {
+	case <-doer.started:
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("leader refresh did not start")
+	}
 
 	baseCtx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	ctx := &observedDoneContext{Context: baseCtx, observed: make(chan struct{})}
 	waiterDone := make(chan error, 1)
 	go func() {
 		_, err := source.Token(ctx)
 		waiterDone <- err
 	}()
-	<-ctx.observed
+	select {
+	case <-ctx.observed:
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("waiter did not enter context-aware refresh wait")
+	}
 	select {
 	case err := <-waiterDone:
 		t.Fatalf("waiter returned before cancellation: %v", err)
@@ -138,12 +155,7 @@ func TestTenantTokenSourceWaiterHonorsContextWhileRefreshIsInFlight(t *testing.T
 			t.Fatalf("waiter error = %v, want context.Canceled", err)
 		}
 	case <-time.After(100 * time.Millisecond):
-		close(doer.release)
-		<-leaderDone
 		t.Fatal("waiter did not honor canceled context while refresh was in flight")
 	}
-	close(doer.release)
-	if err := <-leaderDone; err != nil {
-		t.Fatal(err)
-	}
+	releaseLeader()
 }
