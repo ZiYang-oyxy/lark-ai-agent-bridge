@@ -1,6 +1,6 @@
 # CardKit 能力评估与演进路线
 
-> 状态：技术备忘，作为后续 CardKit 相关工作的决策依据，不代表当前迭代承诺。
+> 状态：P0 容量保护与 recovery 收尾已完成；P2 原生文本流式停在真实端点证据 gate。
 >
 > 更新时间：2026-07-18（依据真实代码核实修订：优先级重排，纠正两处过时现状）
 
@@ -8,13 +8,13 @@
 
 当前 bridge 已经覆盖 CardKit 2.0 在 AI Agent 运行卡场景中的核心展示能力：同一卡片创建与更新、状态标题、Markdown 正文、思考与工具折叠面板、停止和工作目录操作按钮、分栏元数据以及 `card.action.trigger` 回调。
 
-当前真正的生产能力差距只有一类是硬缺口，其余两类此前评估偏保守：
+当前已消除容量与重启恢复两个生产可靠性缺口；剩余原生文本流式属于受真实端点证据约束的性能优化：
 
-1. **容量控制只按文本字符（rune）截断，没有以最终 JSON 字节数为准的闸门与分级降级**。这是当前唯一的线上炸点：字符数不等于字节数，中文、markdown、折叠面板与工具 JSON 输出都可能让「12000 字符」超过飞书 30 KB / 200 组件的硬限制，导致整次更新被拒、用户拿不到最终答案。
+1. **容量保护已完成**：所有整卡与 callback 卡片都经过 28 KiB / 200-component prepared boundary、分级压缩与静态 emergency fallback；client 在 token、限流、重试和 HTTP 前执行最终硬闸。
 2. 正文仍通过节流后的全卡替换更新，没有使用按 `element_id` 更新的原生文本流式接口。用户已能看到打字机式增量，因此这属于**网络开销优化，不是用户可感知的新能力**。
-3. 卡片引用持久化与重启恢复**已基本实现**（`RenderRef` 随会话快照落盘、重启走 `Rehydrate` 恢复 `sequence`），只剩「遗留 running 卡片收敛为 interrupted」「14 天过期后新建卡」两个收尾。
+3. 卡片引用持久化与重启恢复**已完成收尾**：`RenderRef` 保存 `CreatedAt` 与 sequence 安全字段；遗留 running 卡片收敛为 interrupted；14 天到期与 sequence unknown 引用在新请求中安全换卡。
 
-因此优先级重排为：先补 **JSON 字节级容量保护**（独立、纯单测可验证、不碰安全面、不依赖任何未完成项），再做**重启恢复收尾**。原生文本流式更新降级为「按需性能优化」，等真实 E2E 观测到全卡刷新造成明显限流或卡顿再做。访问控制及其下游的敏感 CardKit 交互统一放入 P3，本轮不实施；图表、模板、多语言、循环容器等展示能力同样暂缓。
+因此当前只继续 P2 原生文本流式的证据与安全实现链。普通 streaming 卡已预留唯一空 `answer` target，且 `NativeReady` 只对真实可更新的 streaming payload 开放；真实 raw HTTP probe 已提供但默认 SKIP。由于本机没有显式导出的真实飞书凭据，尚未冻结元素端点的 encoded-body 上限与“明确未应用”错误码，禁止提前启用 production native PUT。访问控制及其下游敏感交互统一放入 P3，本轮不实施；展示组件同样暂缓。
 
 ## 评估范围
 
@@ -219,6 +219,8 @@ AI CardKit 2.0 路径已经使用：
 
 ### P0 收尾：重启恢复的两个缺口
 
+**状态：已完成（2026-07-18）。** `RenderRef.CreatedAt` 在 CardKit create 成功时捕获、reply 绑定成功后提交且后续不可刷新；latest-card 在 14 天到期或 sequence unknown 时先持久清理旧映射再为当前请求建卡；重启 recovery 只更新原卡，unknown 引用仅记录 `recovery_card_update_skipped_sequence_unknown`，不续写也不创建替代卡。
+
 目标：补齐已落地的持久化恢复能力，而非新建存储。`RenderRef` 落盘与 `Rehydrate` 已实现（见「当前容量与恢复能力」），此项只补两个边界。
 
 建议方案：
@@ -258,6 +260,8 @@ P3 安全收口的验收条件：
 - secret 不预填、不回显、不进入 audit。
 
 ### P2：原生文本流式更新（性能优化，非功能补齐）
+
+> 当前进度：已完成稳定 `answer` target、opaque prepared accessor 边界、`NativeReady` 严格资格判断和脱敏 opt-in raw probe。当前 no-go 是缺少真实端点证据；`UpdateElementContent`、durable journal 与 interaction fence 尚未实现或启用。
 
 > 原列为 P0。降级理由：用户借由现有「节流全卡刷新 + `streaming_mode`」已能看到打字机式增量，本项优化的是**网络开销**而非用户可感知能力；且它是整份 roadmap 里实现最复杂、最易引入乱序 / `invalid sequence` 回归的一项（要引入 element 级接口、处理全卡与文本流式共享 `sequence` 的竞争、以及「交互进行中不能并发流式」的官方限制）。收益/风险比最差，应等真实 E2E 观测到全卡刷新造成明显限流或卡顿再做。
 
