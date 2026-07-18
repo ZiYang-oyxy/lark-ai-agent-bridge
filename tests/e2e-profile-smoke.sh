@@ -25,6 +25,8 @@ assert_fail() {
   fi
 }
 
+[[ -x "$ROOT/scripts/e2e-init.sh" ]] || fail "scripts/e2e-init.sh must be executable"
+
 TEST_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/lab-e2e-profile.XXXXXX")"
 trap 'rm -rf "$TEST_ROOT"' EXIT
 mkdir -p "$TEST_ROOT/.lark-agent-bridge/e2e/profiles"
