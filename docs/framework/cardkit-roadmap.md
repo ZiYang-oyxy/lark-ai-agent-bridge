@@ -1,6 +1,6 @@
 # CardKit 能力评估与演进路线
 
-> 状态：P0 容量保护与 recovery 收尾已完成；P2 原生文本流式停在真实端点证据 gate。
+> 状态：P0 容量保护与 recovery 收尾已完成；P2 原生文本流式的安全实现链已落地，但 production 接线仍停在真实端点 smoke gate。
 >
 > 更新时间：2026-07-18（依据真实代码核实修订：优先级重排，纠正两处过时现状）
 
@@ -14,7 +14,7 @@
 2. 正文仍通过节流后的全卡替换更新，没有使用按 `element_id` 更新的原生文本流式接口。用户已能看到打字机式增量，因此这属于**网络开销优化，不是用户可感知的新能力**。
 3. 卡片引用持久化与重启恢复**已完成收尾**：`RenderRef` 保存 `CreatedAt` 与 sequence 安全字段；遗留 running 卡片收敛为 interrupted；14 天到期与 sequence unknown 引用在新请求中安全换卡。
 
-因此当前只继续 P2 原生文本流式的证据与安全实现链。普通 streaming 卡已预留唯一空 `answer` target，且 `NativeReady` 只对真实可更新的 streaming payload 开放；真实 raw HTTP probe 已提供但默认 SKIP。由于本机没有显式导出的真实飞书凭据，尚未冻结元素端点的 encoded-body 上限与“明确未应用”错误码，禁止提前启用 production native PUT。访问控制及其下游敏感交互统一放入 P3，本轮不实施；展示组件同样暂缓。
+因此当前只继续 P2 原生文本流式的真实验证与 production gate。普通 streaming 卡已预留唯一空 `answer` target，且 `NativeReady` 只对真实可更新的 streaming payload 开放；元素更新 client、durable two-phase journal、跨 transport interaction fence、binding 传播和 renderer 的 native/full 单 sequence 状态机均已实现。官方 Go SDK 已确认端点请求包含 `uuid`、`content` 与 `sequence`，但本机没有显式导出的真实飞书凭据，尚未冻结元素端点的 encoded-body 上限、真实错误语义和端到端行为，因此 production router 仍使用非 journal 构造器，禁止提前启用 native PUT。访问控制及其下游敏感交互统一放入 P3，本轮不实施；展示组件同样暂缓。
 
 ## 评估范围
 
@@ -96,24 +96,15 @@ PUT /open-apis/cardkit/v1/cards/{card_id}/elements/{element_id}/content
 - `E2E_CARD_MAX_CHARS` 默认限制为 12000 字符。
 - 长内容支持截断或分页。
 - CardKit client 对部分网络错误和服务端错误进行重试。
+- 最终序列化 JSON 执行 28 KiB / 200-component 硬闸，并按 reasoning、tool、answer 分级压缩，最终可退化为静态 emergency 卡。
+- `card_id`、reply message ID、最后成功 `sequence`、`CreatedAt` 和 sequence unknown 状态均通过 `RenderRef` 持久化；重启可 rehydrate 并把遗留 running 卡片收敛为 interrupted。
+- latest-card 对 14 天过期和 sequence unknown 引用执行持久清理后换卡；recovery 对 unknown 引用只审计、不续写。
+- 全卡与 guarded element-content 路径复用同一 renderer mutex 和 `RenderRef.Version`；durable journal 覆盖 native PUT 的崩溃窗口。
 
-尚缺能力：
+当前保留缺口：
 
-- 最终序列化 JSON 的字节数检查。
-- 组件和元素数量检查。
-- reasoning、tool 和 answer 分区的分级压缩策略。
-- CardKit oversize、expired、not-found、invalid-sequence、interaction-in-progress 等错误的类型化分类。
-
-已具备能力（此前评估偏保守，实测已落地）：
-
-- `card_id`、reply message ID、最后成功 `sequence` 已持久化：封装为 `session.RenderRef{CardID, ReplyMessageID, Version}`，随 `Batch` 通过 `SaveSnapshot` 原子写盘（`session/store.go`）。
-- 重启后已能 rehydrate：`CardTarget.Rehydrate` 用持久化的 `CardID/ReplyMessageID/Version` 重建 renderer 并恢复 `sequence`（`bridge/service.go:245`、`cardkit_renderer.go:84-93`）。
-- 已有单卡串行分配 `sequence`：每 session 一个 `CardKitRenderer`，`renderer.mu` 与上层 `agentCardStream.renderMu` 双层锁保证顺序，无需再新造独立 coordinator（`cardkit_renderer.go:172-186`、`stream_card.go`）。
-
-遗留缺口（属重启恢复的收尾，非新工程）：
-
-- 遗留 running 卡片恢复后仅恢复了 `sequence`，尚未主动关闭 `streaming_mode`、置灰按钮并收敛为 interrupted。
-- `ActiveBatch` 结束清空后，对应 `RenderRef` 不再随快照保留；以及 14 天过期后应新建卡。
+- 原生 element-content 的 endpoint-specific body 上限和完整错误分类尚未经过真实 smoke 冻结；当前 client 使用 28 KiB 保守上限，只识别已知 interaction-in-progress 错误。
+- production router 尚未注入 journal，因此线上仍只走节流全卡刷新。
 
 `CardKitClient.UpdateSettings` 已定义，但当前没有生产调用方，不能视为已落地能力。
 
@@ -261,7 +252,7 @@ P3 安全收口的验收条件：
 
 ### P2：原生文本流式更新（性能优化，非功能补齐）
 
-> 当前进度：已完成稳定 `answer` target、opaque prepared accessor 边界、`NativeReady` 严格资格判断和脱敏 opt-in raw probe。当前 no-go 是缺少真实端点证据；`UpdateElementContent`、durable journal 与 interaction fence 尚未实现或启用。
+> 当前进度：安全实现链已完成：稳定 `answer` target、opaque prepared accessor、严格 `NativeReady`、带稳定 `uuid` 的 guarded `UpdateElementContent`、durable two-phase `NativeSequenceJournal`、active/latest/recovery unknown 隔离、长连接与 HTTP 共用的 interaction fence、完整 `RenderBinding` 传播，以及 renderer 内 native/full 共用单一 `sequence`。production native 路径尚未启用；剩余 gate 是用真实飞书凭据冻结元素端点 body 上限与错误语义，并完成 create/reply/native/final-card smoke 和 profile E2E。
 
 > 原列为 P0。降级理由：用户借由现有「节流全卡刷新 + `streaming_mode`」已能看到打字机式增量，本项优化的是**网络开销**而非用户可感知能力；且它是整份 roadmap 里实现最复杂、最易引入乱序 / `invalid sequence` 回归的一项（要引入 element 级接口、处理全卡与文本流式共享 `sequence` 的竞争、以及「交互进行中不能并发流式」的官方限制）。收益/风险比最差，应等真实 E2E 观测到全卡刷新造成明显限流或卡顿再做。
 
@@ -270,18 +261,18 @@ P3 安全收口的验收条件：
 建议方案：
 
 1. 复用回答正文已有的稳定 `element_id`（`answer`，见 `card/lark_card.go`）。
-2. 在 CardKit client 增加文本流式更新接口（`PUT .../cards/{card_id}/elements/{element_id}/content`）。
-3. 复用现有单卡串行锁统一分配 `sequence`，全卡与文本更新共享同一序号，不各自维护。
+2. CardKit client 通过 `PUT .../cards/{card_id}/elements/{element_id}/content` 提交稳定 `uuid`、正文和 `sequence`，并在取 token 和发 HTTP 前执行保守的 encoded-body 硬闸。
+3. 复用现有单卡串行锁统一分配 `sequence`，全卡与文本更新共享同一序号；native PUT 前持久化 intent，成功后 confirm，结果未知时永久隔离旧卡，绝不猜测或复用序号。
 4. answer delta 只进入文本更新；思考、工具、header、按钮和 footer 变化进入全卡更新。
 5. 完成、失败、停止必须通过全卡更新关闭 `streaming_mode` 并收敛按钮终态。
-6. 原生文本流式失败时回退到当前全卡更新，不中断 Agent run。
+6. 只有真实 smoke 证明“请求明确未应用”的错误才允许同序号回退全卡；网络错误、超时、响应丢失或 confirm 失败一律标记 sequence unknown，不中断 Agent run，也不再写旧卡。
 7. 用户交互进行中收到错误时，跳过中间帧并等待终态更新，不与回调同步换卡竞争。
 
 验收条件：
 
 - 正常回答至少出现一次 `elements/{element_id}/content` 调用。
 - 全卡与文本更新的 `sequence` 全局严格递增。
-- 流式端点失败后仍能得到完整最终答案。
+- 明确未应用的流式失败可安全回退；结果未知时旧卡停止写入，后续请求创建新卡并仍能得到完整最终答案。
 - stop、error、result 终态与当前行为一致。
 - 真实飞书 E2E 能观察到原生打字机效果，audit 能区分 text stream 和 full update。
 
