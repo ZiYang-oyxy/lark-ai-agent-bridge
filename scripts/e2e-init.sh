@@ -167,8 +167,8 @@ discover_p2p_chat() {
       echo "BLOCKED p2p_unavailable: the selected direct chat is not readable" >&2
       exit 3
     }
-    if ! printf '%s' "$members" | jq -e --arg bot "$LARK_BOT_OPEN_ID" \
-      '[(.bots // .data.bots // .items // .data.items // [])[] | (.member_id // .open_id // .member.open_id // empty)] | index($bot) != null' >/dev/null 2>&1; then
+    if ! printf '%s' "$members" | jq -e --arg bot "$LARK_BOT_OPEN_ID" --arg app "$LARK_APP_ID" \
+      '[(.bots // .data.bots // .items // .data.items // [])[] | select(((.member_id // .open_id // .member.open_id // "") == $bot) or ((.app_id // .member.app_id // "") == $app))] | length > 0' >/dev/null 2>&1; then
       echo "BLOCKED p2p_bot_mismatch: the selected direct chat does not contain this bot" >&2
       exit 3
     fi
@@ -183,8 +183,8 @@ discover_p2p_chat() {
   while IFS= read -r chat; do
     [[ -n "$chat" ]] || continue
     members="$(lark_cli im +chat-members-list --as user --chat-id "$chat" --member-types bot --json 2>/dev/null || true)"
-    if printf '%s' "$members" | jq -e --arg bot "$LARK_BOT_OPEN_ID" \
-      '[(.bots // .data.bots // .items // .data.items // [])[] | (.member_id // .open_id // .member.open_id // empty)] | index($bot) != null' >/dev/null 2>&1; then
+    if printf '%s' "$members" | jq -e --arg bot "$LARK_BOT_OPEN_ID" --arg app "$LARK_APP_ID" \
+      '[(.bots // .data.bots // .items // .data.items // [])[] | select(((.member_id // .open_id // .member.open_id // "") == $bot) or ((.app_id // .member.app_id // "") == $app))] | length > 0' >/dev/null 2>&1; then
       matches+=("$chat")
     fi
   done < <(printf '%s' "$list" | jq -r '(.items // .data.items // .data.chats // [])[] | .chat_id // empty')
