@@ -38,6 +38,8 @@ PREFLIGHT_ONLY=0
 STRICT_CAPABILITIES=0
 SELECTED_CASES=()
 RUN_ID="$(date +%Y%m%d-%H%M%S)"
+RUN_STARTED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+RUN_STARTED_EPOCH="$(date +%s)"
 RUN_DIR=""
 RUN_DIR_SET=0
 DEFAULT_WORKDIR="${E2E_REAL_E2E_DEFAULT_WORKDIR:-/tmp/lark-agent-bridge-real-$RUN_ID}"
@@ -52,6 +54,8 @@ SERVER_PID=""
 FAILURES=0
 BLOCKED_CASES=0
 BOT_OPEN_ID=""
+SUMMARY_INITIALIZED=0
+RUN_TIMING_FINALIZED=0
 
 usage() {
   cat <<'USAGE'
@@ -249,7 +253,8 @@ summary_init() {
     echo "# Feishu Real E2E"
     echo
     echo "- run_id: $RUN_ID"
-    echo "- generated_at: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    echo "- generated_at: $RUN_STARTED_AT"
+    echo "- started_at: $RUN_STARTED_AT"
     echo "- repo: $ROOT"
     echo "- mode: $MODE"
     echo "- run_dir: $RUN_DIR"
@@ -265,6 +270,7 @@ summary_init() {
     echo "- secrets: not printed"
     echo
   } >"$SUMMARY"
+  SUMMARY_INITIALIZED=1
 }
 
 summary() {
@@ -696,6 +702,9 @@ restart_server() {
 
 cleanup() {
   local status=$? kept_server=0
+  # Finalize evidence before process cleanup: stop_server can itself fail on a
+  # wedged child, and that failure must not erase the run's timing evidence.
+  append_run_timing >/dev/null 2>&1 || true
   sync_server_pid >/dev/null 2>&1 || true
   if [[ -n "${SERVER_PID:-}" ]] && kill -0 "$SERVER_PID" >/dev/null 2>&1; then
     if [[ "$status" -ne 0 && "$KEEP_SERVER_ON_FAIL" -eq 1 ]]; then
@@ -1055,6 +1064,31 @@ wait_audit_since() {
     fi
     if (( $(date +%s) - start >= timeout )); then
       echo "timed out waiting for new audit pattern: $pattern" >&2
+      return 1
+    fi
+    sleep 1
+  done
+}
+
+wait_audit_expected_before_terminal() {
+  local mark="$1"
+  local expected_pattern="$2"
+  local terminal_pattern="$3"
+  local timeout="${4:-$WAIT_TIMEOUT}"
+  local start line
+  start="$(date +%s)"
+  while true; do
+    while IFS= read -r line; do
+      if printf '%s\n' "$line" | grep -E "$expected_pattern" >/dev/null 2>&1; then
+        return 0
+      fi
+      if printf '%s\n' "$line" | grep -E "$terminal_pattern" >/dev/null 2>&1; then
+        echo "terminal event observed before expected event: expected=$expected_pattern terminal=$terminal_pattern" >&2
+        return 1
+      fi
+    done < <(audit_since "$mark")
+    if (( $(date +%s) - start >= timeout )); then
+      echo "timed out waiting for expected audit pattern: $expected_pattern (terminal: $terminal_pattern)" >&2
       return 1
     fi
     sleep 1
@@ -2257,11 +2291,14 @@ case_native_text_stream() {
   local normal_marker="E2E_${RUN_ID}_NATIVE_TEXT_STREAM_NORMAL"
   local stop_marker="E2E_${RUN_ID}_NATIVE_TEXT_STREAM_STOP_E2E_BLOCK"
   local normal stop normal_mark stop_mark callback_mark callback_elapsed stop_response
+  local normal_stream_pattern normal_terminal_pattern
 
   normal_mark="$(audit_mark)"
   normal="$(send_at "/new ${normal_marker} 请只回复一篇至少四段的简短说明，每段至少两句，不要调用工具；必须在正文中包含该标记。")"
-  wait_audit_count_since "$normal_mark" '"Action":"cardkit_text_stream"|event=stream' 3 60
-  wait_audit_since "$normal_mark" '"Action":"cardkit_text_stream"' 60
+  normal_stream_pattern="($normal.*\"Action\":\"cardkit_text_stream\"|\"Action\":\"cardkit_text_stream\".*$normal)"
+  normal_terminal_pattern="($normal.*event=result|event=result.*$normal)"
+  wait_audit_expected_before_terminal "$normal_mark" "$normal_stream_pattern" "$normal_terminal_pattern" 60
+  wait_audit_count_since "$normal_mark" "($normal.*(\"Action\":\"cardkit_text_stream\"|event=stream)|(\"Action\":\"cardkit_text_stream\"|event=stream).*$normal)" 3 60
   wait_audit_since "$normal_mark" "$normal.*event=result" 60
   if ! audit_since "$normal_mark" | jq -s -e --arg message_id "$normal" '
     [ .[] | select((.SessionID // "") | contains($message_id)) ] | to_entries as $events
@@ -2585,11 +2622,24 @@ append_capability_summary() {
   rm -f "$capability_summary"
 }
 
+append_run_timing() {
+  if [[ "$SUMMARY_INITIALIZED" -ne 1 || "$RUN_TIMING_FINALIZED" -eq 1 ]]; then
+    return
+  fi
+  local finished_at wall_clock_sec
+  finished_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  wall_clock_sec=$(( $(date +%s) - RUN_STARTED_EPOCH ))
+  summary "- finished_at: $finished_at"
+  summary "- wall_clock_sec: $wall_clock_sec"
+  RUN_TIMING_FINALIZED=1
+}
+
 append_normal_summary_footer() {
   summary "## Summary"
   summary
   summary "- failures: $FAILURES"
   summary "- blocked: $BLOCKED_CASES"
+  append_run_timing
   summary "- messages: $MESSAGES"
   summary "- server_log: $SERVER_LOG"
 }
@@ -2859,7 +2909,7 @@ chmod 700 "$(dirname "$normal_lock_path")"
 if ! e2e_profile_lock_acquire "$PROFILE_NAME" "$normal_lock_path" "$RUN_TOKEN"; then
   e2e_cap_record exclusive_runtime BLOCKED profile_busy "another local run owns this profile" "wait or select another profile"
   e2e_cap_write_json "$CAPABILITIES_JSON"
-  e2e_cap_write_summary "$SUMMARY"
+  append_capability_summary
   echo "$SUMMARY"
   if [[ "$STRICT_CAPABILITIES" -eq 1 ]]; then
     exit 3

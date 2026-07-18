@@ -145,6 +145,19 @@ The three retained media cases also require fake Claude. They assert exact accep
 
 ## Commands
 
+### Deterministic execution protocol
+
+真实飞书只用于确认平台集成链路，不作为 harness 或 fixture 的调试循环。每次迭代遵守以下门禁：
+
+1. 一次只推进一个 plan Task；开始前写明唯一 acceptance gate 和受影响 case。
+2. 新增或修改的 harness 分支必须先由本地 contract 覆盖。固定顺序是本地 contract → 单个受影响真实 case → 只有必要时才跑 full。
+3. 同一症状第一次失败后禁止直接重跑。先对照 case log、fake Claude log、audit 和消息结果，补充能够区分假设的观测点。
+4. 第二次同症状失败仍无确定结论时立即暂停，记录观测缺口；不得继续支付相同 timeout。
+5. 每个 Task 最多运行一次 full gate。局部 case 已足以证明 acceptance gate 时，不运行 full。
+6. 收益递减优化默认使用 30 分钟 timebox；时间盒内不能形成确定性结果就停止并保留当前稳定 checkpoint。
+
+`native_text_stream` 的 normal 分支会同时观察 native stream 与 terminal result。如果 terminal 先出现，case 立即失败并打印矛盾事件，不再等待满 60 秒。full summary 直接记录 `started_at`、`finished_at` 和 `wall_clock_sec`；耗时比较统一使用 `wall_clock_sec`，不再混用外层 shell 计时。
+
 List cases:
 
 ```bash
