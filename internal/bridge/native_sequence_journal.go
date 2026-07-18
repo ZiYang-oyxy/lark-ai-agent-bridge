@@ -25,18 +25,29 @@ type nativeSequenceJournalSnapshot struct {
 }
 
 type nativeSequenceJournal struct {
-	mu       sync.Mutex
-	path     string
-	sessions *session.Manager
-	replies  *reply.Store
-	intents  map[string]feishu.NativeSequenceIntent
+	mu               sync.Mutex
+	path             string
+	sessions         *session.Manager
+	replies          *reply.Store
+	intents          map[string]feishu.NativeSequenceIntent
+	save             func(string, map[string]feishu.NativeSequenceIntent) error
+	replaceActiveRef func(string, string, session.RenderRef) error
+	setLatest        func(string, *session.RenderRef) error
 }
 
 func NewNativeSequenceJournal(path string, sessions *session.Manager, replies *reply.Store) (*nativeSequenceJournal, error) {
 	if strings.TrimSpace(path) == "" || sessions == nil || replies == nil {
 		return nil, errors.New("native sequence journal requires path, session manager and reply store")
 	}
-	j := &nativeSequenceJournal{path: path, sessions: sessions, replies: replies, intents: map[string]feishu.NativeSequenceIntent{}}
+	j := &nativeSequenceJournal{
+		path:             path,
+		sessions:         sessions,
+		replies:          replies,
+		intents:          map[string]feishu.NativeSequenceIntent{},
+		save:             saveNativeSequenceJournal,
+		replaceActiveRef: sessions.ReplaceActiveBatchRenderRef,
+		setLatest:        replies.SetLatest,
+	}
 	data, err := os.ReadFile(path)
 	if errors.Is(err, fs.ErrNotExist) {
 		return j, nil
@@ -72,18 +83,18 @@ func (j *nativeSequenceJournal) PrepareNative(_ context.Context, intent feishu.N
 	}
 	candidate := cloneNativeIntents(j.intents)
 	candidate[key] = intent
-	if err := saveNativeSequenceJournal(j.path, candidate); err != nil {
+	if err := j.save(j.path, candidate); err != nil {
 		return err
 	}
 	j.intents = candidate
 	pending := intent.Ref
 	pending.SequenceUnknown = true
 	pending.PendingSequence = intent.Candidate
-	if err := j.sessions.ReplaceActiveBatchRenderRef(intent.SessionID, intent.BatchID, pending); err != nil {
+	if err := j.replaceActiveRef(intent.SessionID, intent.BatchID, pending); err != nil {
 		return err
 	}
 	if intent.LatestScope != "" {
-		if err := j.replies.SetLatest(intent.LatestScope, &pending); err != nil {
+		if err := j.setLatest(intent.LatestScope, &pending); err != nil {
 			return err
 		}
 	}
@@ -116,20 +127,20 @@ func (j *nativeSequenceJournal) finish(intent feishu.NativeSequenceIntent, ref s
 	if !ok || stored.Ref.CardID != intent.Ref.CardID || stored.Ref.ReplyMessageID != intent.Ref.ReplyMessageID || stored.Ref.Version != intent.Ref.Version {
 		return fmt.Errorf("native sequence intent not found or mismatched")
 	}
-	if err := j.sessions.ReplaceActiveBatchRenderRef(intent.SessionID, intent.BatchID, ref); err != nil {
+	if err := j.replaceActiveRef(intent.SessionID, intent.BatchID, ref); err != nil {
 		return err
 	}
 	if intent.LatestScope != "" {
 		latest := j.replies.GetLatest(intent.LatestScope)
 		if latest != nil && latest.CardID == intent.Ref.CardID && latest.ReplyMessageID == intent.Ref.ReplyMessageID {
-			if err := j.replies.SetLatest(intent.LatestScope, &ref); err != nil {
+			if err := j.setLatest(intent.LatestScope, &ref); err != nil {
 				return err
 			}
 		}
 	}
 	candidate := cloneNativeIntents(j.intents)
 	delete(candidate, key)
-	if err := saveNativeSequenceJournal(j.path, candidate); err != nil {
+	if err := j.save(j.path, candidate); err != nil {
 		return err
 	}
 	j.intents = candidate
