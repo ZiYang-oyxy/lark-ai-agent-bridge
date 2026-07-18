@@ -20,7 +20,7 @@ func TestBuildLarkCardUsesValidElementIDs(t *testing.T) {
 		BuildLarkCard(Event{
 			Type: "stream", SessionID: "claude:chat", Streaming: true,
 			Segments: []Segment{{Kind: SegmentText, Text: "answer"}, {Kind: SegmentThought, Text: "thought"}, {Kind: SegmentTool, Text: "tool"}},
-			Actions: WorkDirCreateActions("/tmp/work"), StopButton: StopButton{Visible: true},
+			Actions:  WorkDirCreateActions("/tmp/work"), StopButton: StopButton{Visible: true},
 		}),
 	}
 	var walk func(any)
@@ -230,6 +230,7 @@ func TestBuildLarkCardUsesFinalStopButtonLabels(t *testing.T) {
 		{eventType: "result", want: "已完成"},
 		{eventType: "error", want: "已结束"},
 		{eventType: "stopped", want: "已停止"},
+		{eventType: "interrupted", want: "已中断"},
 	}
 	for _, tt := range tests {
 		payload := BuildLarkCard(Event{Type: tt.eventType, SessionID: "claude:chat", StopButton: StopButton{Visible: true, Disabled: true}})
@@ -241,6 +242,97 @@ func TestBuildLarkCardUsesFinalStopButtonLabels(t *testing.T) {
 		text := button["text"].(map[string]any)
 		if text["content"] != tt.want {
 			t.Fatalf("%s text = %#v, want %s", tt.eventType, text["content"], tt.want)
+		}
+	}
+}
+
+func TestBuildLarkCardTerminalEventsAreNonInteractive(t *testing.T) {
+	for _, eventType := range []string{"result", "error", "stopped", "interrupted"} {
+		t.Run(eventType, func(t *testing.T) {
+			payload := BuildLarkCard(Event{
+				Type:      eventType,
+				SessionID: "claude:chat",
+				Streaming: true,
+				Actions: []Action{
+					{ID: "stop", Label: "Stop"},
+					{ID: "create_workdir", Label: "Create"},
+					{ID: "cancel_workdir", Label: "Cancel"},
+					{ID: "custom", Label: "Custom"},
+				},
+				StopButton: StopButton{Visible: true},
+			})
+			config := payload["config"].(map[string]any)
+			if config["streaming_mode"] != false {
+				t.Fatalf("streaming mode = %#v, want false", config["streaming_mode"])
+			}
+			if _, ok := config["streaming_config"]; ok {
+				t.Fatalf("terminal streaming config = %#v", config["streaming_config"])
+			}
+			assertDisabledButtons(t, payload)
+			if eventType == "interrupted" {
+				header := payload["header"].(map[string]any)
+				if header["template"] != "orange" || header["title"].(map[string]any)["content"] != "服务重启，任务已中断" {
+					t.Fatalf("interrupted header = %#v", header)
+				}
+			}
+		})
+	}
+
+	stream := BuildLarkCard(Event{Type: "stream", SessionID: "claude:chat", Actions: []Action{{ID: "custom", Label: "Custom"}}, StopButton: StopButton{Visible: true}})
+	buttons := collectButtons(stream)
+	if len(buttons) != 2 {
+		t.Fatalf("stream buttons = %#v", buttons)
+	}
+	for _, button := range buttons {
+		if _, ok := button["behaviors"]; !ok {
+			t.Fatalf("live button lost behavior: %#v", button)
+		}
+	}
+}
+
+func TestBuildLarkCardInterruptedWithoutPanelsKeepsPlainBodyText(t *testing.T) {
+	payload := BuildLarkCard(Event{Type: "interrupted", HideAgentPanels: true, Segments: []Segment{{Kind: SegmentText, Text: "服务重启，已中断，请重新发送"}}})
+	for _, element := range payload["body"].(map[string]any)["elements"].([]any) {
+		if markdown, ok := element.(map[string]any); ok && markdown["element_id"] == "answer" {
+			if markdown["content"] != "服务重启，已中断，请重新发送" {
+				t.Fatalf("interrupted body = %#v", markdown["content"])
+			}
+			return
+		}
+	}
+	t.Fatalf("interrupted answer missing: %#v", payload)
+}
+
+func collectButtons(value any) []map[string]any {
+	var buttons []map[string]any
+	var walk func(any)
+	walk = func(value any) {
+		switch typed := value.(type) {
+		case map[string]any:
+			if typed["tag"] == "button" {
+				buttons = append(buttons, typed)
+			}
+			for _, child := range typed {
+				walk(child)
+			}
+		case []any:
+			for _, child := range typed {
+				walk(child)
+			}
+		}
+	}
+	walk(value)
+	return buttons
+}
+
+func assertDisabledButtons(t *testing.T, payload map[string]any) {
+	t.Helper()
+	for _, button := range collectButtons(payload) {
+		if button["disabled"] != true {
+			t.Fatalf("terminal button enabled: %#v", button)
+		}
+		if _, ok := button["behaviors"]; ok {
+			t.Fatalf("terminal button has behavior: %#v", button)
 		}
 	}
 }
