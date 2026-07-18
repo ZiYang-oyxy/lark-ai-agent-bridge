@@ -2,6 +2,7 @@ package feishu
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 
@@ -137,9 +138,19 @@ func (r *CardKitRenderer) renderContext(ctx context.Context, e card.Event) error
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	payload := card.BuildLarkCard(e)
+	prepared, err := card.PrepareLarkCard(e)
+	if err != nil {
+		return err
+	}
 	if r.cardID == "" {
-		created, err := r.client.CreateCard(ctx, CardKitCreateRequest{Card: payload})
+		created, err := r.client.CreateCard(ctx, CardKitCreateRequest{Prepared: &prepared})
+		if errors.Is(err, card.ErrCardPayloadOversize) {
+			emergency, emergencyErr := card.PrepareEmergencyLarkCard()
+			if emergencyErr != nil {
+				return emergencyErr
+			}
+			created, err = r.client.CreateCard(ctx, CardKitCreateRequest{Prepared: &emergency})
+		}
 		if err != nil {
 			return err
 		}
@@ -163,20 +174,29 @@ func (r *CardKitRenderer) renderContext(ctx context.Context, e card.Event) error
 		r.cardID = cardID
 		return nil
 	}
-	if err := r.updateCard(ctx, e, payload); err != nil {
+	if err := r.updateCard(ctx, e, prepared); err != nil {
 		return err
 	}
 	return nil
 }
 
-func (r *CardKitRenderer) updateCard(ctx context.Context, e card.Event, payload map[string]any) error {
+func (r *CardKitRenderer) updateCard(ctx context.Context, e card.Event, prepared card.PreparedLarkCard) error {
 	nextSequence := r.sequence + 1
-	err := r.client.UpdateCard(ctx, CardKitUpdateCardRequest{
+	request := CardKitUpdateCardRequest{
 		CardID:   r.cardID,
-		Card:     payload,
+		Prepared: &prepared,
 		Sequence: nextSequence,
 		UUID:     stableUUID("card-update", r.cardID, e.SessionID, e.Type, fmt.Sprint(nextSequence)),
-	})
+	}
+	err := r.client.UpdateCard(ctx, request)
+	if errors.Is(err, card.ErrCardPayloadOversize) {
+		emergency, emergencyErr := card.PrepareEmergencyLarkCard()
+		if emergencyErr != nil {
+			return emergencyErr
+		}
+		request.Prepared = &emergency
+		err = r.client.UpdateCard(ctx, request)
+	}
 	if err != nil {
 		return classifyRenderUpdateError(err)
 	}

@@ -145,15 +145,15 @@ type ActionResult struct {
 	Event *card.Event
 }
 
-func (r ActionResult) BuildCard(maxChars int) map[string]any {
+func (r ActionResult) PrepareCard(maxChars int) (card.PreparedLarkCard, error) {
 	if r.Event == nil {
-		return nil
+		return card.PreparedLarkCard{}, nil
 	}
 	event := *r.Event
 	if maxChars > 0 {
 		event = card.LimitEvent(event, maxChars)
 	}
-	return card.BuildLarkCard(event)
+	return card.PrepareLarkCard(event)
 }
 
 func NewService(cfg config.Config, renderer card.Renderer, runner AgentRunner, recorder *audit.Recorder) *Service {

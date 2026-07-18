@@ -297,7 +297,11 @@ func runServe(args []string) error {
 			if err != nil {
 				return nil, err
 			}
-			return &feishu.CardActionResponse{Card: result.BuildCard(cfg.CardMaxChars)}, nil
+			prepared, err := result.PrepareCard(cfg.CardMaxChars)
+			if err != nil {
+				return nil, err
+			}
+			return &feishu.CardActionResponse{Card: prepared.PayloadCopy()}, nil
 		},
 		MessageRecalledHandler: func(ctx context.Context, recall feishu.RecalledMessage) error {
 			return svc.HandleMessageRecalled(ctx, bridge.MessageRecall{

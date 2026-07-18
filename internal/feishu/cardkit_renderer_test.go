@@ -16,6 +16,7 @@ type fakeCardKitClient struct {
 	replied     int
 	updated     int
 	lastCard    map[string]any
+	createReqs  []CardKitCreateRequest
 	replyUUIDs  []string
 	nextCardSeq int
 	updateReqs  []CardKitUpdateCardRequest
@@ -36,7 +37,11 @@ func (f *fakeCardKitObserver) Record(_, action, _ string, detail string) {
 
 func (f *fakeCardKitClient) CreateCard(_ context.Context, req CardKitCreateRequest) (CardKitCreateResult, error) {
 	f.created++
+	f.createReqs = append(f.createReqs, req)
 	f.lastCard = req.Card
+	if req.Prepared != nil {
+		f.lastCard = req.Prepared.PayloadCopy()
+	}
 	f.nextCardSeq++
 	return CardKitCreateResult{CardID: "card-" + string(rune('0'+f.nextCardSeq))}, nil
 }
@@ -57,7 +62,30 @@ func (f *fakeCardKitClient) UpdateCard(_ context.Context, req CardKitUpdateCardR
 	f.updated++
 	f.updateReqs = append(f.updateReqs, req)
 	f.lastCard = req.Card
+	if req.Prepared != nil {
+		f.lastCard = req.Prepared.PayloadCopy()
+	}
 	return f.updateErr
+}
+
+func TestCardKitRendererPreparesOversizedCreateAndUpdate(t *testing.T) {
+	client := &fakeCardKitClient{}
+	renderer := NewCardKitRenderer(client, "message-1")
+	oversized := card.Event{Type: "stream", SessionID: "session", Segments: []card.Segment{{Kind: card.SegmentText, Text: strings.Repeat("界", card.LarkCardSoftMaxJSONBytes)}}}
+	if err := renderer.Render(oversized); err != nil {
+		t.Fatalf("create render error: %v", err)
+	}
+	if err := renderer.Render(oversized); err != nil {
+		t.Fatalf("update render error: %v", err)
+	}
+	if client.createReqs[0].Prepared == nil || client.updateReqs[0].Prepared == nil {
+		t.Fatalf("renderer bypassed prepared boundary: create=%#v update=%#v", client.createReqs[0], client.updateReqs[0])
+	}
+	for _, prepared := range []*card.PreparedLarkCard{client.createReqs[0].Prepared, client.updateReqs[0].Prepared} {
+		if got := prepared.Capacity(); got.JSONBytes > card.LarkCardSoftMaxJSONBytes || got.Components > card.LarkCardMaxComponents {
+			t.Fatalf("prepared capacity = %#v", got)
+		}
+	}
 }
 
 func (f *fakeCardKitClient) UpdateSettings(context.Context, CardKitUpdateSettingsRequest) error {

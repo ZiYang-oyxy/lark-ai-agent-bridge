@@ -36,8 +36,13 @@ func NewCallbackHTTPHandler(service *Service) http.Handler {
 		}
 		w.Header().Set("Content-Type", "application/json")
 		resp := map[string]any{"ok": true}
-		if card := result.BuildCard(service.Config.CardMaxChars); card != nil {
-			resp["card"] = card
+		prepared, err := result.PrepareCard(service.Config.CardMaxChars)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		if prepared.CardJSON() != nil {
+			resp["card"] = prepared.PayloadCopy()
 		}
 		_ = json.NewEncoder(w).Encode(resp)
 	})

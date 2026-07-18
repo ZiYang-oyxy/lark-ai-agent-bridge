@@ -1586,7 +1586,11 @@ func TestServiceStopCancelsActiveOneShotRun(t *testing.T) {
 	if result.Event == nil || result.Event.Type != "stopped" || !result.Event.StopButton.Disabled {
 		t.Fatalf("stop action result = %#v, want disabled stopped", result.Event)
 	}
-	payload := result.BuildCard(cfg.CardMaxChars)
+	prepared, err := result.PrepareCard(cfg.CardMaxChars)
+	if err != nil {
+		t.Fatalf("PrepareCard() error: %v", err)
+	}
+	payload := prepared.PayloadCopy()
 	elements := payload["body"].(map[string]any)["elements"].([]any)
 	var button map[string]any
 	for _, raw := range elements {
