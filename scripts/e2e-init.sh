@@ -129,6 +129,15 @@ verify_group() {
 discover_p2p_chat() {
   local list chat members matches=()
   if [[ -n "$P2P_CHAT_ID" ]]; then
+    members="$(lark-cli im +chat-members-list --as user --chat-id "$P2P_CHAT_ID" --member-types bots --json 2>/dev/null)" || {
+      echo "BLOCKED p2p_unavailable: the selected direct chat is not readable" >&2
+      exit 3
+    }
+    if ! printf '%s' "$members" | jq -e --arg bot "$LARK_BOT_OPEN_ID" \
+      '[(.bots // .data.bots // .items // .data.items // [])[] | (.member_id // .open_id // .member.open_id // empty)] | index($bot) != null' >/dev/null 2>&1; then
+      echo "BLOCKED p2p_bot_mismatch: the selected direct chat does not contain this bot" >&2
+      exit 3
+    fi
     E2E_REAL_E2E_P2P_CHAT_ID="$P2P_CHAT_ID"
     export E2E_REAL_E2E_P2P_CHAT_ID
     return

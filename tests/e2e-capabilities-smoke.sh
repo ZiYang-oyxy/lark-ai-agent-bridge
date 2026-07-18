@@ -170,6 +170,33 @@ if rg -q 'preflight unexpectedly invoked go|messages-send|serve|unexpectedly inv
   fail "preflight ignored a blocked static prerequisite"
 fi
 
+write_doctor_profile fail-fast oc_doctor_p2p
+awk '{if ($0 ~ /^E2E_E2E_CHAT_ID=/) print "E2E_E2E_CHAT_ID=oc_missing_group"; else print}' \
+  "$DOCTOR_STATE/.lark-agent-bridge/e2e/profiles/fail-fast.env" >"$DOCTOR_STATE/.lark-agent-bridge/e2e/profiles/fail-fast.env.tmp"
+mv "$DOCTOR_STATE/.lark-agent-bridge/e2e/profiles/fail-fast.env.tmp" "$DOCTOR_STATE/.lark-agent-bridge/e2e/profiles/fail-fast.env"
+chmod 600 "$DOCTOR_STATE/.lark-agent-bridge/e2e/profiles/fail-fast.env"
+cat >"$DOCTOR_STATE/.lark-agent-bridge/e2e/profiles/fail-fast.capabilities.json" <<'EOF'
+{"schema_version":1,"generated_at":"2099-01-01T00:00:00Z","capabilities":[{"name":"media_image","status":"PASS","reason_code":"ready","summary":"previous image canary passed","remediation":"","evidence_refs":[]}]}
+EOF
+chmod 600 "$DOCTOR_STATE/.lark-agent-bridge/e2e/profiles/fail-fast.capabilities.json"
+: >"$DOCTOR_LOG"
+fail_fast_summary="$TEST_ROOT/fail-fast/summary.md"
+run_expect_exit 0 env \
+  E2E_STATE_ROOT="$DOCTOR_STATE" DOCTOR_LOG="$DOCTOR_LOG" PATH="$DOCTOR_BIN:$PATH" E2E_CLAUDE_BIN="$DOCTOR_BIN/claude" \
+  bash "$ROOT/scripts/e2e-real.sh" --profile fail-fast --case media_attachment_only --run-dir "$TEST_ROOT/fail-fast"
+if rg -q 'preflight unexpectedly invoked go|messages-send|serve|unexpectedly invoked claude' "$DOCTOR_LOG"; then
+  fail "runner started active work although every selected case was blocked"
+fi
+rg -q '^## E2E capabilities$' "$fail_fast_summary"
+rg -q '^## media_attachment_only$' "$fail_fast_summary"
+rg -q 'test_group.*BLOCKED' "$fail_fast_summary"
+if [[ -e "$DOCTOR_STATE/.lark-agent-bridge/e2e/locks/fail-fast.lock" ]]; then
+  fail "fully blocked run acquired an active profile lock"
+fi
+run_expect_exit 3 env \
+  E2E_STATE_ROOT="$DOCTOR_STATE" DOCTOR_LOG="$DOCTOR_LOG" PATH="$DOCTOR_BIN:$PATH" E2E_CLAUDE_BIN="$DOCTOR_BIN/claude" \
+  bash "$ROOT/scripts/e2e-real.sh" --profile fail-fast --case media_attachment_only --strict-capabilities --run-dir "$TEST_ROOT/fail-fast-strict"
+
 LEGACY_STATE="$TEST_ROOT/legacy-state"
 mkdir -p "$LEGACY_STATE/.lark-agent-bridge"
 chmod 700 "$LEGACY_STATE/.lark-agent-bridge"

@@ -78,6 +78,13 @@ assert_fail env E2E_PROFILE_MV_BIN="$FAILING_MV" bash -c \
 assert_eq "$old_env_contents" "$(cat "$personal_env")" "failed atomic write preserved old env"
 export LARK_APP_ID="cli_test_app"
 
+export LARK_APP_SECRET=$'unsupported\nsecret'
+assert_fail e2e_profile_write "$TEST_ROOT" unsafe-value
+if find "$TEST_ROOT/.lark-agent-bridge/e2e/profiles" -maxdepth 1 -type f -name '.unsafe-value.*' | rg -q .; then
+  fail "failed profile write left secret-bearing temporary files"
+fi
+export LARK_APP_SECRET="secret-do-not-print"
+
 selection="$(e2e_profile_select "$TEST_ROOT" "")"
 assert_eq $'personal\t'"$personal_env"$'\t'"$personal_json" "$selection" "unique profile selection"
 
@@ -145,6 +152,7 @@ case "$*" in
     esac
     ;;
   *'im +chat-members-list'*'--chat-id oc_unrelated'*) printf '%s\n' '{"bots":[]}' ;;
+  *'im +chat-members-list'*'--chat-id oc_wrong_p2p'*) printf '%s\n' '{"bots":[]}' ;;
   *'im +chat-members-list'*'--chat-id oc_bootstrap_secret_p2p_two'*) printf '%s\n' '{"bots":[{"member_id":"ou_bootstrap_secret_bot"}]}' ;;
   *'im +chat-members-list'*'--chat-id oc_bootstrap_secret_p2p'*) printf '%s\n' '{"bots":[{"member_id":"ou_bootstrap_secret_bot"}]}' ;;
   *) echo "unexpected fake lark-cli call: $*" >&2; exit 1 ;;
@@ -194,5 +202,21 @@ for scenario in none multiple; do
     fail "$scenario P2P bootstrap leaked a secret or full ID"
   fi
 done
+
+wrong_p2p_root="$TEST_ROOT/bootstrap-wrong-p2p"
+wrong_p2p_output="$TEST_ROOT/bootstrap-wrong-p2p.out"
+mkdir -p "$wrong_p2p_root"
+set +e
+PATH="$FAKE_BIN:$PATH" E2E_REPO_ROOT="$wrong_p2p_root" \
+  LARK_APP_ID="cli_bootstrap_app" LARK_APP_SECRET="bootstrap-secret-do-not-print" \
+  LARK_BOT_OPEN_ID="" E2E_E2E_CHAT_ID="oc_bootstrap_secret_group" E2E_REAL_E2E_P2P_CHAT_ID="" \
+  bash "$ROOT/scripts/e2e-init.sh" --profile developer --non-interactive --p2p-chat-id oc_wrong_p2p \
+  >"$wrong_p2p_output" 2>&1
+wrong_p2p_status=$?
+set -e
+assert_eq 3 "$wrong_p2p_status" "explicit P2P without target bot status"
+if rg -e 'bootstrap-secret-do-not-print|ou_bootstrap_secret_bot|oc_bootstrap_secret_group|oc_wrong_p2p' "$wrong_p2p_output" >/dev/null 2>&1; then
+  fail "explicit P2P validation leaked a secret or full ID"
+fi
 
 echo "e2e profile smoke ok"

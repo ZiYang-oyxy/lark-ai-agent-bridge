@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# Dynamic case dispatch intentionally invokes case_* helpers by constructed name.
+# shellcheck disable=SC2329
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -1691,28 +1693,28 @@ case_prerequisites() {
   case "$name" in
     debounce_dm)
       if e2e_cap_index dm_delivery >/dev/null 2>&1; then
-        printf '%s\n' credentials dm_delivery wrapper exclusive_runtime
+        printf '%s\n' credentials lark_cli_auth bot_identity p2p_chat dm_delivery wrapper exclusive_runtime
       else
         printf '%s\n' credentials lark_cli_auth bot_identity p2p_chat wrapper exclusive_runtime
       fi
       ;;
     media_attachment_only|media_images)
       if e2e_cap_index media_image >/dev/null 2>&1; then
-        printf '%s\n' credentials media_image wrapper exclusive_runtime
+        printf '%s\n' credentials lark_cli_auth bot_identity test_group media_image wrapper exclusive_runtime
       else
         printf '%s\n' credentials lark_cli_auth bot_identity test_group wrapper exclusive_runtime
       fi
       ;;
     media_text_files|media_partial|media_rejected)
       if e2e_cap_index media_file >/dev/null 2>&1; then
-        printf '%s\n' credentials media_file wrapper exclusive_runtime
+        printf '%s\n' credentials lark_cli_auth bot_identity p2p_chat media_file wrapper exclusive_runtime
       else
         printf '%s\n' credentials lark_cli_auth bot_identity p2p_chat wrapper exclusive_runtime
       fi
       ;;
     message_revoke|message_revoke_pending_workdir|message_revoke_queued_input|recall_state)
       if e2e_cap_index recall_event_delivery >/dev/null 2>&1; then
-        printf '%s\n' credentials recall_event_delivery wrapper exclusive_runtime
+        printf '%s\n' credentials lark_cli_auth bot_identity test_group recall_event_delivery wrapper exclusive_runtime
       else
         printf '%s\n' credentials lark_cli_auth bot_identity test_group wrapper exclusive_runtime
       fi
@@ -1724,6 +1726,46 @@ case_prerequisites() {
       printf '%s\n' credentials lark_cli_auth bot_identity test_group wrapper exclusive_runtime
       ;;
   esac
+}
+
+selected_cases_have_ready() {
+  local case_name capability state
+  local prerequisites=()
+  for case_name in "${RUN_CASES[@]}"; do
+    prerequisites=()
+    while IFS= read -r capability; do
+      [[ -n "$capability" ]] && prerequisites+=("$capability")
+    done < <(case_prerequisites "$case_name")
+    state="$(e2e_cap_evaluate "$case_name" "${prerequisites[@]}")"
+    [[ "$state" == "READY" ]] && return 0
+  done
+  return 1
+}
+
+append_capability_summary() {
+  local capability_summary="$RUN_DIR/.capability-summary.md"
+  e2e_cap_write_summary "$capability_summary"
+  cat "$capability_summary" >>"$SUMMARY"
+  rm -f "$capability_summary"
+}
+
+append_normal_summary_footer() {
+  summary "## Summary"
+  summary
+  summary "- failures: $FAILURES"
+  summary "- blocked: $BLOCKED_CASES"
+  summary "- messages: $MESSAGES"
+  summary "- server_log: $SERVER_LOG"
+}
+
+normal_exit_code() {
+  if [[ "$FAILURES" -ne 0 ]]; then
+    printf '1\n'
+  elif [[ "$STRICT_CAPABILITIES" -eq 1 && "$BLOCKED_CASES" -ne 0 ]]; then
+    printf '3\n'
+  else
+    printf '0\n'
+  fi
 }
 
 run_case_with_capabilities() {
@@ -1902,6 +1944,17 @@ if [[ "$PROFILE_NAME" != "legacy" && -f "$PROFILE_CAPABILITY_CACHE" && "$PROFILE
     group_delivery dm_delivery card_action message_recall_api recall_event_delivery media_image media_file
 fi
 summary_init
+if ! selected_cases_have_ready; then
+  e2e_cap_write_json "$CAPABILITIES_JSON"
+  append_capability_summary
+  for case_name in "${RUN_CASES[@]}"; do
+    [[ -n "$case_name" ]] || continue
+    run_case_with_capabilities "$case_name"
+  done
+  append_normal_summary_footer
+  echo "$SUMMARY"
+  exit "$(normal_exit_code)"
+fi
 normal_lock_path="$STATE_ROOT/.lark-agent-bridge/e2e/locks/$PROFILE_NAME.lock"
 mkdir -p "$(dirname "$normal_lock_path")"
 chmod 700 "$(dirname "$normal_lock_path")"
@@ -1917,6 +1970,7 @@ if ! e2e_profile_lock_acquire "$PROFILE_NAME" "$normal_lock_path" "$RUN_TOKEN"; 
 fi
 e2e_cap_record exclusive_runtime PASS ready "active run acquired the local profile lock" ""
 e2e_cap_write_json "$CAPABILITIES_JSON"
+append_capability_summary
 require_cmd go
 require_cmd pgrep
 require_cmd ps
@@ -1933,17 +1987,7 @@ for case_name in "${RUN_CASES[@]}"; do
   run_case_with_capabilities "$case_name"
 done
 
-summary "## Summary"
-summary
-summary "- failures: $FAILURES"
-summary "- blocked: $BLOCKED_CASES"
-summary "- messages: $MESSAGES"
-summary "- server_log: $SERVER_LOG"
+append_normal_summary_footer
 
 echo "$SUMMARY"
-if [[ "$FAILURES" -ne 0 ]]; then
-  exit 1
-fi
-if [[ "$STRICT_CAPABILITIES" -eq 1 && "$BLOCKED_CASES" -ne 0 ]]; then
-  exit 3
-fi
+exit "$(normal_exit_code)"

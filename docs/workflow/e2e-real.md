@@ -78,6 +78,7 @@ E2E_CLAUDE_BIN=/absolute/path/to/claude
 `LARK_BOT_OPEN_ID` is optional. If it is omitted, `scripts/e2e-real.sh` queries `bot/v3/info` with the bridge app token. The script must never print app secret or tenant token.
 `E2E_REAL_E2E_CALLBACK_ADDR` is optional; it pins the local callback port used only by the `stop_preserves_queue` case. Without it, the script selects a loopback port for that run.
 `E2E_REAL_E2E_P2P_CHAT_ID` is required only by media file cases. It must be the current user's existing direct-chat `oc_...` with this exact bot; do not substitute a group chat or another similarly named bot.
+When `--p2p-chat-id` is supplied to `e2e-init.sh`, bootstrap verifies that the selected chat contains the resolved bot before saving it.
 
 ## Feishu App Prerequisites
 
@@ -155,6 +156,8 @@ Exit codes are `0` for no failures, `1` for any failure, `2` for CLI/profile err
 ```bash
 ./scripts/e2e-real.sh --profile personal --mode full --strict-capabilities
 ```
+
+The latest active-canary result is cached inside the gitignored profile directory. A Feature run rechecks current static prerequisites before using a cached active capability. If every selected case is already blocked, the runner writes capability/case evidence and exits without building or starting the bridge.
 
 Run smoke cases:
 

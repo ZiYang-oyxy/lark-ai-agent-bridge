@@ -210,6 +210,7 @@ e2e_profile_write() {
     value="${!key:-}"
     e2e_profile_safe_value "$value" || {
       e2e_profile_error "profile field $key contains unsupported characters"
+      rm -f "$env_tmp" "$json_tmp"
       return 2
     }
     printf '%s=%s\n' "$key" "$value" >>"$env_tmp"
