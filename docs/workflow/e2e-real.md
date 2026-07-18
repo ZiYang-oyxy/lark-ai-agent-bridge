@@ -19,32 +19,60 @@ The E2E suite verifies the bridge as a real user would use it:
 
 Media file E2E uses the existing P2P chat between the current `lark-cli` user and this bot. This avoids the invalid assumption that a Feishu `post` can contain a `{tag:file}` element. The separate `debounce_dm` case still uses `--user-id "$BOT_OPEN_ID"`; if that app-domain identifier is incompatible, that case remains an explicit nonzero external prerequisite rather than falling back to group chat.
 
-## Configuration
+## Developer-local profiles
 
-Put real credentials in:
+Every developer must use their own Feishu app, bot, test group and P2P chat. Bootstrap a named profile:
 
 ```bash
-.lark-agent-bridge/e2e.env
+./scripts/e2e-init.sh --profile personal
 ```
 
-Required:
+The command writes only to gitignored local paths:
+
+```text
+.lark-agent-bridge/e2e/profiles/personal.env
+.lark-agent-bridge/e2e/profiles/personal.json
+.lark-agent-bridge/e2e/locks/personal.lock/
+.cache/e2e/personal/<run-id>/
+```
+
+The env and metadata files are `0600`; their directories are `0700`. They contain real app/bot/chat identity and must never be added to Git, copied into tracked documentation, or pasted into reports.
+
+One checkout may contain multiple profiles:
 
 ```bash
-export LARK_APP_ID="cli_xxx"
-export LARK_APP_SECRET="xxx"
-export E2E_E2E_CHAT_ID="oc_example_chat_id"
-export E2E_E2E_CHAT_TYPE="group"
+./scripts/e2e-init.sh --profile personal
+./scripts/e2e-init.sh --profile staging
+./scripts/e2e-real.sh --profile personal --doctor
+E2E_E2E_PROFILE=staging ./scripts/e2e-real.sh --doctor
+```
+
+Selection order is explicit `--profile`, `E2E_E2E_PROFILE`, the only named profile, then legacy `.lark-agent-bridge/e2e.env`. If multiple named profiles exist, the runner refuses to guess.
+
+Different profiles may run concurrently. An active preflight or Feature run holds a local profile-scoped lock; a second run of the same profile is `BLOCKED:profile_busy`. This lock protects one machine only. Developers must not share one bot across machines unless they coordinate outside this harness.
+
+The legacy `.lark-agent-bridge/e2e.env` remains readable as the `legacy` profile, but new setup should use `e2e-init.sh`.
+
+## Profile fields
+
+Required values are stored without `export` in the local profile env:
+
+```bash
+LARK_APP_ID=cli_xxx
+LARK_APP_SECRET=xxx
+LARK_BOT_OPEN_ID=ou_xxx
+E2E_E2E_CHAT_ID=oc_xxx
+E2E_REAL_E2E_P2P_CHAT_ID=oc_xxx
 ```
 
 Optional:
 
 ```bash
-export LARK_BOT_OPEN_ID="ou_xxx"
-export E2E_REAL_E2E_TIMEOUT_SEC="420"
-export E2E_REAL_E2E_DEFAULT_WORKDIR="/tmp/lark-agent-bridge-real"
-export E2E_REAL_E2E_FAKE_CLAUDE="1"
-export E2E_REAL_E2E_CALLBACK_ADDR="127.0.0.1:28080"
-export E2E_REAL_E2E_P2P_CHAT_ID="oc_xxx"
+E2E_REAL_E2E_TIMEOUT_SEC=420
+E2E_REAL_E2E_DEFAULT_WORKDIR=/tmp/lark-agent-bridge-real
+E2E_REAL_E2E_FAKE_CLAUDE=1
+E2E_REAL_E2E_CALLBACK_ADDR=127.0.0.1:28080
+E2E_CLAUDE_BIN=/absolute/path/to/claude
 ```
 
 `LARK_BOT_OPEN_ID` is optional. If it is omitted, `scripts/e2e-real.sh` queries `bot/v3/info` with the bridge app token. The script must never print app secret or tenant token.
@@ -103,22 +131,48 @@ List cases:
 ./scripts/e2e-real.sh --list-cases
 ```
 
+Run static capability checks without sending messages or starting a bridge:
+
+```bash
+./scripts/e2e-real.sh --profile personal --doctor
+```
+
+Run static checks plus real group, DM, CardKit, recall and media canaries with fake Claude:
+
+```bash
+./scripts/e2e-real.sh --profile personal --preflight-only
+```
+
+Capability states are:
+
+- `PASS`: directly proven.
+- `FAIL`: harness, bridge or assertion failure; always exits nonzero.
+- `BLOCKED`: external identity, permission, topology or subscription is missing.
+- `SKIPPED`: an upstream prerequisite was not available.
+
+Exit codes are `0` for no failures, `1` for any failure, `2` for CLI/profile errors and `3` for blocked strict runs. Development mode may continue unrelated cases when one capability is blocked. Use strict mode for a release gate:
+
+```bash
+./scripts/e2e-real.sh --profile personal --mode full --strict-capabilities
+```
+
 Run smoke cases:
 
 ```bash
-./scripts/e2e-real.sh --mode smoke
+./scripts/e2e-real.sh --profile personal --mode smoke
 ```
 
 Run full cases:
 
 ```bash
-./scripts/e2e-real.sh --mode full
+./scripts/e2e-real.sh --profile personal --mode full
 ```
 
 Run selected cases:
 
 ```bash
 ./scripts/e2e-real.sh \
+  --profile personal \
   --case workdir_existing \
   --case message_revoke_pending_workdir
 ```
@@ -193,12 +247,13 @@ The personal bridge deliberately has no global semaphore, FIFO, or fairness poli
 Every run writes a directory like:
 
 ```text
-.cache/e2e/real-YYYYMMDD-HHMMSS/
+.cache/e2e/<profile>/real-YYYYMMDD-HHMMSS/
 ```
 
 Important files:
 
 - `summary.md`: run metadata, case status, elapsed time, and paths.
+- `capabilities.json`: machine-readable capability status, reason codes, remediation and local evidence references.
 - `audit.jsonl`: bridge audit events for the run.
 - `server.log`: bridge stdout/stderr.
 - `messages.jsonl`: sent message ids and Feishu thread links.

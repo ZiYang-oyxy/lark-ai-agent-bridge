@@ -183,21 +183,25 @@ GOCACHE=$PWD/.cache/go-build go run ./cmd/lark-agent-bridge simulate-action \
 
 ## 飞书 E2E 前置检查
 
-载入真实配置：
+每位开发者先使用自己的 app、bot、测试群和 P2P chat 创建本地命名 profile：
 
 ```bash
-set -a
-source .lark-agent-bridge/e2e.env
-set +a
-./scripts/e2e-preflight.sh
+./scripts/e2e-init.sh --profile personal
+./scripts/e2e-real.sh --profile personal --doctor
+./scripts/e2e-real.sh --profile personal --preflight-only
 ```
 
-该脚本检查：
+profile 和 evidence 位于 `/.lark-agent-bridge/`、`/.cache/`，均已 Git ignore。真实 `App ID`、`App Secret`、bot/chat/message ID 和 OAuth 元数据不得写入 tracked 文件。
+
+`--doctor` 不发送消息、不启动 bridge，检查：
 
 - `LARK_APP_ID`、`LARK_APP_SECRET`
-- doctor
-- 长连接 action 和 CardKit 单测
-- `REQUIRE_LARK=1 ./scripts/verify.sh`
+- `lark-cli` 用户 OAuth 与 app identity
+- bot、测试群和 P2P chat
+- Claude wrapper
+- 本地 profile 是否已有 active owner
+
+`--preflight-only` 使用 fake Claude，额外验证真实 group/DM delivery、CardKit callback、recall API/event 和 media image/file 链路。结果分为 `PASS`、`FAIL`、`BLOCKED`、`SKIPPED`；发布门禁使用 `--strict-capabilities`。
 
 不需要配置公网 callback URL。按钮 E2E 依赖飞书后台选择“使用长连接接收回调”，并订阅 `card.action.trigger`。
 
@@ -207,13 +211,13 @@ set +a
 
 ```bash
 ./scripts/e2e-real.sh --list-cases
-./scripts/e2e-real.sh --mode smoke
-./scripts/e2e-real.sh --mode full
+./scripts/e2e-real.sh --profile personal --mode smoke
+./scripts/e2e-real.sh --profile personal --mode full --strict-capabilities
 ```
 
 下面保留手动排查步骤，便于脚本失败时定位。
 
-1. 载入 `.lark-agent-bridge/e2e.env`。
+1. 选择一个不会与其他开发会话共享 bot 的命名 profile。
 2. 启动 bridge：
 
 ```bash
