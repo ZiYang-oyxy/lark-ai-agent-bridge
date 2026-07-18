@@ -38,6 +38,7 @@ type CardKitRenderer struct {
 	snapshot         *cardSnapshot
 	observer         CardKitRenderObserver
 	routerKey        string
+	now              func() time.Time
 }
 
 type cardSnapshot struct {
@@ -76,6 +77,7 @@ type CardKitRouterRenderer struct {
 	client    CardKitClientAPI
 	observer  CardKitRenderObserver
 	journal   NativeSequenceJournal
+	now       func() time.Time
 	renderers map[string]*CardKitRenderer
 }
 
@@ -88,11 +90,18 @@ func NewCardKitRouterRenderer(client CardKitClientAPI) *CardKitRouterRenderer {
 }
 
 func NewCardKitRouterRendererWithObserver(client CardKitClientAPI, observer CardKitRenderObserver) *CardKitRouterRenderer {
-	return &CardKitRouterRenderer{client: client, observer: observer, renderers: map[string]*CardKitRenderer{}}
+	return newCardKitRouterRendererWithClock(client, observer, nil, time.Now)
 }
 
 func NewCardKitRouterRendererWithObserverAndJournal(client CardKitClientAPI, observer CardKitRenderObserver, journal NativeSequenceJournal) *CardKitRouterRenderer {
-	return &CardKitRouterRenderer{client: client, observer: observer, journal: journal, renderers: map[string]*CardKitRenderer{}}
+	return newCardKitRouterRendererWithClock(client, observer, journal, time.Now)
+}
+
+func newCardKitRouterRendererWithClock(client CardKitClientAPI, observer CardKitRenderObserver, journal NativeSequenceJournal, now func() time.Time) *CardKitRouterRenderer {
+	if now == nil {
+		now = time.Now
+	}
+	return &CardKitRouterRenderer{client: client, observer: observer, journal: journal, now: now, renderers: map[string]*CardKitRenderer{}}
 }
 
 func NewCardKitRenderer(client CardKitClientAPI, replyToMessageID string) *CardKitRenderer {
@@ -100,11 +109,18 @@ func NewCardKitRenderer(client CardKitClientAPI, replyToMessageID string) *CardK
 }
 
 func NewCardKitRendererWithObserver(client CardKitClientAPI, replyToMessageID string, observer CardKitRenderObserver, routerKey string) *CardKitRenderer {
-	return &CardKitRenderer{client: client, replyToMessageID: replyToMessageID, observer: observer, routerKey: routerKey}
+	return newCardKitRendererWithClock(client, replyToMessageID, observer, routerKey, RenderBinding{}, nil, time.Now)
 }
 
 func NewCardKitRendererWithNative(client CardKitClientAPI, replyToMessageID string, observer CardKitRenderObserver, binding RenderBinding, journal NativeSequenceJournal) *CardKitRenderer {
-	return &CardKitRenderer{client: client, replyToMessageID: replyToMessageID, observer: observer, routerKey: binding.RunCardSessionID, binding: binding, journal: journal}
+	return newCardKitRendererWithClock(client, replyToMessageID, observer, binding.RunCardSessionID, binding, journal, time.Now)
+}
+
+func newCardKitRendererWithClock(client CardKitClientAPI, replyToMessageID string, observer CardKitRenderObserver, routerKey string, binding RenderBinding, journal NativeSequenceJournal, now func() time.Time) *CardKitRenderer {
+	if now == nil {
+		now = time.Now
+	}
+	return &CardKitRenderer{client: client, replyToMessageID: replyToMessageID, observer: observer, routerKey: routerKey, binding: binding, journal: journal, now: now}
 }
 
 func (r *CardKitRouterRenderer) NewStreaming(ctx context.Context, sessionID, replyTo string) (ResumableRenderer, error) {
@@ -118,7 +134,7 @@ func (r *CardKitRouterRenderer) NewStreamingBound(_ context.Context, binding Ren
 	if binding.RunCardSessionID == "" || replyTo == "" {
 		return nil, fmt.Errorf("cardkit streaming requires session and reply message ids")
 	}
-	renderer := NewCardKitRendererWithNative(r.client, replyTo, r.observer, binding, r.journal)
+	renderer := newCardKitRendererWithClock(r.client, replyTo, r.observer, binding.RunCardSessionID, binding, r.journal, r.now)
 	r.mu.Lock()
 	r.renderers[binding.RunCardSessionID] = renderer
 	r.mu.Unlock()
@@ -132,7 +148,7 @@ func (r *CardKitRouterRenderer) AppendTerminal(ctx context.Context, replyTo stri
 	if replyTo == "" {
 		return fmt.Errorf("missing reply message id for terminal card")
 	}
-	renderer := NewCardKitRendererWithObserver(r.client, replyTo, r.observer, event.SessionID)
+	renderer := newCardKitRendererWithClock(r.client, replyTo, r.observer, event.SessionID, RenderBinding{}, nil, r.now)
 	return renderer.renderContext(ctx, event)
 }
 
@@ -141,7 +157,7 @@ func (r *CardKitRouterRenderer) Rehydrate(sessionID string, ref session.RenderRe
 }
 
 func (r *CardKitRouterRenderer) RehydrateBound(binding RenderBinding, ref session.RenderRef) ResumableRenderer {
-	renderer := NewCardKitRendererWithNative(r.client, ref.ReplyMessageID, r.observer, binding, r.journal)
+	renderer := newCardKitRendererWithClock(r.client, ref.ReplyMessageID, r.observer, binding.RunCardSessionID, binding, r.journal, r.now)
 	renderer.cardID = ref.CardID
 	renderer.replyMessageID = ref.ReplyMessageID
 	renderer.sequence = ref.Version
@@ -169,7 +185,7 @@ func (r *CardKitRouterRenderer) Render(e card.Event) error {
 			r.mu.Unlock()
 			return fmt.Errorf("missing reply message id for new card session %q", key)
 		}
-		renderer = NewCardKitRendererWithObserver(r.client, e.ReplyToMessageID, r.observer, key)
+		renderer = newCardKitRendererWithClock(r.client, e.ReplyToMessageID, r.observer, key, RenderBinding{}, nil, r.now)
 		r.renderers[key] = renderer
 	}
 	r.mu.Unlock()
@@ -215,7 +231,7 @@ func (r *CardKitRenderer) renderContext(ctx context.Context, e card.Event) error
 		if err != nil {
 			return err
 		}
-		createdAt := time.Now().UTC()
+		createdAt := r.now().UTC()
 		cardID := created.CardID
 		r.recordRender("cardkit_create", e, fmt.Sprintf("key=%s card_id=%s reply_to=%s event=%s %s", r.renderKey(e), cardID, r.replyToMessageID, e.Type, renderAuditState(e)))
 		if r.replyToMessageID != "" {
@@ -266,7 +282,7 @@ func (r *CardKitRenderer) nativeCandidate(prepared card.PreparedLarkCard) bool {
 	if r.journal == nil || r.snapshot == nil || r.snapshot.nativeDisabled || r.interactionDepth != 0 || !validRenderBinding(r.binding) {
 		return false
 	}
-	return r.snapshot.prepared.NativeReady() && prepared.NativeReady() &&
+	return prepared.EventCopy().Streaming && r.snapshot.prepared.NativeReady() && prepared.NativeReady() &&
 		r.snapshot.staticFingerprint == staticFingerprint(prepared) &&
 		prepared.Answer() != r.snapshot.prepared.Answer()
 }

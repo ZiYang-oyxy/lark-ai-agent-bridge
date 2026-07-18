@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -175,6 +176,240 @@ func (f *fakeNativeJournal) ConfirmNative(_ context.Context, intent NativeSequen
 func (f *fakeNativeJournal) AbortNative(_ context.Context, intent NativeSequenceIntent) error {
 	f.aborted = append(f.aborted, intent)
 	return f.abortErr
+}
+
+type strictSequenceCardKitServer struct {
+	mu sync.Mutex
+
+	created int
+	replied int
+
+	lastAccepted       int
+	updateCardReqs     []CardKitUpdateCardRequest
+	elementContentReqs []CardKitUpdateElementContentRequest
+	elementAfterAccept error
+	replyHook          func()
+}
+
+func (s *strictSequenceCardKitServer) CreateCard(_ context.Context, _ CardKitCreateRequest) (CardKitCreateResult, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.created++
+	return CardKitCreateResult{CardID: fmt.Sprintf("strict-card-%d", s.created)}, nil
+}
+
+func (s *strictSequenceCardKitServer) ReplyCard(_ context.Context, _ CardKitReplyRequest) (CardKitReplyResult, error) {
+	s.mu.Lock()
+	hook := s.replyHook
+	s.replied++
+	s.mu.Unlock()
+	if hook != nil {
+		hook()
+	}
+	return CardKitReplyResult{MessageID: "strict-reply"}, nil
+}
+
+func (s *strictSequenceCardKitServer) UpdateCard(_ context.Context, req CardKitUpdateCardRequest) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if req.Sequence != s.lastAccepted+1 {
+		return fmt.Errorf("strict full sequence=%d, want %d", req.Sequence, s.lastAccepted+1)
+	}
+	s.lastAccepted = req.Sequence
+	s.updateCardReqs = append(s.updateCardReqs, req)
+	return nil
+}
+
+func (s *strictSequenceCardKitServer) UpdateSettings(context.Context, CardKitUpdateSettingsRequest) error {
+	return nil
+}
+
+func (s *strictSequenceCardKitServer) UpdateElementContent(_ context.Context, req CardKitUpdateElementContentRequest) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if req.Sequence != s.lastAccepted+1 {
+		return fmt.Errorf("strict element sequence=%d, want %d", req.Sequence, s.lastAccepted+1)
+	}
+	s.lastAccepted = req.Sequence
+	s.elementContentReqs = append(s.elementContentReqs, req)
+	return s.elementAfterAccept
+}
+
+type controlledRendererClock struct {
+	mu  sync.Mutex
+	now time.Time
+}
+
+func (c *controlledRendererClock) Now() time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.now
+}
+
+func (c *controlledRendererClock) Set(now time.Time) {
+	c.mu.Lock()
+	c.now = now
+	c.mu.Unlock()
+}
+
+func TestCardKitRendererCreatedAtUsesCreateSuccessClockAndSurvivesLaterPaths(t *testing.T) {
+	createdAt := time.Date(2026, time.July, 18, 9, 30, 0, 0, time.FixedZone("create", -7*60*60))
+	replyCompletedAt := createdAt.Add(11 * time.Minute)
+	nextCreatedAt := replyCompletedAt.Add(9 * time.Minute)
+	clock := &controlledRendererClock{now: createdAt}
+	server := &strictSequenceCardKitServer{}
+	router := newCardKitRouterRendererWithClock(server, nil, nil, clock.Now)
+	renderer, err := router.NewStreaming(context.Background(), "run", "source")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var beforeReply session.RenderRef
+	concrete := renderer.(*CardKitRenderer)
+	server.replyHook = func() {
+		beforeReply = session.RenderRef{CardID: concrete.cardID, ReplyMessageID: concrete.replyMessageID, CreatedAt: concrete.createdAt}
+		clock.Set(replyCompletedAt)
+	}
+	first := card.Event{Type: "stream", Streaming: true, SessionID: "run", Segments: []card.Segment{{Kind: card.SegmentText, Text: "one"}}}
+	if err := renderer.Render(first); err != nil {
+		t.Fatal(err)
+	}
+	if beforeReply != (session.RenderRef{}) {
+		t.Fatalf("RenderRef during ReplyCard = %#v, want empty", beforeReply)
+	}
+	ref := renderer.RenderRef()
+	if !ref.CreatedAt.Equal(createdAt.UTC()) || ref.CreatedAt.Location() != time.UTC {
+		t.Fatalf("CreatedAt = %s, want create-success time %s", ref.CreatedAt, createdAt.UTC())
+	}
+
+	second := first
+	second.Segments = []card.Segment{{Kind: card.SegmentText, Text: "two"}}
+	if err := renderer.Render(second); err != nil {
+		t.Fatal(err)
+	}
+	advanced := renderer.RenderRef()
+	if advanced.Version != ref.Version+1 || !advanced.CreatedAt.Equal(ref.CreatedAt) {
+		t.Fatalf("advanced ref = %#v, want version %d and CreatedAt %s", advanced, ref.Version+1, ref.CreatedAt)
+	}
+
+	rehydrated := newCardKitRouterRendererWithClock(server, nil, nil, clock.Now).Rehydrate("rehydrated", advanced)
+	if err := rehydrated.Render(card.Event{Type: "result", SessionID: "rehydrated", Segments: second.Segments}); err != nil {
+		t.Fatal(err)
+	}
+	if got := rehydrated.RenderRef(); !got.CreatedAt.Equal(createdAt.UTC()) {
+		t.Fatalf("rehydrated ref = %#v, want CreatedAt %s", got, createdAt.UTC())
+	}
+
+	clock.Set(nextCreatedAt)
+	next, err := newCardKitRouterRendererWithClock(server, nil, nil, clock.Now).NewStreaming(context.Background(), "next", "source-next")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := next.Render(card.Event{Type: "stream", Streaming: true, SessionID: "next"}); err != nil {
+		t.Fatal(err)
+	}
+	if got := next.RenderRef().CreatedAt; !got.Equal(nextCreatedAt.UTC()) {
+		t.Fatalf("next CreatedAt = %s, want %s", got, nextCreatedAt.UTC())
+	}
+
+	failure, err := newCardKitRouterRendererWithClock(&fakeCardKitClient{replyErr: errors.New("reply failed")}, nil, nil, clock.Now).NewStreaming(context.Background(), "failed", "source-failed")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := failure.Render(card.Event{Type: "stream", Streaming: true, SessionID: "failed"}); err == nil {
+		t.Fatal("Render() error = nil, want reply failure")
+	}
+	if got := failure.RenderRef(); got != (session.RenderRef{}) {
+		t.Fatalf("reply failure exposed partial ref %#v", got)
+	}
+}
+
+func TestCardKitRendererStrictServerSharesSequenceAcrossConcurrentNativeAndFullUpdates(t *testing.T) {
+	server := &strictSequenceCardKitServer{}
+	renderer := NewCardKitRendererWithNative(server, "source", nil, RenderBinding{
+		BaseSessionID: "base", BatchID: "batch", LatestScope: "base", RunCardSessionID: "run",
+	}, &fakeNativeJournal{})
+	seed := card.Event{Type: "stream", Streaming: true, SessionID: "run", Segments: []card.Segment{
+		{Kind: card.SegmentText, Text: "seed"}, {Kind: card.SegmentThought, Text: "keep-static"},
+	}}
+	if err := renderer.Render(seed); err != nil {
+		t.Fatal(err)
+	}
+
+	const callers = 12
+	runConcurrent := func(event func(int) card.Event) {
+		t.Helper()
+		errs := make(chan error, callers)
+		var wg sync.WaitGroup
+		for i := range callers {
+			wg.Add(1)
+			go func(i int) {
+				defer wg.Done()
+				errs <- renderer.Render(event(i))
+			}(i)
+		}
+		wg.Wait()
+		close(errs)
+		for err := range errs {
+			if err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	runConcurrent(func(i int) card.Event {
+		return card.Event{Type: "stream", Streaming: true, SessionID: "run", Segments: []card.Segment{
+			{Kind: card.SegmentText, Text: fmt.Sprintf("native-%d", i)}, {Kind: card.SegmentThought, Text: "keep-static"},
+		}}
+	})
+	runConcurrent(func(i int) card.Event {
+		return card.Event{Type: "result", SessionID: "run", Message: fmt.Sprintf("result-%d", i), Segments: []card.Segment{{Kind: card.SegmentText, Text: "done"}}}
+	})
+
+	server.mu.Lock()
+	defer server.mu.Unlock()
+	if len(server.elementContentReqs) != callers || len(server.updateCardReqs) != callers {
+		t.Fatalf("native/full calls = %d/%d, want %d/%d", len(server.elementContentReqs), len(server.updateCardReqs), callers, callers)
+	}
+	for i, req := range server.elementContentReqs {
+		if req.Sequence != i+1 || req.ElementID != "answer" || req.Content == "" {
+			t.Fatalf("native request %d = %#v", i, req)
+		}
+	}
+	for i, req := range server.updateCardReqs {
+		if req.Sequence != callers+i+1 || req.Prepared == nil {
+			t.Fatalf("full request %d = %#v", i, req)
+		}
+	}
+	if server.lastAccepted != callers*2 {
+		t.Fatalf("strict server last sequence = %d, want %d", server.lastAccepted, callers*2)
+	}
+}
+
+func TestCardKitRendererStrictServerDeliveryUnknownBlocksOldCardWrites(t *testing.T) {
+	server := &strictSequenceCardKitServer{elementAfterAccept: errors.New("response lost after apply")}
+	renderer := NewCardKitRendererWithNative(server, "source", nil, RenderBinding{
+		BaseSessionID: "base", BatchID: "batch", LatestScope: "base", RunCardSessionID: "run",
+	}, &fakeNativeJournal{})
+	first := card.Event{Type: "stream", Streaming: true, SessionID: "run", Segments: []card.Segment{{Kind: card.SegmentText, Text: "one"}}}
+	if err := renderer.Render(first); err != nil {
+		t.Fatal(err)
+	}
+	second := first
+	second.Segments = []card.Segment{{Kind: card.SegmentText, Text: "two"}}
+	if err := renderer.Render(second); err != nil {
+		t.Fatal(err)
+	}
+	if err := renderer.Render(card.Event{Type: "result", SessionID: "run", Segments: second.Segments}); err != nil {
+		t.Fatal(err)
+	}
+
+	server.mu.Lock()
+	defer server.mu.Unlock()
+	if len(server.elementContentReqs) != 1 || len(server.updateCardReqs) != 0 || server.lastAccepted != 1 {
+		t.Fatalf("old-card writes element/full/last=%d/%d/%d", len(server.elementContentReqs), len(server.updateCardReqs), server.lastAccepted)
+	}
+	if ref := renderer.RenderRef(); ref.Version != 0 || !ref.SequenceUnknown || ref.PendingSequence != 1 {
+		t.Fatalf("unknown ref = %#v", ref)
+	}
 }
 
 func TestCardKitRendererNativeAnswerAndFullCardShareSequence(t *testing.T) {
