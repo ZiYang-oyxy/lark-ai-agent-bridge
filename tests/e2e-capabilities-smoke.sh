@@ -71,4 +71,97 @@ e2e_profile_lock_acquire stale "$LOCK_ROOT/stale.lock" fresh-run
 assert_eq "$$" "$(sed -n '1p' "$LOCK_ROOT/stale.lock/owner")" "stale lock owner"
 e2e_profile_lock_release
 
+DOCTOR_STATE="$TEST_ROOT/doctor-state"
+DOCTOR_BIN="$TEST_ROOT/doctor-bin"
+DOCTOR_LOG="$TEST_ROOT/doctor-calls.log"
+mkdir -p "$DOCTOR_STATE/.lark-agent-bridge/e2e/profiles" "$DOCTOR_BIN"
+chmod 700 "$DOCTOR_STATE/.lark-agent-bridge" "$DOCTOR_STATE/.lark-agent-bridge/e2e" "$DOCTOR_STATE/.lark-agent-bridge/e2e/profiles"
+cat >"$DOCTOR_BIN/lark-cli" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >>"${DOCTOR_LOG:?}"
+case "$*" in
+  'auth status --json --verify') printf '%s\n' '{"verified":true,"app_id":"cli_doctor_app"}' ;;
+  *'im chats get'*'--chat-id oc_doctor_group'*) printf '%s\n' '{"data":{"chat_id":"oc_doctor_group"}}' ;;
+  *'im chats get'*'--chat-id oc_doctor_p2p'*) printf '%s\n' '{"data":{"chat_id":"oc_doctor_p2p","chat_mode":"p2p"}}' ;;
+  *) echo "unexpected fake lark-cli call" >&2; exit 1 ;;
+esac
+EOF
+cat >"$DOCTOR_BIN/curl" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "curl $*" >>"${DOCTOR_LOG:?}"
+case "$*" in
+  *tenant_access_token*) printf '%s\n' '{"tenant_access_token":"doctor-token"}' ;;
+  *bot/v3/info*) printf '%s\n' '{"bot":{"open_id":"ou_doctor_bot"}}' ;;
+  *) echo "unexpected fake curl call" >&2; exit 1 ;;
+esac
+EOF
+cat >"$DOCTOR_BIN/claude" <<'EOF'
+#!/usr/bin/env bash
+echo "doctor unexpectedly invoked claude" >>"${DOCTOR_LOG:?}"
+exit 1
+EOF
+cat >"$DOCTOR_BIN/go" <<'EOF'
+#!/usr/bin/env bash
+echo "preflight unexpectedly invoked go" >>"${DOCTOR_LOG:?}"
+exit 1
+EOF
+chmod +x "$DOCTOR_BIN/lark-cli" "$DOCTOR_BIN/curl" "$DOCTOR_BIN/claude" "$DOCTOR_BIN/go"
+
+write_doctor_profile() {
+  local name="$1" p2p="$2" dir="$DOCTOR_STATE/.lark-agent-bridge/e2e/profiles"
+  cat >"$dir/$name.env" <<EOF
+LARK_APP_ID=cli_doctor_app
+LARK_APP_SECRET=doctor-secret
+LARK_BOT_OPEN_ID=ou_doctor_bot
+E2E_E2E_CHAT_ID=oc_doctor_group
+E2E_REAL_E2E_P2P_CHAT_ID=$p2p
+EOF
+  printf '%s\n' '{"schema_version":1}' >"$dir/$name.json"
+  chmod 600 "$dir/$name.env" "$dir/$name.json"
+}
+
+run_expect_exit() {
+  local want="$1"
+  shift
+  set +e
+  "$@" >/dev/null 2>&1
+  local got=$?
+  set -e
+  assert_eq "$want" "$got" "exit code for $*"
+}
+
+write_doctor_profile pass oc_doctor_p2p
+: >"$DOCTOR_LOG"
+run_expect_exit 0 env \
+  E2E_STATE_ROOT="$DOCTOR_STATE" DOCTOR_LOG="$DOCTOR_LOG" PATH="$DOCTOR_BIN:$PATH" E2E_CLAUDE_BIN="$DOCTOR_BIN/claude" \
+  bash "$ROOT/scripts/e2e-real.sh" --profile pass --doctor --run-dir "$TEST_ROOT/doctor-pass"
+if rg -q 'messages-send|serve|unexpectedly invoked claude' "$DOCTOR_LOG"; then
+  fail "static doctor performed an active operation"
+fi
+jq -e '.capabilities[] | select(.name == "p2p_chat" and .status == "PASS")' "$TEST_ROOT/doctor-pass/capabilities.json" >/dev/null
+
+write_doctor_profile blocked ''
+run_expect_exit 0 env \
+  E2E_STATE_ROOT="$DOCTOR_STATE" DOCTOR_LOG="$DOCTOR_LOG" PATH="$DOCTOR_BIN:$PATH" E2E_CLAUDE_BIN="$DOCTOR_BIN/claude" \
+  bash "$ROOT/scripts/e2e-real.sh" --profile blocked --doctor --run-dir "$TEST_ROOT/doctor-blocked"
+run_expect_exit 3 env \
+  E2E_STATE_ROOT="$DOCTOR_STATE" DOCTOR_LOG="$DOCTOR_LOG" PATH="$DOCTOR_BIN:$PATH" E2E_CLAUDE_BIN="$DOCTOR_BIN/claude" \
+  bash "$ROOT/scripts/e2e-real.sh" --profile blocked --doctor --strict-capabilities --run-dir "$TEST_ROOT/doctor-blocked-strict"
+
+run_expect_exit 2 env E2E_STATE_ROOT="$DOCTOR_STATE" PATH="$DOCTOR_BIN:$PATH" \
+  bash "$ROOT/scripts/e2e-real.sh" --profile missing --doctor --run-dir "$TEST_ROOT/doctor-missing"
+
+write_doctor_profile static-blocked oc_doctor_p2p
+awk '{if ($0 ~ /^LARK_APP_SECRET=/) print "LARK_APP_SECRET="; else print}' \
+  "$DOCTOR_STATE/.lark-agent-bridge/e2e/profiles/static-blocked.env" >"$DOCTOR_STATE/.lark-agent-bridge/e2e/profiles/static-blocked.env.tmp"
+mv "$DOCTOR_STATE/.lark-agent-bridge/e2e/profiles/static-blocked.env.tmp" "$DOCTOR_STATE/.lark-agent-bridge/e2e/profiles/static-blocked.env"
+chmod 600 "$DOCTOR_STATE/.lark-agent-bridge/e2e/profiles/static-blocked.env"
+: >"$DOCTOR_LOG"
+run_expect_exit 3 env \
+  E2E_STATE_ROOT="$DOCTOR_STATE" DOCTOR_LOG="$DOCTOR_LOG" PATH="$DOCTOR_BIN:$PATH" E2E_CLAUDE_BIN="$DOCTOR_BIN/claude" \
+  bash "$ROOT/scripts/e2e-real.sh" --profile static-blocked --preflight-only --strict-capabilities --run-dir "$TEST_ROOT/preflight-static-blocked"
+if rg -q 'preflight unexpectedly invoked go|messages-send|serve|unexpectedly invoked claude' "$DOCTOR_LOG"; then
+  fail "preflight ignored a blocked static prerequisite"
+fi
+
 echo "e2e capability smoke ok"

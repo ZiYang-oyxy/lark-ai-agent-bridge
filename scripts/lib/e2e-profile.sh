@@ -20,7 +20,7 @@ e2e_profile_mode() {
 
 e2e_profile_allowed_key() {
   case "$1" in
-    LARK_APP_ID|LARK_APP_SECRET|LARK_BOT_OPEN_ID|E2E_E2E_CHAT_ID|E2E_REAL_E2E_P2P_CHAT_ID) return 0 ;;
+    LARK_APP_ID|LARK_APP_SECRET|LARK_BOT_OPEN_ID|E2E_E2E_CHAT_ID|E2E_REAL_E2E_P2P_CHAT_ID|E2E_REAL_E2E_TIMEOUT_SEC|E2E_REAL_E2E_FAKE_CLAUDE|E2E_REAL_E2E_DEFAULT_WORKDIR|E2E_REAL_E2E_CALLBACK_ADDR|E2E_CLAUDE_BIN) return 0 ;;
     *) return 1 ;;
   esac
 }
@@ -143,7 +143,7 @@ e2e_profile_redacted() {
 
 e2e_profile_write() {
   local root="$1" name="$2" dir env_path json_path env_tmp json_tmp key value now
-  local keys=(LARK_APP_ID LARK_APP_SECRET LARK_BOT_OPEN_ID E2E_E2E_CHAT_ID E2E_REAL_E2E_P2P_CHAT_ID)
+  local keys=(LARK_APP_ID LARK_APP_SECRET LARK_BOT_OPEN_ID E2E_E2E_CHAT_ID E2E_REAL_E2E_P2P_CHAT_ID E2E_REAL_E2E_TIMEOUT_SEC E2E_REAL_E2E_FAKE_CLAUDE E2E_REAL_E2E_DEFAULT_WORKDIR E2E_REAL_E2E_CALLBACK_ADDR E2E_CLAUDE_BIN)
   e2e_profile_validate_name "$name" || {
     e2e_profile_error "invalid profile name"
     return 2

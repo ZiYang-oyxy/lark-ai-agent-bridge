@@ -79,7 +79,7 @@ load_output="$TEST_ROOT/load-output"
 if e2e_profile_load "$personal_env" >"$load_output" 2>&1; then
   fail "insecure profile mode unexpectedly loaded"
 fi
-if rg -F 'secret-do-not-print|ou_profile_secret_bot|oc_profile_secret' "$load_output" >/dev/null 2>&1; then
+if rg -e 'secret-do-not-print|ou_profile_secret_bot|oc_profile_secret' "$load_output" >/dev/null 2>&1; then
   fail "profile load error leaked a secret or full ID"
 fi
 chmod 600 "$personal_env"

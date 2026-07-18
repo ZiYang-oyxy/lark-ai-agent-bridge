@@ -2,7 +2,12 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+STATE_ROOT="${E2E_STATE_ROOT:-$ROOT}"
 cd "$ROOT"
+# shellcheck disable=SC1091
+source "$ROOT/scripts/lib/e2e-profile.sh"
+# shellcheck disable=SC1091
+source "$ROOT/scripts/lib/e2e-capabilities.sh"
 
 SMOKE_CASES=(
   preflight
@@ -39,9 +44,16 @@ FULL_EXTRA_CASES=(
 MODE="smoke"
 KEEP_SERVER_ON_FAIL=0
 LIST_CASES=0
+PROFILE_ARG=""
+PROFILE_NAME=""
+PROFILE_ENV=""
+DOCTOR_MODE=0
+PREFLIGHT_ONLY=0
+STRICT_CAPABILITIES=0
 SELECTED_CASES=()
 RUN_ID="$(date +%Y%m%d-%H%M%S)"
-RUN_DIR="$ROOT/.cache/e2e/real-$RUN_ID"
+RUN_DIR=""
+RUN_DIR_SET=0
 DEFAULT_WORKDIR="${E2E_REAL_E2E_DEFAULT_WORKDIR:-/tmp/lark-agent-bridge-real-$RUN_ID}"
 WAIT_TIMEOUT="${E2E_REAL_E2E_TIMEOUT_SEC:-420}"
 USE_FAKE_CLAUDE="${E2E_REAL_E2E_FAKE_CLAUDE:-0}"
@@ -49,14 +61,20 @@ MEDIA_P2P_CHAT_ID="${E2E_REAL_E2E_P2P_CHAT_ID:-}"
 FAKE_BIN_DIR=""
 SERVER_PID=""
 FAILURES=0
+BLOCKED_CASES=0
 BOT_OPEN_ID=""
 
 usage() {
   cat <<'USAGE'
 Usage:
-  scripts/e2e-real.sh [--mode smoke|full] [--case name ...] [--list-cases]
+  scripts/e2e-real.sh [--profile name] [--doctor|--preflight-only]
+                      [--mode smoke|full] [--case name ...] [--list-cases]
 
 Options:
+  --profile name              use one developer-local E2E profile.
+  --doctor                    run static capability checks without sending messages.
+  --preflight-only            run static checks and real active canaries, then exit.
+  --strict-capabilities       return 3 when a required capability is blocked.
   --mode smoke|full           smoke runs core cases; full adds revoke cases.
   --case name                 run one case; repeat to run multiple cases.
   --list-cases                print supported cases and exit.
@@ -75,6 +93,22 @@ USAGE
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
+    --profile)
+      PROFILE_ARG="${2:-}"
+      shift 2
+      ;;
+    --doctor)
+      DOCTOR_MODE=1
+      shift
+      ;;
+    --preflight-only)
+      PREFLIGHT_ONLY=1
+      shift
+      ;;
+    --strict-capabilities)
+      STRICT_CAPABILITIES=1
+      shift
+      ;;
     --mode)
       MODE="${2:-}"
       shift 2
@@ -93,6 +127,7 @@ while [[ $# -gt 0 ]]; do
       ;;
     --run-dir)
       RUN_DIR="${2:-}"
+      RUN_DIR_SET=1
       shift 2
       ;;
     --keep-server-on-fail)
@@ -111,11 +146,9 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-if [[ -f "$ROOT/.lark-agent-bridge/e2e.env" ]]; then
-  set -a
-  # shellcheck disable=SC1091
-  source "$ROOT/.lark-agent-bridge/e2e.env"
-  set +a
+if [[ "$DOCTOR_MODE" -eq 1 && "$PREFLIGHT_ONLY" -eq 1 ]]; then
+  echo "--doctor and --preflight-only are mutually exclusive" >&2
+  exit 2
 fi
 
 case "$MODE" in
@@ -155,7 +188,21 @@ if [[ "$LIST_CASES" -eq 1 ]]; then
   exit 0
 fi
 
+profile_selection="$(e2e_profile_select "$STATE_ROOT" "$PROFILE_ARG")" || exit 2
+IFS=$'\t' read -r PROFILE_NAME PROFILE_ENV _ <<<"$profile_selection"
+e2e_profile_load "$PROFILE_ENV" || exit 2
+if [[ "$PROFILE_NAME" == "legacy" ]]; then
+  echo "notice: legacy .lark-agent-bridge/e2e.env is in use; run e2e-init.sh to create a named profile" >&2
+fi
+if [[ "$RUN_DIR_SET" -eq 0 ]]; then
+  RUN_DIR="$STATE_ROOT/.cache/e2e/$PROFILE_NAME/real-$RUN_ID"
+fi
+WAIT_TIMEOUT="${E2E_REAL_E2E_TIMEOUT_SEC:-$WAIT_TIMEOUT}"
+USE_FAKE_CLAUDE="${E2E_REAL_E2E_FAKE_CLAUDE:-$USE_FAKE_CLAUDE}"
+MEDIA_P2P_CHAT_ID="${E2E_REAL_E2E_P2P_CHAT_ID:-}"
+
 SUMMARY="$RUN_DIR/summary.md"
+CAPABILITIES_JSON="$RUN_DIR/capabilities.json"
 MESSAGES="$RUN_DIR/messages.jsonl"
 AUDIT="$RUN_DIR/audit.jsonl"
 MGET_DIR="$RUN_DIR/mget"
@@ -235,6 +282,108 @@ require_env() {
     echo "missing required env: $name" >&2
     exit 1
   fi
+}
+
+record_static_credentials() {
+  if [[ -n "${LARK_APP_ID:-}" && -n "${LARK_APP_SECRET:-}" ]]; then
+    e2e_cap_record credentials PASS ready "bridge app credentials are configured" ""
+  else
+    e2e_cap_record credentials BLOCKED credentials_missing "bridge app credentials are incomplete" "rerun e2e-init.sh for this profile"
+  fi
+}
+
+record_static_user_auth() {
+  local response auth_app
+  if ! response="$(lark-cli auth status --json --verify 2>/dev/null)"; then
+    e2e_cap_record lark_cli_auth BLOCKED lark_cli_auth_missing "lark-cli user authentication is unavailable" "run lark-cli auth login with the bridge app"
+    e2e_cap_record oauth_same_app SKIPPED auth_unavailable "OAuth app identity was not checked" "restore lark-cli authentication"
+    return
+  fi
+  if ! printf '%s' "$response" | jq -e . >/dev/null 2>&1; then
+    e2e_cap_record lark_cli_auth FAIL auth_response_invalid "lark-cli returned invalid auth JSON" "inspect lark-cli auth status --json --verify"
+    e2e_cap_record oauth_same_app SKIPPED auth_invalid "OAuth app identity was not checked" "repair lark-cli"
+    return
+  fi
+  e2e_cap_record lark_cli_auth PASS ready "lark-cli user authentication is valid" ""
+  auth_app="$(printf '%s' "$response" | jq -r '.app_id // .data.app_id // .auth.app_id // empty')"
+  if [[ -z "$auth_app" ]]; then
+    e2e_cap_record oauth_same_app BLOCKED oauth_app_unverifiable "lark-cli did not expose its OAuth app identity" "run active DM preflight to prove app compatibility"
+  elif [[ "$auth_app" == "${LARK_APP_ID:-}" ]]; then
+    e2e_cap_record oauth_same_app PASS ready "user OAuth and bridge app identities match" ""
+  else
+    e2e_cap_record oauth_same_app BLOCKED oauth_app_mismatch "user OAuth belongs to another app" "login lark-cli through this bridge app"
+  fi
+}
+
+record_static_bot() {
+  if [[ -n "${LARK_BOT_OPEN_ID:-}" ]]; then
+    BOT_OPEN_ID="$LARK_BOT_OPEN_ID"
+    e2e_cap_record bot_identity PASS ready "bot identity is configured" ""
+  else
+    e2e_cap_record bot_identity BLOCKED bot_not_initialized "bot identity is missing from the profile" "rerun e2e-init.sh"
+  fi
+}
+
+record_static_chats() {
+  if [[ -z "${E2E_E2E_CHAT_ID:-}" ]]; then
+    e2e_cap_record test_group BLOCKED group_missing "test group is not configured" "rerun e2e-init.sh with a test group"
+  elif lark-cli im chats get --as user --chat-id "$E2E_E2E_CHAT_ID" --json >/dev/null 2>&1; then
+    e2e_cap_record test_group PASS ready "test group is readable by the current user" ""
+  else
+    e2e_cap_record test_group BLOCKED group_unavailable "test group is not readable by the current user" "check membership and user OAuth"
+  fi
+
+  if [[ -z "${E2E_REAL_E2E_P2P_CHAT_ID:-}" ]]; then
+    e2e_cap_record p2p_chat BLOCKED p2p_not_found "P2P chat is not configured" "start a direct chat with the bot and rerun e2e-init.sh"
+  elif lark-cli im chats get --as user --chat-id "$E2E_REAL_E2E_P2P_CHAT_ID" --json >/dev/null 2>&1; then
+    e2e_cap_record p2p_chat PASS ready "P2P chat is readable by the current user" ""
+  else
+    e2e_cap_record p2p_chat BLOCKED p2p_unavailable "P2P chat is not readable by the current user" "rerun e2e-init.sh and select the intended P2P chat"
+  fi
+}
+
+record_static_wrapper() {
+  local claude_bin="${E2E_CLAUDE_BIN:-claude}"
+  if [[ "$claude_bin" == */* ]]; then
+    if [[ -x "$claude_bin" ]]; then
+      e2e_cap_record wrapper PASS ready "configured Claude wrapper is executable" ""
+    else
+      e2e_cap_record wrapper BLOCKED wrapper_unavailable "configured Claude wrapper is not executable" "fix E2E_CLAUDE_BIN for this profile"
+    fi
+  elif command -v "$claude_bin" >/dev/null 2>&1; then
+    e2e_cap_record wrapper PASS ready "Claude executable is available" ""
+  else
+    e2e_cap_record wrapper BLOCKED wrapper_unavailable "Claude executable is unavailable" "install Claude or configure E2E_CLAUDE_BIN"
+  fi
+}
+
+record_static_exclusivity() {
+  local lock_path="$STATE_ROOT/.lark-agent-bridge/e2e/locks/$PROFILE_NAME.lock" owner_pid=""
+  if [[ ! -d "$lock_path" ]]; then
+    e2e_cap_record exclusive_runtime PASS ready "profile has no active local owner" ""
+    return
+  fi
+  owner_pid="$(sed -n '1p' "$lock_path/owner" 2>/dev/null || true)"
+  if [[ "$owner_pid" =~ ^[0-9]+$ ]] && kill -0 "$owner_pid" >/dev/null 2>&1; then
+    e2e_cap_record exclusive_runtime BLOCKED profile_busy "another local run owns this profile" "wait for the active run or select another profile"
+  elif [[ "$owner_pid" =~ ^[0-9]+$ ]]; then
+    e2e_cap_record exclusive_runtime PASS stale_lock "profile lock is stale and can be reclaimed by an active run" ""
+  else
+    e2e_cap_record exclusive_runtime BLOCKED profile_busy "profile lock owner cannot be verified" "inspect the local gitignored lock directory"
+  fi
+}
+
+run_static_capability_doctor() {
+  mkdir -p "$RUN_DIR"
+  e2e_cap_reset
+  record_static_credentials
+  record_static_user_auth
+  record_static_bot
+  record_static_chats
+  record_static_wrapper
+  record_static_exclusivity
+  e2e_cap_write_json "$CAPABILITIES_JSON"
+  e2e_cap_write_summary "$SUMMARY"
 }
 
 json_escape() {
@@ -418,14 +567,20 @@ restart_server() {
 }
 
 cleanup() {
-  local status=$?
+  local status=$? kept_server=0
   sync_server_pid >/dev/null 2>&1 || true
   if [[ -n "${SERVER_PID:-}" ]] && kill -0 "$SERVER_PID" >/dev/null 2>&1; then
     if [[ "$status" -ne 0 && "$KEEP_SERVER_ON_FAIL" -eq 1 ]]; then
       echo "keeping bridge process $SERVER_PID for diagnosis"
+      kept_server=1
     else
       stop_server TERM
     fi
+  fi
+  if [[ "$kept_server" -eq 1 && -n "${E2E_PROFILE_LOCK_PATH:-}" ]]; then
+    printf '%s\n%s\n%s\n' "$SERVER_PID" "$RUN_TOKEN" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >"$E2E_PROFILE_LOCK_PATH/owner"
+  else
+    e2e_profile_lock_release >/dev/null 2>&1 || true
   fi
 }
 trap cleanup EXIT
@@ -1528,14 +1683,204 @@ run_case() {
   summary
 }
 
+case_prerequisites() {
+  local name="$1"
+  case "$name" in
+    debounce_dm)
+      printf '%s\n' credentials lark_cli_auth oauth_same_app bot_identity p2p_chat wrapper exclusive_runtime
+      ;;
+    media_text_files|media_partial|media_rejected)
+      printf '%s\n' credentials lark_cli_auth bot_identity p2p_chat wrapper exclusive_runtime
+      ;;
+    preflight)
+      printf '%s\n' credentials lark_cli_auth bot_identity test_group exclusive_runtime
+      ;;
+    *)
+      printf '%s\n' credentials lark_cli_auth bot_identity test_group wrapper exclusive_runtime
+      ;;
+  esac
+}
+
+run_case_with_capabilities() {
+  local name="$1" state capability
+  local prerequisites=()
+  while IFS= read -r capability; do
+    [[ -n "$capability" ]] && prerequisites+=("$capability")
+  done < <(case_prerequisites "$name")
+  state="$(e2e_cap_evaluate "$name" "${prerequisites[@]}")"
+  case "$state" in
+    READY)
+      run_case "$name"
+      ;;
+    BLOCKED)
+      log "case $name blocked by profile capabilities"
+      summary "## $name"
+      summary
+      summary "- status: blocked"
+      summary "- reason: prerequisite_blocked"
+      summary
+      BLOCKED_CASES=$((BLOCKED_CASES + 1))
+      ;;
+    *)
+      log "case $name skipped because a prerequisite failed or was not evaluated"
+      summary "## $name"
+      summary
+      summary "- status: skipped"
+      summary "- reason: prerequisite_$state"
+      summary
+      FAILURES=$((FAILURES + 1))
+      ;;
+  esac
+}
+
+capability_prerequisites_ready() {
+  local capability="$1"
+  shift
+  local state
+  state="$(e2e_cap_evaluate "$capability" "$@")"
+  case "$state" in
+    READY) return 0 ;;
+    BLOCKED)
+      e2e_cap_record "$capability" BLOCKED prerequisite_blocked "one or more prerequisites are blocked" "resolve the blocked static capability first"
+      ;;
+    FAIL)
+      e2e_cap_record "$capability" SKIPPED prerequisite_failed "a prerequisite failed" "repair the failed capability first"
+      ;;
+    *)
+      e2e_cap_record "$capability" SKIPPED prerequisite_skipped "a prerequisite was not evaluated" "run static doctor first"
+      ;;
+  esac
+  return 1
+}
+
+run_capability_case() {
+  local capability="$1" case_name="$2" blocked_pattern="${3:-}" blocked_reason="${4:-external_prerequisite}" remediation="${5:-inspect the local evidence}"
+  local log_file="$RUN_DIR/capability-$capability.log" status=0
+  set +e
+  ( set -e; "case_$case_name" ) >"$log_file" 2>&1
+  status=$?
+  set -e
+  if [[ "$status" -eq 0 ]]; then
+    e2e_cap_record "$capability" PASS ready "active canary passed" "" "$log_file"
+    return 0
+  fi
+  if [[ -n "$blocked_pattern" ]] && grep -Eiq "$blocked_pattern" "$log_file"; then
+    e2e_cap_record "$capability" BLOCKED "$blocked_reason" "active canary hit an external prerequisite" "$remediation" "$log_file"
+    return 0
+  fi
+  e2e_cap_record "$capability" FAIL canary_failed "active canary failed" "inspect the capability log" "$log_file"
+  return 1
+}
+
+run_recall_capabilities() {
+  local log_file="$RUN_DIR/capability-recall.log" status=0
+  set +e
+  ( set -e; case_message_revoke ) >"$log_file" 2>&1
+  status=$?
+  set -e
+  if [[ "$status" -eq 0 ]]; then
+    e2e_cap_record message_recall_api PASS ready "message deletion API passed" "" "$log_file"
+    e2e_cap_record recall_event_delivery PASS ready "recall event reached the bridge" "" "$log_file"
+    return
+  fi
+  if grep -Eiq 'permission|forbidden|scope|delete.*failed|revoke.*failed' "$log_file"; then
+    e2e_cap_record message_recall_api BLOCKED recall_permission_missing "message deletion API is unavailable" "grant the user message recall permission" "$log_file"
+    e2e_cap_record recall_event_delivery SKIPPED recall_api_blocked "recall event was not tested" "resolve message recall API access" "$log_file"
+  elif grep -Eiq 'message_recalled|timed out.*recall|recall.*timed out' "$log_file"; then
+    e2e_cap_record message_recall_api PASS ready "message deletion API passed" "" "$log_file"
+    e2e_cap_record recall_event_delivery BLOCKED event_not_delivered "recall event did not reach the bridge" "enable im.message.recalled_v1 for this app" "$log_file"
+  else
+    e2e_cap_record message_recall_api FAIL canary_failed "recall canary failed before it could be classified" "inspect the recall capability log" "$log_file"
+    e2e_cap_record recall_event_delivery SKIPPED recall_probe_failed "recall event was not evaluated" "repair the recall canary" "$log_file"
+  fi
+}
+
+run_active_capability_preflight() {
+  local lock_path="$STATE_ROOT/.lark-agent-bridge/e2e/locks/$PROFILE_NAME.lock"
+  local readiness
+  readiness="$(e2e_cap_evaluate active_preflight credentials lark_cli_auth bot_identity test_group wrapper exclusive_runtime)"
+  if [[ "$readiness" != "READY" ]]; then
+    e2e_cap_record group_delivery SKIPPED static_prerequisite_blocked "active preflight did not start" "resolve static doctor results first"
+    e2e_cap_record dm_delivery SKIPPED static_prerequisite_blocked "active preflight did not start" "resolve static doctor results first"
+    e2e_cap_record card_action SKIPPED static_prerequisite_blocked "active preflight did not start" "resolve static doctor results first"
+    e2e_cap_record message_recall_api SKIPPED static_prerequisite_blocked "active preflight did not start" "resolve static doctor results first"
+    e2e_cap_record recall_event_delivery SKIPPED static_prerequisite_blocked "active preflight did not start" "resolve static doctor results first"
+    e2e_cap_record media_image SKIPPED static_prerequisite_blocked "active preflight did not start" "resolve static doctor results first"
+    e2e_cap_record media_file SKIPPED static_prerequisite_blocked "active preflight did not start" "resolve static doctor results first"
+    return 0
+  fi
+  mkdir -p "$(dirname "$lock_path")"
+  chmod 700 "$(dirname "$lock_path")"
+  e2e_profile_lock_acquire "$PROFILE_NAME" "$lock_path" "$RUN_TOKEN" || {
+    e2e_cap_record exclusive_runtime BLOCKED profile_busy "another local run owns this profile" "wait or select another profile"
+    return 3
+  }
+  e2e_cap_record exclusive_runtime PASS ready "active run acquired the local profile lock" ""
+  USE_FAKE_CLAUDE=1
+  go build -o "$SERVER_BIN" ./cmd/lark-agent-bridge
+  fetch_bot_open_id
+  start_server_if_needed capability
+
+  if capability_prerequisites_ready group_delivery credentials bot_identity test_group; then
+    run_capability_case group_delivery new_basic || true
+  fi
+  if capability_prerequisites_ready dm_delivery credentials bot_identity oauth_same_app p2p_chat; then
+    run_capability_case dm_delivery debounce_dm 'cross app|P2P send|user-id' open_id_cross_app "login lark-cli through the bridge app" || true
+  fi
+  if capability_prerequisites_ready card_action group_delivery; then
+    run_capability_case card_action stop_preserves_queue || true
+  fi
+  if capability_prerequisites_ready message_recall_api group_delivery; then
+    run_recall_capabilities
+  else
+    e2e_cap_record recall_event_delivery SKIPPED recall_prerequisite_blocked "recall event was not tested" "resolve group delivery first"
+  fi
+  if capability_prerequisites_ready media_image group_delivery; then
+    run_capability_case media_image media_attachment_only || true
+  fi
+  if capability_prerequisites_ready media_file dm_delivery p2p_chat; then
+    run_capability_case media_file media_text_files || true
+  fi
+}
+
 RUN_CASES=()
 selected_cases_array
-summary_init
 validate_selected_cases
 require_cmd jq
-require_cmd go
 require_cmd lark-cli
 require_cmd curl
+run_static_capability_doctor
+if [[ "$DOCTOR_MODE" -eq 1 ]]; then
+  echo "$SUMMARY"
+  exit "$(e2e_cap_exit_code "$STRICT_CAPABILITIES")"
+fi
+if [[ "$PREFLIGHT_ONLY" -eq 1 ]]; then
+  require_cmd go
+  require_cmd pgrep
+  require_cmd ps
+  run_active_capability_preflight || true
+  e2e_cap_write_json "$CAPABILITIES_JSON"
+  e2e_cap_write_summary "$SUMMARY"
+  echo "$SUMMARY"
+  exit "$(e2e_cap_exit_code "$STRICT_CAPABILITIES")"
+fi
+summary_init
+normal_lock_path="$STATE_ROOT/.lark-agent-bridge/e2e/locks/$PROFILE_NAME.lock"
+mkdir -p "$(dirname "$normal_lock_path")"
+chmod 700 "$(dirname "$normal_lock_path")"
+if ! e2e_profile_lock_acquire "$PROFILE_NAME" "$normal_lock_path" "$RUN_TOKEN"; then
+  e2e_cap_record exclusive_runtime BLOCKED profile_busy "another local run owns this profile" "wait or select another profile"
+  e2e_cap_write_json "$CAPABILITIES_JSON"
+  e2e_cap_write_summary "$SUMMARY"
+  echo "$SUMMARY"
+  if [[ "$STRICT_CAPABILITIES" -eq 1 ]]; then
+    exit 3
+  fi
+  exit 0
+fi
+e2e_cap_record exclusive_runtime PASS ready "active run acquired the local profile lock" ""
+e2e_cap_write_json "$CAPABILITIES_JSON"
+require_cmd go
 require_cmd pgrep
 require_cmd ps
 require_env LARK_APP_ID
@@ -1548,16 +1893,20 @@ summary
 
 for case_name in "${RUN_CASES[@]}"; do
   [[ -n "$case_name" ]] || continue
-  run_case "$case_name"
+  run_case_with_capabilities "$case_name"
 done
 
 summary "## Summary"
 summary
 summary "- failures: $FAILURES"
+summary "- blocked: $BLOCKED_CASES"
 summary "- messages: $MESSAGES"
 summary "- server_log: $SERVER_LOG"
 
 echo "$SUMMARY"
 if [[ "$FAILURES" -ne 0 ]]; then
   exit 1
+fi
+if [[ "$STRICT_CAPABILITIES" -eq 1 && "$BLOCKED_CASES" -ne 0 ]]; then
+  exit 3
 fi
