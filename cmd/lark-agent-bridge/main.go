@@ -20,6 +20,7 @@ import (
 	"lark-agent-bridge/internal/doctor"
 	"lark-agent-bridge/internal/feishu"
 	"lark-agent-bridge/internal/media"
+	"lark-agent-bridge/internal/reply"
 	"lark-agent-bridge/internal/session"
 )
 
@@ -261,18 +262,25 @@ func runServe(args []string) error {
 		return err
 	}
 	defer closeAudit()
-	renderer := feishu.NewReactionCardRenderer(sender, feishu.NewCardKitRouterRendererWithObserver(cardClient, recorder))
+	cardRouter := feishu.NewCardKitRouterRendererWithObserver(cardClient, recorder)
+	renderer := feishu.NewReactionCardRenderer(sender, cardRouter)
 	sessions := session.NewManagerWithStore(cfg.SessionStorePath)
 	notices, err := sessions.Restore()
 	if err != nil {
 		return fmt.Errorf("restore session store: %w", err)
 	}
 	svc := bridge.NewServiceWithSessions(cfg, renderer, nil, recorder, sessions, notices)
-	preferences, err := config.OpenPreferenceStore(cfg.PreferenceStorePath, config.RuntimePreference{Model: cfg.Model, Effort: cfg.Effort}, cfg.AllowedModels)
+	preferences, err := config.OpenPreferenceStore(cfg.PreferenceStorePath, config.RuntimePreference{Model: cfg.Model, Effort: cfg.Effort, ReplyMode: cfg.ReplyMode}, cfg.AllowedModels)
 	if err != nil {
 		return fmt.Errorf("open runtime preference store: %w", err)
 	}
 	svc.Preferences = preferences
+	replies, err := reply.OpenStore(cfg.ReplyStorePath)
+	if err != nil {
+		return fmt.Errorf("open reply store: %w", err)
+	}
+	svc.Replies = replies
+	svc.CardTarget = cardRouter
 	mediaWiring := newServeMedia(cfg, tokens)
 	svc.MediaCache = mediaWiring.cache
 	svc.MediaDownloader = mediaWiring.downloader

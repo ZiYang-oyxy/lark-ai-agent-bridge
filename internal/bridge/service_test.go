@@ -16,7 +16,9 @@ import (
 	"lark-agent-bridge/internal/audit"
 	"lark-agent-bridge/internal/card"
 	"lark-agent-bridge/internal/config"
+	"lark-agent-bridge/internal/feishu"
 	"lark-agent-bridge/internal/media"
+	"lark-agent-bridge/internal/reply"
 	"lark-agent-bridge/internal/session"
 )
 
@@ -29,6 +31,56 @@ type fakeRunner struct {
 	block   chan struct{}
 	started chan struct{}
 }
+
+type bridgeReplyTarget struct {
+	mu             sync.Mutex
+	newCalls       int
+	rehydrateCalls int
+	newRef         session.RenderRef
+	rehydratedRef  session.RenderRef
+	events         []card.Event
+}
+
+func (t *bridgeReplyTarget) NewStreaming(context.Context, string, string) (feishu.ResumableRenderer, error) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.newCalls++
+	ref := t.newRef
+	if ref.CardID == "" {
+		ref = session.RenderRef{CardID: "new-card", ReplyMessageID: "new-reply"}
+	}
+	return &bridgeReplyRenderer{target: t, ref: ref}, nil
+}
+
+func (t *bridgeReplyTarget) AppendTerminal(_ context.Context, _ string, event card.Event) error {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.events = append(t.events, event)
+	return nil
+}
+
+func (t *bridgeReplyTarget) Rehydrate(_ string, ref session.RenderRef) feishu.ResumableRenderer {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.rehydrateCalls++
+	t.rehydratedRef = ref
+	return &bridgeReplyRenderer{target: t, ref: ref}
+}
+
+type bridgeReplyRenderer struct {
+	target *bridgeReplyTarget
+	ref    session.RenderRef
+}
+
+func (r *bridgeReplyRenderer) Render(event card.Event) error {
+	r.target.mu.Lock()
+	defer r.target.mu.Unlock()
+	r.target.events = append(r.target.events, event)
+	r.ref.Version++
+	return nil
+}
+
+func (r *bridgeReplyRenderer) RenderRef() session.RenderRef { return r.ref }
 
 type failingAuditWriter struct{}
 
@@ -420,6 +472,60 @@ func TestServiceFreezesPreferencesAtEnqueueTime(t *testing.T) {
 	}
 	if first, second := sess.Queue[0], sess.Queue[1]; first.RequestedModel != "sonnet" || first.RequestedEffort != "low" || second.RequestedModel != "opus" || second.RequestedEffort != "high" {
 		t.Fatalf("frozen queue preferences = %#v", sess.Queue)
+	}
+}
+
+func TestServiceRoutesBatchThroughReplyPolicyAndPersistsActiveRenderRef(t *testing.T) {
+	cfg := testConfig(t)
+	cfg.Model, cfg.Effort = "default", "low"
+	cfg.ReplyMode = config.ReplyModeAppend
+	preferences, _ := testPreferenceStore(t, config.RuntimePreference{Model: cfg.Model, Effort: cfg.Effort, ReplyMode: cfg.ReplyMode}, cfg.AllowedModels)
+	if err := preferences.Set(config.RuntimePreference{Model: cfg.Model, Effort: cfg.Effort, ReplyMode: config.ReplyModeLatestCard}); err != nil {
+		t.Fatal(err)
+	}
+	replies, err := reply.OpenStore(filepath.Join(t.TempDir(), "replies.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantRef := session.RenderRef{CardID: "latest-card", ReplyMessageID: "latest-reply", Version: 7}
+	if err := replies.SetLatest("claude:chat", &wantRef); err != nil {
+		t.Fatal(err)
+	}
+	runner := newFakeRunner()
+	runner.block = make(chan struct{})
+	target := &bridgeReplyTarget{}
+	fallback := card.NewFakeRenderer()
+	svc := NewService(cfg, fallback, runner, audit.NewRecorder())
+	svc.Preferences = preferences
+	svc.Replies = replies
+	svc.CardTarget = target
+	now := time.Now()
+	if err := svc.HandleMessage(context.Background(), Message{ID: "reply-mode", ChatID: "chat", Sender: "user", Text: "hello", Time: now}); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.DrainReady(now.Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	<-runner.started
+	sess, ok := svc.Sessions.Get(session.Key{Agent: agent.Claude, ChatID: "chat"})
+	if !ok || sess.ActiveBatch == nil || sess.ActiveBatch.RenderRef == nil {
+		t.Fatalf("active session = %#v, want durable render ref", sess)
+	}
+	if got := *sess.ActiveBatch.RenderRef; got.CardID != wantRef.CardID || got.ReplyMessageID != wantRef.ReplyMessageID || got.Version != wantRef.Version+1 {
+		t.Fatalf("active render ref = %#v, want advanced %#v", got, wantRef)
+	}
+	target.mu.Lock()
+	newCalls, rehydrateCalls, rehydrated := target.newCalls, target.rehydrateCalls, target.rehydratedRef
+	target.mu.Unlock()
+	if newCalls != 0 || rehydrateCalls != 1 || rehydrated != wantRef {
+		t.Fatalf("reply target new/rehydrate/ref = %d/%d/%#v", newCalls, rehydrateCalls, rehydrated)
+	}
+	close(runner.block)
+	waitForSessionNoActiveBatch(t, svc, session.Key{Agent: agent.Claude, ChatID: "chat"})
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := svc.Shutdown(shutdownCtx); err != nil {
+		t.Fatal(err)
 	}
 }
 

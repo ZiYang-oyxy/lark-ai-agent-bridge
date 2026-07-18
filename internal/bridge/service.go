@@ -22,6 +22,7 @@ import (
 	"lark-agent-bridge/internal/card"
 	"lark-agent-bridge/internal/config"
 	"lark-agent-bridge/internal/media"
+	"lark-agent-bridge/internal/reply"
 	"lark-agent-bridge/internal/session"
 )
 
@@ -35,6 +36,8 @@ type Service struct {
 	MediaDownloader media.Downloader
 	MediaGC         mediaSweeper
 	Preferences     *config.PreferenceStore
+	Replies         *reply.Store
+	CardTarget      reply.CardTarget
 	RestoreNotices  []session.RecoveryNotice
 
 	mu                 sync.Mutex
@@ -278,7 +281,11 @@ func (s *Service) runtimePreference() config.RuntimePreference {
 	if effort == "" {
 		effort = "low"
 	}
-	return config.RuntimePreference{Model: model, Effort: effort}
+	mode := s.Config.ReplyMode
+	if mode == "" {
+		mode = config.ReplyModeAppend
+	}
+	return config.RuntimePreference{Model: model, Effort: effort, ReplyMode: mode}
 }
 
 func (s *Service) configModelOptions() []string {
@@ -429,6 +436,18 @@ func (s *Service) startBatch(parent context.Context, sess session.Session, batch
 		sources = append(sources, in.ID, in.ReplyToMessageID)
 	}
 	stream := newAgentCardStream(s, id, sess, anchor)
+	if s.CardTarget != nil {
+		mode := s.runtimePreference().ReplyMode
+		policyRun, err := reply.NewPolicy(s.CardTarget, s.Replies).Begin(runCtx, mode, sess.ID, id, anchor.ReplyToMessageID)
+		if err != nil {
+			cancel()
+			_, _ = s.finishBatchOrRemember(sess, batch.ID, session.BatchCompletion{Status: session.InputFailed, At: time.Now()}, "batch_finish_failed")
+			s.Audit.Record("system", "reply_policy_start_failed", sess.ID, err.Error())
+			_ = s.Cards.Render(card.Event{Type: "error", SessionID: id, ReplyToMessageID: anchor.ReplyToMessageID, Segments: []card.Segment{{Kind: card.SegmentError, Text: "回复卡片初始化失败，请重试。"}}})
+			return
+		}
+		stream = newAgentCardStreamWithRenderer(s, id, sess, anchor, card.NewLimitRenderer(policyRun, s.Config.CardMaxChars), policyRun)
+	}
 	s.storeActiveRun(id, activeRun{BaseSessionID: sess.ID, BatchID: batch.ID, SourceMessageIDs: sources, Key: sess.Key, WorkDir: sess.WorkDir, Cancel: cancel, Stream: stream})
 	if s.afterStoreActiveRunHook != nil {
 		s.afterStoreActiveRunHook()
@@ -443,7 +462,7 @@ func (s *Service) startBatch(parent context.Context, sess session.Session, batch
 		s.Audit.Record("system", "card_render_failed", sess.ID, err.Error())
 		return
 	}
-	marked, _, err := s.Sessions.MarkBatchRunning(batchKey(sess, batch), batch.ID, nil, time.Now())
+	marked, _, err := s.Sessions.MarkBatchRunning(batchKey(sess, batch), batch.ID, stream.RenderRef(), time.Now())
 	if err != nil {
 		cancel()
 		s.finishStartingBatch(sess, batch, id, session.InputFailed, "failed", AgentRunResult{})
@@ -766,7 +785,7 @@ func (s *Service) HandleActionResult(ctx context.Context, req ActionRequest) (Ac
 			s.Audit.Record(req.Actor, "config_save_failed", req.SessionID, err.Error())
 			return s.renderActionEvent(configSaveErrorEvent(req.SessionID))
 		}
-		preference := config.RuntimePreference{Model: req.FormValues["model"], Effort: req.FormValues["effort"]}
+		preference := config.RuntimePreference{Model: req.FormValues["model"], Effort: req.FormValues["effort"], ReplyMode: s.runtimePreference().ReplyMode}
 		if err := s.Preferences.Set(preference); err != nil {
 			s.Audit.Record(req.Actor, "config_save_failed", req.SessionID, err.Error())
 			return s.renderActionEvent(configSaveErrorEvent(req.SessionID))

@@ -18,7 +18,8 @@ const (
 
 type agentCardStream struct {
 	mu          sync.Mutex
-	service     *Service
+	renderer    card.Renderer
+	refProvider interface{ RenderRef() session.RenderRef }
 	sessionID   string
 	replyTo     string
 	startedAt   time.Time
@@ -36,6 +37,10 @@ type agentCardStream struct {
 }
 
 func newAgentCardStream(service *Service, sessionID string, sess session.Session, input session.Input) *agentCardStream {
+	return newAgentCardStreamWithRenderer(service, sessionID, sess, input, service.Cards, nil)
+}
+
+func newAgentCardStreamWithRenderer(service *Service, sessionID string, sess session.Session, input session.Input, renderer card.Renderer, refProvider interface{ RenderRef() session.RenderRef }) *agentCardStream {
 	startedAt := input.Time
 	if startedAt.IsZero() {
 		startedAt = time.Now()
@@ -45,7 +50,8 @@ func newAgentCardStream(service *Service, sessionID string, sess session.Session
 		flushEvery = time.Second
 	}
 	return &agentCardStream{
-		service:     service,
+		renderer:    renderer,
+		refProvider: refProvider,
 		sessionID:   sessionID,
 		replyTo:     input.ReplyToMessageID,
 		startedAt:   startedAt,
@@ -56,6 +62,17 @@ func newAgentCardStream(service *Service, sessionID string, sess session.Session
 		totalBefore: sess.Tokens,
 		stopVisible: true,
 	}
+}
+
+func (s *agentCardStream) RenderRef() *session.RenderRef {
+	if s.refProvider == nil {
+		return nil
+	}
+	ref := s.refProvider.RenderRef()
+	if ref.CardID == "" {
+		return nil
+	}
+	return &ref
 }
 
 func (s *agentCardStream) Start() error {
@@ -189,7 +206,7 @@ func (s *agentCardStream) render(initial bool) (card.Event, error) {
 	event := s.eventLocked(initial)
 	s.lastFlush = time.Now()
 	s.mu.Unlock()
-	return event, s.service.Cards.Render(event)
+	return event, s.renderer.Render(event)
 }
 
 func (s *agentCardStream) eventLocked(initial bool) card.Event {
