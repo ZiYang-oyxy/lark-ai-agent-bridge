@@ -280,6 +280,11 @@ func runServe(args []string) error {
 		return fmt.Errorf("open reply store: %w", err)
 	}
 	svc.Replies = replies
+	sequenceJournal, err := bridge.NewNativeSequenceJournal(filepath.Join(filepath.Dir(cfg.SessionStorePath), "native-sequence-journal.json"), sessions, replies)
+	if err != nil {
+		return fmt.Errorf("open native sequence journal: %w", err)
+	}
+	svc.SequenceResolver = sequenceJournal
 	svc.CardTarget = cardRouter
 	svc.Reactions = sender
 	actionGateway := bridge.ActionGateway{Service: svc, Fencer: cardRouter}

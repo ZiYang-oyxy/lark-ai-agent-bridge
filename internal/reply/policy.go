@@ -22,9 +22,10 @@ type CardTarget interface {
 }
 
 type Policy struct {
-	target CardTarget
-	store  *Store
-	now    func() time.Time
+	target   CardTarget
+	store    *Store
+	now      func() time.Time
+	Resolver session.RenderRefSequenceResolver
 }
 
 func NewPolicy(target CardTarget, store *Store) *Policy {
@@ -78,7 +79,7 @@ func (p *Policy) Begin(ctx context.Context, mode config.ReplyMode, scope, sessio
 }
 
 func (p *Policy) discardLatestRef(ref session.RenderRef) bool {
-	if ref.SequenceUnknown {
+	if ref.SequenceUnknown || (p.Resolver != nil && p.Resolver.RenderRefSequenceUnknown(ref)) {
 		return true
 	}
 	if ref.CreatedAt.IsZero() {

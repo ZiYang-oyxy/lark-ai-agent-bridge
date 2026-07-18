@@ -52,6 +52,10 @@ type fakeResumable struct {
 	err      error
 }
 
+type alwaysUnknownResolver struct{}
+
+func (alwaysUnknownResolver) RenderRefSequenceUnknown(session.RenderRef) bool { return true }
+
 func (f *fakeResumable) Render(event card.Event) error {
 	call := len(f.events) + 1
 	f.events = append(f.events, event)
@@ -137,6 +141,26 @@ func TestPolicyLatestCardRehydratesAndPersistsAdvancedRef(t *testing.T) {
 	got := store.GetLatest("scope")
 	if target.rehydrateCalls != 1 || target.newCalls != 0 || got == nil || got.CardID != "old-card" || got.Version != 5 {
 		t.Fatalf("rehydrate/new/latest = %d/%d/%#v", target.rehydrateCalls, target.newCalls, got)
+	}
+}
+
+func TestPolicyLatestCardDiscardsResolverUnknownRef(t *testing.T) {
+	store, err := OpenStore(filepath.Join(t.TempDir(), "replies.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	old := &session.RenderRef{CardID: "old-card", ReplyMessageID: "old-reply", Version: 4}
+	if err := store.SetLatest("scope", old); err != nil {
+		t.Fatal(err)
+	}
+	target := &fakeTarget{}
+	policy := NewPolicy(target, store)
+	policy.Resolver = alwaysUnknownResolver{}
+	if _, err := policy.Begin(context.Background(), configMode("latest-card"), "scope", "run", "source"); err != nil {
+		t.Fatal(err)
+	}
+	if target.rehydrateCalls != 0 || target.newCalls != 1 {
+		t.Fatalf("rehydrate/new = %d/%d", target.rehydrateCalls, target.newCalls)
 	}
 }
 

@@ -2265,6 +2265,30 @@ func TestServiceRecoverySkipsSequenceUnknownCardOnce(t *testing.T) {
 	}
 }
 
+type bridgeAlwaysUnknownResolver struct{}
+
+func (bridgeAlwaysUnknownResolver) RenderRefSequenceUnknown(session.RenderRef) bool { return true }
+
+func TestServiceRecoverySkipsResolverUnknownCard(t *testing.T) {
+	ref := &session.RenderRef{CardID: "unknown-card", ReplyMessageID: "old-reply", Version: 4}
+	target := &bridgeReplyTarget{}
+	recorder := audit.NewRecorder()
+	svc := NewServiceWithSessions(testConfig(t), card.NewFakeRenderer(), newFakeRunner(), recorder, session.NewManager(), []session.RecoveryNotice{{
+		SessionID: "claude:chat", ReplyToMessageID: "source", Status: session.InputInterrupted, RenderRef: ref,
+	}})
+	svc.CardTarget = target
+	svc.SequenceResolver = bridgeAlwaysUnknownResolver{}
+	svc.ProcessRecoveryNotices(context.Background())
+	target.mu.Lock()
+	defer target.mu.Unlock()
+	if target.newCalls != 0 || target.rehydrateCalls != 0 || len(target.events) != 0 {
+		t.Fatalf("resolver unknown recovery wrote card: %#v", target)
+	}
+	if !auditContainsAction(recorder.Events(), "recovery_card_update_skipped_sequence_unknown") {
+		t.Fatalf("missing unknown audit: %#v", recorder.Events())
+	}
+}
+
 func TestServiceRecoveryFailureDoesNotCreateOrMutateLatest(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
