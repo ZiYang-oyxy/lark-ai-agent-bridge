@@ -19,6 +19,7 @@ import (
 	"lark-agent-bridge/internal/config"
 	"lark-agent-bridge/internal/doctor"
 	"lark-agent-bridge/internal/feishu"
+	"lark-agent-bridge/internal/media"
 	"lark-agent-bridge/internal/session"
 )
 
@@ -53,7 +54,10 @@ func run(args []string) error {
 
 func runSimulateAction(args []string) error {
 	fs := flag.NewFlagSet("simulate-action", flag.ContinueOnError)
-	cfg := config.LoadFromEnv()
+	cfg, err := config.LoadFromEnvStrict()
+	if err != nil {
+		return err
+	}
 	actionID := fs.String("action", "stop", "action id")
 	value := fs.String("value", "", "action value")
 	sessionID := fs.String("session", "claude:chat-demo:message:local-id", "session id")
@@ -63,7 +67,9 @@ func runSimulateAction(args []string) error {
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	applyDefaultWorkDir(&cfg, *defaultWorkDir)
+	if err := applyDefaultWorkDir(&cfg, *defaultWorkDir); err != nil {
+		return err
+	}
 	renderer := card.NewFakeRenderer()
 	recorder := audit.NewRecorder()
 	svc := bridge.NewService(cfg, renderer, simulateRunner{}, recorder)
@@ -107,19 +113,27 @@ func runSimulateAction(args []string) error {
 
 func runDoctor(args []string) error {
 	fs := flag.NewFlagSet("doctor", flag.ContinueOnError)
-	cfg := config.LoadFromEnv()
+	cfg, err := config.LoadFromEnvStrict()
+	if err != nil {
+		return err
+	}
 	defaultWorkDir := fs.String("default-workdir", cfg.DefaultWorkDir, "default workdir for messages without --workdir")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	applyDefaultWorkDir(&cfg, *defaultWorkDir)
+	if err := applyDefaultWorkDir(&cfg, *defaultWorkDir); err != nil {
+		return err
+	}
 	fmt.Println(doctor.Summary(doctor.Run(cfg)))
 	return nil
 }
 
 func runSimulate(args []string) error {
 	fs := flag.NewFlagSet("simulate", flag.ContinueOnError)
-	cfg := config.LoadFromEnv()
+	cfg, err := config.LoadFromEnvStrict()
+	if err != nil {
+		return err
+	}
 	text := fs.String("text", "/help", "message text")
 	chat := fs.String("chat", "chat-demo", "chat id")
 	thread := fs.String("thread", "", "thread id")
@@ -133,7 +147,9 @@ func runSimulate(args []string) error {
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	applyDefaultWorkDir(&cfg, *defaultWorkDir)
+	if err := applyDefaultWorkDir(&cfg, *defaultWorkDir); err != nil {
+		return err
+	}
 	renderer := card.NewFakeRenderer()
 	recorder := audit.NewRecorder()
 	baseMsg := bridge.Message{
@@ -198,12 +214,17 @@ func runSimulate(args []string) error {
 
 func runServe(args []string) error {
 	fs := flag.NewFlagSet("serve", flag.ContinueOnError)
-	cfg := config.LoadFromEnv()
+	cfg, err := config.LoadFromEnvStrict()
+	if err != nil {
+		return err
+	}
 	defaultWorkDir := fs.String("default-workdir", cfg.DefaultWorkDir, "default workdir for messages without --workdir")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	applyDefaultWorkDir(&cfg, *defaultWorkDir)
+	if err := applyDefaultWorkDir(&cfg, *defaultWorkDir); err != nil {
+		return err
+	}
 	appID := os.Getenv("LARK_APP_ID")
 	appSecret := os.Getenv("LARK_APP_SECRET")
 	if appID == "" || appSecret == "" {
@@ -219,7 +240,8 @@ func runServe(args []string) error {
 			return fmt.Errorf("fetch feishu bot open_id: %w", err)
 		}
 	}
-	cardClient := feishu.NewCardKitClient(appID, appSecret)
+	tokens := feishu.NewTenantTokenSource(appID, appSecret)
+	cardClient := feishu.NewCardKitClientWithTokenSource(tokens)
 	sender := feishu.NewSDKSender(appID, appSecret)
 	recorder, closeAudit, err := newServeAuditRecorder(cfg)
 	if err != nil {
@@ -233,6 +255,11 @@ func runServe(args []string) error {
 		return fmt.Errorf("restore session store: %w", err)
 	}
 	svc := bridge.NewServiceWithSessions(cfg, renderer, nil, recorder, sessions, notices)
+	mediaWiring := newServeMedia(cfg, tokens)
+	svc.MediaCache = mediaWiring.cache
+	svc.MediaDownloader = mediaWiring.downloader
+	svc.MediaGC = mediaWiring.gc
+	svc.SweepMediaCacheStartup()
 	client := feishu.NewLongConnClient(feishu.LongConnConfig{
 		AppID:     appID,
 		AppSecret: appSecret,
@@ -339,9 +366,9 @@ Environment:
   LARK_BOT_OPEN_ID       optional override; serve auto-fetches bot open_id by default`)
 }
 
-func applyDefaultWorkDir(cfg *config.Config, workDir string) {
+func applyDefaultWorkDir(cfg *config.Config, workDir string) error {
 	if workDir == "" {
-		return
+		return nil
 	}
 	cfg.DefaultWorkDir = workDir
 	if os.Getenv("E2E_AUDIT_LOG") == "" {
@@ -349,6 +376,34 @@ func applyDefaultWorkDir(cfg *config.Config, workDir string) {
 	}
 	if os.Getenv("E2E_SESSION_STORE") == "" {
 		cfg.SessionStorePath = filepath.Join(workDir, ".lark-agent-bridge", "sessions.json")
+	}
+	if os.Getenv("E2E_MEDIA_CACHE_DIR") == "" {
+		absoluteWorkDir, err := filepath.Abs(workDir)
+		if err != nil {
+			return fmt.Errorf("resolve default workdir for media cache: %w", err)
+		}
+		cfg.MediaCacheDir = filepath.Join(filepath.Clean(absoluteWorkDir), ".lark-agent-bridge", "media")
+	}
+	return nil
+}
+
+type serveMediaWiring struct {
+	cache      *media.Cache
+	downloader *feishu.MediaDownloader
+	gc         *media.GC
+}
+
+func newServeMedia(cfg config.Config, tokens feishu.TenantTokenSource) serveMediaWiring {
+	cache := media.NewCache(cfg.MediaCacheDir, media.Limits{
+		MaxFileBytes:    cfg.MediaMaxFileBytes,
+		MaxBatchBytes:   cfg.MediaMaxBatchBytes,
+		MaxFiles:        10,
+		CacheQuotaBytes: cfg.MediaCacheMaxBytes,
+	})
+	return serveMediaWiring{
+		cache:      cache,
+		downloader: &feishu.MediaDownloader{Tokens: tokens},
+		gc:         media.NewGC(cache, cfg.MediaRetention),
 	}
 }
 

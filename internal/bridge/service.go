@@ -33,6 +33,7 @@ type Service struct {
 	Audit           *audit.Recorder
 	MediaCache      mediaResolver
 	MediaDownloader media.Downloader
+	MediaGC         mediaSweeper
 	RestoreNotices  []session.RecoveryNotice
 
 	mu                 sync.Mutex
@@ -56,6 +57,11 @@ type Service struct {
 // service to a concrete cache implementation.
 type mediaResolver interface {
 	Resolve(context.Context, media.Downloader, []media.Ref) media.Resolution
+}
+
+type mediaSweeper interface {
+	Sweep(map[string]struct{}) (media.SweepResult, error)
+	SweepStartup(map[string]struct{}) (media.SweepResult, error)
 }
 
 type AgentRunner interface {
@@ -522,12 +528,15 @@ func effectiveMessageTime(msg Message) time.Time {
 }
 
 func (s *Service) batchLimits() session.BatchLimits {
-	limits := session.BatchLimits{MaxInputs: s.Config.BatchMaxInputs, MaxTextRunes: s.Config.BatchMaxTextRunes, MaxAttachments: 10, MaxAttachmentBytes: 100 << 20, MaxPending: s.Config.QueueMaxPending}
+	limits := session.BatchLimits{MaxInputs: s.Config.BatchMaxInputs, MaxTextRunes: s.Config.BatchMaxTextRunes, MaxAttachments: 10, MaxAttachmentBytes: s.Config.MediaMaxBatchBytes, MaxPending: s.Config.QueueMaxPending}
 	if limits.MaxInputs <= 0 {
 		limits.MaxInputs = 10
 	}
 	if limits.MaxTextRunes <= 0 {
 		limits.MaxTextRunes = 64 << 10
+	}
+	if limits.MaxAttachmentBytes <= 0 {
+		limits.MaxAttachmentBytes = 100 << 20
 	}
 	if limits.MaxPending <= 0 {
 		limits.MaxPending = 20
@@ -546,12 +555,51 @@ func (s *Service) resolveAttachments(ctx context.Context, refs []media.Ref) ([]m
 		}
 		return nil, failures, func() {}
 	}
+	s.SweepMediaCache()
 	resolution := s.MediaCache.Resolve(ctx, s.MediaDownloader, refs)
 	release := resolution.Release
 	if release == nil {
 		release = func() {}
 	}
 	return resolution.Attachments, resolution.Failures, release
+}
+
+const mediaGCRetryAttempts = 2
+
+// SweepMediaCache runs a runtime sweep with fresh durable live snapshots.
+// Failures are observable through audit but never block ordinary message flow.
+func (s *Service) SweepMediaCache() {
+	s.sweepMediaCache(false)
+}
+
+// SweepMediaCacheStartup additionally clears crash-leftover download temp
+// files. Call it before accepting any message or starting a media Resolve.
+func (s *Service) SweepMediaCacheStartup() {
+	s.sweepMediaCache(true)
+}
+
+func (s *Service) sweepMediaCache(startup bool) {
+	if s.MediaGC == nil || s.Sessions == nil {
+		return
+	}
+	for attempt := 1; attempt <= mediaGCRetryAttempts; attempt++ {
+		live := s.Sessions.LiveAttachmentPaths()
+		var result media.SweepResult
+		var err error
+		if startup {
+			result, err = s.MediaGC.SweepStartup(live)
+		} else {
+			result, err = s.MediaGC.Sweep(live)
+		}
+		if err != nil {
+			s.Audit.Record("system", "media_gc_failed", "", err.Error())
+			return
+		}
+		if !result.Stale {
+			return
+		}
+	}
+	s.Audit.Record("system", "media_gc_stale", "", "bounded retry exhausted")
 }
 
 func attachmentFailureSummary(failures []media.Failure, partial bool) string {
@@ -742,27 +790,34 @@ func (s *Service) StartBackgroundLoops(ctx context.Context, outputEvery time.Dur
 	}
 	pendingTicker := time.NewTicker(outputEvery)
 	readyTicker := time.NewTicker(50 * time.Millisecond)
+	mediaTicker := time.NewTicker(6 * time.Hour)
 	s.mu.Lock()
 	if s.loopsStarted {
 		s.mu.Unlock()
 		pendingTicker.Stop()
 		readyTicker.Stop()
+		mediaTicker.Stop()
 		return
 	}
 	loopCtx, cancel := context.WithCancel(ctx)
 	s.loopsCancel, s.loopsStarted = cancel, true
 	s.mu.Unlock()
-	s.startBackgroundLoopsWithTicks(loopCtx, pendingTicker.C, readyTicker.C)
+	s.startBackgroundLoopsWithMediaTicks(loopCtx, pendingTicker.C, readyTicker.C, mediaTicker.C)
 	go func() {
 		<-loopCtx.Done()
 		pendingTicker.Stop()
 		readyTicker.Stop()
+		mediaTicker.Stop()
 	}()
 }
 
 // startBackgroundLoopsWithTicks is the package-level deterministic test seam.
 // The caller has already made the loop unique and owns both tick channels.
 func (s *Service) startBackgroundLoopsWithTicks(ctx context.Context, pendingTicks, readyTicks <-chan time.Time) {
+	s.startBackgroundLoopsWithMediaTicks(ctx, pendingTicks, readyTicks, nil)
+}
+
+func (s *Service) startBackgroundLoopsWithMediaTicks(ctx context.Context, pendingTicks, readyTicks, mediaTicks <-chan time.Time) {
 	go func() {
 		for {
 			select {
@@ -772,6 +827,8 @@ func (s *Service) startBackgroundLoopsWithTicks(ctx context.Context, pendingTick
 				_ = s.RenderPendingRunTimeouts(now)
 			case now := <-readyTicks:
 				_ = s.DrainReady(now)
+			case <-mediaTicks:
+				s.SweepMediaCache()
 			}
 		}
 	}()

@@ -140,6 +140,74 @@ func configureTestMedia(svc *Service, cache mediaResolver) {
 	svc.MediaDownloader = unusedMediaDownloader{}
 }
 
+type mediaSweepStub struct {
+	mu           sync.Mutex
+	results      []media.SweepResult
+	err          error
+	calls        []map[string]struct{}
+	startupCalls []map[string]struct{}
+	order        *[]string
+}
+
+func (s *mediaSweepStub) Sweep(live map[string]struct{}) (media.SweepResult, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.order != nil {
+		*s.order = append(*s.order, "sweep")
+	}
+	s.calls = append(s.calls, clonePathSet(live))
+	if s.err != nil {
+		return media.SweepResult{}, s.err
+	}
+	if len(s.results) == 0 {
+		return media.SweepResult{}, nil
+	}
+	result := s.results[0]
+	s.results = s.results[1:]
+	return result, nil
+}
+
+func (s *mediaSweepStub) SweepStartup(live map[string]struct{}) (media.SweepResult, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.startupCalls = append(s.startupCalls, clonePathSet(live))
+	return media.SweepResult{}, s.err
+}
+
+func (s *mediaSweepStub) callSnapshots() []map[string]struct{} {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]map[string]struct{}, len(s.calls))
+	for i := range s.calls {
+		out[i] = clonePathSet(s.calls[i])
+	}
+	return out
+}
+
+func (s *mediaSweepStub) startupCallCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return len(s.startupCalls)
+}
+
+type orderedMediaResolver struct {
+	order      *[]string
+	resolution media.Resolution
+}
+
+func (r *orderedMediaResolver) Resolve(context.Context, media.Downloader, []media.Ref) media.Resolution {
+	*r.order = append(*r.order, "resolve")
+	return r.resolution
+}
+
+func clonePathSet(in map[string]struct{}) map[string]struct{} {
+	out := make(map[string]struct{}, len(in))
+	for path := range in {
+		out[path] = struct{}{}
+	}
+	return out
+}
+
 var errAttachmentFailureSummary = errors.New("attachment failure summary render failed")
 
 type attachmentFailureSummaryRenderer struct{}
@@ -1244,6 +1312,87 @@ func TestServiceBackgroundReadyTickDrainsWithoutSleep(t *testing.T) {
 	svc.startBackgroundLoopsWithTicks(ctx, nil, ready)
 	ready <- now.Add(time.Second)
 	waitForCalls(t, runner, 1)
+}
+
+func TestServiceSweepsWithLivePathsBeforeResolvingAttachments(t *testing.T) {
+	cfg := testConfig(t)
+	recorder := audit.NewRecorder()
+	svc := NewService(cfg, card.NewFakeRenderer(), newFakeRunner(), recorder)
+	livePath := filepath.Join(t.TempDir(), "live.png")
+	key := session.Key{Agent: agent.Claude, ChatID: "live-chat"}
+	_, _, err := svc.Sessions.EnqueueDurable(key, session.Input{
+		ID: "live", State: session.InputQueued,
+		Attachments: []media.Attachment{{Path: livePath, MIME: "image/png", Size: 1}},
+	}, cfg.DefaultWorkDir, session.BatchLimits{MaxPending: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	order := []string{}
+	sweeper := &mediaSweepStub{err: errors.New("scan failed"), order: &order}
+	resolver := &orderedMediaResolver{order: &order, resolution: media.Resolution{Failures: []media.Failure{{Code: "download_failed"}}}}
+	svc.MediaGC = sweeper
+	configureTestMedia(svc, resolver)
+
+	_, _, release := svc.resolveAttachments(context.Background(), []media.Ref{{MessageID: "m", FileKey: "f", Kind: "file"}})
+	release()
+	if got := strings.Join(order, ","); got != "sweep,resolve" {
+		t.Fatalf("order = %q, want sweep,resolve", got)
+	}
+	calls := sweeper.callSnapshots()
+	if len(calls) != 1 {
+		t.Fatalf("sweep calls = %d, want 1", len(calls))
+	}
+	if _, ok := calls[0][livePath]; !ok {
+		t.Fatalf("live snapshot = %#v, missing %q", calls[0], livePath)
+	}
+	if !auditContainsAction(recorder.Events(), "media_gc_failed") {
+		t.Fatalf("audit = %#v, want media_gc_failed", recorder.Events())
+	}
+}
+
+func TestServiceRetriesStaleMediaSweepWithFreshSnapshotAndBoundsAttempts(t *testing.T) {
+	svc := NewService(testConfig(t), card.NewFakeRenderer(), newFakeRunner(), audit.NewRecorder())
+	sweeper := &mediaSweepStub{results: []media.SweepResult{{Stale: true}, {Stale: true}, {Stale: false}}}
+	svc.MediaGC = sweeper
+	svc.SweepMediaCache()
+	if calls := len(sweeper.callSnapshots()); calls != 2 {
+		t.Fatalf("sweep calls = %d, want bounded 2", calls)
+	}
+	if !auditContainsAction(svc.Audit.Events(), "media_gc_stale") {
+		t.Fatalf("audit = %#v, want media_gc_stale", svc.Audit.Events())
+	}
+}
+
+func TestServiceStartupAndBackgroundMediaSweeps(t *testing.T) {
+	svc := NewService(testConfig(t), card.NewFakeRenderer(), newFakeRunner(), audit.NewRecorder())
+	sweeper := &mediaSweepStub{}
+	svc.MediaGC = sweeper
+	svc.SweepMediaCacheStartup()
+	if calls := sweeper.startupCallCount(); calls != 1 {
+		t.Fatalf("startup sweep calls = %d, want 1", calls)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	mediaTicks := make(chan time.Time, 1)
+	svc.startBackgroundLoopsWithMediaTicks(ctx, nil, nil, mediaTicks)
+	mediaTicks <- time.Now()
+	deadline := time.Now().Add(time.Second)
+	for len(sweeper.callSnapshots()) == 0 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if calls := len(sweeper.callSnapshots()); calls != 1 {
+		t.Fatalf("background sweep calls = %d, want 1", calls)
+	}
+	cancel()
+}
+
+func auditContainsAction(events []audit.Event, action string) bool {
+	for _, event := range events {
+		if event.Action == action {
+			return true
+		}
+	}
+	return false
 }
 
 func TestServiceRecallDuringStartingCancelsBeforeRunnerSpawn(t *testing.T) {
