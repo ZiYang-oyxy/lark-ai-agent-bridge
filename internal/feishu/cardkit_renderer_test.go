@@ -23,6 +23,7 @@ type fakeCardKitClient struct {
 	replyResult CardKitReplyResult
 	replyErr    error
 	updateErr   error
+	updateErrs  []error
 }
 
 type fakeCardKitObserver struct {
@@ -65,6 +66,11 @@ func (f *fakeCardKitClient) UpdateCard(_ context.Context, req CardKitUpdateCardR
 	if req.Prepared != nil {
 		f.lastCard = req.Prepared.PayloadCopy()
 	}
+	if len(f.updateErrs) > 0 {
+		err := f.updateErrs[0]
+		f.updateErrs = f.updateErrs[1:]
+		return err
+	}
 	return f.updateErr
 }
 
@@ -85,6 +91,26 @@ func TestCardKitRendererPreparesOversizedCreateAndUpdate(t *testing.T) {
 		if got := prepared.Capacity(); got.JSONBytes > card.LarkCardSoftMaxJSONBytes || got.Components > card.LarkCardMaxComponents {
 			t.Fatalf("prepared capacity = %#v", got)
 		}
+	}
+}
+
+func TestCardKitRendererRetriesLocalCapacityRejectionWithEmergencyAtSameSequence(t *testing.T) {
+	client := &fakeCardKitClient{updateErrs: []error{card.ErrCardPayloadOversize}}
+	renderer := NewCardKitRenderer(client, "message-1")
+	if err := renderer.Render(card.Event{Type: "stream", SessionID: "session"}); err != nil {
+		t.Fatalf("create render error: %v", err)
+	}
+	if err := renderer.Render(card.Event{Type: "result", SessionID: "session", Segments: []card.Segment{{Kind: card.SegmentText, Text: "answer"}}}); err != nil {
+		t.Fatalf("update render error: %v", err)
+	}
+	if len(client.updateReqs) != 2 || client.updateReqs[0].Sequence != 1 || client.updateReqs[1].Sequence != 1 {
+		t.Fatalf("update requests = %#v, want two retries at sequence 1", client.updateReqs)
+	}
+	if client.updateReqs[1].Prepared == nil || client.updateReqs[1].Prepared.NativeReady() {
+		t.Fatalf("retry prepared = %#v, want emergency card", client.updateReqs[1].Prepared)
+	}
+	if ref := renderer.RenderRef(); ref.Version != 1 {
+		t.Fatalf("render ref = %#v, want version 1", ref)
 	}
 }
 
