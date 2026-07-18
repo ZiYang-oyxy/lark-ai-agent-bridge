@@ -12,7 +12,7 @@
 
 ## 结论先行
 
-主线已具备个人使用所需的可靠性底座:单 agent(claude)、JSON 会话快照、按 chat/topic 串行、one-shot + `--resume` 续接、附件输入、持久化运行偏好和 CardKit 流式卡片。当前 P0 已收敛,P1 剩余重点是回复展示模式。
+主线已具备个人使用所需的完整 P0/P1 能力:单 agent(claude)、JSON 会话快照、按 chat/topic 串行、one-shot + `--resume` 续接、附件输入、持久化运行偏好、三种回复展示模式、预览节流和 reaction 生命周期。P0/P1 个人版已于 2026-07-18 收敛。
 
 gist 的企业级方案对当前体量**严重过度设计**,近期一律不进主清单,只作远期备注(见文末)。近期该做的绝大多数能从 **lcab 近乎平移**(模型同构),cc-connect 提供几个轻量补充小件。
 
@@ -39,6 +39,7 @@ gist 的企业级方案对当前体量**严重过度设计**,近期一律不进�
 - **状态(2026-07-18)**:✅ 个人版已完成。JSON v1 snapshot 使用 `0600` 原子写,保存 session/history/dedup/input 状态;启动时只恢复可继续的 Claude 上下文。
 - **恢复语义**:重启不调度旧输入。`debouncing/queued/starting` 终结为 `cancelled`,`running` 终结为 `interrupted`,并写入 recovery audit;用户需重新发送,下一条新消息可用保存的 `ClaudeSessionID` 续接上下文。
 - **边界**:`/resume` 继续保持禁用;个人版不需要跨用户 catalog/nonce 选择器。
+- **证据**:`.cache/evidence/dee05c5/core-regression-green/summary.md` 的 session restart、pending cancel/interrupted、DM/group debounce、busy merge、queue full、scope parallel、stop 与 recall 十个核心 case 全部通过。
 
 ### P0-2 · 访问控制(owner / allowlist / invite)
 
@@ -68,6 +69,7 @@ gist 的企业级方案对当前体量**严重过度设计**,近期一律不进�
 - **状态(2026-07-18)**:✅ 已完成。dedup/watermark 与 session snapshot 一起落盘;每个 scope 有界排队,同 scope 串行、不同 scope 并行。
 - **队列语义**:busy 时兼容的连续输入可进入下一 batch;配置/workdir/附件边界不同则保持独立 batch。重启一律清空未终态输入,不自动重放。
 - **未引入**:全局 semaphore/FIFO/公平性与跨重启 durable job queue,这些对个人版收益不足。
+- **证据**:`.cache/evidence/dee05c5/core-regression-green/summary.md` 覆盖 DM/group debounce、busy merge、queue full、scope parallel 与 stop-preserves-queue。
 
 ### P1-2 · 可选 model / effort 指定
 
@@ -78,13 +80,10 @@ gist 的企业级方案对当前体量**严重过度设计**,近期一律不进�
 
 ### P1-3 · 回复展示模式可配 + typing/reaction 反馈
 
-- **问题**:当前卡片策略固定。
-- **方案**:
-  - lcab `ReplyDisplayMode`:`append` / `latest-card` / `append-clean-card`(`config/schema.ts:71`,分发在 `bot/channel.ts`)。
-  - cc-connect preview 双门限节流:interval + minDelta(`core/streaming.go`),freeze/unfreeze/discard/finish 降级完备。
-  - reaction 表示「处理中」:lcab `bot/message-work-reactions.ts`。
-- **平移索引**:lcab `card/run-state.ts`(主线已有对应的 `stream_card.go` reducer,扩展策略即可)、cc-connect `core/streaming.go`。
-- **成本**:低中。主线已有 reducer 层,扩展即可。
+- **状态(2026-07-18)**:✅ 已完成。`/config` 可选择 `append`、`append-clean-card`、`latest-card`;偏好与 latest mapping 使用原子 JSON 持久化。
+- **回复语义**:`append` 每轮新建卡;`append-clean-card` 终态隐藏思考/工具过程区;`latest-card` 按 conversation scope 复用卡片,跨重启继续递增 sequence。旧卡 ID 失效时清除 mapping 并新建卡,真实飞书返回的 `10002 cardid invalid` 已纳入 stale 判定。
+- **流式体验**:preview 同时满足时间间隔与新增字符门限,终态不截断;等待输入使用 `OneSecond`,运行使用 `Typing`,所有完成/停止/重启/竞态路径统一清理 reaction。
+- **证据**:`.cache/evidence/dee05c5/reply-final-summary.md` 汇总六个最终通过的 Reply E2E,并链接保留首轮失败现场与两次定向绿色重跑。
 
 ---
 
@@ -124,4 +123,4 @@ gist 的企业级方案对当前体量**严重过度设计**,近期一律不进�
 
 ## 推荐落地顺序
 
-`P0-1(持久化)→ P0-2(鉴权)→ P0-3(图片)` 是一条自洽主线:先「重启不丢」,再「谁能用」,再「能发图」。P1 三项均为低成本增量,可穿插。P2 视 codex / 上线运营 / 收紧权限的实际需求再定。
+个人版 P0/P1 已完成。下一步不再扩张本轮范围;P2 仅在确有 Codex、多人使用、审批或运营观测需求时启动。若使用范围从个人可控 chat/tenant 扩大,应优先恢复访问控制与权限收紧,再考虑其他 P2 能力。

@@ -181,6 +181,8 @@ GOCACHE=$PWD/.cache/go-build go run ./cmd/lark-agent-bridge simulate-action \
 
 `./scripts/verify.sh` 选择精确 Go 测试覆盖上述 snapshot restore、duplicate skip、queue full、busy merge、scope 串/并行和 `/resume` 禁用行为。真实飞书生命周期覆盖见下节与 `docs/workflow/e2e-real.md`；本地脚本检查不会连接飞书。
 
+2026-07-18 最终 integration 版本的串行核心回归位于 `.cache/evidence/dee05c5/core-regression-green/summary.md`:session context restart、queued cancel、running interrupted、DM/group debounce、busy merge、queue full、scope parallel、stop-preserves-queue、recall-state 十个 case 全部 passed。
+
 ## 飞书 E2E 前置检查
 
 每位开发者先使用自己的 app、bot 和测试群创建本地命名 profile：
@@ -306,6 +308,28 @@ E2E_MODEL=sonnet E2E_EFFORT=medium \
 - `doctor --strict` 的 wrapper preflight 通过,argv 为 bounded harmless one-shot,输出不含 secret 或 wrapper 返回内容。
 
 2026-07-18 的证据位于 `.cache/evidence/e8cca6b/config-real/summary.md`,五个 case 均为 passed;补充的 `REQUIRE_E2E=1 ./scripts/evidence.sh` 报告为 `.cache/evidence/evidence-20260718-111543.md`。
+
+### Reply Experience 真实 E2E
+
+Reply Experience 必须在独占 bridge 窗口串行执行,使用 fake Claude 保证 timing、preview 和 restart 场景可重复:
+
+```bash
+E2E_REAL_E2E_FAKE_CLAUDE=1 \
+./scripts/e2e-real.sh \
+  --case reply_append --case reply_clean --case reply_latest \
+  --case preview_thresholds --case reaction_lifecycle \
+  --case latest_restart_fallback
+```
+
+验收要求:
+
+- `append` 两轮创建两张卡;`append-clean-card` 终态只保留结果;`latest-card` 同 scope 复用同一 card ID 并递增 sequence。
+- preview 同时受 interval/min-delta 限制,中间内容截断但终态完整。
+- `OneSecond` 和 `Typing` 在任务结束后均被删除;真实链路超过等待阈值时,快速任务允许短暂出现 `OneSecond`,但不允许残留。
+- 重启把 queued/starting 终结为 cancelled、running 终结为 interrupted,用户可见卡显示“服务重启,已中断,请重新发送”。
+- latest mapping 指向无效 card ID 时必须清除旧 mapping、新建卡并完成 result;飞书 `10002 cardid invalid` 属于 stale mapping,不能当作普通 render failure。
+
+2026-07-18 的最终汇总证据为 `.cache/evidence/dee05c5/reply-final-summary.md`;它链接三段原始 evidence:reply modes/preview、reaction 定向重跑、restart stale fallback 定向重跑。最终六个 case 均为 passed,首轮失败现场未覆盖或删除。
 
 ## 证据报告
 
