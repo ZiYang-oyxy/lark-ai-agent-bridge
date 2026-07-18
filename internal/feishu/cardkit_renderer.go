@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -382,8 +383,33 @@ func snapshotForPrepared(prepared card.PreparedLarkCard) *cardSnapshot {
 func staticFingerprint(prepared card.PreparedLarkCard) [32]byte {
 	payload := prepared.PayloadCopy()
 	blankAnswerContent(payload)
+	normalizeHeaderElapsed(payload)
 	encoded, _ := json.Marshal(payload)
 	return sha256.Sum256(encoded)
+}
+
+func normalizeHeaderElapsed(payload map[string]any) {
+	if header, ok := payload["header"].(map[string]any); ok {
+		if title, ok := header["title"].(map[string]any); ok {
+			normalizeElapsedContent(title)
+		}
+	}
+	if config, ok := payload["config"].(map[string]any); ok {
+		if summary, ok := config["summary"].(map[string]any); ok {
+			normalizeElapsedContent(summary)
+		}
+	}
+}
+
+func normalizeElapsedContent(container map[string]any) {
+	content, ok := container["content"].(string)
+	if !ok {
+		return
+	}
+	const separator = " · ⏱ "
+	if index := strings.LastIndex(content, separator); index > 0 && index+len(separator) < len(content) {
+		container["content"] = content[:index] + separator + "<elapsed>"
+	}
 }
 
 func blankAnswerContent(value any) {

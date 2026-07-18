@@ -74,9 +74,9 @@ e2e_profile_write "$TEST_ROOT" personal
 
 personal_env="$TEST_ROOT/.lark-agent-bridge/e2e/profiles/personal.env"
 personal_json="$TEST_ROOT/.lark-agent-bridge/e2e/profiles/personal.json"
-assert_eq 600 "$(stat -f '%Lp' "$personal_env")" "profile env mode"
-assert_eq 600 "$(stat -f '%Lp' "$personal_json")" "profile metadata mode"
-assert_eq 700 "$(stat -f '%Lp' "$(dirname "$personal_env")")" "profile directory mode"
+assert_eq 600 "$(e2e_profile_mode "$personal_env")" "profile env mode"
+assert_eq 600 "$(e2e_profile_mode "$personal_json")" "profile metadata mode"
+assert_eq 700 "$(e2e_profile_mode "$(dirname "$personal_env")")" "profile directory mode"
 
 selection="$(e2e_profile_select "$TEST_ROOT" personal)"
 assert_eq $'personal\t'"$personal_env"$'\t'"$personal_json" "$selection" "explicit selection"
@@ -243,7 +243,7 @@ if ! PATH="$FAKE_BIN:$PATH" \
 fi
 
 bootstrap_env="$BOOT_ROOT/.lark-agent-bridge/e2e/profiles/developer.env"
-assert_eq 600 "$(stat -f '%Lp' "$bootstrap_env")" "bootstrap env mode"
+assert_eq 600 "$(e2e_profile_mode "$bootstrap_env")" "bootstrap env mode"
 assert_ok rg -q '^LARK_BOT_OPEN_ID=ou_bootstrap_secret_bot$' "$bootstrap_env"
 assert_ok rg -q '^E2E_REAL_E2E_P2P_CHAT_ID=oc_bootstrap_secret_p2p$' "$bootstrap_env"
 if rg -e 'bootstrap-secret-do-not-print|ou_bootstrap_secret_bot|oc_bootstrap_secret_group|oc_bootstrap_secret_p2p' "$bootstrap_output" >/dev/null 2>&1; then

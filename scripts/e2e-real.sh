@@ -83,6 +83,7 @@ BLOCKED_CASES=0
 BOT_OPEN_ID=""
 SERVER_CARD_UPDATE_MS=""
 SERVER_CARD_MIN_DELTA_CHARS=""
+SERVER_REAL_CARDKIT=""
 
 usage() {
   cat <<'USAGE'
@@ -485,17 +486,17 @@ printf 'pid=%s args=%s\n' "$$" "$args" >>"${FAKE_CLAUDE_LOG:?FAKE_CLAUDE_LOG is 
 case "$args" in
   *E2E_NATIVE_TEXT_STREAM_STOP_E2E_BLOCK*)
     printf '%s\n' '{"type":"content_block_delta","delta":{"type":"text_delta","text":"native-stop-one "}}'
-    sleep 0.12
+    sleep 1.2
     printf '%s\n' '{"type":"content_block_delta","delta":{"type":"text_delta","text":"native-stop-two "}}'
-    sleep 0.12
+    sleep 1.2
     printf '%s\n' '{"type":"content_block_delta","delta":{"type":"text_delta","text":"native-stop-three "}}'
     exec sleep 300
     ;;
   *E2E_NATIVE_TEXT_STREAM_NORMAL*)
     printf '%s\n' '{"type":"content_block_delta","delta":{"type":"text_delta","text":"native-normal-one "}}'
-    sleep 0.12
+    sleep 1.2
     printf '%s\n' '{"type":"content_block_delta","delta":{"type":"text_delta","text":"native-normal-two "}}'
-    sleep 0.12
+    sleep 1.2
     printf '%s\n' '{"type":"content_block_delta","delta":{"type":"text_delta","text":"native-normal-three "}}'
     printf '%s\n' '{"type":"result","result":"native-normal-final","model":"fake-claude-e2e","usage":{"output_tokens":1},"session_id":"fake-e2e-session"}'
     exit 0
@@ -588,6 +589,9 @@ start_server_if_needed() {
   fi
   if [[ -n "$SERVER_CARD_MIN_DELTA_CHARS" ]]; then
     server_env+=("E2E_CARD_MIN_DELTA_CHARS=$SERVER_CARD_MIN_DELTA_CHARS")
+  fi
+  if [[ -n "$SERVER_REAL_CARDKIT" ]]; then
+    server_env+=("E2E_REAL_CARDKIT=$SERVER_REAL_CARDKIT")
   fi
   env "${server_env[@]}" "$SERVER_BIN" serve --default-workdir "$DEFAULT_WORKDIR" >>"$SERVER_LOG" 2>&1 &
   SERVER_PID=$!
@@ -2385,6 +2389,14 @@ run_case() {
   if [[ "$name" == "native_text_stream" ]]; then
     SERVER_CARD_UPDATE_MS=50
     SERVER_CARD_MIN_DELTA_CHARS=1
+    SERVER_REAL_CARDKIT=1
+    if sync_server_pid; then
+      stop_server TERM
+    fi
+  elif [[ -n "$SERVER_REAL_CARDKIT" ]]; then
+    SERVER_CARD_UPDATE_MS=""
+    SERVER_CARD_MIN_DELTA_CHARS=""
+    SERVER_REAL_CARDKIT=""
     if sync_server_pid; then
       stop_server TERM
     fi

@@ -446,6 +446,52 @@ func TestCardKitRendererNativeAnswerAndFullCardShareSequence(t *testing.T) {
 	}
 }
 
+func TestCardKitRendererNativeAnswerIgnoresElapsedHeaderSuffix(t *testing.T) {
+	client := &fakeCardKitClient{}
+	renderer := NewCardKitRendererWithNative(client, "source", nil, RenderBinding{
+		BaseSessionID: "claude:chat", BatchID: "batch", LatestScope: "claude:chat", RunCardSessionID: "run-card",
+	}, &fakeNativeJournal{})
+	first := card.Event{
+		Type: "stream", Streaming: true, SessionID: "run-card", HeaderTitle: "✍️ 正在回复 · ⏱ 1s",
+		Segments: []card.Segment{{Kind: card.SegmentText, Text: "one"}},
+	}
+	if err := renderer.Render(first); err != nil {
+		t.Fatal(err)
+	}
+	second := first
+	second.HeaderTitle = "✍️ 正在回复 · ⏱ 2s"
+	second.Segments = []card.Segment{{Kind: card.SegmentText, Text: "two"}}
+	if err := renderer.Render(second); err != nil {
+		t.Fatal(err)
+	}
+	if len(client.elementReqs) != 1 || len(client.updateReqs) != 0 {
+		t.Fatalf("elapsed-only header change wrote element/full=%d/%d", len(client.elementReqs), len(client.updateReqs))
+	}
+}
+
+func TestCardKitRendererNativeAnswerPreservesHeaderPhaseChanges(t *testing.T) {
+	client := &fakeCardKitClient{}
+	renderer := NewCardKitRendererWithNative(client, "source", nil, RenderBinding{
+		BaseSessionID: "claude:chat", BatchID: "batch", LatestScope: "claude:chat", RunCardSessionID: "run-card",
+	}, &fakeNativeJournal{})
+	first := card.Event{
+		Type: "stream", Streaming: true, SessionID: "run-card", HeaderTitle: "🧠 正在推理 · ⏱ 1s",
+		Segments: []card.Segment{{Kind: card.SegmentText, Text: "one"}},
+	}
+	if err := renderer.Render(first); err != nil {
+		t.Fatal(err)
+	}
+	second := first
+	second.HeaderTitle = "✍️ 正在回复 · ⏱ 2s"
+	second.Segments = []card.Segment{{Kind: card.SegmentText, Text: "two"}}
+	if err := renderer.Render(second); err != nil {
+		t.Fatal(err)
+	}
+	if len(client.elementReqs) != 0 || len(client.updateReqs) != 1 {
+		t.Fatalf("phase header change wrote element/full=%d/%d", len(client.elementReqs), len(client.updateReqs))
+	}
+}
+
 func TestCardKitRendererNativeDeliveryUnknownStopsAllLaterWrites(t *testing.T) {
 	client := &fakeCardKitClient{elementErr: errors.New("response lost")}
 	journal := &fakeNativeJournal{}
