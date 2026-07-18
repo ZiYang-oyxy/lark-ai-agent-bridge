@@ -157,7 +157,7 @@ flowchart TD
 ### 剩余重构(需真实 e2e 环境验证,建议在有环境时执行)
 这些改动改的是 bash 编排层,改完只能在真实飞书环境端到端验证,不宜盲改:
 
-1. **消除 native_text_stream 中途重启**:该 case 需要 `E2E_CARD_UPDATE_MS=50` 高频更新,当前靠「切参数 → 重启 server」注入。因为该参数对其他 case 无害,可考虑常开该参数、去掉切换重启;但 `--case` 允许任意顺序,切回分支(`e2e-real.sh:2416`)在乱序执行时**不是死代码**,不能简单删除。安全做法:仅在检测到「下一个 case 需要不同参数」时才重启,而非每次切换都重启。
+1. **消除 native_text_stream 中途重启(已完成)**:fake native marker pattern 修正后,1.2s delta 间隔已足以在默认 800ms preview interval 下触发 native update。已删除 `E2E_CARD_UPDATE_MS` / `E2E_CARD_MIN_DELTA_CHARS` 专用切换和 server 重启;`native_text_stream → new_basic` 真实飞书乱序验证共用唯一 bridge PID 且全部通过。
 2. **失败 recovery 从「重启进程」改为「软重置会话」**:当前失败 case 后 `stop_server` + `start_server`(`e2e-real.sh:2434-2446`)。改为新建 topic/chat 隔离,不重启 server。
 3. **隔离性 case 按 chat/topic 分组并发**:`scope_parallel` 已证明不同 topic 互不干扰,DM/不同 topic/不同 chat 的 case 可并发投递。
 

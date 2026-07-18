@@ -52,8 +52,6 @@ SERVER_PID=""
 FAILURES=0
 BLOCKED_CASES=0
 BOT_OPEN_ID=""
-SERVER_CARD_UPDATE_MS=""
-SERVER_CARD_MIN_DELTA_CHARS=""
 
 usage() {
   cat <<'USAGE'
@@ -585,12 +583,6 @@ start_server_if_needed() {
   fi
   if [[ -n "$SERVER_QUEUE_MAX_PENDING" ]]; then
     server_env+=("E2E_QUEUE_MAX_PENDING=$SERVER_QUEUE_MAX_PENDING")
-  fi
-  if [[ -n "$SERVER_CARD_UPDATE_MS" ]]; then
-    server_env+=("E2E_CARD_UPDATE_MS=$SERVER_CARD_UPDATE_MS")
-  fi
-  if [[ -n "$SERVER_CARD_MIN_DELTA_CHARS" ]]; then
-    server_env+=("E2E_CARD_MIN_DELTA_CHARS=$SERVER_CARD_MIN_DELTA_CHARS")
   fi
   env "${server_env[@]}" "$SERVER_BIN" serve --default-workdir "$DEFAULT_WORKDIR" >>"$SERVER_LOG" 2>&1 &
   SERVER_PID=$!
@@ -2456,19 +2448,6 @@ case_wrapper_preflight() {
 
 run_case() {
   local name="$1"
-	if [[ "$name" == "native_text_stream" ]]; then
-		SERVER_CARD_UPDATE_MS=50
-		SERVER_CARD_MIN_DELTA_CHARS=1
-		if sync_server_pid; then
-			stop_server TERM
-		fi
-	elif [[ -n "$SERVER_CARD_UPDATE_MS" || -n "$SERVER_CARD_MIN_DELTA_CHARS" ]]; then
-		SERVER_CARD_UPDATE_MS=""
-		SERVER_CARD_MIN_DELTA_CHARS=""
-		if sync_server_pid; then
-			stop_server TERM
-    fi
-  fi
   start_server_if_needed "$name"
   log "case $name start"
   summary "## $name"

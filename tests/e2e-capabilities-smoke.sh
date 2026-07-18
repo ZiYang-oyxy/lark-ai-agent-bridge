@@ -349,6 +349,12 @@ for required in \
   fi
 done
 
+run_case_source="$(sed -n '/^run_case() {/,/^}/p' "$ROOT/scripts/e2e-real.sh")"
+if printf '%s\n' "$run_case_source" | rg -F 'SERVER_CARD_UPDATE_MS' >/dev/null || \
+  printf '%s\n' "$run_case_source" | rg -F 'SERVER_CARD_MIN_DELTA_CHARS' >/dev/null; then
+  fail "native text stream must run with the shared server timing instead of restarting for case-local parameters"
+fi
+
 if rg -F 'SERVER_REAL_CARDKIT' "$ROOT/scripts/e2e-real.sh" >/dev/null || rg -F 'E2E_REAL_CARDKIT=$SERVER_REAL_CARDKIT' "$ROOT/scripts/e2e-real.sh" >/dev/null; then
   fail "retired native validation gate is still present"
 fi
