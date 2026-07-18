@@ -156,6 +156,11 @@ else
   exit 94
 fi
 case "$*" in
+  *'im +chat-members-list'*)
+    [[ "$*" == *'--member-types bot --json'* ]] || exit 96
+    ;;
+esac
+case "$*" in
   'config show')
     if [[ "${CLI_PROFILE_SCENARIO:-missing}" == "mismatch" ]]; then
       printf '%s\n' 'App ID: cli_another_app'

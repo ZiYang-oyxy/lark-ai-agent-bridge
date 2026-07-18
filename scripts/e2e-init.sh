@@ -163,7 +163,7 @@ verify_group() {
 discover_p2p_chat() {
   local list chat members matches=()
   if [[ -n "$P2P_CHAT_ID" ]]; then
-    members="$(lark_cli im +chat-members-list --as user --chat-id "$P2P_CHAT_ID" --member-types bots --json 2>/dev/null)" || {
+    members="$(lark_cli im +chat-members-list --as user --chat-id "$P2P_CHAT_ID" --member-types bot --json 2>/dev/null)" || {
       echo "BLOCKED p2p_unavailable: the selected direct chat is not readable" >&2
       exit 3
     }
@@ -182,7 +182,7 @@ discover_p2p_chat() {
   }
   while IFS= read -r chat; do
     [[ -n "$chat" ]] || continue
-    members="$(lark_cli im +chat-members-list --as user --chat-id "$chat" --member-types bots --json 2>/dev/null || true)"
+    members="$(lark_cli im +chat-members-list --as user --chat-id "$chat" --member-types bot --json 2>/dev/null || true)"
     if printf '%s' "$members" | jq -e --arg bot "$LARK_BOT_OPEN_ID" \
       '[(.bots // .data.bots // .items // .data.items // [])[] | (.member_id // .open_id // .member.open_id // empty)] | index($bot) != null' >/dev/null 2>&1; then
       matches+=("$chat")
