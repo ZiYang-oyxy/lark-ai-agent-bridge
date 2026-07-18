@@ -40,12 +40,16 @@ type bridgeReplyTarget struct {
 	rehydratedRef  session.RenderRef
 	events         []card.Event
 	renderErr      error
+	newErr         error
 }
 
 func (t *bridgeReplyTarget) NewStreaming(context.Context, string, string) (feishu.ResumableRenderer, error) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	t.newCalls++
+	if t.newErr != nil {
+		return nil, t.newErr
+	}
 	ref := t.newRef
 	if ref.CardID == "" {
 		ref = session.RenderRef{CardID: "new-card", ReplyMessageID: "new-reply"}
@@ -566,10 +570,17 @@ func TestServiceFreezesConversationModeAtEnqueueTime(t *testing.T) {
 		t.Fatal(err)
 	}
 	waitForEvents(t, renderer, 3)
+	foundRunEvent := false
 	for _, event := range renderer.Events() {
-		if event.ReplyToMessageID == "queued-topic" && !event.ReplyInThread {
-			t.Fatalf("queued topic event lost frozen mode: %#v", event)
+		if event.ReplyToMessageID == "queued-topic" {
+			foundRunEvent = true
+			if !event.ReplyInThread {
+				t.Fatalf("queued topic event lost frozen mode: %#v", event)
+			}
 		}
+	}
+	if !foundRunEvent {
+		t.Fatalf("missing run event for queued topic input: %#v", renderer.Events())
 	}
 }
 
@@ -709,6 +720,29 @@ func TestServiceRoutesBatchThroughReplyPolicyAndPersistsActiveRenderRef(t *testi
 	defer cancel()
 	if err := svc.Shutdown(shutdownCtx); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestReplyPolicyStartFailureKeepsFrozenTopicReplyMode(t *testing.T) {
+	cfg := testConfig(t)
+	fallback := card.NewFakeRenderer()
+	runner := newFakeRunner()
+	svc := NewService(cfg, fallback, runner, audit.NewRecorder())
+	svc.CardTarget = &bridgeReplyTarget{newErr: errors.New("new streaming failed")}
+	now := time.Now()
+	if err := svc.HandleMessage(context.Background(), Message{ID: "topic-fallback", ChatID: "chat", ThreadID: "topic-a", Sender: "user", Text: "hello", Time: now}); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.DrainReady(now.Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	waitForEvents(t, fallback, 1)
+	events := fallback.Events()
+	if len(events) != 1 || events[0].Type != "error" || events[0].ReplyToMessageID != "topic-fallback" || !events[0].ReplyInThread {
+		t.Fatalf("fallback events = %#v, want one in-thread error reply", events)
+	}
+	if calls := runner.Calls(); len(calls) != 0 {
+		t.Fatalf("runner calls = %#v, want none", calls)
 	}
 }
 
