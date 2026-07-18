@@ -111,6 +111,30 @@ func newPreviewTestStream(t *testing.T, renderer card.Renderer, clock streamCloc
 	return newAgentCardStreamWithClock(svc, "run", sess, input, renderer, nil, clock)
 }
 
+func TestStreamPreviewCannotRenderAfterFinish(t *testing.T) {
+	clock := &fakeStreamClock{now: time.Unix(100, 0)}
+	renderer := card.NewFakeRenderer()
+	stream := newPreviewTestStream(t, renderer, clock, 30, 2000)
+	if err := stream.Start(); err != nil {
+		t.Fatal(err)
+	}
+	stream.mu.Lock()
+	generation := stream.previewGen
+	stream.previewPending = true
+	preview := card.Event{Type: "stream", SessionID: "run", Segments: []card.Segment{{Kind: card.SegmentText, Text: "stale preview"}}, Streaming: true}
+	stream.mu.Unlock()
+	if _, err := stream.Finish("completed", card.Meta{}, AgentRunResult{Segments: []card.Segment{{Kind: card.SegmentText, Text: "final"}}}); err != nil {
+		t.Fatal(err)
+	}
+	before := len(renderer.Events())
+	if err := stream.renderPreview(generation, preview); err != nil {
+		t.Fatal(err)
+	}
+	if got := len(renderer.Events()); got != before {
+		t.Fatalf("events after stale preview = %d, want %d", got, before)
+	}
+}
+
 func TestStreamPreviewUsesDeltaAndDeadlineThresholds(t *testing.T) {
 	clock := &fakeStreamClock{now: time.Unix(100, 0)}
 	renderer := card.NewFakeRenderer()

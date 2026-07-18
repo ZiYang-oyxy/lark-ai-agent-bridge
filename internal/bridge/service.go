@@ -27,6 +27,8 @@ import (
 	"lark-agent-bridge/internal/session"
 )
 
+const recoveryNoticesTimeout = 5 * time.Second
+
 type Service struct {
 	Config          config.Config
 	Sessions        *session.Manager
@@ -216,9 +218,15 @@ func (s *Service) ProcessRecoveryNotices(ctx context.Context) {
 	notices := s.RestoreNotices
 	s.RestoreNotices = nil
 	s.mu.Unlock()
+	recoveryCtx, cancel := context.WithTimeout(ctx, recoveryNoticesTimeout)
+	defer cancel()
 
 	seenCards := make(map[string]struct{}, len(notices))
 	for _, notice := range notices {
+		if err := recoveryCtx.Err(); err != nil {
+			s.Audit.Record("system", "recovery_card_update_failed", notice.SessionID, err.Error())
+			break
+		}
 		if notice.RenderRef == nil || notice.RenderRef.CardID == "" {
 			continue
 		}
@@ -247,8 +255,14 @@ func (s *Service) ProcessRecoveryNotices(ctx context.Context) {
 			Meta:             card.Meta{Status: string(session.InputInterrupted)},
 			Streaming:        false,
 		}
-		if err := renderer.Render(event); err != nil {
-			s.Audit.Record("system", "recovery_card_update_failed", notice.SessionID, err.Error())
+		var renderErr error
+		if contextRenderer, ok := renderer.(feishu.ContextRenderer); ok {
+			renderErr = contextRenderer.RenderContext(recoveryCtx, event)
+		} else {
+			renderErr = renderer.Render(event)
+		}
+		if renderErr != nil {
+			s.Audit.Record("system", "recovery_card_update_failed", notice.SessionID, renderErr.Error())
 			continue
 		}
 		if s.Replies != nil {

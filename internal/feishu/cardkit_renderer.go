@@ -14,6 +14,10 @@ type ResumableRenderer interface {
 	RenderRef() session.RenderRef
 }
 
+type ContextRenderer interface {
+	RenderContext(context.Context, card.Event) error
+}
+
 type CardKitRenderer struct {
 	mu               sync.Mutex
 	client           CardKitClientAPI
@@ -121,6 +125,10 @@ var _ card.Renderer = (*CardKitRenderer)(nil)
 
 func (r *CardKitRenderer) Render(e card.Event) error {
 	return r.renderContext(context.Background(), e)
+}
+
+func (r *CardKitRenderer) RenderContext(ctx context.Context, e card.Event) error {
+	return r.renderContext(ctx, e)
 }
 
 func (r *CardKitRenderer) renderContext(ctx context.Context, e card.Event) error {

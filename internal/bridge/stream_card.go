@@ -304,7 +304,7 @@ func (s *agentCardStream) flushPreview(generation uint64) error {
 	flushedRunes := s.previewRuneCountLocked()
 	s.mu.Unlock()
 
-	err := s.renderEvent(event)
+	err := s.renderPreview(generation, event)
 	s.mu.Lock()
 	if generation != s.previewGen {
 		s.mu.Unlock()
@@ -330,6 +330,18 @@ func (s *agentCardStream) flushPreview(generation uint64) error {
 func (s *agentCardStream) renderEvent(event card.Event) error {
 	s.renderMu.Lock()
 	defer s.renderMu.Unlock()
+	return s.renderer.Render(event)
+}
+
+func (s *agentCardStream) renderPreview(generation uint64, event card.Event) error {
+	s.renderMu.Lock()
+	defer s.renderMu.Unlock()
+	s.mu.Lock()
+	if s.closed || s.previewDisabled || !s.previewPending || generation != s.previewGen {
+		s.mu.Unlock()
+		return nil
+	}
+	s.mu.Unlock()
 	return s.renderer.Render(event)
 }
 

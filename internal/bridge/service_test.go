@@ -83,6 +83,46 @@ func (r *bridgeReplyRenderer) Render(event card.Event) error {
 
 func (r *bridgeReplyRenderer) RenderRef() session.RenderRef { return r.ref }
 
+type contextBlockingRecoveryTarget struct {
+	renderer *contextBlockingRecoveryRenderer
+}
+
+func (t *contextBlockingRecoveryTarget) NewStreaming(context.Context, string, string) (feishu.ResumableRenderer, error) {
+	return nil, errors.New("unexpected new streaming call")
+}
+
+func (t *contextBlockingRecoveryTarget) AppendTerminal(context.Context, string, card.Event) error {
+	return errors.New("unexpected append terminal call")
+}
+
+func (t *contextBlockingRecoveryTarget) Rehydrate(string, session.RenderRef) feishu.ResumableRenderer {
+	return t.renderer
+}
+
+type contextBlockingRecoveryRenderer struct {
+	mu            sync.Mutex
+	legacyCalled  bool
+	contextCalled bool
+	ref           session.RenderRef
+}
+
+func (r *contextBlockingRecoveryRenderer) Render(card.Event) error {
+	r.mu.Lock()
+	r.legacyCalled = true
+	r.mu.Unlock()
+	return errors.New("legacy render should not be used")
+}
+
+func (r *contextBlockingRecoveryRenderer) RenderContext(ctx context.Context, _ card.Event) error {
+	r.mu.Lock()
+	r.contextCalled = true
+	r.mu.Unlock()
+	<-ctx.Done()
+	return ctx.Err()
+}
+
+func (r *contextBlockingRecoveryRenderer) RenderRef() session.RenderRef { return r.ref }
+
 type fakeReactionSink struct {
 	mu        sync.Mutex
 	adds      []reactionCall
@@ -2163,6 +2203,28 @@ func TestServiceProcessesRestartCardRecoveryOnceWithoutReplacement(t *testing.T)
 	}
 	if !auditContainsAction(recorder.Events(), "recovery_card_update_failed") {
 		t.Fatalf("recovery audit = %#v", recorder.Events())
+	}
+}
+
+func TestServiceRecoveryCardUpdateHonorsCallerDeadline(t *testing.T) {
+	ref := session.RenderRef{CardID: "old-card", ReplyMessageID: "old-reply", Version: 4}
+	renderer := &contextBlockingRecoveryRenderer{ref: ref}
+	svc := NewServiceWithSessions(testConfig(t), card.NewFakeRenderer(), newFakeRunner(), audit.NewRecorder(), session.NewManager(), []session.RecoveryNotice{{
+		SessionID: "claude:chat", ReplyToMessageID: "source", Status: session.InputInterrupted, RenderRef: &ref,
+	}})
+	svc.CardTarget = &contextBlockingRecoveryTarget{renderer: renderer}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	started := time.Now()
+	svc.ProcessRecoveryNotices(ctx)
+	if elapsed := time.Since(started); elapsed > time.Second {
+		t.Fatalf("recovery elapsed = %s, want bounded by caller deadline", elapsed)
+	}
+	renderer.mu.Lock()
+	legacyCalled, contextCalled := renderer.legacyCalled, renderer.contextCalled
+	renderer.mu.Unlock()
+	if legacyCalled || !contextCalled {
+		t.Fatalf("legacy/context render calls = %t/%t, want false/true", legacyCalled, contextCalled)
 	}
 }
 
