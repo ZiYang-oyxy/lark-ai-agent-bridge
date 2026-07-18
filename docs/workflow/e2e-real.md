@@ -199,6 +199,18 @@ Run selected cases:
   --case message_revoke_pending_workdir
 ```
 
+Run the native `element_id=answer` smoke and profile E2E only from a deliberately configured profile. The Go smoke is opt-in and must never be added to ordinary CI:
+
+```bash
+./scripts/e2e-real.sh --profile <name> --doctor
+E2E_REAL_CARDKIT=1 GOCACHE=$PWD/.cache/go-build go test ./internal/feishu -run 'TestRealCardKitNativeAnswerStream' -count=1
+./scripts/e2e-real.sh --profile <name> --case native_text_stream
+```
+
+`native_text_stream` lowers only its own E2E bridge's preview interval and delta threshold so one normal long-form answer produces more than two previews. It requires at least one `cardkit_text_stream` audit event before the terminal `cardkit_update`. It then starts a second long answer, invokes the local compatibility stop callback, requires that callback to return within three seconds, and checks that no native preview appears after the callback. If that run has no `cardkit_sequence_unknown` audit event, the terminal update must be `stopped`, with disabled buttons and `streaming_mode=false`.
+
+For deterministic agent timing while retaining real Feishu message delivery and CardKit APIs, prepend `E2E_REAL_E2E_FAKE_CLAUDE=1` to the final command. The profile E2E evidence is private: it stays under the existing gitignored `.cache/e2e/<profile>/...` path and must never be staged or copied into a commit.
+
 Keep the bridge process alive after failure:
 
 ```bash
@@ -254,6 +266,7 @@ Full-only cases:
 - `config_frozen_queue`: queues one input under sonnet/low, changes preferences to opus/high, queues another input and verifies the two later Agent invocations retain their enqueue-time values.
 - `requested_actual_model`: verifies the result card distinguishes requested `opus` from fake CLI actual `fake-claude-e2e`, and requires the mismatch audit event.
 - `wrapper_preflight`: runs `doctor --strict` with the E2E wrapper, verifies the bounded harmless argv and requires redacted successful output.
+- `native_text_stream`: sends a normal long-form answer and requires native answer-element streaming before its terminal full-card update. Its stop subcase validates the three-second callback bound, suppresses post-stop native previews, and—unless delivery is explicitly `cardkit_sequence_unknown`—requires a stopped non-streaming terminal card with disabled buttons.
 
 Run the media gate serially, with no other bridge process connected to the same app:
 
@@ -301,6 +314,8 @@ Important files:
 
 When reporting a failure, include the case name, `summary.md`, the matching audit lines, and the mget snapshot.
 
+Do not use remote E2E to simulate response-loss, journal confirm-write failure, or process restart during a native element write. Those are deterministic fake-server and journal tests; remote E2E proves only the normal API path and user-visible stop behavior. Never commit `.cache/e2e` evidence, message/card identifiers, request bodies, app secrets, or tokens.
+
 ## Known Issues To Regress
 
 ### Only `Get` Reaction After Revoking A Prompt
@@ -340,7 +355,7 @@ Regression target:
 For failures, check in this order:
 
 1. `server.log`: bridge startup, long connection errors, Claude command errors.
-2. `audit.jsonl`: `receive_message`, `run_input`, `cardkit_create`, `cardkit_reply`, `cardkit_update`, `card_action`.
+2. `audit.jsonl`: `receive_message`, `run_input`, `cardkit_create`, `cardkit_reply`, `cardkit_text_stream`, `cardkit_update`, `cardkit_sequence_unknown`, `card_action`.
 3. `mget/*.json`: whether the user-visible card reached Feishu and which button state is visible.
 4. Feishu app console: long connection mode and event subscription status.
 5. Local `lark-cli auth` state: user identity can send to the target group and revoke its own messages.

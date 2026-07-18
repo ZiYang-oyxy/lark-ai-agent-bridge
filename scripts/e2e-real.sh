@@ -52,6 +52,7 @@ FULL_EXTRA_CASES=(
   preview_thresholds
   reaction_lifecycle
   latest_restart_fallback
+  native_text_stream
 )
 
 MODE="smoke"
@@ -80,6 +81,8 @@ SERVER_PID=""
 FAILURES=0
 BLOCKED_CASES=0
 BOT_OPEN_ID=""
+SERVER_CARD_UPDATE_MS=""
+SERVER_CARD_MIN_DELTA_CHARS=""
 
 usage() {
   cat <<'USAGE'
@@ -480,6 +483,23 @@ set -eu
 args="$(printf '%s' "$*" | tr '\n' ' ')"
 printf 'pid=%s args=%s\n' "$$" "$args" >>"${FAKE_CLAUDE_LOG:?FAKE_CLAUDE_LOG is required}"
 case "$args" in
+  *E2E_NATIVE_TEXT_STREAM_STOP_E2E_BLOCK*)
+    printf '%s\n' '{"type":"content_block_delta","delta":{"type":"text_delta","text":"native-stop-one "}}'
+    sleep 0.12
+    printf '%s\n' '{"type":"content_block_delta","delta":{"type":"text_delta","text":"native-stop-two "}}'
+    sleep 0.12
+    printf '%s\n' '{"type":"content_block_delta","delta":{"type":"text_delta","text":"native-stop-three "}}'
+    exec sleep 300
+    ;;
+  *E2E_NATIVE_TEXT_STREAM_NORMAL*)
+    printf '%s\n' '{"type":"content_block_delta","delta":{"type":"text_delta","text":"native-normal-one "}}'
+    sleep 0.12
+    printf '%s\n' '{"type":"content_block_delta","delta":{"type":"text_delta","text":"native-normal-two "}}'
+    sleep 0.12
+    printf '%s\n' '{"type":"content_block_delta","delta":{"type":"text_delta","text":"native-normal-three "}}'
+    printf '%s\n' '{"type":"result","result":"native-normal-final","model":"fake-claude-e2e","usage":{"output_tokens":1},"session_id":"fake-e2e-session"}'
+    exit 0
+    ;;
   *E2E_PREVIEW_THRESHOLDS*)
     printf '%s\n' '{"type":"content_block_delta","delta":{"type":"text_delta","text":"PREVIEW_FIRST_"}}'
     sleep 0.2
@@ -562,6 +582,12 @@ start_server_if_needed() {
   fi
   if [[ -n "$SERVER_QUEUE_MAX_PENDING" ]]; then
     server_env+=("E2E_QUEUE_MAX_PENDING=$SERVER_QUEUE_MAX_PENDING")
+  fi
+  if [[ -n "$SERVER_CARD_UPDATE_MS" ]]; then
+    server_env+=("E2E_CARD_UPDATE_MS=$SERVER_CARD_UPDATE_MS")
+  fi
+  if [[ -n "$SERVER_CARD_MIN_DELTA_CHARS" ]]; then
+    server_env+=("E2E_CARD_MIN_DELTA_CHARS=$SERVER_CARD_MIN_DELTA_CHARS")
   fi
   env "${server_env[@]}" "$SERVER_BIN" serve --default-workdir "$DEFAULT_WORKDIR" >>"$SERVER_LOG" 2>&1 &
   SERVER_PID=$!
@@ -2161,6 +2187,69 @@ PY
   record_message preview_thresholds result "$msg" "$final_file"
 }
 
+case_native_text_stream() {
+  local normal_marker="E2E_${RUN_ID}_NATIVE_TEXT_STREAM_NORMAL"
+  local stop_marker="E2E_${RUN_ID}_NATIVE_TEXT_STREAM_STOP_E2E_BLOCK"
+  local normal stop normal_mark stop_mark callback_mark callback_elapsed stop_response
+
+  normal_mark="$(audit_mark)"
+  normal="$(send_at "/new ${normal_marker} 请只回复一篇至少四段的简短说明，每段至少两句，不要调用工具；必须在正文中包含该标记。")"
+  wait_audit_count_since "$normal_mark" '"Action":"cardkit_text_stream"|event=stream' 3 60
+  wait_audit_since "$normal_mark" '"Action":"cardkit_text_stream"' 60
+  wait_audit_since "$normal_mark" "$normal.*event=result" 60
+  if ! audit_since "$normal_mark" | jq -s -e --arg message_id "$normal" '
+    [ .[] | select((.SessionID // "") | contains($message_id)) ] | to_entries as $events
+    | ([ $events[] | select(.value.Action == "cardkit_text_stream") | .key ] | first) as $native
+    | ([ $events[] | select(.value.Action == "cardkit_update" and (.value.Detail | contains("event=result"))) | .key ] | first) as $terminal
+    | $native != null and $terminal != null and $native < $terminal
+  ' >/dev/null; then
+    echo "native text stream was not followed by a terminal CardKit update: $normal" >&2
+    return 1
+  fi
+
+  stop_mark="$(audit_mark)"
+  stop="$(send_at "/new ${stop_marker} 请只连续输出一篇至少一千字的中文说明，不要调用工具；必须在正文中包含该标记。")"
+  wait_audit_since "$stop_mark" '"Action":"cardkit_text_stream"' 60
+  SECONDS=0
+  stop_card "claude:${E2E_E2E_CHAT_ID}:message:${stop}"
+  callback_elapsed="$SECONDS"
+  if (( callback_elapsed > 3 )); then
+    echo "stop callback exceeded three seconds: ${callback_elapsed}s" >&2
+    return 1
+  fi
+  stop_response="$RUN_DIR/stop-claude_${E2E_E2E_CHAT_ID//[^A-Za-z0-9._-]/_}_message_${stop//[^A-Za-z0-9._-]/_}.json"
+  jq -e '
+    .ok == true
+    and .card.config.streaming_mode == false
+    and ([.. | objects | select(.tag? == "button") | .disabled] | length > 0 and all(.[]; . == true))
+  ' "$stop_response" >/dev/null
+  callback_mark="$(audit_mark)"
+  wait_audit_since "$stop_mark" "$stop.*event=stopped" 60
+  sleep 3
+  if audit_since "$callback_mark" | jq -e --arg message_id "$stop" '
+    select((.SessionID // "") | contains($message_id)) | select(.Action == "cardkit_text_stream")
+  ' >/dev/null; then
+    echo "native preview occurred after the stop callback completed: $stop" >&2
+    return 1
+  fi
+  if ! audit_since "$stop_mark" | jq -e --arg message_id "$stop" '
+    select((.SessionID // "") | contains($message_id))
+    | select(.Action == "cardkit_sequence_unknown")
+  ' >/dev/null; then
+    if ! audit_since "$stop_mark" | jq -e --arg message_id "$stop" '
+      select((.SessionID // "") | contains($message_id))
+      | select(.Action == "cardkit_update")
+      | select(.Detail | contains("event=stopped") and contains("streaming=false") and contains("stop_disabled=true"))
+    ' >/dev/null; then
+      echo "stopped terminal card did not disable buttons or streaming: $stop" >&2
+      return 1
+    fi
+  fi
+  record_message native_text_stream normal "$normal"
+  record_message native_text_stream stopped "$stop"
+  summary "- native_text_stream: normal=$normal stop=$stop callback_sec=$callback_elapsed buttons=disabled streaming_mode=false"
+}
+
 case_reaction_lifecycle() {
   require_fake_claude
   local quick active queued quick_mark active_mark
@@ -2293,6 +2382,13 @@ case_wrapper_preflight() {
 
 run_case() {
   local name="$1"
+  if [[ "$name" == "native_text_stream" ]]; then
+    SERVER_CARD_UPDATE_MS=50
+    SERVER_CARD_MIN_DELTA_CHARS=1
+    if sync_server_pid; then
+      stop_server TERM
+    fi
+  fi
   start_server_if_needed "$name"
   log "case $name start"
   summary "## $name"

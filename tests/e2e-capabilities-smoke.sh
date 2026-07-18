@@ -268,4 +268,23 @@ if printf '%s\n' "$active_dm_source" | head -n 1 | rg -q 'p2p_chat'; then
   fail "active DM canary must not require a pre-existing P2P chat_id"
 fi
 
+native_cases="$(bash "$ROOT/scripts/e2e-real.sh" --list-cases)"
+if ! printf '%s\n' "$native_cases" | rg -Fx 'native_text_stream' >/dev/null; then
+  fail "native text stream must be an explicitly selectable E2E case"
+fi
+
+native_case_source="$(sed -n '/^case_native_text_stream() {/,/^}/p' "$ROOT/scripts/e2e-real.sh")"
+for required in \
+  'cardkit_text_stream' \
+  'cardkit_update' \
+  'cardkit_sequence_unknown' \
+  'event=stopped' \
+  'streaming_mode=false' \
+  'buttons=disabled' \
+  'callback_elapsed > 3'; do
+  if ! printf '%s\n' "$native_case_source" | rg -F -- "$required" >/dev/null; then
+    fail "native text stream contract is missing: $required"
+  fi
+done
+
 echo "e2e capability smoke ok"
