@@ -1,6 +1,7 @@
 package feishu
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/larksuite/oapi-sdk-go/v3/event/dispatcher/callback"
@@ -22,6 +23,48 @@ func TestBuildCardActionFromLarkValueObject(t *testing.T) {
 	}
 	if got.SessionID != "claude:chat" || got.ActionID != "stop" || got.Value != "ignored" || got.Actor != "ou_user" || got.Tag != "button" {
 		t.Fatalf("action = %#v", got)
+	}
+}
+
+func TestBuildCardActionFromLarkPreservesStringFormValues(t *testing.T) {
+	formValues := map[string]any{"model": "opus", "effort": "high", "ignored": 42}
+	event := &callback.CardActionTriggerEvent{Event: &callback.CardActionTriggerRequest{
+		Operator: &callback.Operator{OpenID: "ou_user"},
+		Action: &callback.CallBackAction{
+			Tag:       "button",
+			FormValue: formValues,
+			Value:     map[string]any{"session": "claude:chat", "action_id": "config.save"},
+		},
+	}}
+	got, err := BuildCardActionFromLark(event)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.FormValues) != 2 || got.FormValues["model"] != "opus" || got.FormValues["effort"] != "high" {
+		t.Fatalf("form values = %#v", got.FormValues)
+	}
+	formValues["model"] = "haiku"
+	if got.FormValues["model"] != "opus" {
+		t.Fatalf("form values alias source map: %#v", got.FormValues)
+	}
+}
+
+func TestBuildCardActionFromLarkRejectsOversizedFormValues(t *testing.T) {
+	tooMany := make(map[string]any)
+	for i := 0; i < 17; i++ {
+		tooMany[string(rune('a'+i))] = "value"
+	}
+	for _, formValues := range []map[string]any{
+		tooMany,
+		{"model": strings.Repeat("x", 129)},
+		{strings.Repeat("k", 129): "opus"},
+	} {
+		_, err := BuildCardActionFromLark(&callback.CardActionTriggerEvent{Event: &callback.CardActionTriggerRequest{
+			Action: &callback.CallBackAction{FormValue: formValues, Value: map[string]any{"session": "claude:chat", "action_id": "config.save"}},
+		}})
+		if err == nil {
+			t.Fatalf("BuildCardActionFromLark(%#v) error = nil", formValues)
+		}
 	}
 }
 

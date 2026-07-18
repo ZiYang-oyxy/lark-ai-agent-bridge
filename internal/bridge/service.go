@@ -123,10 +123,11 @@ type pendingCompletion struct {
 }
 
 type ActionRequest struct {
-	SessionID string
-	ActionID  string
-	Value     string
-	Actor     string
+	SessionID  string
+	ActionID   string
+	Value      string
+	Actor      string
+	FormValues map[string]string
 }
 
 type ActionResult struct {

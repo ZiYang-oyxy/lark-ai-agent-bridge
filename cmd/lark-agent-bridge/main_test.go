@@ -34,6 +34,20 @@ func TestNewServeAuditRecorderWritesFile(t *testing.T) {
 	}
 }
 
+func TestActionRequestFromFeishuClonesFormValues(t *testing.T) {
+	action := feishu.CardAction{
+		SessionID:  "claude:chat",
+		ActionID:   "config.save",
+		Actor:      "user",
+		FormValues: map[string]string{"model": "opus", "effort": "high"},
+	}
+	req := actionRequestFromFeishu(action)
+	action.FormValues["model"] = "haiku"
+	if req.SessionID != "claude:chat" || req.ActionID != "config.save" || req.Actor != "user" || req.FormValues["model"] != "opus" || req.FormValues["effort"] != "high" {
+		t.Fatalf("action request form values = %#v", req.FormValues)
+	}
+}
+
 func TestApplyDefaultWorkDirPreservesExplicitAuditLog(t *testing.T) {
 	t.Setenv("E2E_AUDIT_LOG", "/tmp/custom-audit.jsonl")
 	cfg := config.Config{AuditLogPath: "/tmp/custom-audit.jsonl"}

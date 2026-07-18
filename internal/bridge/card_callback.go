@@ -29,11 +29,16 @@ func ActionRequestFromCardCallback(payload []byte) (ActionRequest, error) {
 	if value == nil {
 		return ActionRequest{}, fmt.Errorf("missing card callback action value")
 	}
+	formValues, err := callbackFormValues(action)
+	if err != nil {
+		return ActionRequest{}, err
+	}
 	req := ActionRequest{
-		SessionID: stringField(value, "session"),
-		ActionID:  stringField(value, "action_id"),
-		Value:     stringField(value, "value"),
-		Actor:     actorFromPayload(raw),
+		SessionID:  stringField(value, "session"),
+		ActionID:   stringField(value, "action_id"),
+		Value:      stringField(value, "value"),
+		Actor:      actorFromPayload(raw),
+		FormValues: formValues,
 	}
 	if req.ActionID == "" {
 		req.ActionID = stringField(action, "action_id")
@@ -45,6 +50,38 @@ func ActionRequestFromCardCallback(payload []byte) (ActionRequest, error) {
 		return ActionRequest{}, fmt.Errorf("missing session")
 	}
 	return req, nil
+}
+
+func callbackFormValues(action map[string]any) (map[string]string, error) {
+	var raw map[string]any
+	for _, key := range []string{"form_value", "formValue"} {
+		if value, ok := action[key]; ok {
+			var valid bool
+			raw, valid = value.(map[string]any)
+			if !valid {
+				return nil, fmt.Errorf("invalid card callback %s", key)
+			}
+			break
+		}
+	}
+	if len(raw) > 16 {
+		return nil, fmt.Errorf("too many card form values: %d", len(raw))
+	}
+	out := make(map[string]string, len(raw))
+	for key, value := range raw {
+		text, ok := value.(string)
+		if !ok {
+			continue
+		}
+		if len(key) > 128 || len(text) > 128 {
+			return nil, fmt.Errorf("card form value exceeds 128 bytes")
+		}
+		out[key] = text
+	}
+	if len(out) == 0 {
+		return nil, nil
+	}
+	return out, nil
 }
 
 func actionValueMap(action map[string]any) (map[string]any, error) {

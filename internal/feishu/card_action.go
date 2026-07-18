@@ -7,12 +7,13 @@ import (
 )
 
 type CardAction struct {
-	SessionID string
-	ActionID  string
-	Value     string
-	Actor     string
-	Tag       string
-	Option    string
+	SessionID  string
+	ActionID   string
+	Value      string
+	Actor      string
+	Tag        string
+	Option     string
+	FormValues map[string]string
 }
 
 func BuildCardActionFromLark(event *callback.CardActionTriggerEvent) (CardAction, error) {
@@ -22,13 +23,18 @@ func BuildCardActionFromLark(event *callback.CardActionTriggerEvent) (CardAction
 	action := event.Event.Action
 	value := action.Value
 	formValue := action.FormValue
+	formValues, err := boundedFormValues(formValue)
+	if err != nil {
+		return CardAction{}, err
+	}
 	req := CardAction{
-		SessionID: anyString(value["session"]),
-		ActionID:  anyString(value["action_id"]),
-		Value:     anyString(value["value"]),
-		Actor:     operatorActor(event.Event.Operator),
-		Tag:       action.Tag,
-		Option:    action.Option,
+		SessionID:  anyString(value["session"]),
+		ActionID:   anyString(value["action_id"]),
+		Value:      anyString(value["value"]),
+		Actor:      operatorActor(event.Event.Operator),
+		Tag:        action.Tag,
+		Option:     action.Option,
+		FormValues: formValues,
 	}
 	if req.SessionID == "" {
 		req.SessionID = anyString(formValue["session"])
@@ -56,6 +62,27 @@ func BuildCardActionFromLark(event *callback.CardActionTriggerEvent) (CardAction
 		return CardAction{}, fmt.Errorf("missing session")
 	}
 	return req, nil
+}
+
+func boundedFormValues(values map[string]any) (map[string]string, error) {
+	if len(values) > 16 {
+		return nil, fmt.Errorf("too many card form values: %d", len(values))
+	}
+	out := make(map[string]string, len(values))
+	for key, raw := range values {
+		value, ok := raw.(string)
+		if !ok {
+			continue
+		}
+		if len(key) > 128 || len(value) > 128 {
+			return nil, fmt.Errorf("card form value exceeds 128 bytes")
+		}
+		out[key] = value
+	}
+	if len(out) == 0 {
+		return nil, nil
+	}
+	return out, nil
 }
 
 func operatorActor(operator *callback.Operator) string {

@@ -265,12 +265,7 @@ func runServe(args []string) error {
 		AppSecret: appSecret,
 		BotOpenID: botOpenID,
 		ActionHandler: func(ctx context.Context, action feishu.CardAction) (*feishu.CardActionResponse, error) {
-			result, err := svc.HandleActionResult(ctx, bridge.ActionRequest{
-				SessionID: action.SessionID,
-				ActionID:  action.ActionID,
-				Value:     action.Value,
-				Actor:     action.Actor,
-			})
+			result, err := svc.HandleActionResult(ctx, actionRequestFromFeishu(action))
 			if err != nil {
 				return nil, err
 			}
@@ -314,6 +309,23 @@ func runServe(args []string) error {
 		return longConnErr
 	}
 	return shutdownErr
+}
+
+func actionRequestFromFeishu(action feishu.CardAction) bridge.ActionRequest {
+	formValues := make(map[string]string, len(action.FormValues))
+	for key, value := range action.FormValues {
+		formValues[key] = value
+	}
+	if len(formValues) == 0 {
+		formValues = nil
+	}
+	return bridge.ActionRequest{
+		SessionID:  action.SessionID,
+		ActionID:   action.ActionID,
+		Value:      action.Value,
+		Actor:      action.Actor,
+		FormValues: formValues,
+	}
 }
 
 func runLongConnUntilStopped(ctx context.Context, client feishu.LongConnClient, handler func(context.Context, feishu.InboundMessage) error) error {
