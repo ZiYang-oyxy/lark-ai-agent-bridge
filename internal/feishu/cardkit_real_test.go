@@ -78,20 +78,32 @@ func TestRawElementContentProbeFailureMessagesExcludeSensitiveData(t *testing.T)
 	}
 }
 
-func TestRealCardKitElementContentRequestShape(t *testing.T) {
+func realCardKitSmokeClient(t *testing.T) *CardKitClient {
+	t.Helper()
 	if os.Getenv("E2E_REAL_CARDKIT") != "1" {
-		t.Skip("set E2E_REAL_CARDKIT=1 with LARK_APP_ID/LARK_APP_SECRET to run the raw CardKit element-content probe")
+		t.Skip("set E2E_REAL_CARDKIT=1 with LARK_APP_ID/LARK_APP_SECRET to run real CardKit smoke")
 	}
 	appID := os.Getenv("LARK_APP_ID")
 	appSecret := os.Getenv("LARK_APP_SECRET")
 	if appID == "" || appSecret == "" {
-		t.Skip("LARK_APP_ID and LARK_APP_SECRET are required for the raw CardKit element-content probe")
+		t.Skip("LARK_APP_ID and LARK_APP_SECRET are required for real CardKit smoke")
 	}
+	return NewCardKitClient(appID, appSecret)
+}
 
+func realCardKitReplyTarget(t *testing.T) string {
+	t.Helper()
+	messageID := strings.TrimSpace(os.Getenv("E2E_REAL_CARDKIT_REPLY_TO_MESSAGE_ID"))
+	if messageID == "" {
+		t.Skip("E2E_REAL_CARDKIT_REPLY_TO_MESSAGE_ID is required for the real CardKit native answer smoke")
+	}
+	return messageID
+}
+
+func TestRealCardKitElementContentRequestShape(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
-	tokens := NewTenantTokenSource(appID, appSecret)
-	client := NewCardKitClientWithTokenSource(tokens)
+	client := realCardKitSmokeClient(t)
 	prepared, err := card.PrepareLarkCard(card.Event{Type: "stream", Streaming: true, SessionID: "cardkit-element-content-probe"})
 	if err != nil {
 		t.Fatal(rawElementContentProbeFailureMessage(rawElementContentProbePrepareCard))
@@ -101,11 +113,11 @@ func TestRealCardKitElementContentRequestShape(t *testing.T) {
 		t.Fatal(rawElementContentProbeFailureMessage(rawElementContentProbeCreateCard))
 	}
 
-	body, err := json.Marshal(map[string]any{"content": "native probe", "sequence": 1})
+	body, err := json.Marshal(map[string]any{"content": "native probe", "sequence": 1, "uuid": "cardkit-element-content-probe-1"})
 	if err != nil {
 		t.Fatal(rawElementContentProbeFailureMessage(rawElementContentProbeMarshalRequest))
 	}
-	token, err := tokens.Token(ctx)
+	token, err := client.tokens.Token(ctx)
 	if err != nil {
 		t.Fatal(rawElementContentProbeFailureMessage(rawElementContentProbeGetToken))
 	}
@@ -135,17 +147,75 @@ func TestRealCardKitElementContentRequestShape(t *testing.T) {
 	t.Fatalf("raw element-content probe observed http=%d code=%d encoded_bytes=%d; evidence is not frozen, native streaming remains disabled", resp.StatusCode, envelope.Code, len(body))
 }
 
+func TestRealCardKitNativeAnswerStream(t *testing.T) {
+	runRealCardKitNativeAnswerStream(t)
+}
+
+func runRealCardKitNativeAnswerStream(t *testing.T) {
+	t.Helper()
+	client := realCardKitSmokeClient(t)
+	replyToMessageID := realCardKitReplyTarget(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	streaming, err := card.PrepareLarkCard(card.Event{
+		Type:      "stream",
+		Streaming: true,
+		SessionID: "cardkit-native-answer-smoke",
+	})
+	if err != nil {
+		t.Fatal("native answer smoke failed while preparing the streaming card")
+	}
+	created, err := client.CreateCard(ctx, CardKitCreateRequest{Prepared: &streaming})
+	if err != nil {
+		t.Fatal("native answer smoke failed while creating the streaming card")
+	}
+	if _, err := client.ReplyCard(ctx, CardKitReplyRequest{
+		ReplyToMessageID: replyToMessageID,
+		CardID:           created.CardID,
+		UUID:             stableUUID("cardkit-native-answer-smoke-reply", replyToMessageID, created.CardID),
+	}); err != nil {
+		t.Fatal("native answer smoke failed while replying with the streaming card")
+	}
+
+	for _, update := range []struct {
+		content  string
+		sequence int
+	}{
+		{content: "native-smoke-one", sequence: 1},
+		{content: "native-smoke-two", sequence: 2},
+	} {
+		if err := client.UpdateElementContent(ctx, CardKitUpdateElementContentRequest{
+			CardID:    created.CardID,
+			ElementID: "answer",
+			Content:   update.content,
+			Sequence:  update.sequence,
+			UUID:      stableUUID("cardkit-native-answer-smoke-answer", created.CardID, fmt.Sprint(update.sequence)),
+		}); err != nil {
+			t.Fatal("native answer smoke failed while updating answer content")
+		}
+	}
+
+	terminal, err := card.PrepareLarkCard(card.Event{
+		Type:      "result",
+		SessionID: "cardkit-native-answer-smoke",
+		Segments:  []card.Segment{{Kind: card.SegmentText, Text: "native-smoke-two"}},
+	})
+	if err != nil {
+		t.Fatal("native answer smoke failed while preparing the final card")
+	}
+	if err := client.UpdateCard(ctx, CardKitUpdateCardRequest{
+		CardID:   created.CardID,
+		Prepared: &terminal,
+		Sequence: 3,
+		UUID:     stableUUID("cardkit-native-answer-smoke-final", created.CardID, "3"),
+	}); err != nil {
+		t.Fatal("native answer smoke failed while sending the final card")
+	}
+}
+
 func TestRealCardKitCreatesBridgeCard(t *testing.T) {
-	if os.Getenv("E2E_REAL_CARDKIT") != "1" {
-		t.Skip("set E2E_REAL_CARDKIT=1 with LARK_APP_ID/LARK_APP_SECRET to run real CardKit schema smoke")
-	}
-	appID := os.Getenv("LARK_APP_ID")
-	appSecret := os.Getenv("LARK_APP_SECRET")
-	if appID == "" || appSecret == "" {
-		t.Fatal("LARK_APP_ID and LARK_APP_SECRET are required")
-	}
-	tokens := NewTenantTokenSource(appID, appSecret)
-	client := NewCardKitClientWithTokenSource(tokens)
+	client := realCardKitSmokeClient(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	events := []card.Event{
