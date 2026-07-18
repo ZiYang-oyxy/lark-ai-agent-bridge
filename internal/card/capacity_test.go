@@ -135,6 +135,87 @@ func TestPreparedLarkCardAccessorsReturnDefensiveCopies(t *testing.T) {
 	}
 }
 
+func TestPrepareLarkCardNativeReadyRequiresStreamingAnswerTarget(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		event Event
+		want  bool
+	}{
+		{
+			name:  "streaming answer",
+			event: Event{Type: "stream", Streaming: true, Segments: []Segment{{Kind: SegmentText, Text: "answer"}}},
+			want:  true,
+		},
+		{
+			name:  "streaming without answer target",
+			event: Event{Type: "stream", Streaming: true, ConfigForm: &ConfigForm{}},
+			want:  false,
+		},
+		{
+			name:  "result",
+			event: Event{Type: "result", Streaming: true, Segments: []Segment{{Kind: SegmentText, Text: "answer"}}},
+			want:  false,
+		},
+		{
+			name:  "error",
+			event: Event{Type: "error", Streaming: true, Segments: []Segment{{Kind: SegmentError, Text: "failure"}}},
+			want:  false,
+		},
+		{
+			name:  "stopped",
+			event: Event{Type: "stopped", Streaming: true, Segments: []Segment{{Kind: SegmentText, Text: "stopped"}}},
+			want:  false,
+		},
+		{
+			name:  "interrupted",
+			event: Event{Type: "interrupted", Streaming: true, Segments: []Segment{{Kind: SegmentText, Text: "interrupted"}}},
+			want:  false,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			prepared, err := PrepareLarkCard(tc.event)
+			if err != nil {
+				t.Fatalf("PrepareLarkCard() error: %v", err)
+			}
+			if got := prepared.NativeReady(); got != tc.want {
+				t.Fatalf("NativeReady() = %t, want %t; event=%#v", got, tc.want, prepared.EventCopy())
+			}
+		})
+	}
+}
+
+func TestNativeReadyRequiresExactlyOneMarkdownAnswerTarget(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		payload map[string]any
+		want    bool
+	}{
+		{
+			name:    "no answer target",
+			payload: map[string]any{"body": map[string]any{"elements": []any{map[string]any{"tag": "markdown", "element_id": "message", "content": "message"}}}},
+		},
+		{
+			name:    "duplicate answer targets",
+			payload: map[string]any{"body": map[string]any{"elements": []any{map[string]any{"tag": "markdown", "element_id": "answer", "content": "one"}, map[string]any{"tag": "markdown", "element_id": "answer", "content": "two"}}}},
+		},
+		{
+			name:    "wrong answer tag",
+			payload: map[string]any{"body": map[string]any{"elements": []any{map[string]any{"tag": "plain_text", "element_id": "answer", "content": "answer"}}}},
+		},
+		{
+			name:    "single markdown answer",
+			payload: map[string]any{"body": map[string]any{"elements": []any{map[string]any{"tag": "markdown", "element_id": "answer", "content": "answer"}}}},
+			want:    true,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := nativeReadyForPayload(Event{Type: "stream", Streaming: true}, tc.payload); got != tc.want {
+				t.Fatalf("nativeReadyForPayload() = %t, want %t", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestPrepareLarkCardDropsOldestToolOutputBeforeThoughtOrAnswer(t *testing.T) {
 	event := Event{Type: "result", Segments: []Segment{
 		{Kind: SegmentText, Text: "answer remains"},
@@ -181,7 +262,7 @@ func TestPrepareLarkCardPreservesLatestActivityForToolOnlyAndThoughtOnlyEvents(t
 
 func TestPrepareLarkCardTruncatesAnswerTailBeforeEmergencyFallback(t *testing.T) {
 	answer := "answer prefix " + strings.Repeat("tail ", LarkCardSoftMaxJSONBytes)
-	prepared, err := PrepareLarkCard(Event{Type: "result", Segments: []Segment{{Kind: SegmentText, Text: answer}}})
+	prepared, err := PrepareLarkCard(Event{Type: "stream", Streaming: true, Segments: []Segment{{Kind: SegmentText, Text: answer}}})
 	if err != nil {
 		t.Fatalf("PrepareLarkCard() error: %v", err)
 	}
@@ -203,7 +284,7 @@ func TestPrepareLarkCardFitsMultipleAnswerSegmentsBeforeEmergencyFallback(t *tes
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
-			prepared, err := PrepareLarkCard(Event{Type: "result", Segments: segments})
+			prepared, err := PrepareLarkCard(Event{Type: "stream", Streaming: true, Segments: segments})
 			if err != nil {
 				t.Fatalf("PrepareLarkCard() error: %v", err)
 			}

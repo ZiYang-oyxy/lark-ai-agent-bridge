@@ -82,6 +82,7 @@ func PrepareLarkCard(event Event) (PreparedLarkCard, error) {
 }
 
 func prepareLarkCard(event Event, nativeReady bool) (PreparedLarkCard, error) {
+	event = normalizeTerminalEvent(event)
 	payload := BuildLarkCard(event)
 	encoded, capacity, err := MarshalLarkCard(payload)
 	if err != nil {
@@ -94,10 +95,36 @@ func prepareLarkCard(event Event, nativeReady bool) (PreparedLarkCard, error) {
 		json:        append([]byte(nil), encoded...),
 		capacity:    capacity,
 		answer:      answer,
-		nativeReady: nativeReady,
+		nativeReady: nativeReady && nativeReadyForPayload(event, payload),
 	}
 	prepared.integrity = preparedIntegrity(prepared)
 	return prepared, nil
+}
+
+func nativeReadyForPayload(event Event, payload map[string]any) bool {
+	if !event.Streaming {
+		return false
+	}
+	body, ok := payload["body"].(map[string]any)
+	if !ok {
+		return false
+	}
+	elements, ok := body["elements"].([]any)
+	if !ok {
+		return false
+	}
+	answerTargets := 0
+	for _, raw := range elements {
+		element, ok := raw.(map[string]any)
+		if !ok || element["element_id"] != "answer" {
+			continue
+		}
+		if element["tag"] != "markdown" {
+			return false
+		}
+		answerTargets++
+	}
+	return answerTargets == 1
 }
 
 func fitLarkCard(event Event) (PreparedLarkCard, bool) {
