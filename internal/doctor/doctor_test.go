@@ -12,7 +12,7 @@ import (
 )
 
 func TestRunChecksRuntimeConfig(t *testing.T) {
-	workDir := t.TempDir()
+	workDir := canonicalTempDir(t)
 	auditPath := filepath.Join(workDir, ".lark-agent-bridge", "audit.jsonl")
 	storePath := filepath.Join(workDir, ".lark-agent-bridge", "sessions.json")
 	cachePath := filepath.Join(workDir, ".lark-agent-bridge", "media")
@@ -77,8 +77,8 @@ func TestRunReportsMissingWorkdir(t *testing.T) {
 }
 
 func TestRunRejectsSymlinkMediaCacheWithoutMutatingTarget(t *testing.T) {
-	target := t.TempDir()
-	link := filepath.Join(t.TempDir(), "media-link")
+	target := canonicalTempDir(t)
+	link := filepath.Join(canonicalTempDir(t), "media-link")
 	if err := os.Symlink(target, link); err != nil {
 		t.Fatal(err)
 	}
@@ -93,8 +93,27 @@ func TestRunRejectsSymlinkMediaCacheWithoutMutatingTarget(t *testing.T) {
 	}
 }
 
+func TestRunRejectsIntermediateSymlinkWithoutMutatingTarget(t *testing.T) {
+	base := canonicalTempDir(t)
+	target := canonicalTempDir(t)
+	link := filepath.Join(base, "link")
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatal(err)
+	}
+	cfg := doctorTestConfig(t.TempDir(), filepath.Join(t.TempDir(), "sessions.json"))
+	cfg.MediaCacheDir = filepath.Join(link, "media")
+
+	check := findCheck(t, Run(cfg), "media_cache")
+	if check.OK {
+		t.Fatalf("media_cache check = %#v, want intermediate symlink failure", check)
+	}
+	if entries, err := os.ReadDir(target); err != nil || len(entries) != 0 {
+		t.Fatalf("intermediate symlink target was mutated: entries=%v err=%v", entries, err)
+	}
+}
+
 func TestRunRejectsRegularFileMediaCache(t *testing.T) {
-	cachePath := filepath.Join(t.TempDir(), "media")
+	cachePath := filepath.Join(canonicalTempDir(t), "media")
 	if err := os.WriteFile(cachePath, []byte("not a cache directory"), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -108,7 +127,7 @@ func TestRunRejectsRegularFileMediaCache(t *testing.T) {
 }
 
 func TestRunRejectsMediaCacheWhenParentCannotBeCreated(t *testing.T) {
-	blockingFile := filepath.Join(t.TempDir(), "not-a-directory")
+	blockingFile := filepath.Join(canonicalTempDir(t), "not-a-directory")
 	if err := os.WriteFile(blockingFile, []byte("blocks child directory"), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -122,7 +141,7 @@ func TestRunRejectsMediaCacheWhenParentCannotBeCreated(t *testing.T) {
 }
 
 func TestRunCreatesPrivateMediaCacheWithoutChangingExistingParent(t *testing.T) {
-	workDir := t.TempDir()
+	workDir := canonicalTempDir(t)
 	parent := filepath.Join(workDir, "existing-parent")
 	if err := os.Mkdir(parent, 0o755); err != nil {
 		t.Fatal(err)
@@ -146,6 +165,31 @@ func TestRunCreatesPrivateMediaCacheWithoutChangingExistingParent(t *testing.T) 
 	}
 	if probes, err := filepath.Glob(filepath.Join(cachePath, ".media-cache-probe-*")); err != nil || len(probes) != 0 {
 		t.Fatalf("media cache probe files = %q, err = %v; want none", probes, err)
+	}
+}
+
+func TestRunRejectsInsecureExistingMediaCacheWithoutChangingMode(t *testing.T) {
+	for _, mode := range []os.FileMode{0o755, 0o777} {
+		t.Run(mode.String(), func(t *testing.T) {
+			workDir := canonicalTempDir(t)
+			cachePath := filepath.Join(workDir, "media")
+			if err := os.Mkdir(cachePath, mode); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Chmod(cachePath, mode); err != nil {
+				t.Fatal(err)
+			}
+			cfg := doctorTestConfig(workDir, filepath.Join(workDir, "sessions.json"))
+			cfg.MediaCacheDir = cachePath
+
+			check := findCheck(t, Run(cfg), "media_cache")
+			if check.OK {
+				t.Fatalf("media_cache check = %#v, want insecure mode failure", check)
+			}
+			if got := filePermissions(t, cachePath); got != mode {
+				t.Fatalf("existing media cache permissions changed from %o to %o", mode, got)
+			}
+		})
 	}
 }
 
@@ -331,6 +375,15 @@ func filePermissions(t *testing.T, path string) os.FileMode {
 		t.Fatal(err)
 	}
 	return info.Mode().Perm()
+}
+
+func canonicalTempDir(t *testing.T) string {
+	t.Helper()
+	path, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return path
 }
 
 func doctorTestConfig(workDir, storePath string) config.Config {

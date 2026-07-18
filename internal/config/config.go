@@ -129,6 +129,10 @@ func LoadFromEnvStrict() (Config, error) {
 	if cfg.MediaCacheDir, err = explicitMediaDir("E2E_MEDIA_CACHE_DIR", cfg.MediaCacheDir); err != nil {
 		return Config{}, err
 	}
+	if cfg.MediaCacheDir, err = filepath.Abs(cfg.MediaCacheDir); err != nil {
+		return Config{}, fmt.Errorf("resolve E2E_MEDIA_CACHE_DIR as an absolute path: %w", err)
+	}
+	cfg.MediaCacheDir = filepath.Clean(cfg.MediaCacheDir)
 	if cfg.MediaMaxFileBytes, err = explicitMediaMiB("E2E_MEDIA_MAX_FILE_MB", cfg.MediaMaxFileBytes); err != nil {
 		return Config{}, err
 	}

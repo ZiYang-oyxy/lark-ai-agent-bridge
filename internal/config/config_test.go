@@ -1,6 +1,7 @@
 package config
 
 import (
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -94,6 +95,44 @@ func TestLoadFromEnvStrictParsesMediaOverrides(t *testing.T) {
 	}
 }
 
+func TestLoadFromEnvStrictMakesExplicitMediaCacheAbsolute(t *testing.T) {
+	relative := filepath.Join("relative", "cache", "..", "media")
+	t.Setenv("E2E_MEDIA_CACHE_DIR", relative)
+
+	cfg, err := LoadFromEnvStrict()
+	if err != nil {
+		t.Fatal(err)
+	}
+	want, err := filepath.Abs(relative)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.MediaCacheDir != want || !filepath.IsAbs(cfg.MediaCacheDir) || cfg.MediaCacheDir != filepath.Clean(cfg.MediaCacheDir) {
+		t.Fatalf("media cache dir = %q, want clean absolute %q", cfg.MediaCacheDir, want)
+	}
+}
+
+func TestLoadFromEnvStrictMakesDefaultMediaCacheAbsoluteForRelativeWorkdir(t *testing.T) {
+	relativeWorkDir := filepath.Join("relative", "work", "..", "work-final")
+	t.Setenv("E2E_DEFAULT_WORKDIR", relativeWorkDir)
+	unsetEnv(t, "E2E_MEDIA_CACHE_DIR")
+
+	cfg, err := LoadFromEnvStrict()
+	if err != nil {
+		t.Fatal(err)
+	}
+	want, err := filepath.Abs(filepath.Join(relativeWorkDir, ".lark-agent-bridge", "media"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.DefaultWorkDir != relativeWorkDir {
+		t.Fatalf("default workdir = %q, want existing relative semantics %q", cfg.DefaultWorkDir, relativeWorkDir)
+	}
+	if cfg.MediaCacheDir != want || !filepath.IsAbs(cfg.MediaCacheDir) || cfg.MediaCacheDir != filepath.Clean(cfg.MediaCacheDir) {
+		t.Fatalf("media cache dir = %q, want clean absolute %q", cfg.MediaCacheDir, want)
+	}
+}
+
 func TestLoadFromEnvStrictRejectsInvalidExplicitMediaSettings(t *testing.T) {
 	for _, tc := range []struct {
 		name  string
@@ -117,4 +156,19 @@ func TestLoadFromEnvStrictRejectsInvalidExplicitMediaSettings(t *testing.T) {
 			}
 		})
 	}
+}
+
+func unsetEnv(t *testing.T, name string) {
+	t.Helper()
+	value, ok := os.LookupEnv(name)
+	if err := os.Unsetenv(name); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if ok {
+			_ = os.Setenv(name, value)
+			return
+		}
+		_ = os.Unsetenv(name)
+	})
 }

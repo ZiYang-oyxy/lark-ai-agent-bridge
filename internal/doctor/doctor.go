@@ -45,25 +45,12 @@ func mediaCacheWritable(path string) Check {
 	if path == "" {
 		return Check{Name: "media_cache", OK: false, Detail: "empty"}
 	}
-	info, err := os.Lstat(path)
-	if err == nil && info.Mode()&os.ModeSymlink != 0 {
-		return Check{Name: "media_cache", OK: false, Detail: "symlink_path: " + path}
+	path = filepath.Clean(path)
+	if !filepath.IsAbs(path) {
+		return Check{Name: "media_cache", OK: false, Detail: "not_absolute: " + path}
 	}
-	if err != nil && !os.IsNotExist(err) {
-		return Check{Name: "media_cache", OK: false, Detail: "stat_failed: " + path}
-	}
-	if err := os.MkdirAll(path, 0o700); err != nil {
-		return Check{Name: "media_cache", OK: false, Detail: "create_failed: " + path}
-	}
-	info, err = os.Lstat(path)
-	if err != nil {
-		return Check{Name: "media_cache", OK: false, Detail: "stat_failed: " + path}
-	}
-	if info.Mode()&os.ModeSymlink != 0 {
-		return Check{Name: "media_cache", OK: false, Detail: "symlink_path: " + path}
-	}
-	if !info.IsDir() {
-		return Check{Name: "media_cache", OK: false, Detail: "not_directory: " + path}
+	if err := preparePrivateMediaCache(path); err != nil {
+		return Check{Name: "media_cache", OK: false, Detail: "unsafe_path: " + path}
 	}
 	probe, err := os.CreateTemp(path, ".media-cache-probe-*")
 	if err != nil {
@@ -77,7 +64,58 @@ func mediaCacheWritable(path string) Check {
 	if err := os.Remove(probePath); err != nil {
 		return Check{Name: "media_cache", OK: false, Detail: "write_probe_cleanup_failed: " + path}
 	}
+	if err := walkMediaCachePath(path, false); err != nil {
+		return Check{Name: "media_cache", OK: false, Detail: "unsafe_path: " + path}
+	}
 	return Check{Name: "media_cache", OK: true, Detail: path}
+}
+
+func preparePrivateMediaCache(path string) error {
+	if err := walkMediaCachePath(path, true); err != nil {
+		return err
+	}
+	return walkMediaCachePath(path, false)
+}
+
+func walkMediaCachePath(path string, createMissing bool) error {
+	volume := filepath.VolumeName(path)
+	root := volume + string(os.PathSeparator)
+	components := []string{root}
+	current := root
+	for _, component := range strings.Split(strings.TrimPrefix(path, root), string(os.PathSeparator)) {
+		if component == "" {
+			continue
+		}
+		current = filepath.Join(current, component)
+		components = append(components, current)
+	}
+	for _, component := range components {
+		info, err := os.Lstat(component)
+		created := false
+		if os.IsNotExist(err) {
+			if !createMissing {
+				return fmt.Errorf("path component does not exist: %s", component)
+			}
+			if err := os.Mkdir(component, 0o700); err != nil {
+				return fmt.Errorf("create path component %s: %w", component, err)
+			}
+			created = true
+			info, err = os.Lstat(component)
+		}
+		if err != nil {
+			return fmt.Errorf("inspect path component %s: %w", component, err)
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("path component is a symlink: %s", component)
+		}
+		if !info.IsDir() {
+			return fmt.Errorf("path component is not a directory: %s", component)
+		}
+		if (created || component == path) && info.Mode().Perm() != 0o700 {
+			return fmt.Errorf("private path component has mode %o: %s", info.Mode().Perm(), component)
+		}
+	}
+	return nil
 }
 
 func sessionStoreWritable(path string) Check {
