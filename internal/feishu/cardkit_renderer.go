@@ -150,6 +150,7 @@ func (r *CardKitRenderer) renderContext(ctx context.Context, e card.Event) error
 				ReplyToMessageID: r.replyToMessageID,
 				CardID:           cardID,
 				UUID:             stableUUID("card-reply", r.replyToMessageID, cardID, e.SessionID, e.Type),
+				ReplyInThread:    e.ReplyInThread,
 			})
 			if err != nil {
 				return err

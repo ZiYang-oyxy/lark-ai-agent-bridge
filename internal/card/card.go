@@ -65,6 +65,7 @@ type Event struct {
 	Type             string
 	SessionID        string
 	ReplyToMessageID string
+	ReplyInThread    bool
 	Segments         []Segment
 	Meta             Meta
 	StopButton       StopButton

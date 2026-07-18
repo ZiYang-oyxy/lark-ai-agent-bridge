@@ -17,6 +17,7 @@ type fakeCardKitClient struct {
 	updated     int
 	lastCard    map[string]any
 	replyUUIDs  []string
+	replyReqs   []CardKitReplyRequest
 	nextCardSeq int
 	updateReqs  []CardKitUpdateCardRequest
 	replyResult CardKitReplyResult
@@ -44,6 +45,7 @@ func (f *fakeCardKitClient) CreateCard(_ context.Context, req CardKitCreateReque
 func (f *fakeCardKitClient) ReplyCard(_ context.Context, req CardKitReplyRequest) (CardKitReplyResult, error) {
 	f.replied++
 	f.replyUUIDs = append(f.replyUUIDs, req.UUID)
+	f.replyReqs = append(f.replyReqs, req)
 	if f.replyErr != nil {
 		return CardKitReplyResult{}, f.replyErr
 	}
@@ -51,6 +53,21 @@ func (f *fakeCardKitClient) ReplyCard(_ context.Context, req CardKitReplyRequest
 		return f.replyResult, nil
 	}
 	return CardKitReplyResult{MessageID: "msg-1"}, nil
+}
+
+func TestCardKitRendererForwardsReplyInThread(t *testing.T) {
+	for _, want := range []bool{false, true} {
+		t.Run(fmt.Sprintf("reply_in_thread_%t", want), func(t *testing.T) {
+			client := &fakeCardKitClient{}
+			renderer := NewCardKitRenderer(client, "source-message")
+			if err := renderer.Render(card.Event{Type: "stream", SessionID: "claude:chat", ReplyInThread: want}); err != nil {
+				t.Fatal(err)
+			}
+			if len(client.replyReqs) != 1 || client.replyReqs[0].ReplyInThread != want {
+				t.Fatalf("reply requests = %#v, want reply_in_thread=%t", client.replyReqs, want)
+			}
+		})
+	}
 }
 
 func (f *fakeCardKitClient) UpdateCard(_ context.Context, req CardKitUpdateCardRequest) error {
