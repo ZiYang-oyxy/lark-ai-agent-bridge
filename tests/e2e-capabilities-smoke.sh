@@ -360,6 +360,12 @@ fi
 if printf '%s\n' "$run_case_source" | rg -F 'start_server_if_needed recovery' >/dev/null; then
   fail "failed case recovery must not restart the bridge"
 fi
+parallel_source="$(sed -n '/^run_parallel_media_pair() {/,/^}/p' "$ROOT/scripts/e2e-real.sh")"
+for required in 'media_images' 'media_text_files' 'wait "$group_pid"' 'wait "$p2p_pid"'; do
+  if ! printf '%s\n' "$parallel_source" | rg -F -- "$required" >/dev/null; then
+    fail "isolated media pair parallel contract is missing: $required"
+  fi
+done
 
 if rg -F 'SERVER_REAL_CARDKIT' "$ROOT/scripts/e2e-real.sh" >/dev/null || rg -F 'E2E_REAL_CARDKIT=$SERVER_REAL_CARDKIT' "$ROOT/scripts/e2e-real.sh" >/dev/null; then
   fail "retired native validation gate is still present"

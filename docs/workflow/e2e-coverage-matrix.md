@@ -154,12 +154,11 @@ flowchart TD
 - **readiness 探针轮询 1s → 0.3s**(`e2e-real.sh` startup 循环):server 通常亚秒级就绪,回收大部分启动等待,不增加风险。
 - **readiness 从 callback challenge 解耦**:`start_server_if_needed` 只匹配本次启动后新增的 `connected to wss`;callback challenge 保留为 gateway 注入 action 的额外探针。真实飞书 `new_basic` 已确认 readiness 约 2 秒内完成并继续产生 CardKit `event=result`。
 
-### 剩余重构(需真实 e2e 环境验证,建议在有环境时执行)
-这些改动改的是 bash 编排层,改完只能在真实飞书环境端到端验证,不宜盲改:
+### 编排层重构(已完成并通过真实 E2E)
 
 1. **消除 native_text_stream 中途重启(已完成)**:fake native marker pattern 修正后,1.2s delta 间隔已足以在默认 800ms preview interval 下触发 native update。已删除 `E2E_CARD_UPDATE_MS` / `E2E_CARD_MIN_DELTA_CHARS` 专用切换和 server 重启;`native_text_stream → new_basic` 真实飞书乱序验证共用唯一 bridge PID 且全部通过。
 2. **失败 recovery 从「重启进程」改为「软重置会话」(已完成)**:失败 case 会终止残留 agent child,在对应 group/DM scope 执行无 prompt `/new` 并等待 reset result,保留同一 bridge PID。故意失败 `new_basic` 后 `streaming_card` 的真实飞书验证已通过。
-3. **隔离性 case 按 chat/topic 分组并发**:`scope_parallel` 已证明不同 topic 互不干扰,DM/不同 topic/不同 chat 的 case 可并发投递。
+3. **隔离性 case 分组并发(已完成)**:共享 group session、preference 或 restart 的 case 保持串行;仅并发 group `media_images` 与独立 P2P `media_text_files`。最终 9-case strict gate 全部通过,wall-clock 约 118s → 103s。
 
 ### 最大杠杆(阶段 3)
 真实列表已从 38 个收敛到 9 个。保留集合为 `new_basic`、`streaming_card`、`session_restart_context`、`recall_state`、`media_attachment_only`、`media_images`、`media_text_files`、`latest_restart_fallback`、`native_text_stream`。

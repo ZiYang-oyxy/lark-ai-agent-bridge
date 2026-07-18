@@ -251,6 +251,8 @@ Use a custom evidence directory or default workdir:
 
 其余 29 个原 L2 case 已由 L1 fake SDK / fake Claude / store 单测承担,不再出现在 `--list-cases`。对应函数暂保留为实现参考,但不属于发布门禁,也不能通过 `--case` 选择。
 
+Full mode keeps cases that share a group session, global preference, or restart semantics serial. It runs only `media_images` (group scope) and `media_text_files` (independent P2P scope) in parallel. Each child writes a separate case log; the parent waits for both before updating summary and failure counters. The final real 9-case strict gate completed in about 103 seconds versus the prior 118-second baseline.
+
 ### 历史 case 详细参考
 
 以下描述只用于追溯原 E2E 语义;是否可运行以本节上方九个 case 和 `--list-cases` 为准。

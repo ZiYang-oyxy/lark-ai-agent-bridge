@@ -2636,6 +2636,66 @@ run_case_with_capabilities() {
   esac
 }
 
+case_capabilities_ready() {
+  local name="$1" capability
+  local prerequisites=()
+  while IFS= read -r capability; do
+    [[ -n "$capability" ]] && prerequisites+=("$capability")
+  done < <(case_prerequisites "$name")
+  [[ "$(e2e_cap_evaluate "$name" "${prerequisites[@]}")" == "READY" ]]
+}
+
+run_parallel_media_pair() {
+  local group_case="media_images" p2p_case="media_text_files"
+  local group_pid p2p_pid group_status=0 p2p_status=0 start elapsed recovery_status
+  start_server_if_needed parallel-media
+  prepare_media_fixtures
+  log "cases $group_case + $p2p_case start in parallel"
+  start="$(date +%s)"
+  set +e
+  ( set -e; case_media_images ) >"$RUN_DIR/$group_case.log" 2>&1 &
+  group_pid=$!
+  ( set -e; case_media_text_files ) >"$RUN_DIR/$p2p_case.log" 2>&1 &
+  p2p_pid=$!
+  wait "$group_pid" || group_status=$?
+  wait "$p2p_pid" || p2p_status=$?
+  set -e
+  if [[ "$group_status" -eq 0 && "${E2E_E2E_FORCE_FAIL_CASE:-}" == "$group_case" ]]; then
+    group_status=97
+  fi
+  if [[ "$p2p_status" -eq 0 && "${E2E_E2E_FORCE_FAIL_CASE:-}" == "$p2p_case" ]]; then
+    p2p_status=97
+  fi
+  elapsed=$(( $(date +%s) - start ))
+  for case_name in "$group_case" "$p2p_case"; do
+    local status="$group_status"
+    [[ "$case_name" == "$p2p_case" ]] && status="$p2p_status"
+    if [[ "$status" -ne 0 && "$KEEP_SERVER_ON_FAIL" -eq 0 ]]; then
+      set +e
+      soft_recover_after_failure "$case_name" >>"$RUN_DIR/$case_name.log" 2>&1
+      recovery_status=$?
+      set -e
+      if [[ "$recovery_status" -ne 0 ]]; then
+        echo "bridge soft recovery after failed parallel case also failed" >>"$RUN_DIR/$case_name.log"
+      fi
+    fi
+    summary "## $case_name"
+    summary
+    summary "- execution: parallel_isolated_media"
+    if [[ "$status" -eq 0 ]]; then
+      log "case $case_name passed"
+      summary "- status: passed"
+    else
+      log "case $case_name failed; see $RUN_DIR/$case_name.log"
+      summary "- status: failed"
+      FAILURES=$((FAILURES + 1))
+    fi
+    summary "- elapsed_sec: $elapsed"
+    summary "- log: $RUN_DIR/$case_name.log"
+    summary
+  done
+}
+
 capability_prerequisites_ready() {
   local capability="$1"
   shift
@@ -2820,9 +2880,18 @@ fetch_bot_open_id
 summary "- bot_open_id: ${BOT_OPEN_ID:0:6}...${BOT_OPEN_ID: -4}"
 summary
 
-for case_name in "${RUN_CASES[@]}"; do
-  [[ -n "$case_name" ]] || continue
+case_index=0
+while (( case_index < ${#RUN_CASES[@]} )); do
+  case_name="${RUN_CASES[$case_index]}"
+  [[ -n "$case_name" ]] || { case_index=$((case_index + 1)); continue; }
+  if [[ "$case_name" == "media_images" && $((case_index + 1)) -lt ${#RUN_CASES[@]} && "${RUN_CASES[$((case_index + 1))]}" == "media_text_files" ]] && \
+    case_capabilities_ready media_images && case_capabilities_ready media_text_files; then
+    run_parallel_media_pair
+    case_index=$((case_index + 2))
+    continue
+  fi
   run_case_with_capabilities "$case_name"
+  case_index=$((case_index + 1))
 done
 
 append_normal_summary_footer
