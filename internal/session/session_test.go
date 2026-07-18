@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"lark-agent-bridge/internal/agent"
+	"lark-agent-bridge/internal/media"
 )
 
 func TestFreezeReadyBatchPreservesOrderAndBoundaries(t *testing.T) {
@@ -233,6 +234,51 @@ func TestFreezeReadyBatchAllowsOversizedHeadAsSingleInput(t *testing.T) {
 	}
 }
 
+func TestFreezeReadyBatchRespectsAttachmentLimitsWithoutSkippingHead(t *testing.T) {
+	m := NewManager()
+	key := Key{Agent: agent.Claude, ChatID: "attachments"}
+	now := time.Unix(10, 0)
+	limits := BatchLimits{MaxAttachments: 10, MaxAttachmentBytes: 100 << 20}
+	attachments := make([]media.Attachment, 9)
+	for i := range attachments {
+		attachments[i] = media.Attachment{Path: "/cache/fit", Size: 10 << 20}
+	}
+	for _, input := range []Input{
+		{ID: "nine", State: InputQueued, Time: now, Attachments: attachments},
+		{ID: "ten", State: InputQueued, Time: now, Attachments: []media.Attachment{{Path: "/cache/ten", Size: 10 << 20}}},
+		{ID: "eleventh", State: InputQueued, Time: now, Attachments: []media.Attachment{{Path: "/cache/eleventh", Size: 1}}},
+		{ID: "over-bytes", State: InputQueued, Time: now, Attachments: []media.Attachment{{Path: "/cache/over", Size: 101 << 20}}},
+	} {
+		if _, _, err := m.EnqueueDurable(key, input, "/work", limits); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	sess, batch, err := m.FreezeReadyBatch(key, now, limits)
+	if err != nil || batch == nil {
+		t.Fatalf("freeze batch=%#v err=%v", batch, err)
+	}
+	if len(batch.Inputs) != 2 || batch.Inputs[0].ID != "nine" || batch.Inputs[1].ID != "ten" {
+		t.Fatalf("batch inputs = %#v, want boundary pair", batch.Inputs)
+	}
+	if len(sess.Queue) != 2 || sess.Queue[0].ID != "eleventh" || sess.Queue[1].ID != "over-bytes" {
+		t.Fatalf("remaining queue = %#v, want eleventh then over-bytes", sess.Queue)
+	}
+	if _, _, err := m.MarkBatchRunning(key, batch.ID, nil, now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.FinishBatch(key, batch.ID, BatchCompletion{Status: InputCompleted, At: now}); err != nil {
+		t.Fatal(err)
+	}
+	sess, next, err := m.FreezeReadyBatch(key, now, limits)
+	if err != nil || next == nil || len(next.Inputs) != 1 || next.Inputs[0].ID != "eleventh" {
+		t.Fatalf("next batch=%#v err=%v, want eleventh only", next, err)
+	}
+	if len(sess.Queue) != 1 || sess.Queue[0].ID != "over-bytes" {
+		t.Fatalf("queue after byte limit = %#v, want over-byte head retained", sess.Queue)
+	}
+}
+
 func TestFreezeReadyBatchDoesNotPromoteWhileBatchIsActive(t *testing.T) {
 	m := NewManager()
 	key := Key{Agent: agent.Claude, ChatID: "chat"}
@@ -409,18 +455,22 @@ func TestSessionClonesDoNotLeakDurableQueueOrActiveBatch(t *testing.T) {
 
 func TestCloneSessionDeepCopiesRenderRef(t *testing.T) {
 	original := &Session{
-		Queue: []Input{{ID: "queued", Text: "queued"}},
+		Queue: []Input{{ID: "queued", Text: "queued", Attachments: []media.Attachment{{Path: "/cache/queued.png"}}}},
 		ActiveBatch: &Batch{
-			Inputs:    []Input{{ID: "active", Text: "active"}},
+			Inputs:    []Input{{ID: "active", Text: "active", Attachments: []media.Attachment{{Path: "/cache/active.png"}}}},
 			RenderRef: &RenderRef{CardID: "card", ReplyMessageID: "reply", Version: 1},
 		},
 	}
 	cloned := cloneSession(original)
 	cloned.Queue[0].Text = "changed queued"
 	cloned.ActiveBatch.Inputs[0].Text = "changed active"
+	cloned.Queue[0].Attachments[0].Path = "/cache/changed-queued.png"
+	cloned.ActiveBatch.Inputs[0].Attachments[0].Path = "/cache/changed-active.png"
 	cloned.ActiveBatch.RenderRef.CardID = "changed card"
 
-	if original.Queue[0].Text != "queued" || original.ActiveBatch.Inputs[0].Text != "active" || original.ActiveBatch.RenderRef.CardID != "card" {
+	if original.Queue[0].Text != "queued" || original.ActiveBatch.Inputs[0].Text != "active" ||
+		original.Queue[0].Attachments[0].Path != "/cache/queued.png" || original.ActiveBatch.Inputs[0].Attachments[0].Path != "/cache/active.png" ||
+		original.ActiveBatch.RenderRef.CardID != "card" {
 		t.Fatalf("clone mutated original: %#v", original)
 	}
 }

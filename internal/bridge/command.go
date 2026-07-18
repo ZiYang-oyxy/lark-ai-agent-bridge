@@ -32,7 +32,7 @@ func ParseCommand(msg Message, defaultAgent agent.Kind) Command {
 	if !msg.ShouldHandle() {
 		return Command{Type: CommandIgnored, Raw: raw}
 	}
-	if raw == "" {
+	if raw == "" && len(msg.Attachments) == 0 {
 		return Command{Type: CommandIgnored, Raw: raw}
 	}
 	if !strings.HasPrefix(raw, "/") {

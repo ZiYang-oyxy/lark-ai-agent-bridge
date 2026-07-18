@@ -9,6 +9,7 @@ import (
 	"unicode/utf8"
 
 	"lark-agent-bridge/internal/agent"
+	"lark-agent-bridge/internal/media"
 )
 
 type Key struct {
@@ -48,6 +49,7 @@ type Input struct {
 	ID               string
 	Sender           string
 	Text             string
+	Attachments      []media.Attachment
 	ReplyToMessageID string
 	CardSessionID    string
 	WorkDir          string
@@ -84,9 +86,11 @@ type RenderRef struct {
 }
 
 type BatchLimits struct {
-	MaxInputs    int
-	MaxTextRunes int
-	MaxPending   int
+	MaxInputs          int
+	MaxTextRunes       int
+	MaxAttachments     int
+	MaxAttachmentBytes int64
+	MaxPending         int
 }
 
 type EnqueueResult struct {
@@ -299,6 +303,8 @@ func (m *Manager) FreezeReadyBatch(key Key, now time.Time, limits BatchLimits) (
 	first := s.Queue[0]
 	count := 0
 	textRunes := 0
+	attachmentCount := 0
+	attachmentBytes := int64(0)
 	for _, input := range s.Queue {
 		if input.State != InputQueued || !compatibleBatchInput(first, input) {
 			break
@@ -316,8 +322,15 @@ func (m *Manager) FreezeReadyBatch(key Key, now time.Time, limits BatchLimits) (
 			}
 			break
 		}
+		inputAttachments, inputAttachmentBytes := attachmentUsage(input.Attachments)
+		if count > 0 && ((limits.MaxAttachments > 0 && attachmentCount+inputAttachments > limits.MaxAttachments) ||
+			(limits.MaxAttachmentBytes > 0 && attachmentBytes+inputAttachmentBytes > limits.MaxAttachmentBytes)) {
+			break
+		}
 		count++
 		textRunes += inputRunes
+		attachmentCount += inputAttachments
+		attachmentBytes += inputAttachmentBytes
 		if first.Reset {
 			break
 		}
@@ -345,6 +358,14 @@ func (m *Manager) FreezeReadyBatch(key Key, now time.Time, limits BatchLimits) (
 	}
 	snapshot := cloneSession(s)
 	return *snapshot, cloneBatch(s.ActiveBatch), nil
+}
+
+func attachmentUsage(attachments []media.Attachment) (int, int64) {
+	var bytes int64
+	for _, attachment := range attachments {
+		bytes += attachment.Size
+	}
+	return len(attachments), bytes
 }
 
 // ReadyKeys returns scopes whose FIFO queue head can be frozen now. It is a
@@ -807,7 +828,11 @@ func compatibleBatchInput(first, next Input) bool {
 }
 
 func cloneInputs(inputs []Input) []Input {
-	return append([]Input(nil), inputs...)
+	cloned := append([]Input(nil), inputs...)
+	for i := range cloned {
+		cloned[i].Attachments = append([]media.Attachment(nil), inputs[i].Attachments...)
+	}
+	return cloned
 }
 
 func cloneBatch(batch *Batch) *Batch {

@@ -8,12 +8,16 @@ import (
 )
 
 func MessageFromFeishu(in feishu.InboundMessage) Message {
+	text := stripMentionPrefix(in.Text, in.Mentions)
+	if len(in.Attachments) > 0 && (in.MessageType == "image" || in.MessageType == "file") {
+		text = ""
+	}
 	return Message{
 		ID:             in.MessageID,
 		ChatID:         in.ChatID,
 		ThreadID:       in.TopicID,
 		Sender:         in.SenderID,
-		Text:           stripMentionPrefix(in.Text, in.Mentions),
+		Text:           text,
 		Attachments:    append([]media.Ref(nil), in.Attachments...),
 		IsGroup:        strings.EqualFold(in.ChatType, "group"),
 		HasAttachments: len(in.Attachments) > 0,

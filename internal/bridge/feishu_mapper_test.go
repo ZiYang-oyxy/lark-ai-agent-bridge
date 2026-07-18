@@ -48,3 +48,15 @@ func TestMessageFromFeishuCopiesAttachments(t *testing.T) {
 		t.Fatalf("attachments were not copied: %#v", got.Attachments)
 	}
 }
+
+func TestMessageFromFeishuDropsDirectAttachmentResourceJSONFromText(t *testing.T) {
+	for _, in := range []feishu.InboundMessage{
+		{MessageType: "image", Text: `{"image_key":"img_123"}`, Attachments: []media.Ref{{MessageID: "m-image", FileKey: "img_123", Kind: "image"}}},
+		{MessageType: "file", Text: `{"file_key":"file_123","file_name":"notes.txt"}`, Attachments: []media.Ref{{MessageID: "m-file", FileKey: "file_123", Kind: "file", Name: "notes.txt"}}},
+	} {
+		got := MessageFromFeishu(in)
+		if got.Text != "" || !got.HasAttachments {
+			t.Fatalf("message = %#v, want attachment-only text", got)
+		}
+	}
+}

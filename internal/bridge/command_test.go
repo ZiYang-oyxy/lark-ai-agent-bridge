@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"lark-agent-bridge/internal/agent"
+	"lark-agent-bridge/internal/media"
 )
 
 func TestParseNewCommand(t *testing.T) {
@@ -36,6 +37,13 @@ func TestParsePlainTextOutsideTopicContinuesScope(t *testing.T) {
 	cmd := ParseCommand(Message{Text: "hello"}, agent.Claude)
 	if cmd.Type != CommandRun || cmd.Agent != agent.Claude || cmd.Reset {
 		t.Fatalf("cmd = %#v, want non-reset claude run", cmd)
+	}
+}
+
+func TestParseAttachmentOnlyMessageRunsWithEmptyText(t *testing.T) {
+	cmd := ParseCommand(Message{Attachments: []media.Ref{{MessageID: "m1", FileKey: "image", Kind: "image"}}}, agent.Claude)
+	if cmd.Type != CommandRun || cmd.Text != "" || cmd.Agent != agent.Claude {
+		t.Fatalf("cmd = %#v, want attachment-only run", cmd)
 	}
 }
 

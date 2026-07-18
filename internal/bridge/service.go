@@ -21,16 +21,19 @@ import (
 	"lark-agent-bridge/internal/audit"
 	"lark-agent-bridge/internal/card"
 	"lark-agent-bridge/internal/config"
+	"lark-agent-bridge/internal/media"
 	"lark-agent-bridge/internal/session"
 )
 
 type Service struct {
-	Config         config.Config
-	Sessions       *session.Manager
-	Cards          card.Renderer
-	Runner         AgentRunner
-	Audit          *audit.Recorder
-	RestoreNotices []session.RecoveryNotice
+	Config          config.Config
+	Sessions        *session.Manager
+	Cards           card.Renderer
+	Runner          AgentRunner
+	Audit           *audit.Recorder
+	MediaCache      mediaResolver
+	MediaDownloader media.Downloader
+	RestoreNotices  []session.RecoveryNotice
 
 	mu                 sync.Mutex
 	pendingRuns        map[string]pendingRun
@@ -47,6 +50,12 @@ type Service struct {
 	// the first cancellation check/card render.
 	afterStoreActiveRunHook          func()
 	beforePendingCompletionRetryHook func()
+}
+
+// mediaResolver keeps attachment resolution testable without coupling the
+// service to a concrete cache implementation.
+type mediaResolver interface {
+	Resolve(context.Context, media.Downloader, []media.Ref) media.Resolution
 }
 
 type AgentRunner interface {
@@ -269,11 +278,19 @@ func (s *Service) runWithCardSessionID(ctx context.Context, cmd Command, msg Mes
 		return nil
 	}
 	text := strings.TrimSpace(cmd.Text)
-	if text == "" && !cmd.Reset {
+	if text == "" && len(msg.Attachments) == 0 && !cmd.Reset {
 		return s.renderText("empty", msg.ID, card.SegmentError, "empty prompt")
 	}
+	attachments, failures, release := s.resolveAttachments(ctx, msg.Attachments)
+	defer release()
+	if len(failures) > 0 {
+		_ = s.renderText("attachment-failure", msg.ID, card.SegmentError, attachmentFailureSummary(failures, len(attachments) > 0))
+	}
+	if len(msg.Attachments) > 0 && len(attachments) == 0 && text == "" {
+		return nil
+	}
 	now := effectiveMessageTime(msg)
-	input := session.Input{ID: msg.ID, Sender: msg.Sender, Text: text, ReplyToMessageID: msg.ID, CardSessionID: cardSessionID, WorkDir: workDir, Time: now, DebounceUntil: now.Add(DebounceFor(msg)), State: session.InputDebouncing, Reset: cmd.Reset}
+	input := session.Input{ID: msg.ID, Sender: msg.Sender, Text: text, Attachments: attachments, ReplyToMessageID: msg.ID, CardSessionID: cardSessionID, WorkDir: workDir, Time: now, DebounceUntil: now.Add(DebounceFor(msg)), State: session.InputDebouncing, Reset: cmd.Reset}
 	accepted, queued, err := s.Sessions.AcceptAndEnqueue(key, input, now, s.dedupTTL(), s.dedupMaxEntries(), s.batchLimits())
 	if err != nil {
 		action := "queue_rejected"
@@ -385,7 +402,7 @@ func (s *Service) finishStartingBatch(sess session.Session, batch session.Batch,
 func (s *Service) executeBatch(ctx context.Context, sess session.Session, batch session.Batch, id string) {
 	defer s.runWG.Done()
 	defer func() { s.clearActiveRun(id); _ = s.DrainReady(time.Now()) }()
-	prompt := BuildBatchPrompt(batch.Inputs)
+	prompt := BuildBatchPrompt(batch)
 	if batch.Inputs[0].Reset && strings.TrimSpace(prompt) == "" {
 		updated, _ := s.finishBatchOrRemember(sess, batch.ID, session.BatchCompletion{Status: session.InputCompleted, At: time.Now()}, "completion_persist_failed")
 		if run, ok := s.activeRun(id); ok && run.BatchID == batch.ID && run.Stream != nil {
@@ -500,7 +517,7 @@ func effectiveMessageTime(msg Message) time.Time {
 }
 
 func (s *Service) batchLimits() session.BatchLimits {
-	limits := session.BatchLimits{MaxInputs: s.Config.BatchMaxInputs, MaxTextRunes: s.Config.BatchMaxTextRunes, MaxPending: s.Config.QueueMaxPending}
+	limits := session.BatchLimits{MaxInputs: s.Config.BatchMaxInputs, MaxTextRunes: s.Config.BatchMaxTextRunes, MaxAttachments: 10, MaxAttachmentBytes: 100 << 20, MaxPending: s.Config.QueueMaxPending}
 	if limits.MaxInputs <= 0 {
 		limits.MaxInputs = 10
 	}
@@ -511,6 +528,44 @@ func (s *Service) batchLimits() session.BatchLimits {
 		limits.MaxPending = 20
 	}
 	return limits
+}
+
+func (s *Service) resolveAttachments(ctx context.Context, refs []media.Ref) ([]media.Attachment, []media.Failure, func()) {
+	if len(refs) == 0 {
+		return nil, nil, func() {}
+	}
+	if s.MediaCache == nil {
+		failures := make([]media.Failure, 0, len(refs))
+		for _, ref := range refs {
+			failures = append(failures, media.Failure{Ref: ref, Code: "media_unavailable", Detail: "attachment resolver is not configured"})
+		}
+		return nil, failures, func() {}
+	}
+	resolution := s.MediaCache.Resolve(ctx, s.MediaDownloader, refs)
+	release := resolution.Release
+	if release == nil {
+		release = func() {}
+	}
+	return resolution.Attachments, resolution.Failures, release
+}
+
+func attachmentFailureSummary(failures []media.Failure, partial bool) string {
+	if len(failures) == 0 {
+		return ""
+	}
+	prefix := "附件处理失败，未执行："
+	if partial {
+		prefix = "部分附件未处理："
+	}
+	parts := make([]string, 0, len(failures))
+	for _, failure := range failures {
+		part := failure.Code
+		if failure.Detail != "" {
+			part += " (" + failure.Detail + ")"
+		}
+		parts = append(parts, part)
+	}
+	return prefix + strings.Join(parts, "; ")
 }
 
 func (s *Service) dedupTTL() time.Duration {
