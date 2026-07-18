@@ -89,10 +89,16 @@ func TestGCSweepPreservesPendingLeaseDuringConcurrentResolve(t *testing.T) {
 		close(atCandidate)
 		<-allowDeleteCheck
 	}
-	sweepDone := make(chan error, 1)
+	sweepDone := make(chan struct {
+		result SweepResult
+		err    error
+	}, 1)
 	go func() {
-		_, err := gc.Sweep(nil)
-		sweepDone <- err
+		result, err := gc.Sweep(nil)
+		sweepDone <- struct {
+			result SweepResult
+			err    error
+		}{result: result, err: err}
 	}()
 	<-atCandidate
 
@@ -105,8 +111,12 @@ func TestGCSweepPreservesPendingLeaseDuringConcurrentResolve(t *testing.T) {
 		t.Fatalf("resolution = %+v", resolution)
 	}
 	close(allowDeleteCheck)
-	if err := <-sweepDone; err != nil {
-		t.Fatal(err)
+	swept := <-sweepDone
+	if swept.err != nil {
+		t.Fatal(swept.err)
+	}
+	if !swept.result.Stale {
+		t.Fatalf("sweep result = %+v, want stale retry signal", swept.result)
 	}
 	assertGCPresent(t, finalPath)
 }
@@ -147,6 +157,133 @@ func TestGCSweepDoesNotDeleteInProgressDownloadTempFile(t *testing.T) {
 	defer resolution.Release()
 	if len(resolution.Attachments) != 1 || len(resolution.Failures) != 0 {
 		t.Fatalf("resolution = %+v", resolution)
+	}
+}
+
+func TestGCSweepStartupRemovesCrashTempAndRuntimeSweepSkipsIt(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "media")
+	if err := os.MkdirAll(root, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	temp := writeGCFile(t, root, ".download-crash.tmp", "crash", time.Now())
+	live := writeGCFile(t, root, "live.txt", "live", time.Now())
+	gc := NewGC(NewCache(root, Limits{CacheQuotaBytes: 1024}), 72*time.Hour)
+
+	runtimeResult, err := gc.Sweep(map[string]struct{}{live: {}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if runtimeResult.RemovedFiles != 0 || runtimeResult.UsageBytes != int64(len("crash")+len("live")) {
+		t.Fatalf("runtime sweep result = %+v, want protected temp counted in usage", runtimeResult)
+	}
+	assertGCPresent(t, temp)
+
+	startupResult, err := gc.SweepStartup(map[string]struct{}{live: {}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if startupResult.Stale || startupResult.RemovedFiles != 1 || startupResult.RemovedBytes != int64(len("crash")) || startupResult.UsageBytes != int64(len("live")) {
+		t.Fatalf("startup sweep result = %+v", startupResult)
+	}
+	assertGCAbsent(t, temp)
+	assertGCPresent(t, live)
+}
+
+func TestGCSweepAccountsForRemovedFileBeforeReturningStale(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "media")
+	if err := os.MkdirAll(root, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	candidate := writeGCFile(t, root, "candidate.txt", "old", time.Now().Add(-time.Hour))
+	cache := NewCache(root, Limits{MaxFileBytes: 1024, CacheQuotaBytes: 8192})
+	unrelated := cache.Resolve(context.Background(), freshGCDownloader{data: pngFixture()}, []Ref{{MessageID: "m2", FileKey: "other", Kind: "image", Name: "other.png"}})
+	if len(unrelated.Attachments) != 1 {
+		t.Fatalf("unrelated resolution = %+v", unrelated)
+	}
+	unrelatedPath := unrelated.Attachments[0].Path
+	gc := NewGC(cache, time.Nanosecond)
+	gc.afterDeleteClaim = func(path string) {
+		if path == candidate {
+			unrelated.Release()
+		}
+	}
+
+	result, err := gc.Sweep(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.Stale || result.RemovedFiles != 1 || result.RemovedBytes != int64(len("old")) || result.UsageBytes != int64(len(pngFixture())) {
+		t.Fatalf("sweep result = %+v, want removed candidate accounted before stale", result)
+	}
+	assertGCAbsent(t, candidate)
+	assertGCPresent(t, unrelatedPath)
+}
+
+func TestResolveWaitsOutsideLockForDeleteClaimThenCommitsSamePath(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "media")
+	if err := os.MkdirAll(root, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	data := pngFixture()
+	digest := sha256.Sum256(data)
+	finalPath := filepath.Join(root, hex.EncodeToString(digest[:])+".png")
+	if err := os.WriteFile(finalPath, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	old := time.Now().Add(-time.Hour)
+	if err := os.Chtimes(finalPath, old, old); err != nil {
+		t.Fatal(err)
+	}
+	cache := NewCache(root, Limits{MaxFileBytes: 1024, CacheQuotaBytes: 8192})
+	claimed := make(chan struct{})
+	allowDelete := make(chan struct{})
+	gc := NewGC(cache, time.Nanosecond)
+	gc.afterDeleteClaim = func(path string) {
+		if path == finalPath {
+			close(claimed)
+			<-allowDelete
+		}
+	}
+	sweepDone := make(chan error, 1)
+	go func() {
+		_, err := gc.Sweep(nil)
+		sweepDone <- err
+	}()
+	<-claimed
+
+	waiting := make(chan struct{})
+	cache.beforeDeleteWait = func(path string) {
+		if path == finalPath {
+			close(waiting)
+		}
+	}
+	resolutionDone := make(chan Resolution, 1)
+	go func() {
+		resolutionDone <- cache.Resolve(context.Background(), freshGCDownloader{data: data}, []Ref{{MessageID: "m1", FileKey: "image", Kind: "image", Name: "image.png"}})
+	}()
+	<-waiting
+	select {
+	case resolution := <-resolutionDone:
+		t.Fatalf("Resolve completed before delete claim ended: %+v", resolution)
+	default:
+	}
+
+	close(allowDelete)
+	if err := <-sweepDone; err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case resolution := <-resolutionDone:
+		defer resolution.Release()
+		if len(resolution.Attachments) != 1 || len(resolution.Failures) != 0 {
+			t.Fatalf("resolution = %+v", resolution)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Resolve deadlocked waiting for completed delete claim")
+	}
+	assertGCPresent(t, finalPath)
+	if _, ok := cache.PendingPaths()[finalPath]; !ok {
+		t.Fatal("committed final path lost its pending lease")
 	}
 }
 

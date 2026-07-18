@@ -44,6 +44,8 @@ type Cache struct {
 	pending    map[string]int
 	generation uint64
 	deleting   map[string]chan struct{}
+	// beforeDeleteWait is a package-private deterministic test seam.
+	beforeDeleteWait func(string)
 }
 
 // NewCache constructs a media cache. The directory is created lazily.
@@ -288,6 +290,9 @@ func (c *Cache) admitFinalPath(path string) error {
 			return nil
 		}
 		if wait != nil {
+			if c.beforeDeleteWait != nil {
+				c.beforeDeleteWait(path)
+			}
 			<-wait
 		}
 	}

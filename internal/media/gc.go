@@ -18,7 +18,8 @@ type GC struct {
 	retention time.Duration
 	// beforeDelete is a package-private deterministic test seam. Production
 	// callers leave it nil.
-	beforeDelete func(string)
+	beforeDelete     func(string)
+	afterDeleteClaim func(string)
 }
 
 // SweepResult reports the observable storage effect of one sweep.
@@ -26,6 +27,10 @@ type SweepResult struct {
 	RemovedFiles int
 	RemovedBytes int64
 	UsageBytes   int64
+	// Stale tells the caller that pending generation changed after its durable
+	// live snapshot. The caller should obtain a fresh snapshot and retry within
+	// its own bounded retry policy.
+	Stale bool
 }
 
 func NewGC(cache *Cache, retention time.Duration) *GC {
@@ -36,6 +41,17 @@ func NewGC(cache *Cache, retention time.Duration) *GC {
 // first applies retention and then evicts remaining unreferenced files oldest
 // first until the cache quota is met. Live and pending paths are never deleted.
 func (g *GC) Sweep(durableLive map[string]struct{}) (SweepResult, error) {
+	return g.sweep(durableLive, false)
+}
+
+// SweepStartup additionally removes crash-leftover download temp files. The
+// caller must invoke it before accepting messages, when no Resolve can be
+// active; runtime Sweep deliberately continues to protect every temp file.
+func (g *GC) SweepStartup(durableLive map[string]struct{}) (SweepResult, error) {
+	return g.sweep(durableLive, true)
+}
+
+func (g *GC) sweep(durableLive map[string]struct{}, cleanupTemps bool) (SweepResult, error) {
 	if g == nil || g.cache == nil {
 		return SweepResult{}, fmt.Errorf("media gc is not configured")
 	}
@@ -46,7 +62,7 @@ func (g *GC) Sweep(durableLive map[string]struct{}) (SweepResult, error) {
 	for path := range pending {
 		live[path] = struct{}{}
 	}
-	return g.sweepCache(g.cache.root, g.cache.limits.CacheQuotaBytes, g.retention, live, generation)
+	return g.sweepCache(g.cache.root, g.cache.limits.CacheQuotaBytes, g.retention, live, generation, cleanupTemps)
 }
 
 type cacheFile struct {
@@ -57,13 +73,44 @@ type cacheFile struct {
 	removed bool
 }
 
-func (g *GC) sweepCache(root string, quota int64, retention time.Duration, live map[string]struct{}, generation uint64) (SweepResult, error) {
+func (g *GC) sweepCache(root string, quota int64, retention time.Duration, live map[string]struct{}, generation uint64, cleanupTemps bool) (SweepResult, error) {
 	root, entries, usage, err := cacheFiles(root)
 	if err != nil {
 		return SweepResult{}, err
 	}
 	live = absolutePaths(live)
 	result := SweepResult{UsageBytes: usage}
+	remove := func(entry *cacheFile) (bool, error) {
+		removed, stale, nextGeneration, err := g.removeCandidate(root, entry.path, generation)
+		if err != nil {
+			return true, err
+		}
+		generation = nextGeneration
+		if removed {
+			entry.removed = true
+			result.RemovedFiles++
+			result.RemovedBytes += entry.size
+			result.UsageBytes -= entry.size
+		}
+		if stale {
+			result.Stale = true
+			return true, nil
+		}
+		return false, nil
+	}
+
+	if cleanupTemps {
+		for i := range entries {
+			entry := &entries[i]
+			if !entry.temp {
+				continue
+			}
+			stop, err := remove(entry)
+			if err != nil || stop {
+				return result, err
+			}
+		}
+	}
 
 	if retention > 0 {
 		cutoff := time.Now().Add(-retention)
@@ -75,19 +122,9 @@ func (g *GC) sweepCache(root string, quota int64, retention time.Duration, live 
 			if _, keep := live[entry.path]; keep || !entry.modTime.Before(cutoff) {
 				continue
 			}
-			removed, stale, nextGeneration, err := g.removeCandidate(root, entry.path, generation)
-			if err != nil {
+			stop, err := remove(entry)
+			if err != nil || stop {
 				return result, err
-			}
-			if stale {
-				return result, nil
-			}
-			generation = nextGeneration
-			if removed {
-				entry.removed = true
-				result.RemovedFiles++
-				result.RemovedBytes += entry.size
-				result.UsageBytes -= entry.size
 			}
 		}
 	}
@@ -107,19 +144,9 @@ func (g *GC) sweepCache(root string, quota int64, retention time.Duration, live 
 			if _, keep := live[entry.path]; keep {
 				continue
 			}
-			removed, stale, nextGeneration, err := g.removeCandidate(root, entry.path, generation)
-			if err != nil {
+			stop, err := remove(entry)
+			if err != nil || stop {
 				return result, err
-			}
-			if stale {
-				return result, nil
-			}
-			generation = nextGeneration
-			if removed {
-				entry.removed = true
-				result.RemovedFiles++
-				result.RemovedBytes += entry.size
-				result.UsageBytes -= entry.size
 			}
 		}
 	}
@@ -136,6 +163,9 @@ func (g *GC) removeCandidate(root, path string, generation uint64) (bool, bool, 
 		return false, false, generation, nil
 	case deleteStale:
 		return false, true, generation, nil
+	}
+	if g.afterDeleteClaim != nil {
+		g.afterDeleteClaim(path)
 	}
 
 	// The per-path claim prevents in-process Resolve commits from leasing this
