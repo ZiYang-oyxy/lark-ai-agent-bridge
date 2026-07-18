@@ -284,6 +284,29 @@ Media case 必须设置 `E2E_REAL_E2E_FAKE_CLAUDE=1` 和 `E2E_REAL_E2E_P2P_CHAT_
 - 连续失败消息必须各自回复自己的消息;不得因复用 CardKit key 而更新上一张失败卡。
 - evidence 目录至少包含 `summary.md`、`audit.jsonl`、`messages.jsonl`、`fake-claude.log` 和 `mget/*.json`。
 
+### Runtime Config 真实 E2E
+
+Runtime Config 使用真实飞书消息、CardKit form/callback 和 `mget` 读取,同时用 fake Claude 确定性校验 argv 与 actual model。它必须独占同一 app 的 bridge 连接,并在 Media 窗口关闭后、Reply Experience 窗口开始前串行运行:
+
+```bash
+E2E_REAL_E2E_FAKE_CLAUDE=1 \
+E2E_MODEL=sonnet E2E_EFFORT=medium \
+./scripts/e2e-real.sh \
+  --case config_roundtrip --case config_reset --case config_frozen_queue \
+  --case requested_actual_model --case wrapper_preflight
+```
+
+验收要求:
+
+- `default/sonnet/opus/haiku` 与一个 `E2E_ALLOWED_MODELS` 扩展值均完成 save→persist→下一次 argv 闭环;`default` 不产生对应 CLI flag。
+- `default/low/medium/high` 四种 effort 均覆盖;非法 callback 返回错误卡并写 `config_save_failed`,且不得覆盖最后一次有效偏好。
+- queued input 使用入队时冻结的 model/effort;后保存的偏好只影响后入队输入。
+- `/config reset` 后 snapshot 无 override;restart 后重新读取 `E2E_MODEL`/`E2E_EFFORT` 环境默认。
+- 结果卡分别显示 requested、actual、effort;requested/actual 不一致时必须有 `model_requested_actual_mismatch` audit。
+- `doctor --strict` 的 wrapper preflight 通过,argv 为 bounded harmless one-shot,输出不含 secret 或 wrapper 返回内容。
+
+2026-07-18 的证据位于 `.cache/evidence/e8cca6b/config-real/summary.md`,五个 case 均为 passed;补充的 `REQUIRE_E2E=1 ./scripts/evidence.sh` 报告为 `.cache/evidence/evidence-20260718-111543.md`。
+
 ## 证据报告
 
 生成本地证据报告：

@@ -41,6 +41,11 @@ FULL_EXTRA_CASES=(
   media_text_files
   media_partial
   media_rejected
+  config_roundtrip
+  config_reset
+  config_frozen_queue
+  requested_actual_model
+  wrapper_preflight
 )
 
 MODE="smoke"
@@ -61,6 +66,9 @@ DEFAULT_WORKDIR="${E2E_REAL_E2E_DEFAULT_WORKDIR:-/tmp/lark-agent-bridge-real-$RU
 WAIT_TIMEOUT="${E2E_REAL_E2E_TIMEOUT_SEC:-420}"
 USE_FAKE_CLAUDE="${E2E_REAL_E2E_FAKE_CLAUDE:-0}"
 MEDIA_P2P_CHAT_ID="${E2E_REAL_E2E_P2P_CHAT_ID:-}"
+CONFIG_CUSTOM_MODEL="${E2E_REAL_E2E_CUSTOM_MODEL:-claude-e2e-custom}"
+CONFIG_DEFAULT_MODEL="${E2E_MODEL:-default}"
+CONFIG_DEFAULT_EFFORT="${E2E_EFFORT:-low}"
 FAKE_BIN_DIR=""
 SERVER_PID=""
 FAILURES=0
@@ -214,7 +222,9 @@ MESSAGES="$RUN_DIR/messages.jsonl"
 AUDIT="$RUN_DIR/audit.jsonl"
 MGET_DIR="$RUN_DIR/mget"
 SERVER_LOG="$RUN_DIR/server.log"
-SESSION_STORE="$RUN_DIR/sessions.json"
+STATE_DIR="$RUN_DIR/state"
+SESSION_STORE="$STATE_DIR/sessions.json"
+PREFERENCE_STORE="$STATE_DIR/preferences.json"
 FAKE_CLAUDE_LOG="$RUN_DIR/fake-claude.log"
 MEDIA_CACHE_DIR="$RUN_DIR/media-cache"
 MEDIA_FIXTURE_DIR="$RUN_DIR/media-fixtures"
@@ -225,7 +235,8 @@ RUN_TOKEN="${RUN_ID}-$RANDOM-$$"
 CALLBACK_ADDR="${E2E_REAL_E2E_CALLBACK_ADDR:-127.0.0.1:$((20000 + RANDOM % 20000))}"
 SERVER_QUEUE_MAX_PENDING=""
 
-mkdir -p "$RUN_DIR" "$MGET_DIR" "$ROOT/.cache/go-build"
+mkdir -p "$RUN_DIR" "$MGET_DIR" "$STATE_DIR" "$ROOT/.cache/go-build"
+chmod 700 "$STATE_DIR"
 if [[ -e "$SERVER_PID_FILE" ]]; then
   echo "run directory already contains server state; choose a new --run-dir: $SERVER_PID_FILE" >&2
   exit 1
@@ -508,7 +519,16 @@ start_server_if_needed() {
   prepare_fake_claude_if_needed
   log "starting bridge serve"
   local -a server_env
-  server_env=("PATH=$FAKE_BIN_DIR:$PATH" "E2E_AUDIT_LOG=$AUDIT" "E2E_SESSION_STORE=$SESSION_STORE" "E2E_MEDIA_CACHE_DIR=$MEDIA_CACHE_DIR" "E2E_CALLBACK_ADDR=$CALLBACK_ADDR" "GOCACHE=$GOCACHE")
+  server_env=(
+    "PATH=$FAKE_BIN_DIR:$PATH"
+    "E2E_AUDIT_LOG=$AUDIT"
+    "E2E_SESSION_STORE=$SESSION_STORE"
+    "E2E_PREFERENCE_STORE=$PREFERENCE_STORE"
+    "E2E_MEDIA_CACHE_DIR=$MEDIA_CACHE_DIR"
+    "E2E_CALLBACK_ADDR=$CALLBACK_ADDR"
+    "E2E_ALLOWED_MODELS=${E2E_ALLOWED_MODELS:+$E2E_ALLOWED_MODELS,}$CONFIG_CUSTOM_MODEL"
+    "GOCACHE=$GOCACHE"
+  )
   if [[ "$USE_FAKE_CLAUDE" == "1" ]]; then
     server_env+=("E2E_CLAUDE_BIN=$FAKE_BIN_DIR/claude" "FAKE_CLAUDE_LOG=$FAKE_CLAUDE_LOG")
   fi
@@ -1141,6 +1161,86 @@ stop_card() {
   jq -e '.ok == true and .card != null' "$out" >/dev/null
 }
 
+open_config() {
+  local case_name="$1"
+  local msg file
+  msg="$(send_at "/config")"
+  wait_audit "$msg.*event=config" 60
+  file="$(mget "${case_name}_open" "$msg")"
+  assert_file_contains "$file" "个人运行偏好"
+  record_message "$case_name" config "$msg" "$file"
+  printf '%s\n' "$msg"
+}
+
+submit_config() {
+  local case_name="$1"
+  local session_id="$2"
+  local model="$3"
+  local effort="$4"
+  local out="$RUN_DIR/${case_name}-${model}-${effort}.json"
+  local payload mark
+  payload="$(jq -nc --arg session "$session_id" --arg model "$model" --arg effort "$effort" \
+    '{operator:{open_id:"e2e"},action:{value:{session:$session,action_id:"config.save"},form_value:{model:$model,effort:$effort}}}')"
+  mark="$(audit_mark)"
+  curl -fsS -X POST "http://$CALLBACK_ADDR/card/callback" -H 'Content-Type: application/json' -d "$payload" >"$out"
+  jq -e '.ok == true and .card != null' "$out" >/dev/null
+  wait_audit_since "$mark" '"Action":"config_saved"' 60
+  assert_file_contains "$out" "model=\`$model\`"
+  assert_file_contains "$out" "effort=\`$effort\`"
+}
+
+submit_invalid_config() {
+  local case_name="$1"
+  local session_id="$2"
+  local out="$RUN_DIR/${case_name}-invalid.json"
+  local payload mark
+  payload="$(jq -nc --arg session "$session_id" \
+    '{operator:{open_id:"e2e"},action:{value:{session:$session,action_id:"config.save"},form_value:{model:"not-allowed",effort:"extreme"}}}')"
+  mark="$(audit_mark)"
+  curl -fsS -X POST "http://$CALLBACK_ADDR/card/callback" -H 'Content-Type: application/json' -d "$payload" >"$out"
+  jq -e '.ok == true and .card != null' "$out" >/dev/null
+  wait_audit_since "$mark" '"Action":"config_save_failed"' 60
+  assert_file_contains "$out" "偏好保存失败"
+}
+
+assert_persisted_config() {
+  local model="$1"
+  local effort="$2"
+  jq -e --arg model "$model" --arg effort "$effort" \
+    '.schema_version == 1 and .override.model == $model and .override.effort == $effort' "$PREFERENCE_STORE" >/dev/null
+}
+
+assert_fake_config_argv_since() {
+  local mark="$1"
+  local marker="$2"
+  local model="$3"
+  local effort="$4"
+  local line
+  line="$(tail -n "+$((mark + 1))" "$FAKE_CLAUDE_LOG" | grep -F -- "$marker" | tail -n 1)"
+  if [[ -z "$line" ]]; then
+    echo "no fake Claude invocation found for config marker: $marker" >&2
+    return 1
+  fi
+  if [[ "$model" == "default" ]]; then
+    if printf '%s\n' "$line" | grep -E -- '(^| )--model( |$)' >/dev/null 2>&1; then
+      echo "default model unexpectedly emitted --model: $line" >&2
+      return 1
+    fi
+  elif ! printf '%s\n' "$line" | grep -F -- "--model $model" >/dev/null 2>&1; then
+    echo "fake Claude argv missing model $model: $line" >&2
+    return 1
+  fi
+  if [[ "$effort" == "default" ]]; then
+    if printf '%s\n' "$line" | grep -E -- '(^| )--effort( |$)' >/dev/null 2>&1; then
+      echo "default effort unexpectedly emitted --effort: $line" >&2
+      return 1
+    fi
+  elif ! printf '%s\n' "$line" | grep -F -- "--effort $effort" >/dev/null 2>&1; then
+    echo "fake Claude argv missing effort $effort: $line" >&2
+    return 1
+  fi
+}
+
 case_preflight() {
   ./scripts/e2e-preflight.sh >"$RUN_DIR/preflight.log" 2>&1
   summary "- preflight: passed"
@@ -1683,6 +1783,146 @@ case_media_rejected() {
   run_media_rejection docx "$MEDIA_FIXTURE_DIR/unsupported.docx" unsupported_media
   run_media_rejection audio "$MEDIA_FIXTURE_DIR/unsupported.wav" unsupported_media
   run_media_rejection attachment_only_total_failure "$MEDIA_FIXTURE_DIR/unsupported.bin" unsupported_media
+}
+
+case_config_roundtrip() {
+  require_fake_claude
+  local config_msg session_id model effort marker msg file log_mark
+  local -a models=(default sonnet opus haiku "$CONFIG_CUSTOM_MODEL")
+  local -a efforts=(default low medium high high)
+  config_msg="$(open_config config_roundtrip)"
+  session_id="config:message:${config_msg}"
+  for index in "${!models[@]}"; do
+    model="${models[$index]}"
+    effort="${efforts[$index]}"
+    submit_config config_roundtrip "$session_id" "$model" "$effort"
+    assert_persisted_config "$model" "$effort"
+    marker="E2E_${RUN_ID}_CONFIG_${index}"
+    log_mark="$(fake_log_mark)"
+    msg="$(send_at "/new ${marker}")"
+    wait_audit "$msg.*event=result" 60
+    wait_file_contains "$FAKE_CLAUDE_LOG" "$marker" 60
+    assert_fake_config_argv_since "$log_mark" "$marker" "$model" "$effort"
+    file="$(mget "config_roundtrip_${index}" "$msg")"
+    assert_file_contains "$file" "requested: $model"
+    assert_file_contains "$file" "effort: $effort"
+    record_message config_roundtrip "run_${model}_${effort}" "$msg" "$file"
+  done
+  submit_invalid_config config_roundtrip "$session_id"
+  assert_persisted_config "$CONFIG_CUSTOM_MODEL" high
+  summary "- combinations: default/default, sonnet/low, opus/medium, haiku/high, ${CONFIG_CUSTOM_MODEL}/high"
+}
+
+case_config_reset() {
+  require_fake_claude
+  local config_msg session_id reset_msg reset_file reopened marker msg log_mark
+  config_msg="$(open_config config_reset)"
+  session_id="config:message:${config_msg}"
+  submit_config config_reset "$session_id" opus high
+  assert_persisted_config opus high
+  reset_msg="$(send_at "/config reset")"
+  wait_audit '"Action":"config_reset"' 60
+  wait_audit "reply_to=$reset_msg event=message" 60
+  reset_file="$(mget config_reset "$reset_msg")"
+  assert_file_contains "$reset_file" "已恢复环境默认"
+  jq -e '.schema_version == 1 and .override == null' "$PREFERENCE_STORE" >/dev/null
+  restart_server TERM
+  reopened="$(open_config config_reset_after_restart)"
+  jq -e '.schema_version == 1 and .override == null' "$PREFERENCE_STORE" >/dev/null
+  marker="E2E_${RUN_ID}_CONFIG_RESET_DEFAULTS"
+  log_mark="$(fake_log_mark)"
+  msg="$(send_at "/new ${marker}")"
+  wait_audit "$msg.*event=result" 60
+  wait_file_contains "$FAKE_CLAUDE_LOG" "$marker" 60
+  assert_fake_config_argv_since "$log_mark" "$marker" "$CONFIG_DEFAULT_MODEL" "$CONFIG_DEFAULT_EFFORT"
+  record_message config_reset reset "$reset_msg" "$reset_file"
+  record_message config_reset reopened "$reopened"
+  record_message config_reset defaults_run "$msg"
+  summary "- environment_defaults: model=$CONFIG_DEFAULT_MODEL effort=$CONFIG_DEFAULT_EFFORT"
+}
+
+case_config_frozen_queue() {
+  require_fake_claude
+  local config_msg session_id active old_queued new_queued mark log_mark old_file new_file
+  local active_marker="E2E_${RUN_ID}_CONFIG_ACTIVE_E2E_BLOCK"
+  local old_marker="E2E_${RUN_ID}_CONFIG_FROZEN_OLD"
+  local new_marker="E2E_${RUN_ID}_CONFIG_FROZEN_NEW"
+  config_msg="$(open_config config_frozen_queue)"
+  session_id="config:message:${config_msg}"
+  submit_config config_frozen_queue "$session_id" sonnet low
+  active="$(send_at "/new ${active_marker}")"
+  wait_audit "$active.*event=stream" 60
+  wait_file_contains "$FAKE_CLAUDE_LOG" "$active_marker" 60
+  log_mark="$(fake_log_mark)"
+  mark="$(audit_mark)"
+  old_queued="$(send_at "$old_marker")"
+  wait_audit_since "$mark" '"Action":"queue_input"' 60
+  submit_config config_frozen_queue "$session_id" opus high
+  mark="$(audit_mark)"
+  new_queued="$(send_at "$new_marker")"
+  wait_audit_since "$mark" '"Action":"queue_input"' 60
+  mark="$(audit_mark)"
+  stop_card "claude:${E2E_E2E_CHAT_ID}:message:${active}"
+  wait_audit_since "$mark" '"Action":"batch_stop_requested"' 60
+  wait_audit "$old_queued.*event=result" 60
+  wait_audit "$new_queued.*event=result" 60
+  wait_file_contains "$FAKE_CLAUDE_LOG" "$old_marker" 60
+  wait_file_contains "$FAKE_CLAUDE_LOG" "$new_marker" 60
+  assert_fake_config_argv_since "$log_mark" "$old_marker" sonnet low
+  assert_fake_config_argv_since "$log_mark" "$new_marker" opus high
+  old_file="$(mget config_frozen_queue_old "$old_queued")"
+  new_file="$(mget config_frozen_queue_new "$new_queued")"
+  assert_file_contains "$old_file" "requested: sonnet"
+  assert_file_contains "$new_file" "requested: opus"
+  record_message config_frozen_queue active "$active"
+  record_message config_frozen_queue frozen_old "$old_queued" "$old_file"
+  record_message config_frozen_queue frozen_new "$new_queued" "$new_file"
+}
+
+case_requested_actual_model() {
+  require_fake_claude
+  local config_msg session_id marker msg file mark
+  config_msg="$(open_config requested_actual_model)"
+  session_id="config:message:${config_msg}"
+  submit_config requested_actual_model "$session_id" opus high
+  marker="E2E_${RUN_ID}_REQUESTED_ACTUAL"
+  mark="$(audit_mark)"
+  msg="$(send_at "/new ${marker}")"
+  wait_audit "$msg.*event=result" 60
+  wait_audit_since "$mark" '"Action":"model_requested_actual_mismatch".*requested=opus actual=fake-claude-e2e' 60
+  file="$(mget requested_actual_model "$msg")"
+  assert_file_contains "$file" "requested: opus"
+  assert_file_contains "$file" "actual: fake-claude-e2e"
+  assert_file_contains "$file" "effort: high"
+  assert_file_not_contains "$file" "actual: opus"
+  record_message requested_actual_model result "$msg" "$file"
+}
+
+case_wrapper_preflight() {
+  require_fake_claude
+  local out="$RUN_DIR/wrapper-preflight.out"
+  local log_mark line
+  log_mark="$(fake_log_mark)"
+  env \
+    E2E_CLAUDE_BIN="$FAKE_BIN_DIR/claude" \
+    FAKE_CLAUDE_LOG="$FAKE_CLAUDE_LOG" \
+    E2E_AUDIT_LOG="$AUDIT" \
+    E2E_SESSION_STORE="$SESSION_STORE" \
+    E2E_PREFERENCE_STORE="$PREFERENCE_STORE" \
+    E2E_MEDIA_CACHE_DIR="$MEDIA_CACHE_DIR" \
+    E2E_ALLOWED_MODELS="${E2E_ALLOWED_MODELS:+$E2E_ALLOWED_MODELS,}$CONFIG_CUSTOM_MODEL" \
+    "$SERVER_BIN" doctor --strict --default-workdir "$DEFAULT_WORKDIR" >"$out"
+  assert_file_contains "$out" "ok wrapper-preflight: passed"
+  line="$(tail -n "+$((log_mark + 1))" "$FAKE_CLAUDE_LOG" | tail -n 1)"
+  if ! printf '%s\n' "$line" | grep -F -- "-p --output-format stream-json --verbose --effort low Reply with exactly OK" >/dev/null 2>&1; then
+    echo "wrapper preflight did not use the bounded harmless invocation: $line" >&2
+    return 1
+  fi
+  if grep -F -- "$LARK_APP_SECRET" "$out" >/dev/null 2>&1; then
+    echo "wrapper preflight output leaked LARK_APP_SECRET" >&2
+    return 1
+  fi
+  summary "- doctor: strict wrapper preflight passed"
 }
 
 run_case() {

@@ -249,6 +249,11 @@ Full-only cases:
 - `media_text_files`: sends `.txt/.md/.json/.csv` as native P2P file messages and verifies each canonical cache path reaches the Agent prompt.
 - `media_partial`: verifies mixed text+image succeeds, then verifies an unsupported peer file gets a user-visible failure without starting another Agent process.
 - `media_rejected`: verifies forged image content, a 26 MiB file, PDF, DOCX, audio-as-file, and unknown binary all fail visibly and never reach the Agent prompt.
+- `config_roundtrip`: opens the real `/config` card, saves default/sonnet/opus/haiku plus one custom allowed model across all four effort values, then verifies persistence, exact frozen argv and result-card metadata.
+- `config_reset`: saves an override, resets it, restarts the bridge and verifies the persisted override stays absent while `E2E_MODEL`/`E2E_EFFORT` defaults drive the next run.
+- `config_frozen_queue`: queues one input under sonnet/low, changes preferences to opus/high, queues another input and verifies the two later Agent invocations retain their enqueue-time values.
+- `requested_actual_model`: verifies the result card distinguishes requested `opus` from fake CLI actual `fake-claude-e2e`, and requires the mismatch audit event.
+- `wrapper_preflight`: runs `doctor --strict` with the E2E wrapper, verifies the bounded harmless argv and requires redacted successful output.
 
 Run the media gate serially, with no other bridge process connected to the same app:
 
@@ -259,6 +264,18 @@ E2E_REAL_E2E_FAKE_CLAUDE=1 ./scripts/e2e-real.sh \
 ```
 
 Feishu file resources currently return `application/octet-stream` for ordinary files and `application/x-xls` for CSV. The bridge maps those transport declarations only after an allowlisted extension match, then still requires byte-level content sniffing. A failure card is polled through `mget` because the read API can lag the successful CardKit reply audit by a few seconds.
+
+Run the runtime-configuration gate in a separate window after media and before reply-mode E2E. `fake Claude` keeps argv, queue boundaries and reported actual model deterministic; Feishu message delivery, `/config` CardKit rendering/callbacks and reply reads remain real:
+
+```bash
+E2E_REAL_E2E_FAKE_CLAUDE=1 \
+E2E_MODEL=sonnet E2E_EFFORT=medium \
+./scripts/e2e-real.sh \
+  --case config_roundtrip --case config_reset --case config_frozen_queue \
+  --case requested_actual_model --case wrapper_preflight
+```
+
+The gate also submits an invalid `model/effort` callback fixture and requires `config_save_failed` without changing the last valid persisted value. `config_reset` restarts the E2E bridge and proves the configured environment defaults regain precedence. Do not run another bridge process for the same Feishu app during this matrix.
 
 The restart cases codify the durable contract exactly: context resumes, pending does not. `debouncing`, `queued`, and `starting` inputs become `cancelled`; `running` becomes `interrupted`; old commands are never automatically re-run, so the user must send a new message after restart.
 
