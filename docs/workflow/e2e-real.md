@@ -94,6 +94,15 @@ Required event subscriptions:
 - `card.action.trigger`
 - `im.message.recalled_v1` for prompt revoke cancellation.
 
+The developer's user OAuth must include `im:message.send_as_user`; this is distinct from the bot's tenant permissions. Bootstrap and `--doctor` verify it with:
+
+```bash
+lark-cli --profile <lab-e2e-profile> auth check \
+  --scope im:message.send_as_user --json
+```
+
+If the App has not enabled and published that user scope, authorization cannot grant it. The result is `BLOCKED:user_send_scope_missing`; enable the permission in Feishu Open Platform, publish/install the updated App version, and then authorize the isolated CLI profile again. Repeated OAuth login without enabling the App permission does not fix it.
+
 Recall is an external subscription dependency, not a bridge-generated event. A real run must show a new `message_recalled_*` audit line after each delete. The first Core Task 9 window in `.cache/evidence/1c7d3bf/core-real/` received no recall event at all, so `recall_state` correctly failed instead of treating deletion success as delivery. Check the app's published event subscription/version and tenant installation before rerunning recall cases.
 
 Recommended existing subscriptions for diagnostics:

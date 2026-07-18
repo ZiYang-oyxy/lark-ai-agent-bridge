@@ -164,6 +164,13 @@ case "$*" in
     exit 1
     ;;
   'auth status --json --verify') printf '%s\n' '{"verified":true,"app_id":"cli_bootstrap_app","user":{"open_id":"ou_bootstrap_secret_user"}}' ;;
+  'auth check --scope im:message.send_as_user --json')
+    if [[ "${SEND_SCOPE_SCENARIO:-granted}" == "missing" ]]; then
+      printf '%s\n' '{"ok":false,"granted":null,"missing":["im:message.send_as_user"]}'
+      exit 1
+    fi
+    printf '%s\n' '{"ok":true,"granted":true,"missing":[]}'
+    ;;
   *'im chats get'*'--chat-id oc_bootstrap_secret_group'*) printf '%s\n' '{"data":{"chat_id":"oc_bootstrap_secret_group"}}' ;;
   *'im +chat-list'*'--types p2p'*)
     case "${P2P_SCENARIO:-unique}" in
@@ -221,6 +228,22 @@ set -e
 assert_eq 3 "$mismatch_status" "existing CLI profile app mismatch status"
 if rg -e 'bootstrap-secret-do-not-print|ou_bootstrap_secret_bot|oc_bootstrap_secret_group' "$mismatch_output" >/dev/null 2>&1; then
   fail "CLI profile mismatch output leaked a secret or full ID"
+fi
+
+missing_scope_root="$TEST_ROOT/bootstrap-missing-send-scope"
+missing_scope_output="$TEST_ROOT/bootstrap-missing-send-scope.out"
+mkdir -p "$missing_scope_root"
+set +e
+PATH="$FAKE_BIN:$PATH" E2E_REPO_ROOT="$missing_scope_root" SEND_SCOPE_SCENARIO=missing \
+  LARK_APP_ID="cli_bootstrap_app" LARK_APP_SECRET="bootstrap-secret-do-not-print" \
+  LARK_BOT_OPEN_ID="" E2E_E2E_CHAT_ID="oc_bootstrap_secret_group" E2E_REAL_E2E_P2P_CHAT_ID="" \
+  bash "$ROOT/scripts/e2e-init.sh" --profile developer --non-interactive >"$missing_scope_output" 2>&1
+missing_scope_status=$?
+set -e
+assert_eq 3 "$missing_scope_status" "missing send-as-user scope bootstrap status"
+rg -q 'BLOCKED user_send_scope_missing' "$missing_scope_output"
+if rg -e 'bootstrap-secret-do-not-print|ou_bootstrap_secret_bot|oc_bootstrap_secret_group' "$missing_scope_output" >/dev/null 2>&1; then
+  fail "missing scope output leaked a secret or full ID"
 fi
 
 for scenario in none multiple; do

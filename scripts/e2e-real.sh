@@ -308,7 +308,7 @@ record_static_credentials() {
 }
 
 record_static_user_auth() {
-  local response auth_app login_command="lark-cli auth login --domain im"
+  local response auth_app scope_response login_command="lark-cli auth login --domain im"
   if [[ -n "$LARK_CLI_PROFILE" ]]; then
     login_command="lark-cli --profile $LARK_CLI_PROFILE auth login --domain im"
   fi
@@ -322,8 +322,7 @@ record_static_user_auth() {
     e2e_cap_record oauth_same_app SKIPPED auth_invalid "OAuth app identity was not checked" "repair lark-cli"
     return
   fi
-  e2e_cap_record lark_cli_auth PASS ready "lark-cli user authentication is valid" ""
-  auth_app="$(printf '%s' "$response" | jq -r '.app_id // .data.app_id // .auth.app_id // empty')"
+  auth_app="$(printf '%s' "$response" | jq -r '.appId // .app_id // .data.app_id // .auth.app_id // empty')"
   if [[ -z "$auth_app" ]]; then
     e2e_cap_record oauth_same_app BLOCKED oauth_app_unverifiable "lark-cli did not expose its OAuth app identity" "run active DM preflight to prove app compatibility"
   elif [[ "$auth_app" == "${LARK_APP_ID:-}" ]]; then
@@ -331,6 +330,16 @@ record_static_user_auth() {
   else
     e2e_cap_record oauth_same_app BLOCKED oauth_app_mismatch "user OAuth belongs to another app" "run $login_command"
   fi
+  if scope_response="$(lark_cli auth check --scope im:message.send_as_user --json 2>/dev/null)"; then
+    if printf '%s' "$scope_response" | jq -e '.granted == true' >/dev/null 2>&1; then
+      e2e_cap_record lark_cli_auth PASS ready "lark-cli user authentication can send messages" ""
+      return
+    fi
+  elif printf '%s' "$scope_response" | jq -e '.missing | index("im:message.send_as_user") != null' >/dev/null 2>&1; then
+    e2e_cap_record lark_cli_auth BLOCKED user_send_scope_missing "user OAuth cannot send E2E messages" "enable and publish im:message.send_as_user, then run $login_command"
+    return
+  fi
+  e2e_cap_record lark_cli_auth FAIL user_send_scope_check_failed "lark-cli could not verify the send-as-user scope" "inspect lark-cli auth check output"
 }
 
 record_static_bot() {

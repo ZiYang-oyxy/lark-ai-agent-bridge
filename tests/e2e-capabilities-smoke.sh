@@ -86,12 +86,20 @@ cat >"$DOCTOR_BIN/lark-cli" <<'EOF'
 #!/usr/bin/env bash
 if [[ "${1:-}" == "--profile" ]]; then
   [[ "${2:-}" == lab-e2e-* ]] || exit 91
+  cli_profile="$2"
   printf 'profile=%s ' "$2" >>"${DOCTOR_LOG:?}"
   shift 2
 fi
 printf '%s\n' "$*" >>"${DOCTOR_LOG:?}"
 case "$*" in
   'auth status --json --verify') printf '%s\n' '{"verified":true,"app_id":"cli_doctor_app"}' ;;
+  'auth check --scope im:message.send_as_user --json')
+    if [[ "${cli_profile:-}" == "lab-e2e-no-send" ]]; then
+      printf '%s\n' '{"ok":false,"granted":null,"missing":["im:message.send_as_user"]}'
+      exit 1
+    fi
+    printf '%s\n' '{"ok":true,"granted":true,"missing":[]}'
+    ;;
   *'im chats get'*'--chat-id oc_doctor_group'*) printf '%s\n' '{"data":{"chat_id":"oc_doctor_group"}}' ;;
   *'im chats get'*'--chat-id oc_doctor_p2p'*) printf '%s\n' '{"data":{"chat_id":"oc_doctor_p2p","chat_mode":"p2p"}}' ;;
   *) echo "unexpected fake lark-cli call" >&2; exit 1 ;;
@@ -154,6 +162,13 @@ jq -e '.capabilities[] | select(.name == "p2p_chat" and .status == "PASS")' "$TE
 if rg -v '^profile=lab-e2e-pass ' "$DOCTOR_LOG" | rg -q .; then
   fail "named profile doctor used the global lark-cli profile"
 fi
+
+write_doctor_profile no-send oc_doctor_p2p
+run_expect_exit 3 env \
+  E2E_STATE_ROOT="$DOCTOR_STATE" DOCTOR_LOG="$DOCTOR_LOG" PATH="$DOCTOR_BIN:$PATH" E2E_CLAUDE_BIN="$DOCTOR_BIN/claude" \
+  bash "$ROOT/scripts/e2e-real.sh" --profile no-send --doctor --strict-capabilities --run-dir "$TEST_ROOT/doctor-no-send"
+jq -e '.capabilities[] | select(.name == "lark_cli_auth" and .status == "BLOCKED" and .reason_code == "user_send_scope_missing")' \
+  "$TEST_ROOT/doctor-no-send/capabilities.json" >/dev/null
 
 write_doctor_profile blocked ''
 run_expect_exit 0 env \

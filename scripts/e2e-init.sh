@@ -128,17 +128,27 @@ fetch_bot_open_id() {
 }
 
 verify_user_auth() {
-  local response auth_app
+  local response auth_app scope_response
   response="$(lark_cli auth status --json --verify 2>/dev/null)" || {
     echo "BLOCKED lark_cli_auth_missing: authorize the isolated lark-cli profile for this bridge app" >&2
     echo "Next: lark-cli --profile '$LARK_CLI_PROFILE' auth login --domain im" >&2
     exit 3
   }
-  auth_app="$(printf '%s' "$response" | jq -r '.app_id // .data.app_id // .auth.app_id // empty')"
+  auth_app="$(printf '%s' "$response" | jq -r '.appId // .app_id // .data.app_id // .auth.app_id // empty')"
   if [[ -n "$auth_app" && "$auth_app" != "$LARK_APP_ID" ]]; then
     echo "BLOCKED oauth_app_mismatch: lark-cli user OAuth belongs to another app" >&2
     exit 3
   fi
+  if scope_response="$(lark_cli auth check --scope im:message.send_as_user --json 2>/dev/null)"; then
+    if printf '%s' "$scope_response" | jq -e '.granted == true' >/dev/null 2>&1; then
+      return
+    fi
+  elif printf '%s' "$scope_response" | jq -e '.missing | index("im:message.send_as_user") != null' >/dev/null 2>&1; then
+    echo "BLOCKED user_send_scope_missing: enable and publish im:message.send_as_user, then authorize again" >&2
+    exit 3
+  fi
+  echo "FAIL user_send_scope_check: lark-cli could not verify im:message.send_as_user" >&2
+  exit 1
 }
 
 verify_group() {

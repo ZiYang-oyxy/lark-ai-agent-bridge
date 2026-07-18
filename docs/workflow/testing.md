@@ -199,6 +199,7 @@ profile 和 evidence 位于 `/.lark-agent-bridge/`、`/.cache/`，均已 Git ign
 
 - `LARK_APP_ID`、`LARK_APP_SECRET`
 - `lark-cli` 用户 OAuth 与 app identity
+- 用户 token 是否实际拥有 `im:message.send_as_user`；App 未启用该权限时返回 `BLOCKED:user_send_scope_missing`
 - bot、测试群和 P2P chat
 - Claude wrapper
 - 本地 profile 是否已有 active owner
