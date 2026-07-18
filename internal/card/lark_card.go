@@ -6,6 +6,7 @@ import (
 )
 
 func BuildLarkCard(e Event) map[string]any {
+	e = normalizeTerminalEvent(e)
 	var elements []any
 	if e.ConfigForm != nil {
 		e.Streaming = false
@@ -62,6 +63,29 @@ func BuildLarkCard(e Event) map[string]any {
 		}
 	}
 	return payload
+}
+
+func terminalCardEvent(eventType string) bool {
+	switch eventType {
+	case "result", "error", "stopped", "interrupted":
+		return true
+	default:
+		return false
+	}
+}
+
+func normalizeTerminalEvent(e Event) Event {
+	if !terminalCardEvent(e.Type) {
+		return e
+	}
+	e.Streaming = false
+	for i := range e.Actions {
+		e.Actions[i].Disabled = true
+	}
+	if e.StopButton.Visible {
+		e.StopButton.Disabled = true
+	}
+	return e
 }
 
 func buildConfigFormElements(sessionID string, form ConfigForm) []any {
@@ -267,6 +291,8 @@ func stopButtonLabel(e Event) string {
 		return "已结束"
 	case "stopped":
 		return "已停止"
+	case "interrupted":
+		return "已中断"
 	default:
 		return "已停止"
 	}
@@ -409,6 +435,8 @@ func titleForEvent(eventType string) string {
 		return "⏹ 已取消"
 	case "error":
 		return "Agent 错误"
+	case "interrupted":
+		return "服务重启，任务已中断"
 	case "config":
 		return "个人运行偏好"
 	default:
@@ -426,6 +454,8 @@ func templateForEvent(eventType string) string {
 		return "grey"
 	case "error":
 		return "red"
+	case "interrupted":
+		return "orange"
 	case "config":
 		return "blue"
 	default:

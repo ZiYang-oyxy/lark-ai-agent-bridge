@@ -3,8 +3,10 @@ package reply
 import (
 	"context"
 	"errors"
+	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"lark-agent-bridge/internal/card"
 	"lark-agent-bridge/internal/config"
@@ -138,6 +140,79 @@ func TestPolicyLatestCardRehydratesAndPersistsAdvancedRef(t *testing.T) {
 	}
 }
 
+func TestPolicyLatestCardExpiresUnsafeReferencesAtBegin(t *testing.T) {
+	now := time.Date(2026, 7, 18, 12, 0, 0, 0, time.UTC)
+	for _, tc := range []struct {
+		name          string
+		ref           session.RenderRef
+		wantRehydrate int
+		wantNew       int
+	}{
+		{name: "fresh", ref: session.RenderRef{CardID: "old-card", ReplyMessageID: "old-reply", Version: 4, CreatedAt: now.Add(-latestCardTTL + time.Nanosecond)}, wantRehydrate: 1},
+		{name: "at ttl", ref: session.RenderRef{CardID: "old-card", ReplyMessageID: "old-reply", Version: 4, CreatedAt: now.Add(-latestCardTTL)}, wantNew: 1},
+		{name: "expired", ref: session.RenderRef{CardID: "old-card", ReplyMessageID: "old-reply", Version: 4, CreatedAt: now.Add(-latestCardTTL - time.Nanosecond)}, wantNew: 1},
+		{name: "legacy zero time", ref: session.RenderRef{CardID: "old-card", ReplyMessageID: "old-reply", Version: 4}, wantRehydrate: 1},
+		{name: "sequence unknown", ref: session.RenderRef{CardID: "old-card", ReplyMessageID: "old-reply", Version: 4, CreatedAt: now.Add(-time.Hour), SequenceUnknown: true}, wantNew: 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			store, err := OpenStore(filepath.Join(t.TempDir(), "replies.json"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := store.SetLatest("scope", &tc.ref); err != nil {
+				t.Fatal(err)
+			}
+			target := &fakeTarget{}
+			policy := NewPolicy(target, store)
+			policy.now = func() time.Time { return now }
+			run, err := policy.Begin(context.Background(), configMode("latest-card"), "scope", "run", "source")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if target.rehydrateCalls != tc.wantRehydrate || target.newCalls != tc.wantNew {
+				t.Fatalf("Begin rehydrate/new = %d/%d, want %d/%d", target.rehydrateCalls, target.newCalls, tc.wantRehydrate, tc.wantNew)
+			}
+			if tc.wantNew != 0 && store.GetLatest("scope") != nil {
+				t.Fatalf("unsafe mapping remains before first render: %#v", store.GetLatest("scope"))
+			}
+			if err := run.Render(card.Event{Type: "stream"}); err != nil {
+				t.Fatal(err)
+			}
+			got := store.GetLatest("scope")
+			if got == nil || (tc.wantNew != 0 && got.CardID != "new-card") {
+				t.Fatalf("latest after render = %#v", got)
+			}
+		})
+	}
+}
+
+func TestPolicyLatestCardClearFailurePreventsNewCard(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "replies.json")
+	store, err := OpenStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 7, 18, 12, 0, 0, 0, time.UTC)
+	if err := store.SetLatest("scope", &session.RenderRef{CardID: "old-card", ReplyMessageID: "old-reply", CreatedAt: now.Add(-latestCardTTL)}); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(path, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	target := &fakeTarget{}
+	policy := NewPolicy(target, store)
+	policy.now = func() time.Time { return now }
+	if _, err := policy.Begin(context.Background(), configMode("latest-card"), "scope", "run", "source"); err == nil {
+		t.Fatal("Begin() error = nil, want clearing error")
+	}
+	if target.newCalls != 0 {
+		t.Fatalf("new calls = %d, want 0", target.newCalls)
+	}
+}
+
 func TestPolicyLatestCardReplacesOnlyStaleMapping(t *testing.T) {
 	for _, tc := range []struct {
 		name      string
@@ -148,6 +223,7 @@ func TestPolicyLatestCardReplacesOnlyStaleMapping(t *testing.T) {
 	}{
 		{name: "stale", err: feishu.ErrStaleRenderRef, wantNew: 1, wantCard: "new-card"},
 		{name: "transient", err: errors.New("network down"), wantError: true, wantCard: "old-card"},
+		{name: "server", err: &feishu.FeishuAPIError{HTTPStatus: 500, Code: 999}, wantError: true, wantCard: "old-card"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			store, err := OpenStore(filepath.Join(t.TempDir(), "replies.json"))

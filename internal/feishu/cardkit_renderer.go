@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"time"
 
 	"lark-agent-bridge/internal/card"
 	"lark-agent-bridge/internal/session"
@@ -26,6 +27,7 @@ type CardKitRenderer struct {
 	replyMessageID   string
 	cardID           string
 	sequence         int
+	createdAt        time.Time
 	observer         CardKitRenderObserver
 	routerKey        string
 }
@@ -87,6 +89,7 @@ func (r *CardKitRouterRenderer) Rehydrate(sessionID string, ref session.RenderRe
 	renderer.cardID = ref.CardID
 	renderer.replyMessageID = ref.ReplyMessageID
 	renderer.sequence = ref.Version
+	renderer.createdAt = ref.CreatedAt
 	r.mu.Lock()
 	r.renderers[sessionID] = renderer
 	r.mu.Unlock()
@@ -154,6 +157,7 @@ func (r *CardKitRenderer) renderContext(ctx context.Context, e card.Event) error
 		if err != nil {
 			return err
 		}
+		createdAt := time.Now().UTC()
 		cardID := created.CardID
 		r.recordRender("cardkit_create", e, fmt.Sprintf("key=%s card_id=%s reply_to=%s event=%s %s", r.renderKey(e), cardID, r.replyToMessageID, e.Type, renderAuditState(e)))
 		if r.replyToMessageID != "" {
@@ -169,7 +173,10 @@ func (r *CardKitRenderer) renderContext(ctx context.Context, e card.Event) error
 				return fmt.Errorf("cardkit reply returned empty message id")
 			}
 			r.replyMessageID = replied.MessageID
+			r.cardID = cardID
+			r.createdAt = createdAt
 			r.recordRender("cardkit_reply", e, fmt.Sprintf("key=%s card_id=%s reply_to=%s event=%s %s", r.renderKey(e), cardID, r.replyToMessageID, e.Type, renderAuditState(e)))
+			return nil
 		}
 		r.cardID = cardID
 		return nil
@@ -211,10 +218,10 @@ func (r *CardKitRenderer) RenderRef() session.RenderRef {
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if r.cardID == "" {
+	if r.cardID == "" || r.replyMessageID == "" {
 		return session.RenderRef{}
 	}
-	return session.RenderRef{CardID: r.cardID, ReplyMessageID: r.replyMessageID, Version: r.sequence}
+	return session.RenderRef{CardID: r.cardID, ReplyMessageID: r.replyMessageID, Version: r.sequence, CreatedAt: r.createdAt}
 }
 
 func (r *CardKitRenderer) recordRender(action string, e card.Event, detail string) {

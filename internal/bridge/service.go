@@ -234,6 +234,15 @@ func (s *Service) ProcessRecoveryNotices(ctx context.Context) {
 			continue
 		}
 		seenCards[notice.RenderRef.CardID] = struct{}{}
+		if notice.RenderRef.SequenceUnknown {
+			s.Audit.Record(
+				"system",
+				"recovery_card_update_skipped_sequence_unknown",
+				notice.SessionID,
+				fmt.Sprintf("pending_sequence=%d", notice.RenderRef.PendingSequence),
+			)
+			continue
+		}
 		if s.CardTarget == nil {
 			s.Audit.Record("system", "recovery_card_update_failed", notice.SessionID, "reply card target is unavailable")
 			continue
@@ -251,9 +260,12 @@ func (s *Service) ProcessRecoveryNotices(ctx context.Context) {
 			Type:             "interrupted",
 			SessionID:        cardSessionID,
 			ReplyToMessageID: notice.ReplyToMessageID,
-			Segments:         []card.Segment{{Kind: card.SegmentError, Text: "服务重启,已中断,请重新发送"}},
+			Segments:         []card.Segment{{Kind: card.SegmentText, Text: "服务重启，已中断，请重新发送"}},
 			Meta:             card.Meta{Status: string(session.InputInterrupted)},
+			StopButton:       card.StopButton{Visible: true, Disabled: true},
+			Actions:          nil,
 			Streaming:        false,
+			HideAgentPanels:  true,
 		}
 		var renderErr error
 		if contextRenderer, ok := renderer.(feishu.ContextRenderer); ok {
