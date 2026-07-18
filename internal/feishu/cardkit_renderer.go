@@ -2,6 +2,8 @@ package feishu
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"sync"
@@ -29,8 +31,19 @@ type CardKitRenderer struct {
 	sequence         int
 	createdAt        time.Time
 	interactionDepth int
+	sequenceUnknown  bool
+	pendingSequence  int
+	journal          NativeSequenceJournal
+	binding          RenderBinding
+	snapshot         *cardSnapshot
 	observer         CardKitRenderObserver
 	routerKey        string
+}
+
+type cardSnapshot struct {
+	prepared          card.PreparedLarkCard
+	staticFingerprint [32]byte
+	nativeDisabled    bool
 }
 
 func (r *CardKitRouterRenderer) BeginCardInteraction(sessionID string) func() {
@@ -85,6 +98,10 @@ func NewCardKitRendererWithObserver(client CardKitClientAPI, replyToMessageID st
 	return &CardKitRenderer{client: client, replyToMessageID: replyToMessageID, observer: observer, routerKey: routerKey}
 }
 
+func NewCardKitRendererWithNative(client CardKitClientAPI, replyToMessageID string, observer CardKitRenderObserver, binding RenderBinding, journal NativeSequenceJournal) *CardKitRenderer {
+	return &CardKitRenderer{client: client, replyToMessageID: replyToMessageID, observer: observer, routerKey: binding.RunCardSessionID, binding: binding, journal: journal}
+}
+
 func (r *CardKitRouterRenderer) NewStreaming(_ context.Context, sessionID, replyTo string) (ResumableRenderer, error) {
 	if r == nil || r.client == nil {
 		return nil, fmt.Errorf("cardkit router renderer unavailable")
@@ -116,6 +133,8 @@ func (r *CardKitRouterRenderer) Rehydrate(sessionID string, ref session.RenderRe
 	renderer.replyMessageID = ref.ReplyMessageID
 	renderer.sequence = ref.Version
 	renderer.createdAt = ref.CreatedAt
+	renderer.sequenceUnknown = ref.SequenceUnknown
+	renderer.pendingSequence = ref.PendingSequence
 	r.mu.Lock()
 	r.renderers[sessionID] = renderer
 	r.mu.Unlock()
@@ -201,15 +220,84 @@ func (r *CardKitRenderer) renderContext(ctx context.Context, e card.Event) error
 			r.replyMessageID = replied.MessageID
 			r.cardID = cardID
 			r.createdAt = createdAt
+			r.snapshot = snapshotForPrepared(prepared)
 			r.recordRender("cardkit_reply", e, fmt.Sprintf("key=%s card_id=%s reply_to=%s event=%s %s", r.renderKey(e), cardID, r.replyToMessageID, e.Type, renderAuditState(e)))
 			return nil
 		}
 		r.cardID = cardID
+		r.snapshot = snapshotForPrepared(prepared)
 		return nil
 	}
-	if err := r.updateCard(ctx, e, prepared); err != nil {
+	if err := r.updatePrepared(ctx, e, prepared); err != nil {
 		return err
 	}
+	return nil
+}
+
+func (r *CardKitRenderer) updatePrepared(ctx context.Context, e card.Event, prepared card.PreparedLarkCard) error {
+	if r.sequenceUnknown {
+		r.recordRender("cardkit_sequence_unknown", e, fmt.Sprintf("key=%s card_id=%s pending_sequence=%d", r.renderKey(e), r.cardID, r.pendingSequence))
+		return nil
+	}
+	if r.nativeCandidate(prepared) {
+		return r.updateElementContent(ctx, e, prepared)
+	}
+	err := r.updateCard(ctx, e, prepared)
+	if err == nil {
+		r.snapshot = snapshotForPrepared(prepared)
+	}
+	return err
+}
+
+func (r *CardKitRenderer) nativeCandidate(prepared card.PreparedLarkCard) bool {
+	if r.journal == nil || r.snapshot == nil || r.snapshot.nativeDisabled || r.interactionDepth != 0 || !validRenderBinding(r.binding) {
+		return false
+	}
+	return r.snapshot.prepared.NativeReady() && prepared.NativeReady() &&
+		r.snapshot.staticFingerprint == staticFingerprint(prepared) &&
+		prepared.Answer() != r.snapshot.prepared.Answer()
+}
+
+func (r *CardKitRenderer) updateElementContent(ctx context.Context, e card.Event, prepared card.PreparedLarkCard) error {
+	candidate := r.sequence + 1
+	intent := NativeSequenceIntent{
+		SessionID: r.binding.BaseSessionID, BatchID: r.binding.BatchID, LatestScope: r.binding.LatestScope,
+		Ref: r.renderRefLocked(), Candidate: candidate,
+	}
+	if err := r.journal.PrepareNative(ctx, intent); err != nil {
+		r.sequenceUnknown = true
+		r.pendingSequence = candidate
+		r.recordRender("cardkit_sequence_unknown", e, fmt.Sprintf("key=%s card_id=%s sequence=%d branch=prepare_failed", r.renderKey(e), r.cardID, candidate))
+		return nil
+	}
+	r.sequenceUnknown = true
+	r.pendingSequence = candidate
+	err := r.client.UpdateElementContent(ctx, CardKitUpdateElementContentRequest{
+		CardID: r.cardID, ElementID: "answer", Content: prepared.Answer(), Sequence: candidate,
+		UUID: stableUUID("card-element-content", r.cardID, "answer", fmt.Sprint(candidate)),
+	})
+	if errors.Is(err, ErrCardInteractionInProgress) {
+		if abortErr := r.journal.AbortNative(ctx, intent); abortErr != nil {
+			return nil
+		}
+		r.sequenceUnknown = false
+		r.pendingSequence = 0
+		r.recordRender("cardkit_text_stream_skipped_interaction", e, fmt.Sprintf("key=%s card_id=%s sequence=%d", r.renderKey(e), r.cardID, candidate))
+		return nil
+	}
+	if err != nil {
+		r.recordRender("cardkit_sequence_unknown", e, fmt.Sprintf("key=%s card_id=%s sequence=%d branch=delivery_unknown", r.renderKey(e), r.cardID, candidate))
+		return nil
+	}
+	if err := r.journal.ConfirmNative(ctx, intent); err != nil {
+		r.recordRender("cardkit_sequence_unknown", e, fmt.Sprintf("key=%s card_id=%s sequence=%d branch=confirm_failed", r.renderKey(e), r.cardID, candidate))
+		return nil
+	}
+	r.sequence = candidate
+	r.sequenceUnknown = false
+	r.pendingSequence = 0
+	r.snapshot = snapshotForPrepared(prepared)
+	r.recordRender("cardkit_text_stream", e, fmt.Sprintf("key=%s card_id=%s element_id=answer sequence=%d bytes=%d", r.renderKey(e), r.cardID, candidate, len([]byte(prepared.Answer()))))
 	return nil
 }
 
@@ -247,7 +335,42 @@ func (r *CardKitRenderer) RenderRef() session.RenderRef {
 	if r.cardID == "" || r.replyMessageID == "" {
 		return session.RenderRef{}
 	}
-	return session.RenderRef{CardID: r.cardID, ReplyMessageID: r.replyMessageID, Version: r.sequence, CreatedAt: r.createdAt}
+	return r.renderRefLocked()
+}
+
+func (r *CardKitRenderer) renderRefLocked() session.RenderRef {
+	return session.RenderRef{CardID: r.cardID, ReplyMessageID: r.replyMessageID, Version: r.sequence, CreatedAt: r.createdAt, SequenceUnknown: r.sequenceUnknown, PendingSequence: r.pendingSequence}
+}
+
+func validRenderBinding(binding RenderBinding) bool {
+	return binding.BaseSessionID != "" && binding.BatchID != "" && binding.RunCardSessionID != ""
+}
+
+func snapshotForPrepared(prepared card.PreparedLarkCard) *cardSnapshot {
+	return &cardSnapshot{prepared: prepared, staticFingerprint: staticFingerprint(prepared)}
+}
+
+func staticFingerprint(prepared card.PreparedLarkCard) [32]byte {
+	payload := prepared.PayloadCopy()
+	blankAnswerContent(payload)
+	encoded, _ := json.Marshal(payload)
+	return sha256.Sum256(encoded)
+}
+
+func blankAnswerContent(value any) {
+	switch node := value.(type) {
+	case map[string]any:
+		if node["tag"] == "markdown" && node["element_id"] == "answer" {
+			node["content"] = ""
+		}
+		for _, child := range node {
+			blankAnswerContent(child)
+		}
+	case []any:
+		for _, child := range node {
+			blankAnswerContent(child)
+		}
+	}
 }
 
 func (r *CardKitRenderer) recordRender(action string, e card.Event, detail string) {
