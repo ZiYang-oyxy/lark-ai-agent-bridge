@@ -9,7 +9,7 @@ import (
 
 func MessageFromFeishu(in feishu.InboundMessage) Message {
 	text := stripMentionPrefix(in.Text, in.Mentions)
-	if len(in.Attachments) > 0 && (in.MessageType == "image" || in.MessageType == "file") {
+	if in.MessageType == "image" || in.MessageType == "file" {
 		text = ""
 	}
 	return Message{

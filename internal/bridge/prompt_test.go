@@ -1,6 +1,7 @@
 package bridge
 
 import (
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -62,7 +63,11 @@ func TestBuildBatchPromptIncludesTypedAttachmentPathsExactlyOnce(t *testing.T) {
 }
 
 func TestBuildBatchPromptAttachmentOnlyDoesNotInlineFileContent(t *testing.T) {
-	path := "/absolute/cache/sha-report.txt"
+	sentinel := "ATTACHMENT_BODY_MUST_NOT_APPEAR"
+	path := t.TempDir() + "/sha-report.txt"
+	if err := os.WriteFile(path, []byte(sentinel), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	prompt := BuildBatchPrompt(session.Batch{Inputs: []session.Input{{
 		Sender: "alice", Time: time.Date(2026, 7, 18, 9, 10, 11, 0, time.UTC),
 		Attachments: []media.Attachment{{Path: path, MIME: "text/plain"}},
@@ -70,7 +75,7 @@ func TestBuildBatchPromptAttachmentOnlyDoesNotInlineFileContent(t *testing.T) {
 	if !strings.Contains(prompt, "[text-file] "+path) || strings.Count(prompt, path) != 1 {
 		t.Fatalf("attachment-only prompt = %q", prompt)
 	}
-	if strings.Contains(prompt, "file body must not be inlined") {
+	if strings.Contains(prompt, sentinel) {
 		t.Fatalf("prompt inlined file body: %q", prompt)
 	}
 }

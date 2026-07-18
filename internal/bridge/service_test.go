@@ -119,6 +119,38 @@ type errorRenderer struct{}
 
 func (errorRenderer) Render(card.Event) error { return errors.New("render unavailable") }
 
+type nilRejectingDownloaderCache struct{ called bool }
+
+func (c *nilRejectingDownloaderCache) Resolve(_ context.Context, downloader media.Downloader, _ []media.Ref) media.Resolution {
+	c.called = true
+	if downloader == nil {
+		panic("resolver received nil downloader")
+	}
+	return media.Resolution{}
+}
+
+type unusedMediaDownloader struct{}
+
+func (unusedMediaDownloader) Open(context.Context, media.Ref) (media.Download, error) {
+	return media.Download{}, errors.New("unexpected downloader call")
+}
+
+func configureTestMedia(svc *Service, cache mediaResolver) {
+	svc.MediaCache = cache
+	svc.MediaDownloader = unusedMediaDownloader{}
+}
+
+var errAttachmentFailureSummary = errors.New("attachment failure summary render failed")
+
+type attachmentFailureSummaryRenderer struct{}
+
+func (attachmentFailureSummaryRenderer) Render(event card.Event) error {
+	if event.SessionID == "attachment-failure" {
+		return errAttachmentFailureSummary
+	}
+	return nil
+}
+
 func (c *resolutionCacheStub) Resolve(_ context.Context, _ media.Downloader, _ []media.Ref) media.Resolution {
 	result := c.resolution
 	release := result.Release
@@ -142,7 +174,7 @@ func TestServiceResolvesAttachmentsBeforeDurableEnqueue(t *testing.T) {
 	renderer := card.NewFakeRenderer()
 	runner := newFakeRunner()
 	svc := NewService(testConfig(t), renderer, runner, audit.NewRecorder())
-	svc.MediaCache = cache
+	configureTestMedia(svc, cache)
 	if err := svc.HandleMessage(context.Background(), Message{
 		ID: "media-success", ChatID: "chat", Sender: "alice", Text: "inspect these", Time: now,
 		Attachments: []media.Ref{{MessageID: "media-success", FileKey: "image", Kind: "image"}, {MessageID: "media-success", FileKey: "notes", Kind: "file"}},
@@ -175,7 +207,7 @@ func TestServiceKeepsSuccessfulAttachmentsAndShowsPartialFailureSummary(t *testi
 	}}
 	renderer := card.NewFakeRenderer()
 	svc := NewService(testConfig(t), renderer, newFakeRunner(), audit.NewRecorder())
-	svc.MediaCache = cache
+	configureTestMedia(svc, cache)
 	if err := svc.HandleMessage(context.Background(), Message{ID: "media-partial", ChatID: "chat", Sender: "alice", Text: "inspect", Time: now, Attachments: []media.Ref{{FileKey: "good", Kind: "image"}, {FileKey: "bad", Kind: "file"}}}); err != nil {
 		t.Fatal(err)
 	}
@@ -195,7 +227,7 @@ func TestServiceRunsAttachmentOnlyMessageAndRejectsTotalFailure(t *testing.T) {
 		cache := &resolutionCacheStub{resolution: media.Resolution{Attachments: []media.Attachment{{Path: path, MIME: "image/png", Size: 7}}}}
 		runner := newFakeRunner()
 		svc := NewService(testConfig(t), card.NewFakeRenderer(), runner, audit.NewRecorder())
-		svc.MediaCache = cache
+		configureTestMedia(svc, cache)
 		if err := svc.HandleMessage(context.Background(), Message{ID: "attachment-only", ChatID: "chat", Sender: "alice", Time: now, Attachments: []media.Ref{{FileKey: "image", Kind: "image"}}}); err != nil {
 			t.Fatal(err)
 		}
@@ -216,7 +248,7 @@ func TestServiceRunsAttachmentOnlyMessageAndRejectsTotalFailure(t *testing.T) {
 		renderer := card.NewFakeRenderer()
 		runner := newFakeRunner()
 		svc := NewService(testConfig(t), renderer, runner, audit.NewRecorder())
-		svc.MediaCache = cache
+		configureTestMedia(svc, cache)
 		if err := svc.HandleMessage(context.Background(), Message{ID: "attachment-failure", ChatID: "chat", Sender: "alice", Attachments: []media.Ref{{FileKey: "bad", Kind: "image"}}, Time: time.Now()}); err != nil {
 			t.Fatal(err)
 		}
@@ -233,7 +265,7 @@ func TestServiceReleasesResolutionWhenDurableEnqueueFails(t *testing.T) {
 	cache := &resolutionCacheStub{resolution: media.Resolution{Attachments: []media.Attachment{{Path: "/absolute/cache/image.png", MIME: "image/png", Size: 7}}}}
 	storePath := filepath.Join(t.TempDir(), "missing-parent", "sessions.json")
 	svc := NewServiceWithSessions(testConfig(t), card.NewFakeRenderer(), newFakeRunner(), audit.NewRecorder(), session.NewManagerWithStore(storePath), nil)
-	svc.MediaCache = cache
+	configureTestMedia(svc, cache)
 	if err := svc.HandleMessage(context.Background(), Message{ID: "persist-failure", ChatID: "chat", Sender: "alice", Text: "inspect", Attachments: []media.Ref{{FileKey: "image", Kind: "image"}}, Time: time.Now()}); err != nil {
 		t.Fatal(err)
 	}
@@ -246,7 +278,7 @@ func TestServiceReleasesResolutionOnDuplicateAndReactionRenderFailure(t *testing
 	t.Run("duplicate", func(t *testing.T) {
 		cache := &resolutionCacheStub{resolution: media.Resolution{Attachments: []media.Attachment{{Path: "/absolute/cache/image.png", MIME: "image/png", Size: 7}}}}
 		svc := NewService(testConfig(t), card.NewFakeRenderer(), newFakeRunner(), audit.NewRecorder())
-		svc.MediaCache = cache
+		configureTestMedia(svc, cache)
 		msg := Message{ID: "duplicate", ChatID: "chat", Sender: "alice", Text: "inspect", Attachments: []media.Ref{{FileKey: "image", Kind: "image"}}, Time: time.Now()}
 		if err := svc.HandleMessage(context.Background(), msg); err != nil {
 			t.Fatal(err)
@@ -262,10 +294,58 @@ func TestServiceReleasesResolutionOnDuplicateAndReactionRenderFailure(t *testing
 	t.Run("reaction render failure", func(t *testing.T) {
 		cache := &resolutionCacheStub{resolution: media.Resolution{Attachments: []media.Attachment{{Path: "/absolute/cache/image.png", MIME: "image/png", Size: 7}}}}
 		svc := NewService(testConfig(t), errorRenderer{}, newFakeRunner(), audit.NewRecorder())
-		svc.MediaCache = cache
+		configureTestMedia(svc, cache)
 		err := svc.HandleMessage(context.Background(), Message{ID: "render-failure", ChatID: "chat", Sender: "alice", Text: "inspect", Attachments: []media.Ref{{FileKey: "image", Kind: "image"}}, Time: time.Now()})
 		if err == nil || cache.releases != 1 {
 			t.Fatalf("handle/release = %v/%d, want render error and one release", err, cache.releases)
+		}
+	})
+}
+
+func TestServiceRejectsNilMediaDownloaderBeforeResolve(t *testing.T) {
+	cache := &nilRejectingDownloaderCache{}
+	renderer := card.NewFakeRenderer()
+	svc := NewService(testConfig(t), renderer, newFakeRunner(), audit.NewRecorder())
+	svc.MediaCache = cache
+	if err := svc.HandleMessage(context.Background(), Message{ID: "nil-downloader", ChatID: "chat", Sender: "alice", Attachments: []media.Ref{{FileKey: "image", Kind: "image"}}, Time: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	if cache.called || !eventsContainText(renderer.Events(), "media_unavailable") {
+		t.Fatalf("resolve/events = %v/%#v, want no resolve and visible media_unavailable", cache.called, renderer.Events())
+	}
+	if _, ok := svc.Sessions.Get(session.Key{Agent: agent.Claude, ChatID: "chat"}); ok {
+		t.Fatal("attachment-only unavailable media created a session")
+	}
+}
+
+func TestServiceReturnsAttachmentFailureSummaryRenderError(t *testing.T) {
+	t.Run("attachment-only total failure", func(t *testing.T) {
+		cache := &resolutionCacheStub{resolution: media.Resolution{Failures: []media.Failure{{Code: "content_mismatch"}}}}
+		svc := NewService(testConfig(t), attachmentFailureSummaryRenderer{}, newFakeRunner(), audit.NewRecorder())
+		configureTestMedia(svc, cache)
+		err := svc.HandleMessage(context.Background(), Message{ID: "total-summary-error", ChatID: "chat", Sender: "alice", Attachments: []media.Ref{{FileKey: "bad", Kind: "image"}}, Time: time.Now()})
+		if !errors.Is(err, errAttachmentFailureSummary) || cache.releases != 1 {
+			t.Fatalf("handle/release = %v/%d, want summary render error and one release", err, cache.releases)
+		}
+		if _, ok := svc.Sessions.Get(session.Key{Agent: agent.Claude, ChatID: "chat"}); ok {
+			t.Fatal("total failure created a session")
+		}
+	})
+
+	t.Run("partial failure still enqueues", func(t *testing.T) {
+		cache := &resolutionCacheStub{resolution: media.Resolution{
+			Attachments: []media.Attachment{{Path: "/absolute/cache/good.png", MIME: "image/png", Size: 7}},
+			Failures:    []media.Failure{{Code: "download_failed"}},
+		}}
+		svc := NewService(testConfig(t), attachmentFailureSummaryRenderer{}, newFakeRunner(), audit.NewRecorder())
+		configureTestMedia(svc, cache)
+		err := svc.HandleMessage(context.Background(), Message{ID: "partial-summary-error", ChatID: "chat", Sender: "alice", Text: "inspect", Attachments: []media.Ref{{FileKey: "good", Kind: "image"}, {FileKey: "bad", Kind: "file"}}, Time: time.Now()})
+		if !errors.Is(err, errAttachmentFailureSummary) || cache.releases != 1 {
+			t.Fatalf("handle/release = %v/%d, want summary render error and one release", err, cache.releases)
+		}
+		sess, ok := svc.Sessions.Get(session.Key{Agent: agent.Claude, ChatID: "chat"})
+		if !ok || len(sess.Queue) != 1 || len(sess.Queue[0].Attachments) != 1 {
+			t.Fatalf("session = %#v, want durable partial attachment input", sess)
 		}
 	})
 }

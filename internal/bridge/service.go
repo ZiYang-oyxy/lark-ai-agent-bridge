@@ -283,11 +283,12 @@ func (s *Service) runWithCardSessionID(ctx context.Context, cmd Command, msg Mes
 	}
 	attachments, failures, release := s.resolveAttachments(ctx, msg.Attachments)
 	defer release()
+	var summaryErr error
 	if len(failures) > 0 {
-		_ = s.renderText("attachment-failure", msg.ID, card.SegmentError, attachmentFailureSummary(failures, len(attachments) > 0))
+		summaryErr = s.renderText("attachment-failure", msg.ID, card.SegmentError, attachmentFailureSummary(failures, len(attachments) > 0))
 	}
 	if len(msg.Attachments) > 0 && len(attachments) == 0 && text == "" {
-		return nil
+		return summaryErr
 	}
 	now := effectiveMessageTime(msg)
 	input := session.Input{ID: msg.ID, Sender: msg.Sender, Text: text, Attachments: attachments, ReplyToMessageID: msg.ID, CardSessionID: cardSessionID, WorkDir: workDir, Time: now, DebounceUntil: now.Add(DebounceFor(msg)), State: session.InputDebouncing, Reset: cmd.Reset}
@@ -303,11 +304,15 @@ func (s *Service) runWithCardSessionID(ctx context.Context, cmd Command, msg Mes
 		return s.renderText("queue-error", msg.ID, card.SegmentError, message)
 	}
 	if !accepted {
-		return nil
+		return summaryErr
 	}
 	sess, _ := s.Sessions.Get(key)
 	s.Audit.Record(msg.Sender, "queue_input", sess.ID, fmt.Sprintf("position=%d", queued.Position))
-	return s.Cards.Render(card.Event{Type: "reaction", SessionID: runID(sess.ID, msg.ID), ReplyToMessageID: msg.ID, Message: fmt.Sprintf("queued (%d)", queued.Position)})
+	reactionErr := s.Cards.Render(card.Event{Type: "reaction", SessionID: runID(sess.ID, msg.ID), ReplyToMessageID: msg.ID, Message: fmt.Sprintf("queued (%d)", queued.Position)})
+	if summaryErr != nil {
+		return summaryErr
+	}
+	return reactionErr
 }
 
 func (s *Service) effectiveWorkDir(key session.Key, cmd Command) string {
@@ -534,7 +539,7 @@ func (s *Service) resolveAttachments(ctx context.Context, refs []media.Ref) ([]m
 	if len(refs) == 0 {
 		return nil, nil, func() {}
 	}
-	if s.MediaCache == nil {
+	if s.MediaCache == nil || s.MediaDownloader == nil {
 		failures := make([]media.Failure, 0, len(refs))
 		for _, ref := range refs {
 			failures = append(failures, media.Failure{Ref: ref, Code: "media_unavailable", Detail: "attachment resolver is not configured"})
