@@ -12,8 +12,8 @@ bridge 当前不再托管交互式终端，也不再通过 tmux/PTY 捕获输出
 
 - 启动命令：`claude -p --output-format stream-json --verbose --include-partial-messages --dangerously-skip-permissions --effort low <prompt>`
 - 子进程 `cmd.Dir` 和 `PWD` 都设置为本轮请求解析出的工作目录；没有 `--workdir` 时使用 `--default-workdir` 或环境默认目录。
-- 如果当前 chat/topic 已保存 Claude session id，后续普通消息会追加 `--resume <session_id>` 续接内部会话。
-- `/new` 会清空当前 chat/topic 保存的 Claude session id，并从新会话开始。
+- 如果当前 conversation scope 已保存 Claude session id，后续普通消息会追加 `--resume <session_id>` 续接内部会话。
+- `/new` 会清空当前 conversation scope 保存的 Claude session id，并从新会话开始。
 - 执行开始时创建“执行中”卡片，读取 Claude `stream-json` stdout 时增量更新同一张卡片。
 - 执行中卡片带一次性“停止”按钮，点击后取消当前 Claude 子进程，同一卡片进入灰色“已停止”状态并置灰按钮。
 - 完成、失败和停止后的卡片仍保留灰色 disabled 按钮，文案分别是“已完成”“已结束”“已停止”，避免用户误以为还能继续点击停止。
@@ -38,6 +38,7 @@ bridge 当前不再托管交互式终端，也不再通过 tmux/PTY 捕获输出
 
 - `/new [--workdir <path>] [prompt]`：重置当前 chat/topic 的 Claude 会话；有 prompt 时立即执行，没有 prompt 时只创建 ready 状态。
 - `/status`：查看当前 chat/topic 会话状态；群聊中会额外显示当前群内已知会话数量。
+- `/config`：配置 model、effort、Reply mode 和 Conversation mode；`/config reset` 恢复环境默认。
 - `/help`：显示帮助。
 
 暂不实现 `/resume`。`/sessions`、`/history`、`/topic`、`/attach`、`/interrupt`、`/stop` 文本命令以及 `/claude`、`/codex` 旧入口均不属于当前范围。
@@ -46,20 +47,19 @@ bridge 当前不再托管交互式终端，也不再通过 tmux/PTY 捕获输出
 
 ## 会话 Key 与并发
 
-会话 key 由以下字段组成：
+Conversation mode 决定会话 key 和飞书回复位置：
 
-- agent：当前固定为 `claude`
-- 飞书 chat id
-- 飞书 thread/topic id，可空
+- `chat`（默认）：key 为 `{Agent, ChatID}`，忽略入站 `ThreadID`，回复显式使用 `reply_in_thread=false`。
+- `topic`：key 为 `{Agent, ChatID, ThreadID?}`，非空 thread/topic id 进入 key，回复显式使用 `reply_in_thread=true`。
 
-有 thread/topic id 时，topic 会进入 key；无 topic 时只按 chat 维度管理。
+`E2E_CONVERSATION_MODE=chat|topic` 提供环境默认；`/config` override 持久化到 `preferences.json`。mode 切换只影响保存成功后接收的新消息，不迁移或删除旧 session。input 入队时冻结 mode，pending workdir 确认也保存当时 preference，因此排队或等待按钮期间的配置变化不会改变该输入的回复位置。
 
 并发规则：
 
-- 同一 chat/topic 内串行执行。
-- 执行中收到同一 chat/topic 的新输入时进入该 scope 的持久化队列，并产生 `reaction` 事件提示已排队；兼容的运行时排队输入会按 debounce 窗口合并为下一批 Claude 调用，不保证每条输入各自启动一次子进程。
-- 不同 topic 使用不同 key，可以并行运行各自的 Claude 子进程。
-- 普通文本无论是否位于 topic，都续接当前 chat/topic scope；它不会隐式创建 session boundary，因此同一 debounce cohort 可以合并。
+- 同一 conversation scope 内串行执行。
+- 执行中收到同一 scope 的新输入时进入持久化队列，并产生 `reaction` 事件提示已排队；workdir、model、effort 或 Conversation mode 不同的连续输入不能合入同一 batch。
+- `topic` 模式下不同 topic 使用不同 key，可以并行运行各自的 Claude 子进程；`chat` 模式下同一 chat 只有一个串行 scope。
+- 普通文本续接当前 mode 解析出的 scope；它不会隐式创建 session boundary，因此同一 debounce cohort 可以合并。
 - 只有显式 `/new` 会重置当前 scope 的 Claude session，并作为独占 batch boundary。
 - 队列上限按单一 scope 的 pending input 计算，满时拒绝新输入且不写入去重 receipt。
 - 个人版不设置全局 semaphore、跨 scope FIFO 或公平性调度；唯一的顺序保证是同一 scope 串行，不同 scope 可并行。
@@ -105,7 +105,7 @@ CardKit client 是最后一道本地硬闸：direct `Card` 会重新测量，`Pr
 
 ## 生命周期
 
-会话 snapshot 保存 chat/topic context（Claude session id、workdir、history、model、token 和去重 receipt）以及当时的队列/活动 batch。恢复的语义是**只恢复 context，不恢复 pending 工作**：旧命令不会自动重跑，用户需要重新发送。
+会话 snapshot 保存 conversation scope context（Claude session id、workdir、history、model、token 和去重 receipt）以及当时的队列/活动 batch。恢复的语义是**只恢复 context，不恢复 pending 工作**：旧命令不会自动重跑，用户需要重新发送。
 
 - 恢复时 `debouncing`、`queued`、`starting` input 一律变为 `cancelled`；`running` input 一律变为 `interrupted`。
 - 这些终态只生成 recovery audit notice，不会重建旧卡、重新调度或重新启动 Claude。

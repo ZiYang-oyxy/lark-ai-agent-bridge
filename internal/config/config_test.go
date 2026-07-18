@@ -131,6 +131,25 @@ func TestLoadFromEnvReplyDefaultsAndOverrides(t *testing.T) {
 	}
 }
 
+func TestLoadFromEnvConversationModeDefaultsAndOverrides(t *testing.T) {
+	cfg := LoadFromEnv()
+	if cfg.ConversationMode != ConversationModeChat {
+		t.Fatalf("default conversation mode = %q, want %q", cfg.ConversationMode, ConversationModeChat)
+	}
+	t.Setenv("E2E_CONVERSATION_MODE", string(ConversationModeTopic))
+	cfg = LoadFromEnv()
+	if cfg.ConversationMode != ConversationModeTopic {
+		t.Fatalf("conversation mode = %q, want %q", cfg.ConversationMode, ConversationModeTopic)
+	}
+}
+
+func TestLoadFromEnvStrictRejectsInvalidConversationMode(t *testing.T) {
+	t.Setenv("E2E_CONVERSATION_MODE", "thread-per-message")
+	if _, err := LoadFromEnvStrict(); err == nil {
+		t.Fatal("LoadFromEnvStrict() error = nil for invalid conversation mode")
+	}
+}
+
 func TestLoadFromEnvStrictRejectsInvalidReplyMode(t *testing.T) {
 	t.Setenv("E2E_REPLY_MODE", "replace-everything")
 	if _, err := LoadFromEnvStrict(); err == nil {

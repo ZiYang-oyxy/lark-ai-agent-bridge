@@ -154,6 +154,31 @@ func TestCardKitClientCapacityRejectsDirectCreateAndUpdateBeforeTokenLookup(t *t
 	}
 }
 
+func TestCardKitClientForwardsReplyInThread(t *testing.T) {
+	for _, want := range []bool{false, true} {
+		t.Run(map[bool]string{false: "chat", true: "topic"}[want], func(t *testing.T) {
+			tokens := &countingTokenSource{}
+			httpClient := &recordingCardKitHTTP{}
+			client := NewCardKitClientWithTokenSource(tokens)
+			client.http = httpClient
+			client.limiter = nil
+			if _, err := client.ReplyCard(context.Background(), CardKitReplyRequest{ReplyToMessageID: "source", CardID: "card", UUID: "uuid", ReplyInThread: want}); err != nil {
+				t.Fatal(err)
+			}
+			var body map[string]any
+			if err := json.Unmarshal(httpClient.body, &body); err != nil {
+				t.Fatal(err)
+			}
+			if body["reply_in_thread"] != want {
+				t.Fatalf("request body = %#v, want reply_in_thread=%t", body, want)
+			}
+			if tokens.calls != 1 || httpClient.calls != 1 {
+				t.Fatalf("calls token=%d http=%d", tokens.calls, httpClient.calls)
+			}
+		})
+	}
+}
+
 func TestCardKitClientCapacityRejectsRawMessageAndStructBeforeLocalSideEffects(t *testing.T) {
 	elements := make([]any, card.LarkCardMaxComponents+1)
 	for i := range elements {

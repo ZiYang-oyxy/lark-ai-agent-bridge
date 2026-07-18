@@ -53,18 +53,21 @@ type Action struct {
 }
 
 type ConfigForm struct {
-	Model      string
-	Effort     string
-	ReplyMode  string
-	Models     []string
-	Efforts    []string
-	ReplyModes []string
+	Model             string
+	Effort            string
+	ReplyMode         string
+	ConversationMode  string
+	Models            []string
+	Efforts           []string
+	ReplyModes        []string
+	ConversationModes []string
 }
 
 type Event struct {
 	Type             string
 	SessionID        string
 	ReplyToMessageID string
+	ReplyInThread    bool
 	Segments         []Segment
 	Meta             Meta
 	StopButton       StopButton

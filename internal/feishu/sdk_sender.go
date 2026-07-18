@@ -48,7 +48,7 @@ func (s *SDKSender) SendReply(ctx context.Context, reply Reply) (SendResult, err
 	body := larkim.NewReplyMessageReqBodyBuilder().
 		MsgType("text").
 		Content(content).
-		ReplyInThread(true).
+		ReplyInThread(reply.ReplyInThread).
 		Uuid(buildReplyUUID(reply)).
 		Build()
 	req := larkim.NewReplyMessageReqBuilder().

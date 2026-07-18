@@ -293,7 +293,7 @@ func preferenceStoreWritable(cfg config.Config) Check {
 	if info.Mode().Perm() != 0o600 {
 		return Check{Name: "preference_store", OK: false, Detail: "insecure_permissions: " + path}
 	}
-	defaults := config.RuntimePreference{Model: cfg.Model, Effort: cfg.Effort, ReplyMode: cfg.ReplyMode}
+	defaults := config.RuntimePreference{Model: cfg.Model, Effort: cfg.Effort, ReplyMode: cfg.ReplyMode, ConversationMode: cfg.ConversationMode}
 	if _, err := config.OpenPreferenceStore(path, defaults, cfg.AllowedModels); err != nil {
 		return Check{Name: "preference_store", OK: false, Detail: "invalid_snapshot: " + path}
 	}

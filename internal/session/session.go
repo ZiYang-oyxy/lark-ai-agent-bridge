@@ -9,6 +9,7 @@ import (
 	"unicode/utf8"
 
 	"lark-agent-bridge/internal/agent"
+	"lark-agent-bridge/internal/config"
 	"lark-agent-bridge/internal/media"
 )
 
@@ -55,6 +56,7 @@ type Input struct {
 	WorkDir          string
 	RequestedModel   string
 	RequestedEffort  string
+	ConversationMode config.ConversationMode
 	Time             time.Time
 	DebounceUntil    time.Time
 	State            InputState
@@ -891,7 +893,8 @@ func snapshotReceipts(receipts []Receipt) []Receipt {
 func compatibleBatchInput(first, next Input) bool {
 	return first.WorkDir == next.WorkDir &&
 		first.RequestedModel == next.RequestedModel &&
-		first.RequestedEffort == next.RequestedEffort
+		first.RequestedEffort == next.RequestedEffort &&
+		first.ConversationMode == next.ConversationMode
 }
 
 func cloneInputs(inputs []Input) []Input {

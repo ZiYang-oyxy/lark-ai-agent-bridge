@@ -25,6 +25,7 @@ type Config struct {
 	Model               string
 	Effort              string
 	ReplyMode           ReplyMode
+	ConversationMode    ConversationMode
 	AllowedModels       []string
 	QueueMaxPending     int
 	BatchMaxInputs      int
@@ -57,6 +58,7 @@ func LoadFromEnv() Config {
 		Model:               "default",
 		Effort:              "low",
 		ReplyMode:           ReplyModeAppend,
+		ConversationMode:    ConversationModeChat,
 		QueueMaxPending:     20,
 		BatchMaxInputs:      10,
 		BatchMaxTextRunes:   64 << 10,
@@ -130,6 +132,9 @@ func LoadFromEnv() Config {
 	if v := os.Getenv("E2E_REPLY_MODE"); v != "" {
 		cfg.ReplyMode = ReplyMode(strings.ToLower(strings.TrimSpace(v)))
 	}
+	if v := os.Getenv("E2E_CONVERSATION_MODE"); v != "" {
+		cfg.ConversationMode = ConversationMode(strings.ToLower(strings.TrimSpace(v)))
+	}
 	if v := os.Getenv("E2E_ALLOWED_MODELS"); v != "" {
 		additions := strings.Split(v, ",")
 		if models, err := modelCatalog(additions); err == nil {
@@ -180,7 +185,7 @@ func LoadFromEnvStrict() (Config, error) {
 			return Config{}, fmt.Errorf("parse E2E_ALLOWED_MODELS: %w", err)
 		}
 	}
-	if err := ValidateRuntimePreference(RuntimePreference{Model: cfg.Model, Effort: cfg.Effort, ReplyMode: cfg.ReplyMode}, cfg.AllowedModels...); err != nil {
+	if err := ValidateRuntimePreference(RuntimePreference{Model: cfg.Model, Effort: cfg.Effort, ReplyMode: cfg.ReplyMode, ConversationMode: cfg.ConversationMode}, cfg.AllowedModels...); err != nil {
 		return Config{}, fmt.Errorf("validate runtime preference defaults: %w", err)
 	}
 	if cfg.CardMinDeltaChars, err = explicitPositiveInt("E2E_CARD_MIN_DELTA_CHARS", cfg.CardMinDeltaChars); err != nil {

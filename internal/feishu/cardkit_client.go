@@ -40,6 +40,7 @@ type CardKitReplyRequest struct {
 	ReplyToMessageID string
 	CardID           string
 	UUID             string
+	ReplyInThread    bool
 }
 
 type CardKitReplyResult struct {
@@ -179,7 +180,7 @@ func (c *CardKitClient) ReplyCard(ctx context.Context, req CardKitReplyRequest) 
 	body := map[string]any{
 		"msg_type":        "interactive",
 		"content":         string(content),
-		"reply_in_thread": true,
+		"reply_in_thread": req.ReplyInThread,
 		"uuid":            req.UUID,
 	}
 	path := "/open-apis/im/v1/messages/" + url.PathEscape(req.ReplyToMessageID) + "/reply"

@@ -13,6 +13,7 @@ const (
 
 type Reply struct {
 	ReplyToMessageID string
+	ReplyInThread    bool
 	TopicID          string
 	Message          string
 	ShouldReply      bool

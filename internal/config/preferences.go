@@ -15,10 +15,15 @@ const PreferenceSchemaVersion = 1
 
 type ReplyMode string
 
+type ConversationMode string
+
 const (
 	ReplyModeAppend          ReplyMode = "append"
 	ReplyModeAppendCleanCard ReplyMode = "append-clean-card"
 	ReplyModeLatestCard      ReplyMode = "latest-card"
+
+	ConversationModeChat  ConversationMode = "chat"
+	ConversationModeTopic ConversationMode = "topic"
 )
 
 var builtinModels = []string{"default", "sonnet", "opus", "haiku"}
@@ -31,9 +36,10 @@ var validEfforts = map[string]struct{}{
 }
 
 type RuntimePreference struct {
-	Model     string    `json:"model"`
-	Effort    string    `json:"effort"`
-	ReplyMode ReplyMode `json:"reply_mode,omitempty"`
+	Model            string           `json:"model"`
+	Effort           string           `json:"effort"`
+	ReplyMode        ReplyMode        `json:"reply_mode,omitempty"`
+	ConversationMode ConversationMode `json:"conversation_mode,omitempty"`
 }
 
 type preferenceSnapshot struct {
@@ -153,6 +159,11 @@ func validateRuntimePreference(preference RuntimePreference, allowedModels []str
 	default:
 		return fmt.Errorf("reply mode %q is not allowed", preference.ReplyMode)
 	}
+	switch preference.ConversationMode {
+	case ConversationModeChat, ConversationModeTopic:
+	default:
+		return fmt.Errorf("conversation mode %q is not allowed", preference.ConversationMode)
+	}
 	return nil
 }
 
@@ -162,6 +173,10 @@ func normalizeRuntimePreference(preference RuntimePreference) RuntimePreference 
 	preference.ReplyMode = ReplyMode(strings.ToLower(strings.TrimSpace(string(preference.ReplyMode))))
 	if preference.ReplyMode == "" {
 		preference.ReplyMode = ReplyModeAppend
+	}
+	preference.ConversationMode = ConversationMode(strings.ToLower(strings.TrimSpace(string(preference.ConversationMode))))
+	if preference.ConversationMode == "" {
+		preference.ConversationMode = ConversationModeChat
 	}
 	for _, model := range builtinModels {
 		if strings.EqualFold(preference.Model, model) {

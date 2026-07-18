@@ -106,9 +106,9 @@ func HelpText() string {
 		"Feishu AI Agent Bridge commands:",
 		"/new [--workdir <path>] [prompt] - start a new Claude session in this chat/topic",
 		"/status - show the current chat/topic session status",
-		"/config - configure the model and effort used by new messages",
+		"/config - configure model, effort, reply mode, and chat/topic mode",
 		"/help - show this help",
 		"",
-		"Plain text continues the current chat/topic session. Use /new to start a new Claude session.",
+		"Plain text continues the current configured conversation scope. Use /new to start a new Claude session.",
 	}, "\n")
 }
