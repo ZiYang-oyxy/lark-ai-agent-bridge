@@ -13,6 +13,7 @@ const (
 	CommandHelp    CommandType = "help"
 	CommandRun     CommandType = "run"
 	CommandStatus  CommandType = "status"
+	CommandConfig  CommandType = "config"
 	CommandUnknown CommandType = "unknown"
 	CommandIgnored CommandType = "ignored"
 )
@@ -44,6 +45,8 @@ func ParseCommand(msg Message, defaultAgent agent.Kind) Command {
 		return Command{Type: CommandHelp, Raw: raw}
 	case "status":
 		return Command{Type: CommandStatus, Agent: defaultAgent, Raw: raw}
+	case "config":
+		return Command{Type: CommandConfig, Text: strings.TrimSpace(rest), Raw: raw}
 	case "new":
 		cmd := Command{Type: CommandRun, Agent: defaultAgent, Text: strings.TrimSpace(rest), Reset: true, Explicit: true, Raw: raw}
 		parseRunOptions(&cmd)
@@ -103,6 +106,7 @@ func HelpText() string {
 		"Feishu AI Agent Bridge commands:",
 		"/new [--workdir <path>] [prompt] - start a new Claude session in this chat/topic",
 		"/status - show the current chat/topic session status",
+		"/config - configure the model and effort used by new messages",
 		"/help - show this help",
 		"",
 		"Plain text continues the current chat/topic session. Use /new to start a new Claude session.",

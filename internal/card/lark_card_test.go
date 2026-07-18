@@ -60,6 +60,65 @@ func TestBuildLarkCardIncludesActionsAndMeta(t *testing.T) {
 	assertColumnWeights(t, columnSets[1], []int{10, 12, 30})
 }
 
+func TestBuildLarkCardRendersRuntimeConfigForm(t *testing.T) {
+	payload := BuildLarkCard(Event{
+		Type:      "config",
+		SessionID: "claude:chat:message:config-1",
+		ConfigForm: &ConfigForm{
+			Model:   "opus",
+			Effort:  "high",
+			Models:  []string{"default", "sonnet", "opus", "haiku"},
+			Efforts: []string{"default", "low", "medium", "high"},
+		},
+		Segments:  []Segment{{Kind: SegmentText, Text: "must not appear beside the form"}},
+		Streaming: true,
+	})
+	body := payload["body"].(map[string]any)
+	elements := body["elements"].([]any)
+	var form map[string]any
+	for _, raw := range elements {
+		element := raw.(map[string]any)
+		if element["tag"] == "form" {
+			form = element
+		}
+		if element["element_id"] == "answer" {
+			t.Fatalf("config card mixed streaming answer into form: %#v", element)
+		}
+	}
+	if form == nil || form["name"] != "runtime_config" {
+		t.Fatalf("config form = %#v", form)
+	}
+	controls := form["elements"].([]any)
+	selects := map[string]map[string]any{}
+	var submit map[string]any
+	for _, raw := range controls {
+		control := raw.(map[string]any)
+		if control["tag"] == "select_static" {
+			selects[control["name"].(string)] = control
+		}
+		if control["REDACTED"] == "REDACTED" {
+			submit = control
+		}
+	}
+	if len(selects) != 2 || selects["model"]["initial_option"] != "opus" || selects["effort"]["initial_option"] != "high" {
+		t.Fatalf("select controls = %#v", selects)
+	}
+	if len(selects["model"]["options"].([]any)) != 4 || len(selects["effort"]["options"].([]any)) != 4 {
+		t.Fatalf("select options = model %#v effort %#v", selects["model"]["options"], selects["effort"]["options"])
+	}
+	if submit == nil || submit["form_action_type"] != "submit" {
+		t.Fatalf("submit button = %#v", submit)
+	}
+	behaviors := submit["behaviors"].([]any)
+	value := behaviors[0].(map[string]any)["value"].(map[string]any)
+	if value["action_id"] != "config.save" || value["session"] != "claude:chat:message:config-1" {
+		t.Fatalf("submit callback = %#v", value)
+	}
+	if payload["config"].(map[string]any)["streaming_mode"] != false {
+		t.Fatalf("config form must disable streaming: %#v", payload["config"])
+	}
+}
+
 func TestBuildLarkCardIncludesDisabledStopButton(t *testing.T) {
 	card := BuildLarkCard(Event{Type: "stream", SessionID: "claude:chat", StopButton: StopButton{Visible: true, Disabled: true}})
 	elements := card["body"].(map[string]any)["elements"].([]any)
@@ -96,7 +155,7 @@ func TestBuildLarkCardUsesFinalStopButtonLabels(t *testing.T) {
 			t.Fatalf("%s button = %#v, want disabled default", tt.eventType, button)
 		}
 		text := button["text"].(map[string]any)
-		if text["REDACTED"] != tt.want {
+		if text["content"] != tt.want {
 			t.Fatalf("%s text = %#v, want %s", tt.eventType, text["content"], tt.want)
 		}
 	}

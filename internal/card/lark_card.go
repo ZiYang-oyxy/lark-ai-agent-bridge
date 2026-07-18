@@ -6,29 +6,34 @@ import (
 )
 
 func BuildLarkCard(e Event) map[string]any {
-	elements := make([]any, 0, len(e.Segments)+5)
-	answer, thought, tools := splitCardSections(e.Segments)
-	if strings.TrimSpace(answer) != "" {
-		elements = append(elements, markdownElement("answer", answer))
+	var elements []any
+	if e.ConfigForm != nil {
+		e.Streaming = false
+		elements = buildConfigFormElements(e.SessionID, *e.ConfigForm)
+	} else {
+		elements = make([]any, 0, len(e.Segments)+5)
+		answer, thought, tools := splitCardSections(e.Segments)
+		if strings.TrimSpace(answer) != "" {
+			elements = append(elements, markdownElement("answer", answer))
+		}
+		if e.Message != "" {
+			elements = append(elements, markdownElement("message", e.Message))
+		}
+		if shouldShowAgentPanels(e, thought, tools) {
+			elements = append(elements,
+				collapsiblePanelElement("panel_thought", thoughtPanelTitle(e, thought), e.ThoughtExpanded, []map[string]any{
+					markdownElement("thought", defaultPanelText(thought, "等待模型输出思考或推理内容。")),
+				}),
+				collapsiblePanelElement("panel_tools", toolsPanelTitle(e, tools), e.ToolsExpanded, []map[string]any{
+					markdownElement("tools", defaultPanelText(tools, "暂无工具调用。")),
+				}),
+			)
+		}
+		for _, action := range buildButtonActions(e) {
+			elements = append(elements, action)
+		}
+		elements = append(elements, buildMetaElements(e.Meta)...)
 	}
-	if e.Message != "" {
-		elements = append(elements, markdownElement("message", e.Message))
-	}
-	if shouldShowAgentPanels(e, thought, tools) {
-		elements = append(elements,
-			collapsiblePanelElement("panel_thought", thoughtPanelTitle(e, thought), e.ThoughtExpanded, []map[string]any{
-				markdownElement("thought", defaultPanelText(thought, "等待模型输出思考或推理内容。")),
-			}),
-			collapsiblePanelElement("panel_tools", toolsPanelTitle(e, tools), e.ToolsExpanded, []map[string]any{
-				markdownElement("tools", defaultPanelText(tools, "暂无工具调用。")),
-			}),
-		)
-	}
-	actions := buildButtonActions(e)
-	for _, action := range actions {
-		elements = append(elements, action)
-	}
-	elements = append(elements, buildMetaElements(e.Meta)...)
 	title := headerTitle(e)
 	payload := map[string]any{
 		"schema": "2.0",
@@ -57,6 +62,46 @@ func BuildLarkCard(e Event) map[string]any {
 		}
 	}
 	return payload
+}
+
+func buildConfigFormElements(sessionID string, form ConfigForm) []any {
+	return []any{
+		markdownElement("config_intro", "⚙️ **个人运行偏好**\n\n修改后只影响新进入队列的消息。"),
+		map[string]any{
+			"tag":  "form",
+			"name": "runtime_config",
+			"elements": []any{
+				markdownElement("config_model_label", "**Model**\n`default` 表示由 Claude CLI / wrapper 决定。"),
+				configSelect("model", form.Model, form.Models),
+				markdownElement("config_effort_label", "**Effort**\n`default` 表示不传 `--effort`。"),
+				configSelect("effort", form.Effort, form.Efforts),
+				map[string]any{
+					"tag":              "button",
+					"name":             "submit_runtime_config",
+					"text":             map[string]any{"tag": "plain_text", "content": "保存"},
+					"type":             "primary",
+					"form_action_type": "submit",
+					"behaviors":        callbackBehavior(sessionID, "config.save", ""),
+				},
+			},
+		},
+	}
+}
+
+func configSelect(name, initial string, values []string) map[string]any {
+	options := make([]any, 0, len(values))
+	for _, value := range values {
+		options = append(options, map[string]any{
+			"text":  map[string]any{"tag": "plain_text", "content": value},
+			"value": value,
+		})
+	}
+	return map[string]any{
+		"tag":            "select_static",
+		"name":           name,
+		"initial_option": initial,
+		"options":        options,
+	}
 }
 
 func splitCardSections(segments []Segment) (string, string, string) {
@@ -345,6 +390,8 @@ func titleForEvent(eventType string) string {
 		return "⏹ 已取消"
 	case "error":
 		return "Agent 错误"
+	case "config":
+		return "个人运行偏好"
 	default:
 		return "AI Agent"
 	}
@@ -360,6 +407,8 @@ func templateForEvent(eventType string) string {
 		return "grey"
 	case "error":
 		return "red"
+	case "config":
+		return "blue"
 	default:
 		return "green"
 	}

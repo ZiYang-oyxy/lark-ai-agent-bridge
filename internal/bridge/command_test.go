@@ -1,6 +1,7 @@
 package bridge
 
 import (
+	"strings"
 	"testing"
 
 	"lark-agent-bridge/internal/agent"
@@ -58,6 +59,28 @@ func TestParseCommandIgnoresGroupWithoutMention(t *testing.T) {
 	cmd := ParseCommand(Message{Text: "/new hello", IsGroup: true, Mentioned: false}, agent.Claude)
 	if cmd.Type != CommandIgnored {
 		t.Fatalf("type = %s, want ignored", cmd.Type)
+	}
+}
+
+func TestParseConfigCommandInDirectAndMentionedGroupMessages(t *testing.T) {
+	for _, msg := range []Message{
+		{Text: "/config"},
+		{Text: "/config", IsGroup: true, Mentioned: true},
+	} {
+		cmd := ParseCommand(msg, agent.Claude)
+		if cmd.Type != CommandConfig || cmd.Text != "" {
+			t.Fatalf("ParseCommand(%#v) = %#v, want config", msg, cmd)
+		}
+	}
+	reset := ParseCommand(Message{Text: "/config reset"}, agent.Claude)
+	if reset.Type != CommandConfig || reset.Text != "reset" {
+		t.Fatalf("config reset = %#v", reset)
+	}
+}
+
+func TestHelpTextIncludesConfigCommand(t *testing.T) {
+	if text := HelpText(); !strings.Contains(text, "/config") {
+		t.Fatalf("help text = %q, want /config", text)
 	}
 }
 

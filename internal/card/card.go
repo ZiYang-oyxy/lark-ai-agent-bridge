@@ -45,6 +45,13 @@ type Action struct {
 	Disabled bool
 }
 
+type ConfigForm struct {
+	Model   string
+	Effort  string
+	Models  []string
+	Efforts []string
+}
+
 type Event struct {
 	Type             string
 	SessionID        string
@@ -60,6 +67,7 @@ type Event struct {
 	Activity         string
 	ThoughtExpanded  bool
 	ToolsExpanded    bool
+	ConfigForm       *ConfigForm
 }
 
 func WorkDirCreateActions(path string) []Action {
