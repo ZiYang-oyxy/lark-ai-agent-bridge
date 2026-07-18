@@ -130,6 +130,10 @@ func (f *fakeCardKitClient) UpdateSettings(context.Context, CardKitUpdateSetting
 	return nil
 }
 
+func (f *fakeCardKitClient) UpdateElementContent(context.Context, CardKitUpdateElementContentRequest) error {
+	return nil
+}
+
 func TestCardKitRendererCreateReplyThenUpdate(t *testing.T) {
 	client := &fakeCardKitClient{}
 	renderer := NewCardKitRenderer(client, "message-1")

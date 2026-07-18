@@ -34,15 +34,15 @@ type PreparedLarkCard struct {
 	integrity   [32]byte
 }
 
-type cardPayloadOversizeError struct {
-	capacity CardCapacity
+type CardPayloadOversizeError struct {
+	Capacity CardCapacity
 }
 
-func (e *cardPayloadOversizeError) Error() string {
-	return fmt.Sprintf("%s: json_bytes=%d/%d components=%d/%d", ErrCardPayloadOversize, e.capacity.JSONBytes, e.capacity.MaxJSONBytes, e.capacity.Components, e.capacity.MaxComponents)
+func (e *CardPayloadOversizeError) Error() string {
+	return fmt.Sprintf("%s: json_bytes=%d/%d components=%d/%d", ErrCardPayloadOversize, e.Capacity.JSONBytes, e.Capacity.MaxJSONBytes, e.Capacity.Components, e.Capacity.MaxComponents)
 }
 
-func (e *cardPayloadOversizeError) Is(target error) bool { return target == ErrCardPayloadOversize }
+func (e *CardPayloadOversizeError) Is(target error) bool { return target == ErrCardPayloadOversize }
 
 func MarshalLarkCard(payload map[string]any) ([]byte, CardCapacity, error) {
 	encoded, err := json.Marshal(payload)
@@ -61,7 +61,7 @@ func MarshalLarkCard(payload map[string]any) ([]byte, CardCapacity, error) {
 		MaxComponents: LarkCardMaxComponents,
 	}
 	if capacity.JSONBytes > capacity.MaxJSONBytes || capacity.Components > capacity.MaxComponents {
-		return encoded, capacity, &cardPayloadOversizeError{capacity: capacity}
+		return encoded, capacity, &CardPayloadOversizeError{Capacity: capacity}
 	}
 	return encoded, capacity, nil
 }
