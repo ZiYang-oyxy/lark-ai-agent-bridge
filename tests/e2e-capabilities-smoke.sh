@@ -98,7 +98,7 @@ case "$*" in
       printf '%s\n' '{"ok":false,"granted":null,"missing":["im:message.send_as_user"]}'
       exit 1
     fi
-    printf '%s\n' '{"ok":true,"granted":true,"missing":[]}'
+    printf '%s\n' '{"ok":true,"granted":["im:message.send_as_user"],"missing":null}'
     ;;
   *'im chats get'*'--chat-id oc_doctor_group'*) printf '%s\n' '{"data":{"chat_id":"oc_doctor_group"}}' ;;
   *'im chats get'*'--chat-id oc_doctor_p2p'*) printf '%s\n' '{"data":{"chat_id":"oc_doctor_p2p","chat_mode":"p2p"}}' ;;

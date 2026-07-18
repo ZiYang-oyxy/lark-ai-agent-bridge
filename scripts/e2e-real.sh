@@ -331,11 +331,13 @@ record_static_user_auth() {
     e2e_cap_record oauth_same_app BLOCKED oauth_app_mismatch "user OAuth belongs to another app" "run $login_command"
   fi
   if scope_response="$(lark_cli auth check --scope im:message.send_as_user --json 2>/dev/null)"; then
-    if printf '%s' "$scope_response" | jq -e '.granted == true' >/dev/null 2>&1; then
+    if printf '%s' "$scope_response" | jq -e --arg scope im:message.send_as_user \
+      '.ok == true and ((.granted == true) or ((.granted | type) == "array" and (.granted | index($scope) != null)))' >/dev/null 2>&1; then
       e2e_cap_record lark_cli_auth PASS ready "lark-cli user authentication can send messages" ""
       return
     fi
-  elif printf '%s' "$scope_response" | jq -e '.missing | index("im:message.send_as_user") != null' >/dev/null 2>&1; then
+  elif printf '%s' "$scope_response" | jq -e --arg scope im:message.send_as_user \
+    '(.missing | type) == "array" and (.missing | index($scope) != null)' >/dev/null 2>&1; then
     e2e_cap_record lark_cli_auth BLOCKED user_send_scope_missing "user OAuth cannot send E2E messages" "enable and publish im:message.send_as_user, then run $login_command"
     return
   fi

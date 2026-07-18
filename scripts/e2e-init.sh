@@ -140,10 +140,12 @@ verify_user_auth() {
     exit 3
   fi
   if scope_response="$(lark_cli auth check --scope im:message.send_as_user --json 2>/dev/null)"; then
-    if printf '%s' "$scope_response" | jq -e '.granted == true' >/dev/null 2>&1; then
+    if printf '%s' "$scope_response" | jq -e --arg scope im:message.send_as_user \
+      '.ok == true and ((.granted == true) or ((.granted | type) == "array" and (.granted | index($scope) != null)))' >/dev/null 2>&1; then
       return
     fi
-  elif printf '%s' "$scope_response" | jq -e '.missing | index("im:message.send_as_user") != null' >/dev/null 2>&1; then
+  elif printf '%s' "$scope_response" | jq -e --arg scope im:message.send_as_user \
+    '(.missing | type) == "array" and (.missing | index($scope) != null)' >/dev/null 2>&1; then
     echo "BLOCKED user_send_scope_missing: enable and publish im:message.send_as_user, then authorize again" >&2
     exit 3
   fi
