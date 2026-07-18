@@ -1,6 +1,6 @@
 # CardKit 能力评估与演进路线
 
-> 状态：P0 容量保护与 recovery 收尾已完成；P2 原生文本流式已通过远端真实飞书 normal/stop E2E 与端点边界探测，代码中 production router 默认启用 durable journal，远端生产 binary 尚待正式切换；P3 全部暂缓。
+> 状态：P0 容量保护与 recovery 收尾已完成；P2 原生文本流式已部署到远端生产，真实飞书 normal/stop E2E 与端点边界探测全部通过；P3 全部暂缓。
 >
 > 更新时间：2026-07-18（依据真实代码核实修订：优先级重排，纠正两处过时现状）
 
@@ -252,7 +252,7 @@ P3 安全收口的验收条件：
 
 ### P2：原生文本流式更新（性能优化，非功能补齐）
 
-> 当前进度：已完成。安全实现链、远端真实 normal/stop E2E、100,000/100,001 字符边界及拒绝后 sequence 可复用语义均已验证；临时 `E2E_REAL_CARDKIT` serve gate 已删除，production router 默认注入 durable journal。
+> 当前进度：已完成并部署。安全实现链、100,000/100,001 字符边界及拒绝后 sequence 可复用语义均已验证；临时 `E2E_REAL_CARDKIT` serve gate 已删除，production router 默认注入 durable journal。真实 Claude 路径额外补齐 `--include-partial-messages` 与 `stream_event` unwrap；production normal 证明 18 次 native PUT 后以 1 次 result full update 收敛，真实 UI Stop 后 native 计数保持 18、stopped 终态可见，两者均无 `cardkit_sequence_unknown`。
 
 > 原列为 P0。降级理由：用户借由现有「节流全卡刷新 + `streaming_mode`」已能看到打字机式增量，本项优化的是**网络开销**而非用户可感知能力；且它是整份 roadmap 里实现最复杂、最易引入乱序 / `invalid sequence` 回归的一项（要引入 element 级接口、处理全卡与文本流式共享 `sequence` 的竞争、以及「交互进行中不能并发流式」的官方限制）。收益/风险比最差，应等真实 E2E 观测到全卡刷新造成明显限流或卡顿再做。
 
