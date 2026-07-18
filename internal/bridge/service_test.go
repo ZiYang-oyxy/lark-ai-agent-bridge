@@ -40,6 +40,21 @@ type bridgeReplyTarget struct {
 	rehydratedRef  session.RenderRef
 	events         []card.Event
 	renderErr      error
+	bindings       []feishu.RenderBinding
+}
+
+func (t *bridgeReplyTarget) NewStreamingBound(ctx context.Context, binding feishu.RenderBinding, replyTo string) (feishu.ResumableRenderer, error) {
+	t.mu.Lock()
+	t.bindings = append(t.bindings, binding)
+	t.mu.Unlock()
+	return t.NewStreaming(ctx, binding.RunCardSessionID, replyTo)
+}
+
+func (t *bridgeReplyTarget) RehydrateBound(binding feishu.RenderBinding, ref session.RenderRef) feishu.ResumableRenderer {
+	t.mu.Lock()
+	t.bindings = append(t.bindings, binding)
+	t.mu.Unlock()
+	return t.Rehydrate(binding.RunCardSessionID, ref)
 }
 
 func (t *bridgeReplyTarget) NewStreaming(context.Context, string, string) (feishu.ResumableRenderer, error) {
@@ -627,9 +642,22 @@ func TestServiceRoutesBatchThroughReplyPolicyAndPersistsActiveRenderRef(t *testi
 	}
 	target.mu.Lock()
 	newCalls, rehydrateCalls, rehydrated := target.newCalls, target.rehydrateCalls, target.rehydratedRef
+	bindings := append([]feishu.RenderBinding(nil), target.bindings...)
 	target.mu.Unlock()
 	if newCalls != 0 || rehydrateCalls != 1 || rehydrated != wantRef {
 		t.Fatalf("reply target new/rehydrate/ref = %d/%d/%#v", newCalls, rehydrateCalls, rehydrated)
+	}
+	if len(bindings) != 1 {
+		t.Fatalf("reply target bindings = %#v, want one", bindings)
+	}
+	wantBinding := feishu.RenderBinding{
+		BaseSessionID:    sess.ID,
+		BatchID:          sess.ActiveBatch.ID,
+		LatestScope:      sess.ID,
+		RunCardSessionID: runCardSessionID(sess.ID, sess.ActiveBatch.Inputs[len(sess.ActiveBatch.Inputs)-1]),
+	}
+	if bindings[0] != wantBinding {
+		t.Fatalf("reply target binding = %#v, want %#v", bindings[0], wantBinding)
 	}
 	close(runner.block)
 	waitForSessionNoActiveBatch(t, svc, session.Key{Agent: agent.Claude, ChatID: "chat"})

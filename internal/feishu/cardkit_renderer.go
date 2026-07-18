@@ -75,6 +75,7 @@ type CardKitRouterRenderer struct {
 	mu        sync.Mutex
 	client    CardKitClientAPI
 	observer  CardKitRenderObserver
+	journal   NativeSequenceJournal
 	renderers map[string]*CardKitRenderer
 }
 
@@ -90,6 +91,10 @@ func NewCardKitRouterRendererWithObserver(client CardKitClientAPI, observer Card
 	return &CardKitRouterRenderer{client: client, observer: observer, renderers: map[string]*CardKitRenderer{}}
 }
 
+func NewCardKitRouterRendererWithObserverAndJournal(client CardKitClientAPI, observer CardKitRenderObserver, journal NativeSequenceJournal) *CardKitRouterRenderer {
+	return &CardKitRouterRenderer{client: client, observer: observer, journal: journal, renderers: map[string]*CardKitRenderer{}}
+}
+
 func NewCardKitRenderer(client CardKitClientAPI, replyToMessageID string) *CardKitRenderer {
 	return NewCardKitRendererWithObserver(client, replyToMessageID, nil, "")
 }
@@ -102,16 +107,20 @@ func NewCardKitRendererWithNative(client CardKitClientAPI, replyToMessageID stri
 	return &CardKitRenderer{client: client, replyToMessageID: replyToMessageID, observer: observer, routerKey: binding.RunCardSessionID, binding: binding, journal: journal}
 }
 
-func (r *CardKitRouterRenderer) NewStreaming(_ context.Context, sessionID, replyTo string) (ResumableRenderer, error) {
+func (r *CardKitRouterRenderer) NewStreaming(ctx context.Context, sessionID, replyTo string) (ResumableRenderer, error) {
+	return r.NewStreamingBound(ctx, RenderBinding{RunCardSessionID: sessionID}, replyTo)
+}
+
+func (r *CardKitRouterRenderer) NewStreamingBound(_ context.Context, binding RenderBinding, replyTo string) (ResumableRenderer, error) {
 	if r == nil || r.client == nil {
 		return nil, fmt.Errorf("cardkit router renderer unavailable")
 	}
-	if sessionID == "" || replyTo == "" {
+	if binding.RunCardSessionID == "" || replyTo == "" {
 		return nil, fmt.Errorf("cardkit streaming requires session and reply message ids")
 	}
-	renderer := NewCardKitRendererWithObserver(r.client, replyTo, r.observer, sessionID)
+	renderer := NewCardKitRendererWithNative(r.client, replyTo, r.observer, binding, r.journal)
 	r.mu.Lock()
-	r.renderers[sessionID] = renderer
+	r.renderers[binding.RunCardSessionID] = renderer
 	r.mu.Unlock()
 	return renderer, nil
 }
@@ -128,7 +137,11 @@ func (r *CardKitRouterRenderer) AppendTerminal(ctx context.Context, replyTo stri
 }
 
 func (r *CardKitRouterRenderer) Rehydrate(sessionID string, ref session.RenderRef) ResumableRenderer {
-	renderer := NewCardKitRendererWithObserver(r.client, ref.ReplyMessageID, r.observer, sessionID)
+	return r.RehydrateBound(RenderBinding{RunCardSessionID: sessionID}, ref)
+}
+
+func (r *CardKitRouterRenderer) RehydrateBound(binding RenderBinding, ref session.RenderRef) ResumableRenderer {
+	renderer := NewCardKitRendererWithNative(r.client, ref.ReplyMessageID, r.observer, binding, r.journal)
 	renderer.cardID = ref.CardID
 	renderer.replyMessageID = ref.ReplyMessageID
 	renderer.sequence = ref.Version
@@ -136,7 +149,7 @@ func (r *CardKitRouterRenderer) Rehydrate(sessionID string, ref session.RenderRe
 	renderer.sequenceUnknown = ref.SequenceUnknown
 	renderer.pendingSequence = ref.PendingSequence
 	r.mu.Lock()
-	r.renderers[sessionID] = renderer
+	r.renderers[binding.RunCardSessionID] = renderer
 	r.mu.Unlock()
 	return renderer
 }
