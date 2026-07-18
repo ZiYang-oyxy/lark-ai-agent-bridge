@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"lark-agent-bridge/internal/card"
 	"lark-agent-bridge/internal/session"
@@ -145,7 +146,7 @@ func TestCardKitRouterRendererRenderRefRehydratesWithIncreasingSequence(t *testi
 		}
 	}
 	ref := renderer.RenderRef()
-	if ref.CardID != "card-1" || ref.ReplyMessageID != "actual-reply-42" || ref.Version != 2 {
+	if ref.CardID != "card-1" || ref.ReplyMessageID != "actual-reply-42" || ref.Version != 2 || ref.CreatedAt.IsZero() {
 		t.Fatalf("render ref = %#v", ref)
 	}
 
@@ -161,17 +162,64 @@ func TestCardKitRouterRendererRenderRefRehydratesWithIncreasingSequence(t *testi
 	if last.CardID != "card-1" || last.Sequence != 3 {
 		t.Fatalf("rehydrated update = %#v", last)
 	}
+	if got := rehydrated.RenderRef(); !got.CreatedAt.Equal(ref.CreatedAt) {
+		t.Fatalf("rehydrated ref = %#v, want CreatedAt %s", got, ref.CreatedAt)
+	}
+}
+
+func TestCardKitRendererCapturesCreatedAtOnlyAfterReplyBinding(t *testing.T) {
+	client := &fakeCardKitClient{}
+	renderer := NewCardKitRenderer(client, "source")
+	before := time.Now().UTC()
+	if err := renderer.Render(card.Event{Type: "stream", SessionID: "session"}); err != nil {
+		t.Fatal(err)
+	}
+	after := time.Now().UTC()
+	first := renderer.RenderRef()
+	if first.CardID == "" || first.ReplyMessageID == "" || first.CreatedAt.IsZero() {
+		t.Fatalf("bound ref = %#v", first)
+	}
+	if first.CreatedAt.Location() != time.UTC || first.CreatedAt.Before(before) || first.CreatedAt.After(after) {
+		t.Fatalf("CreatedAt = %s, want UTC in [%s, %s]", first.CreatedAt, before, after)
+	}
+	if err := renderer.Render(card.Event{Type: "stream", SessionID: "session"}); err != nil {
+		t.Fatal(err)
+	}
+	advanced := renderer.RenderRef()
+	if advanced.Version != first.Version+1 || !advanced.CreatedAt.Equal(first.CreatedAt) {
+		t.Fatalf("advanced ref = %#v, first = %#v", advanced, first)
+	}
+
+	rehydrated := NewCardKitRouterRenderer(client).Rehydrate("session", advanced)
+	if err := rehydrated.Render(card.Event{Type: "result", SessionID: "session"}); err != nil {
+		t.Fatal(err)
+	}
+	last := client.updateReqs[len(client.updateReqs)-1]
+	if last.Sequence != advanced.Version+1 {
+		t.Fatalf("rehydrated sequence = %d, want %d", last.Sequence, advanced.Version+1)
+	}
+	if got := rehydrated.RenderRef(); !got.CreatedAt.Equal(first.CreatedAt) {
+		t.Fatalf("rehydrated ref = %#v, want CreatedAt %s", got, first.CreatedAt)
+	}
 }
 
 func TestCardKitRendererDoesNotExposeRefBeforeReplyBinding(t *testing.T) {
-	client := &fakeCardKitClient{replyErr: errors.New("reply failed")}
-	renderer := NewCardKitRenderer(client, "source-message")
-	if err := renderer.Render(card.Event{Type: "stream", SessionID: "claude:chat"}); err == nil {
-		t.Fatal("Render() error = nil, want reply failure")
-	}
-	if ref := renderer.RenderRef(); ref != (session.RenderRef{}) {
-		t.Fatalf("render ref exposed before reply binding: %#v", ref)
-	}
+	t.Run("before first render", func(t *testing.T) {
+		renderer := NewCardKitRenderer(&fakeCardKitClient{}, "source-message")
+		if ref := renderer.RenderRef(); ref != (session.RenderRef{}) || !ref.CreatedAt.IsZero() {
+			t.Fatalf("empty render ref = %#v", ref)
+		}
+	})
+	t.Run("reply failure", func(t *testing.T) {
+		client := &fakeCardKitClient{replyErr: errors.New("reply failed")}
+		renderer := NewCardKitRenderer(client, "source-message")
+		if err := renderer.Render(card.Event{Type: "stream", SessionID: "claude:chat"}); err == nil {
+			t.Fatal("Render() error = nil, want reply failure")
+		}
+		if ref := renderer.RenderRef(); ref != (session.RenderRef{}) || !ref.CreatedAt.IsZero() {
+			t.Fatalf("render ref exposed before reply binding: %#v", ref)
+		}
+	})
 }
 
 func TestCardKitRendererClassifiesOnlyStaleMappingErrors(t *testing.T) {
