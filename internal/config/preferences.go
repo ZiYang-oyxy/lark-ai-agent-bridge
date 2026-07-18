@@ -13,6 +13,14 @@ import (
 
 const PreferenceSchemaVersion = 1
 
+type ReplyMode string
+
+const (
+	ReplyModeAppend          ReplyMode = "append"
+	ReplyModeAppendCleanCard ReplyMode = "append-clean-card"
+	ReplyModeLatestCard      ReplyMode = "latest-card"
+)
+
 var builtinModels = []string{"default", "sonnet", "opus", "haiku"}
 
 var validEfforts = map[string]struct{}{
@@ -23,8 +31,9 @@ var validEfforts = map[string]struct{}{
 }
 
 type RuntimePreference struct {
-	Model  string `json:"model"`
-	Effort string `json:"effort"`
+	Model     string    `json:"model"`
+	Effort    string    `json:"effort"`
+	ReplyMode ReplyMode `json:"reply_mode,omitempty"`
 }
 
 type preferenceSnapshot struct {
@@ -139,12 +148,21 @@ func validateRuntimePreference(preference RuntimePreference, allowedModels []str
 	if _, ok := validEfforts[preference.Effort]; !ok {
 		return fmt.Errorf("effort %q is not allowed", preference.Effort)
 	}
+	switch preference.ReplyMode {
+	case ReplyModeAppend, ReplyModeAppendCleanCard, ReplyModeLatestCard:
+	default:
+		return fmt.Errorf("reply mode %q is not allowed", preference.ReplyMode)
+	}
 	return nil
 }
 
 func normalizeRuntimePreference(preference RuntimePreference) RuntimePreference {
 	preference.Model = strings.TrimSpace(preference.Model)
 	preference.Effort = strings.ToLower(strings.TrimSpace(preference.Effort))
+	preference.ReplyMode = ReplyMode(strings.ToLower(strings.TrimSpace(string(preference.ReplyMode))))
+	if preference.ReplyMode == "" {
+		preference.ReplyMode = ReplyModeAppend
+	}
 	for _, model := range builtinModels {
 		if strings.EqualFold(preference.Model, model) {
 			preference.Model = model

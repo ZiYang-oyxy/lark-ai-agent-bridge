@@ -9,7 +9,7 @@ import (
 
 func TestPreferenceStoreUsesDefaultsWhenSnapshotIsMissing(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "preferences.json")
-	defaults := RuntimePreference{Model: "default", Effort: "low"}
+	defaults := RuntimePreference{Model: "default", Effort: "low", ReplyMode: ReplyModeAppend}
 	store, err := OpenPreferenceStore(path, defaults, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -24,12 +24,12 @@ func TestPreferenceStoreUsesDefaultsWhenSnapshotIsMissing(t *testing.T) {
 
 func TestPreferenceStorePersistsVersionedOverrideAtomically(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "nested", "preferences.json")
-	defaults := RuntimePreference{Model: "default", Effort: "low"}
+	defaults := RuntimePreference{Model: "default", Effort: "low", ReplyMode: ReplyModeAppend}
 	store, err := OpenPreferenceStore(path, defaults, []string{"claude-custom-1"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := RuntimePreference{Model: "claude-custom-1", Effort: "high"}
+	want := RuntimePreference{Model: "claude-custom-1", Effort: "high", ReplyMode: ReplyModeAppend}
 	if err := store.Set(want); err != nil {
 		t.Fatal(err)
 	}
@@ -69,27 +69,27 @@ func TestPreferenceStoreRejectsUnknownSchema(t *testing.T) {
 	if err := os.WriteFile(path, []byte(`{"schema_version":99,"revision":1}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := OpenPreferenceStore(path, RuntimePreference{Model: "default", Effort: "low"}, nil); err == nil {
+	if _, err := OpenPreferenceStore(path, RuntimePreference{Model: "default", Effort: "low", ReplyMode: ReplyModeAppend}, nil); err == nil {
 		t.Fatal("OpenPreferenceStore() error = nil, want unknown schema failure")
 	}
 }
 
 func TestRuntimePreferenceValidationUsesBuiltinsAndAllowedModels(t *testing.T) {
 	for _, preference := range []RuntimePreference{
-		{Model: "default", Effort: "default"},
-		{Model: "sonnet", Effort: "low"},
-		{Model: "opus", Effort: "medium"},
-		{Model: "haiku", Effort: "high"},
-		{Model: "claude-custom-1", Effort: "high"},
+		{Model: "default", Effort: "default", ReplyMode: ReplyModeAppend},
+		{Model: "sonnet", Effort: "low", ReplyMode: ReplyModeAppendCleanCard},
+		{Model: "opus", Effort: "medium", ReplyMode: ReplyModeLatestCard},
+		{Model: "haiku", Effort: "high", ReplyMode: ReplyModeAppend},
+		{Model: "claude-custom-1", Effort: "high", ReplyMode: ReplyModeAppend},
 	} {
 		if err := ValidateRuntimePreference(preference, "claude-custom-1"); err != nil {
 			t.Fatalf("ValidateRuntimePreference(%#v): %v", preference, err)
 		}
 	}
 	for _, preference := range []RuntimePreference{
-		{Model: "unknown", Effort: "low"},
-		{Model: "sonnet", Effort: "extreme"},
-		{Model: "two models", Effort: "low"},
+		{Model: "unknown", Effort: "low", ReplyMode: ReplyModeAppend},
+		{Model: "sonnet", Effort: "extreme", ReplyMode: ReplyModeAppend},
+		{Model: "two models", Effort: "low", ReplyMode: ReplyModeAppend},
 	} {
 		if err := ValidateRuntimePreference(preference, "claude-custom-1"); err == nil {
 			t.Fatalf("ValidateRuntimePreference(%#v) error = nil", preference)
@@ -97,14 +97,43 @@ func TestRuntimePreferenceValidationUsesBuiltinsAndAllowedModels(t *testing.T) {
 	}
 }
 
-func TestPreferenceStoreResetPersistsRemovalAndRestoresDefaults(t *testing.T) {
+func TestRuntimePreferenceValidatesAndPersistsReplyMode(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "preferences.json")
-	defaults := RuntimePreference{Model: "default", Effort: "low"}
+	defaults := RuntimePreference{Model: "default", Effort: "low", ReplyMode: ReplyModeAppend}
 	store, err := OpenPreferenceStore(path, defaults, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := store.Set(RuntimePreference{Model: "opus", Effort: "high"}); err != nil {
+	for _, mode := range []ReplyMode{ReplyModeAppend, ReplyModeAppendCleanCard, ReplyModeLatestCard} {
+		want := RuntimePreference{Model: "opus", Effort: "high", ReplyMode: mode}
+		if err := store.Set(want); err != nil {
+			t.Fatalf("Set(%q): %v", mode, err)
+		}
+		reopened, err := OpenPreferenceStore(path, defaults, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := reopened.Get(); got != want {
+			t.Fatalf("reply preference = %#v, want %#v", got, want)
+		}
+	}
+	before := store.Get()
+	if err := store.Set(RuntimePreference{Model: "sonnet", Effort: "low", ReplyMode: "replace-everything"}); err == nil {
+		t.Fatal("invalid reply mode was accepted")
+	}
+	if got := store.Get(); got != before {
+		t.Fatalf("invalid reply mode changed preference: %#v", got)
+	}
+}
+
+func TestPreferenceStoreResetPersistsRemovalAndRestoresDefaults(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "preferences.json")
+	defaults := RuntimePreference{Model: "default", Effort: "low", ReplyMode: ReplyModeAppend}
+	store, err := OpenPreferenceStore(path, defaults, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Set(RuntimePreference{Model: "opus", Effort: "high", ReplyMode: ReplyModeLatestCard}); err != nil {
 		t.Fatal(err)
 	}
 	if err := store.Reset(); err != nil {
@@ -124,12 +153,12 @@ func TestPreferenceStoreResetPersistsRemovalAndRestoresDefaults(t *testing.T) {
 
 func TestPreferenceStoreFailedReplacementDoesNotPublishCandidate(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "preferences.json")
-	defaults := RuntimePreference{Model: "default", Effort: "low"}
+	defaults := RuntimePreference{Model: "default", Effort: "low", ReplyMode: ReplyModeAppend}
 	store, err := OpenPreferenceStore(path, defaults, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := store.Set(RuntimePreference{Model: "sonnet", Effort: "medium"}); err != nil {
+	if err := store.Set(RuntimePreference{Model: "sonnet", Effort: "medium", ReplyMode: ReplyModeAppend}); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.Remove(path); err != nil {
@@ -138,10 +167,10 @@ func TestPreferenceStoreFailedReplacementDoesNotPublishCandidate(t *testing.T) {
 	if err := os.Mkdir(path, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.Set(RuntimePreference{Model: "opus", Effort: "high"}); err == nil {
+	if err := store.Set(RuntimePreference{Model: "opus", Effort: "high", ReplyMode: ReplyModeLatestCard}); err == nil {
 		t.Fatal("Set() error = nil, want replacement failure")
 	}
-	want := RuntimePreference{Model: "sonnet", Effort: "medium"}
+	want := RuntimePreference{Model: "sonnet", Effort: "medium", ReplyMode: ReplyModeAppend}
 	if got := store.Get(); got != want {
 		t.Fatalf("preference after failed write = %#v, want unchanged %#v", got, want)
 	}

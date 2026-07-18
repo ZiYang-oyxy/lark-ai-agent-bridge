@@ -410,6 +410,9 @@ func applyDefaultWorkDir(cfg *config.Config, workDir string) error {
 	if os.Getenv("E2E_PREFERENCE_STORE") == "" {
 		cfg.PreferenceStorePath = filepath.Join(workDir, ".lark-agent-bridge", "preferences.json")
 	}
+	if os.Getenv("E2E_REPLY_STORE") == "" {
+		cfg.ReplyStorePath = filepath.Join(workDir, ".lark-agent-bridge", "replies.json")
+	}
 	if os.Getenv("E2E_MEDIA_CACHE_DIR") == "" {
 		absoluteWorkDir, err := filepath.Abs(workDir)
 		if err != nil {

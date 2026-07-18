@@ -89,6 +89,32 @@ func TestLoadFromEnvRuntimePreferenceDefaultsAndOverrides(t *testing.T) {
 	}
 }
 
+func TestLoadFromEnvReplyDefaultsAndOverrides(t *testing.T) {
+	workDir := filepath.Join(t.TempDir(), "work")
+	t.Setenv("E2E_DEFAULT_WORKDIR", workDir)
+	cfg := LoadFromEnv()
+	if cfg.ReplyMode != ReplyModeAppend {
+		t.Fatalf("default reply mode = %q, want %q", cfg.ReplyMode, ReplyModeAppend)
+	}
+	if cfg.ReplyStorePath != filepath.Join(workDir, ".lark-agent-bridge", "replies.json") {
+		t.Fatalf("reply store path = %q", cfg.ReplyStorePath)
+	}
+	customPath := filepath.Join(t.TempDir(), "custom-replies.json")
+	t.Setenv("E2E_REPLY_MODE", string(ReplyModeLatestCard))
+	t.Setenv("E2E_REPLY_STORE", customPath)
+	cfg = LoadFromEnv()
+	if cfg.ReplyMode != ReplyModeLatestCard || cfg.ReplyStorePath != customPath {
+		t.Fatalf("reply config = mode %q store %q", cfg.ReplyMode, cfg.ReplyStorePath)
+	}
+}
+
+func TestLoadFromEnvStrictRejectsInvalidReplyMode(t *testing.T) {
+	t.Setenv("E2E_REPLY_MODE", "replace-everything")
+	if _, err := LoadFromEnvStrict(); err == nil {
+		t.Fatal("LoadFromEnvStrict() error = nil for invalid reply mode")
+	}
+}
+
 func TestLoadFromEnvStrictRejectsInvalidRuntimePreferenceDefaults(t *testing.T) {
 	for _, tc := range []struct {
 		name  string

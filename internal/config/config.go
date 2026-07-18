@@ -19,8 +19,10 @@ type Config struct {
 	AuditLogPath        string
 	SessionStorePath    string
 	PreferenceStorePath string
+	ReplyStorePath      string
 	Model               string
 	Effort              string
+	ReplyMode           ReplyMode
 	AllowedModels       []string
 	QueueMaxPending     int
 	BatchMaxInputs      int
@@ -47,8 +49,10 @@ func LoadFromEnv() Config {
 		AuditLogPath:        filepath.Join(workDir, ".lark-agent-bridge", "audit.jsonl"),
 		SessionStorePath:    filepath.Join(workDir, ".lark-agent-bridge", "sessions.json"),
 		PreferenceStorePath: filepath.Join(workDir, ".lark-agent-bridge", "preferences.json"),
+		ReplyStorePath:      filepath.Join(workDir, ".lark-agent-bridge", "replies.json"),
 		Model:               "default",
 		Effort:              "low",
+		ReplyMode:           ReplyModeAppend,
 		QueueMaxPending:     20,
 		BatchMaxInputs:      10,
 		BatchMaxTextRunes:   64 << 10,
@@ -73,6 +77,7 @@ func LoadFromEnv() Config {
 		cfg.AuditLogPath = filepath.Join(v, ".lark-agent-bridge", "audit.jsonl")
 		cfg.SessionStorePath = filepath.Join(v, ".lark-agent-bridge", "sessions.json")
 		cfg.PreferenceStorePath = filepath.Join(v, ".lark-agent-bridge", "preferences.json")
+		cfg.ReplyStorePath = filepath.Join(v, ".lark-agent-bridge", "replies.json")
 		cfg.MediaCacheDir = defaultMediaCacheDir(v)
 	}
 	if v := os.Getenv("E2E_CARD_MAX_CHARS"); v != "" {
@@ -99,11 +104,17 @@ func LoadFromEnv() Config {
 	if v := os.Getenv("E2E_PREFERENCE_STORE"); v != "" {
 		cfg.PreferenceStorePath = v
 	}
+	if v := os.Getenv("E2E_REPLY_STORE"); v != "" {
+		cfg.ReplyStorePath = v
+	}
 	if v := os.Getenv("E2E_MODEL"); v != "" {
 		cfg.Model = strings.TrimSpace(v)
 	}
 	if v := os.Getenv("E2E_EFFORT"); v != "" {
 		cfg.Effort = strings.ToLower(strings.TrimSpace(v))
+	}
+	if v := os.Getenv("E2E_REPLY_MODE"); v != "" {
+		cfg.ReplyMode = ReplyMode(strings.ToLower(strings.TrimSpace(v)))
 	}
 	if v := os.Getenv("E2E_ALLOWED_MODELS"); v != "" {
 		additions := strings.Split(v, ",")
@@ -155,7 +166,7 @@ func LoadFromEnvStrict() (Config, error) {
 			return Config{}, fmt.Errorf("parse E2E_ALLOWED_MODELS: %w", err)
 		}
 	}
-	if err := ValidateRuntimePreference(RuntimePreference{Model: cfg.Model, Effort: cfg.Effort}, cfg.AllowedModels...); err != nil {
+	if err := ValidateRuntimePreference(RuntimePreference{Model: cfg.Model, Effort: cfg.Effort, ReplyMode: cfg.ReplyMode}, cfg.AllowedModels...); err != nil {
 		return Config{}, fmt.Errorf("validate runtime preference defaults: %w", err)
 	}
 	if cfg.MediaCacheDir, err = explicitMediaDir("E2E_MEDIA_CACHE_DIR", cfg.MediaCacheDir); err != nil {

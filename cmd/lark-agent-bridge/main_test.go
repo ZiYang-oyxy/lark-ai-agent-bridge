@@ -85,6 +85,17 @@ func TestApplyDefaultWorkDirRebasesImplicitPreferenceStore(t *testing.T) {
 	}
 }
 
+func TestApplyDefaultWorkDirRebasesImplicitReplyStore(t *testing.T) {
+	t.Setenv("E2E_REPLY_STORE", "")
+	cfg := config.Config{}
+	if err := applyDefaultWorkDir(&cfg, "/tmp/work"); err != nil {
+		t.Fatal(err)
+	}
+	if cfg.ReplyStorePath != filepath.Join("/tmp/work", ".lark-agent-bridge", "replies.json") {
+		t.Fatalf("reply store path = %q", cfg.ReplyStorePath)
+	}
+}
+
 func TestApplyDefaultWorkDirRebasesImplicitMediaCacheAsAbsolute(t *testing.T) {
 	t.Setenv("E2E_MEDIA_CACHE_DIR", "")
 	relative := filepath.Join("relative", "workspace")

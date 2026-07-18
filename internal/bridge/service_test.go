@@ -342,7 +342,7 @@ func TestServiceConfigResetRemovesOverride(t *testing.T) {
 	cfg := testConfig(t)
 	cfg.Model, cfg.Effort = "sonnet", "low"
 	cfg.AllowedModels = []string{"default", "sonnet", "opus", "haiku"}
-	defaults := config.RuntimePreference{Model: cfg.Model, Effort: cfg.Effort}
+	defaults := config.RuntimePreference{Model: cfg.Model, Effort: cfg.Effort, ReplyMode: config.ReplyModeAppend}
 	store, path := testPreferenceStore(t, defaults, cfg.AllowedModels)
 	if err := store.Set(config.RuntimePreference{Model: "opus", Effort: "high"}); err != nil {
 		t.Fatal(err)
@@ -377,7 +377,7 @@ func TestServiceConfigSavePersistsValidValuesAndRejectsInvalidValues(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Event == nil || result.Event.Type != "config_saved" || store.Get() != (config.RuntimePreference{Model: "claude-custom-1", Effort: "medium"}) {
+	if result.Event == nil || result.Event.Type != "config_saved" || store.Get() != (config.RuntimePreference{Model: "claude-custom-1", Effort: "medium", ReplyMode: config.ReplyModeAppend}) {
 		t.Fatalf("save result/store = %#v / %#v", result, store.Get())
 	}
 	reopened, err := config.OpenPreferenceStore(path, defaults, cfg.AllowedModels)
@@ -444,7 +444,7 @@ func TestServiceConfigPersistenceFailureShowsErrorAndAudits(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Event == nil || result.Event.Type != "error" || store.Get() != (config.RuntimePreference{Model: "sonnet", Effort: "medium"}) || !auditContainsAction(recorder.Events(), "config_save_failed") {
+	if result.Event == nil || result.Event.Type != "error" || store.Get() != (config.RuntimePreference{Model: "sonnet", Effort: "medium", ReplyMode: config.ReplyModeAppend}) || !auditContainsAction(recorder.Events(), "config_save_failed") {
 		t.Fatalf("failure result/store/audit = %#v / %#v / %#v", result, store.Get(), recorder.Events())
 	}
 }
