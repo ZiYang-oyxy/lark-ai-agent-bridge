@@ -1,10 +1,15 @@
 package card
 
 import (
+	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
 )
+
+type encodedComponentContainer struct {
+	Elements []any `json:"elements"`
+}
 
 func TestMarshalLarkCardMeasuresUTF8BytesAndNestedComponents(t *testing.T) {
 	payload := map[string]any{
@@ -48,6 +53,28 @@ func TestMarshalLarkCardRejects201stComponentButReturnsEncodedPayload(t *testing
 	}
 	if len(encoded) == 0 || capacity.Components != LarkCardMaxComponents+1 {
 		t.Fatalf("encoded/capacity = %d/%#v", len(encoded), capacity)
+	}
+}
+
+func TestMarshalLarkCardCountsComponentsFromEncodedRawMessageAndStruct(t *testing.T) {
+	elements := componentElements(LarkCardMaxComponents + 1)
+	raw, err := json.Marshal(map[string]any{"elements": elements})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, payload := range map[string]map[string]any{
+		"raw message": {"body": json.RawMessage(raw)},
+		"json struct": {"body": encodedComponentContainer{Elements: elements}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, capacity, err := MarshalLarkCard(payload)
+			if !errors.Is(err, ErrCardPayloadOversize) {
+				t.Fatalf("MarshalLarkCard() error = %v, want ErrCardPayloadOversize", err)
+			}
+			if capacity.Components != LarkCardMaxComponents+1 {
+				t.Fatalf("Components = %d, want %d", capacity.Components, LarkCardMaxComponents+1)
+			}
+		})
 	}
 }
 
@@ -163,6 +190,33 @@ func TestPrepareLarkCardTruncatesAnswerTailBeforeEmergencyFallback(t *testing.T)
 	}
 }
 
+func TestPrepareLarkCardFitsMultipleAnswerSegmentsBeforeEmergencyFallback(t *testing.T) {
+	large := "answer prefix " + strings.Repeat("tail ", LarkCardSoftMaxJSONBytes)
+	for name, segments := range map[string][]Segment{
+		"short error after large answer": {
+			{Kind: SegmentText, Text: large},
+			{Kind: SegmentError, Text: "short error remains"},
+		},
+		"two text segments": {
+			{Kind: SegmentText, Text: large},
+			{Kind: SegmentText, Text: "latest answer remains"},
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			prepared, err := PrepareLarkCard(Event{Type: "result", Segments: segments})
+			if err != nil {
+				t.Fatalf("PrepareLarkCard() error: %v", err)
+			}
+			if !prepared.NativeReady() {
+				t.Fatalf("prepared an emergency card instead of fitting answer segments: %#v", prepared.EventCopy())
+			}
+			if got := prepared.Answer(); !strings.Contains(got, "latest answer remains") && !strings.Contains(got, "short error remains") {
+				t.Fatalf("answer tail was not retained: %q", got)
+			}
+		})
+	}
+}
+
 func TestPrepareLarkCardUsesStaticEmergencyFallbackForUnfitCallerControlledStructure(t *testing.T) {
 	prepared, err := PrepareLarkCard(Event{
 		Type:      "result",
@@ -179,4 +233,12 @@ func TestPrepareLarkCardUsesStaticEmergencyFallbackForUnfitCallerControlledStruc
 	if strings.Contains(encoded, "session") || strings.Contains(encoded, "label") || strings.Contains(encoded, "value") {
 		t.Fatalf("emergency payload includes caller content: %q", encoded)
 	}
+}
+
+func componentElements(n int) []any {
+	elements := make([]any, n)
+	for i := range elements {
+		elements[i] = map[string]any{"tag": "markdown", "content": "x"}
+	}
+	return elements
 }

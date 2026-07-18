@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"reflect"
 	"strings"
 )
 
@@ -50,10 +49,14 @@ func MarshalLarkCard(payload map[string]any) ([]byte, CardCapacity, error) {
 	if err != nil {
 		return nil, CardCapacity{}, fmt.Errorf("marshal lark card: %w", err)
 	}
+	var encodedPayload any
+	if err := json.Unmarshal(encoded, &encodedPayload); err != nil {
+		return nil, CardCapacity{}, fmt.Errorf("decode encoded lark card: %w", err)
+	}
 	capacity := CardCapacity{
 		Scope:         "lark_card",
 		JSONBytes:     len(encoded),
-		Components:    countCardComponents(payload),
+		Components:    countCardComponents(encodedPayload),
 		MaxJSONBytes:  LarkCardSoftMaxJSONBytes,
 		MaxComponents: LarkCardMaxComponents,
 	}
@@ -164,12 +167,39 @@ func shrinkLatestSegment(event Event, kind SegmentKind, keepTail bool) (Event, P
 }
 
 func shrinkLatestAnswer(event Event) (Event, PreparedLarkCard, bool) {
-	for i := len(event.Segments) - 1; i >= 0; i-- {
-		if event.Segments[i].Kind == SegmentText || event.Segments[i].Kind == SegmentError {
-			return shrinkSegment(event, i, false)
+	indices := answerSegmentIndices(event.Segments)
+	if len(indices) == 0 {
+		return event, PreparedLarkCard{}, false
+	}
+
+	// Reserve a readable placeholder for every answer section first. This lets a
+	// short final error or answer survive while earlier large sections are reduced.
+	candidate := cloneEvent(event)
+	for _, index := range indices {
+		candidate.Segments[index].Text = "…"
+	}
+	prepared, err := prepareLarkCard(candidate, true)
+	if err != nil {
+		return event, PreparedLarkCard{}, false
+	}
+
+	// Prefer the answer tail, then use any remaining capacity for earlier text.
+	for i := len(indices) - 1; i >= 0; i-- {
+		index := indices[i]
+		original := []rune(event.Segments[index].Text)
+		candidate, prepared = maximizeSegment(candidate, index, original, false, prepared)
+	}
+	return candidate, prepared, true
+}
+
+func answerSegmentIndices(segments []Segment) []int {
+	indices := make([]int, 0, len(segments))
+	for index, segment := range segments {
+		if segment.Kind == SegmentText || segment.Kind == SegmentError {
+			indices = append(indices, index)
 		}
 	}
-	return event, PreparedLarkCard{}, false
+	return indices
 }
 
 func shrinkSegment(event Event, index int, keepTail bool) (Event, PreparedLarkCard, bool) {
@@ -177,8 +207,15 @@ func shrinkSegment(event Event, index int, keepTail bool) (Event, PreparedLarkCa
 	if len(original) == 0 {
 		return event, PreparedLarkCard{}, false
 	}
-	var best PreparedLarkCard
-	bestEvent := event
+	bestEvent, best := maximizeSegment(event, index, original, keepTail, PreparedLarkCard{})
+	if len(best.json) == 0 {
+		return event, PreparedLarkCard{}, false
+	}
+	return bestEvent, best, true
+}
+
+func maximizeSegment(event Event, index int, original []rune, keepTail bool, initial PreparedLarkCard) (Event, PreparedLarkCard) {
+	bestEvent, best := event, initial
 	low, high := 0, len(original)
 	for low <= high {
 		mid := (low + high) / 2
@@ -192,10 +229,7 @@ func shrinkSegment(event Event, index int, keepTail bool) (Event, PreparedLarkCa
 		}
 		high = mid - 1
 	}
-	if len(best.json) == 0 {
-		return event, PreparedLarkCard{}, false
-	}
-	return bestEvent, best, true
+	return bestEvent, best
 }
 
 func shrinkMessage(event Event) (Event, PreparedLarkCard, bool) {
@@ -291,54 +325,25 @@ func preparedIntegrity(prepared PreparedLarkCard) [32]byte {
 }
 
 func countCardComponents(value any) int {
-	return countCardComponentsValue(reflect.ValueOf(value))
-}
-
-func countCardComponentsValue(value reflect.Value) int {
-	if !value.IsValid() {
-		return 0
-	}
-	for value.Kind() == reflect.Interface || value.Kind() == reflect.Pointer {
-		if value.IsNil() {
-			return 0
-		}
-		value = value.Elem()
-	}
-	switch value.Kind() {
-	case reflect.Slice, reflect.Array:
+	switch value := value.(type) {
+	case []any:
 		count := 0
-		for i := 0; i < value.Len(); i++ {
-			count += countCardComponentsValue(value.Index(i))
+		for _, item := range value {
+			count += countCardComponents(item)
 		}
 		return count
-	case reflect.Map:
+	case map[string]any:
 		count := 0
-		hasTag := false
-		iter := value.MapRange()
-		for iter.Next() {
-			key := iter.Key()
-			if key.Kind() == reflect.String && key.String() == "tag" && isStringValue(iter.Value()) {
-				hasTag = true
-			}
-			count += countCardComponentsValue(iter.Value())
-		}
-		if hasTag {
+		if _, ok := value["tag"].(string); ok {
 			count++
+		}
+		for _, item := range value {
+			count += countCardComponents(item)
 		}
 		return count
 	default:
 		return 0
 	}
-}
-
-func isStringValue(value reflect.Value) bool {
-	for value.IsValid() && value.Kind() == reflect.Interface {
-		if value.IsNil() {
-			return false
-		}
-		value = value.Elem()
-	}
-	return value.IsValid() && value.Kind() == reflect.String
 }
 
 func clonePayload(payload map[string]any) map[string]any {
