@@ -74,6 +74,8 @@ type AgentRunRequest struct {
 	Prompt          string
 	WorkDir         string
 	ClaudeSessionID string
+	Model           string
+	Effort          string
 	OnEvent         func(AgentStreamUpdate)
 }
 
@@ -421,7 +423,7 @@ func (s *Service) executeBatch(ctx context.Context, sess session.Session, batch 
 		}
 		return
 	}
-	result, err := s.Runner.Run(ctx, AgentRunRequest{Kind: sess.Key.Agent, ClaudeBin: s.Config.ClaudeBin, Prompt: prompt, WorkDir: sess.WorkDir, ClaudeSessionID: sess.ClaudeSessionID, OnEvent: func(update AgentStreamUpdate) {
+	result, err := s.Runner.Run(ctx, AgentRunRequest{Kind: sess.Key.Agent, ClaudeBin: s.Config.ClaudeBin, Prompt: prompt, WorkDir: sess.WorkDir, ClaudeSessionID: sess.ClaudeSessionID, Model: batch.Inputs[0].RequestedModel, Effort: batch.Inputs[0].RequestedEffort, OnEvent: func(update AgentStreamUpdate) {
 		if run, ok := s.activeRun(id); ok && run.BatchID == batch.ID && run.Stream != nil {
 			run.Stream.Handle(update)
 		}
@@ -1137,6 +1139,8 @@ func (CLIExecRunner) Run(ctx context.Context, req AgentRunRequest) (AgentRunResu
 		WorkDir:         req.WorkDir,
 		Prompt:          req.Prompt,
 		ClaudeSessionID: req.ClaudeSessionID,
+		Model:           req.Model,
+		Effort:          req.Effort,
 	})
 	if err != nil {
 		return AgentRunResult{}, err

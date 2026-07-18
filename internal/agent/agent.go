@@ -19,6 +19,8 @@ type OneShotConfig struct {
 	WorkDir         string
 	Prompt          string
 	ClaudeSessionID string
+	Model           string
+	Effort          string
 }
 
 func ParseKind(raw string) (Kind, bool) {
@@ -48,7 +50,17 @@ func buildClaudeOneShotCommand(cfg OneShotConfig) ([]string, error) {
 	if bin == "" {
 		bin = "claude"
 	}
-	args := []string{bin, "-p", "--output-format", "stream-json", "--verbose", "--dangerously-skip-permissions", "--effort", "low"}
+	args := []string{bin, "-p", "--output-format", "stream-json", "--verbose", "--dangerously-skip-permissions"}
+	effort := strings.TrimSpace(cfg.Effort)
+	if effort == "" {
+		effort = "low"
+	}
+	if !strings.EqualFold(effort, "default") {
+		args = append(args, "--effort", effort)
+	}
+	if model := strings.TrimSpace(cfg.Model); model != "" && !strings.EqualFold(model, "default") {
+		args = append(args, "--model", model)
+	}
 	if sessionID := strings.TrimSpace(cfg.ClaudeSessionID); sessionID != "" {
 		args = append(args, "--resume", sessionID)
 	}

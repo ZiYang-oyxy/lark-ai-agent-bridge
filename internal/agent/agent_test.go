@@ -29,6 +29,28 @@ func TestBuildClaudeOneShotCommandResumesInternalSession(t *testing.T) {
 	}
 }
 
+func TestBuildClaudeOneShotCommandUsesConfiguredModelAndEffort(t *testing.T) {
+	cmd, err := BuildOneShotCommand(OneShotConfig{Kind: Claude, Prompt: "hello", Model: "opus", Effort: "high"})
+	if err != nil {
+		t.Fatalf("one-shot command error: %v", err)
+	}
+	want := []string{"claude", "-p", "--output-format", "stream-json", "--verbose", "--dangerously-skip-permissions", "--effort", "high", "--model", "opus", "hello"}
+	if got := strings.Join(cmd, "\x00"); got != strings.Join(want, "\x00") {
+		t.Fatalf("one-shot command = %#v, want %#v", cmd, want)
+	}
+}
+
+func TestBuildClaudeOneShotCommandOmitsDefaultModelAndEffort(t *testing.T) {
+	cmd, err := BuildOneShotCommand(OneShotConfig{Kind: Claude, Prompt: "hello", Model: "default", Effort: "default"})
+	if err != nil {
+		t.Fatalf("one-shot command error: %v", err)
+	}
+	joined := strings.Join(cmd, " ")
+	if strings.Contains(joined, "--model") || strings.Contains(joined, "--effort") {
+		t.Fatalf("default preferences must omit model and effort flags: %#v", cmd)
+	}
+}
+
 func TestBuildOneShotRejectsEmptyPrompt(t *testing.T) {
 	_, err := BuildOneShotCommand(OneShotConfig{Kind: Claude, Prompt: "   "})
 	if err == nil || !strings.Contains(err.Error(), "empty") {

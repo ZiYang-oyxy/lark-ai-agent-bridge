@@ -285,6 +285,34 @@ func TestServiceResolvesAttachmentsBeforeDurableEnqueue(t *testing.T) {
 	}
 }
 
+func TestServicePassesFrozenModelAndEffortToRunner(t *testing.T) {
+	now := time.Now()
+	runner := newFakeRunner()
+	svc := NewService(testConfig(t), card.NewFakeRenderer(), runner, audit.NewRecorder())
+	key := session.Key{Agent: agent.Claude, ChatID: "runtime-config"}
+	_, _, err := svc.Sessions.EnqueueDurable(key, session.Input{
+		ID:              "frozen-preference",
+		Text:            "hello",
+		WorkDir:         svc.Config.DefaultWorkDir,
+		RequestedModel:  "opus",
+		RequestedEffort: "high",
+		Time:            now,
+		DebounceUntil:   now,
+		State:           session.InputQueued,
+	}, svc.Config.DefaultWorkDir, session.BatchLimits{MaxPending: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.DrainReady(now.Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	waitForCalls(t, runner, 1)
+	call := runner.Calls()[0]
+	if call.Model != "opus" || call.Effort != "high" {
+		t.Fatalf("runner preferences = model %q effort %q, want opus/high", call.Model, call.Effort)
+	}
+}
+
 func TestServiceKeepsSuccessfulAttachmentsAndShowsPartialFailureSummary(t *testing.T) {
 	now := time.Now()
 	cache := &resolutionCacheStub{resolution: media.Resolution{
