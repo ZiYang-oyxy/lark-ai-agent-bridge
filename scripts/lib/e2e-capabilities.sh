@@ -123,7 +123,7 @@ e2e_cap_exit_code() {
 }
 
 e2e_cap_write_json() {
-  local path="$1" dir tmp records i evidence_json
+  local path="$1" dir tmp records i evidence_json generated_at
   dir="$(dirname "$path")"
   mkdir -p "$dir"
   tmp="$(mktemp "$dir/.capabilities.XXXXXX")"
@@ -144,10 +144,28 @@ e2e_cap_write_json() {
       --argjson evidence "$evidence_json" \
       '{name:$name,status:$status,reason_code:$reason,summary:$summary,remediation:$remediation,evidence_refs:$evidence}' >>"$records"
   done
-  jq -s '{schema_version:1,capabilities:.}' "$records" >"$tmp"
+  generated_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  jq -s --arg generated_at "$generated_at" '{schema_version:1,generated_at:$generated_at,capabilities:.}' "$records" >"$tmp"
   mv "$tmp" "$path"
   chmod 600 "$path"
   rm -f "$records"
+}
+
+e2e_cap_import_json() {
+  local path="$1" name record status reason summary remediation evidence
+  shift
+  [[ -f "$path" ]] || return 0
+  jq -e '.schema_version == 1 and (.capabilities | type == "array")' "$path" >/dev/null 2>&1 || return 1
+  for name in "$@"; do
+    record="$(jq -c --arg name "$name" '.capabilities[] | select(.name == $name)' "$path" | tail -n 1)"
+    [[ -n "$record" ]] || continue
+    status="$(printf '%s' "$record" | jq -r '.status')"
+    reason="$(printf '%s' "$record" | jq -r '.reason_code // ""')"
+    summary="$(printf '%s' "$record" | jq -r '.summary // ""')"
+    remediation="$(printf '%s' "$record" | jq -r '.remediation // ""')"
+    evidence="$(printf '%s' "$record" | jq -r '.evidence_refs[0] // ""')"
+    e2e_cap_record "$name" "$status" "$reason" "$summary" "$remediation" "$evidence"
+  done
 }
 
 e2e_cap_write_summary() {

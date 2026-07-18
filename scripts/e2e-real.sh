@@ -190,9 +190,11 @@ fi
 
 profile_selection="$(e2e_profile_select "$STATE_ROOT" "$PROFILE_ARG")" || exit 2
 IFS=$'\t' read -r PROFILE_NAME PROFILE_ENV _ <<<"$profile_selection"
-e2e_profile_load "$PROFILE_ENV" || exit 2
 if [[ "$PROFILE_NAME" == "legacy" ]]; then
+  e2e_profile_load_legacy "$PROFILE_ENV" || exit 2
   echo "notice: legacy .lark-agent-bridge/e2e.env is in use; run e2e-init.sh to create a named profile" >&2
+else
+  e2e_profile_load "$PROFILE_ENV" || exit 2
 fi
 if [[ "$RUN_DIR_SET" -eq 0 ]]; then
   RUN_DIR="$STATE_ROOT/.cache/e2e/$PROFILE_NAME/real-$RUN_ID"
@@ -203,6 +205,7 @@ MEDIA_P2P_CHAT_ID="${E2E_REAL_E2E_P2P_CHAT_ID:-}"
 
 SUMMARY="$RUN_DIR/summary.md"
 CAPABILITIES_JSON="$RUN_DIR/capabilities.json"
+PROFILE_CAPABILITY_CACHE="$STATE_ROOT/.lark-agent-bridge/e2e/profiles/$PROFILE_NAME.capabilities.json"
 MESSAGES="$RUN_DIR/messages.jsonl"
 AUDIT="$RUN_DIR/audit.jsonl"
 MGET_DIR="$RUN_DIR/mget"
@@ -1687,10 +1690,32 @@ case_prerequisites() {
   local name="$1"
   case "$name" in
     debounce_dm)
-      printf '%s\n' credentials lark_cli_auth oauth_same_app bot_identity p2p_chat wrapper exclusive_runtime
+      if e2e_cap_index dm_delivery >/dev/null 2>&1; then
+        printf '%s\n' credentials dm_delivery wrapper exclusive_runtime
+      else
+        printf '%s\n' credentials lark_cli_auth bot_identity p2p_chat wrapper exclusive_runtime
+      fi
+      ;;
+    media_attachment_only|media_images)
+      if e2e_cap_index media_image >/dev/null 2>&1; then
+        printf '%s\n' credentials media_image wrapper exclusive_runtime
+      else
+        printf '%s\n' credentials lark_cli_auth bot_identity test_group wrapper exclusive_runtime
+      fi
       ;;
     media_text_files|media_partial|media_rejected)
-      printf '%s\n' credentials lark_cli_auth bot_identity p2p_chat wrapper exclusive_runtime
+      if e2e_cap_index media_file >/dev/null 2>&1; then
+        printf '%s\n' credentials media_file wrapper exclusive_runtime
+      else
+        printf '%s\n' credentials lark_cli_auth bot_identity p2p_chat wrapper exclusive_runtime
+      fi
+      ;;
+    message_revoke|message_revoke_pending_workdir|message_revoke_queued_input|recall_state)
+      if e2e_cap_index recall_event_delivery >/dev/null 2>&1; then
+        printf '%s\n' credentials recall_event_delivery wrapper exclusive_runtime
+      else
+        printf '%s\n' credentials lark_cli_auth bot_identity test_group wrapper exclusive_runtime
+      fi
       ;;
     preflight)
       printf '%s\n' credentials lark_cli_auth bot_identity test_group exclusive_runtime
@@ -1824,8 +1849,12 @@ run_active_capability_preflight() {
   if capability_prerequisites_ready group_delivery credentials bot_identity test_group; then
     run_capability_case group_delivery new_basic || true
   fi
-  if capability_prerequisites_ready dm_delivery credentials bot_identity oauth_same_app p2p_chat; then
+  if capability_prerequisites_ready dm_delivery credentials lark_cli_auth bot_identity p2p_chat; then
     run_capability_case dm_delivery debounce_dm 'cross app|P2P send|user-id' open_id_cross_app "login lark-cli through the bridge app" || true
+    case "$(e2e_cap_status dm_delivery)" in
+      PASS) e2e_cap_record oauth_same_app PASS active_probe "DM canary proved OAuth compatibility" "" "$RUN_DIR/capability-dm_delivery.log" ;;
+      BLOCKED) e2e_cap_record oauth_same_app BLOCKED oauth_app_mismatch "DM canary proved an app identity mismatch" "login lark-cli through the bridge app" "$RUN_DIR/capability-dm_delivery.log" ;;
+    esac
   fi
   if capability_prerequisites_ready card_action group_delivery; then
     run_capability_case card_action stop_preserves_queue || true
@@ -1861,8 +1890,16 @@ if [[ "$PREFLIGHT_ONLY" -eq 1 ]]; then
   run_active_capability_preflight || true
   e2e_cap_write_json "$CAPABILITIES_JSON"
   e2e_cap_write_summary "$SUMMARY"
+  if [[ "$PROFILE_NAME" != "legacy" ]]; then
+    cp "$CAPABILITIES_JSON" "$PROFILE_CAPABILITY_CACHE"
+    chmod 600 "$PROFILE_CAPABILITY_CACHE"
+  fi
   echo "$SUMMARY"
   exit "$(e2e_cap_exit_code "$STRICT_CAPABILITIES")"
+fi
+if [[ "$PROFILE_NAME" != "legacy" && -f "$PROFILE_CAPABILITY_CACHE" && "$PROFILE_CAPABILITY_CACHE" -nt "$PROFILE_ENV" ]]; then
+  e2e_cap_import_json "$PROFILE_CAPABILITY_CACHE" \
+    group_delivery dm_delivery card_action message_recall_api recall_event_delivery media_image media_file
 fi
 summary_init
 normal_lock_path="$STATE_ROOT/.lark-agent-bridge/e2e/locks/$PROFILE_NAME.lock"

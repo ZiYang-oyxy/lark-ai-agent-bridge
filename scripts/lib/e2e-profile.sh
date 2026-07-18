@@ -18,6 +18,11 @@ e2e_profile_mode() {
   stat -f '%Lp' "$path" 2>/dev/null || stat -c '%a' "$path" 2>/dev/null
 }
 
+e2e_profile_owner_uid() {
+  local path="$1"
+  stat -f '%u' "$path" 2>/dev/null || stat -c '%u' "$path" 2>/dev/null
+}
+
 e2e_profile_allowed_key() {
   case "$1" in
     LARK_APP_ID|LARK_APP_SECRET|LARK_BOT_OPEN_ID|E2E_E2E_CHAT_ID|E2E_REAL_E2E_P2P_CHAT_ID|E2E_REAL_E2E_TIMEOUT_SEC|E2E_REAL_E2E_FAKE_CLAUDE|E2E_REAL_E2E_DEFAULT_WORKDIR|E2E_REAL_E2E_CALLBACK_ADDR|E2E_CLAUDE_BIN) return 0 ;;
@@ -97,7 +102,7 @@ e2e_profile_select() {
 }
 
 e2e_profile_load() {
-  local path="$1" mode line key value
+  local path="$1" mode owner_uid dir dir_mode dir_owner_uid line key value
   [[ -f "$path" ]] || {
     e2e_profile_error "profile file not found"
     return 2
@@ -108,6 +113,27 @@ e2e_profile_load() {
   }
   [[ "$mode" == "600" ]] || {
     e2e_profile_error "profile file permissions must be 0600"
+    return 2
+  }
+  owner_uid="$(e2e_profile_owner_uid "$path")" || {
+    e2e_profile_error "cannot inspect profile ownership"
+    return 2
+  }
+  [[ "$owner_uid" == "$(id -u)" ]] || {
+    e2e_profile_error "profile file must be owned by the current user"
+    return 2
+  }
+  dir="$(dirname "$path")"
+  dir_mode="$(e2e_profile_mode "$dir")" || {
+    e2e_profile_error "cannot inspect profile directory permissions"
+    return 2
+  }
+  dir_owner_uid="$(e2e_profile_owner_uid "$dir")" || {
+    e2e_profile_error "cannot inspect profile directory ownership"
+    return 2
+  }
+  [[ "$dir_mode" == "700" && "$dir_owner_uid" == "$(id -u)" ]] || {
+    e2e_profile_error "profile directory must be current-user-owned mode 0700"
     return 2
   }
 
@@ -132,6 +158,24 @@ e2e_profile_load() {
   done <"$path"
 }
 
+e2e_profile_load_legacy() {
+  local path="$1" mode owner_uid
+  [[ -f "$path" ]] || {
+    e2e_profile_error "legacy profile file not found"
+    return 2
+  }
+  mode="$(e2e_profile_mode "$path")" || return 2
+  owner_uid="$(e2e_profile_owner_uid "$path")" || return 2
+  [[ "$mode" == "600" && "$owner_uid" == "$(id -u)" ]] || {
+    e2e_profile_error "legacy profile must be current-user-owned mode 0600"
+    return 2
+  }
+  set -a
+  # shellcheck disable=SC1090
+  source "$path"
+  set +a
+}
+
 e2e_profile_redacted() {
   local value="${1:-}" length=${#1}
   if (( length <= 8 )); then
@@ -142,7 +186,7 @@ e2e_profile_redacted() {
 }
 
 e2e_profile_write() {
-  local root="$1" name="$2" dir env_path json_path env_tmp json_tmp key value now
+  local root="$1" name="$2" dir env_path json_path env_tmp json_tmp key value now move_bin
   local keys=(LARK_APP_ID LARK_APP_SECRET LARK_BOT_OPEN_ID E2E_E2E_CHAT_ID E2E_REAL_E2E_P2P_CHAT_ID E2E_REAL_E2E_TIMEOUT_SEC E2E_REAL_E2E_FAKE_CLAUDE E2E_REAL_E2E_DEFAULT_WORKDIR E2E_REAL_E2E_CALLBACK_ADDR E2E_CLAUDE_BIN)
   e2e_profile_validate_name "$name" || {
     e2e_profile_error "invalid profile name"
@@ -159,8 +203,8 @@ e2e_profile_write() {
   json_path="$dir/$name.json"
   env_tmp="$(mktemp "$dir/.$name.env.XXXXXX")"
   json_tmp="$(mktemp "$dir/.$name.json.XXXXXX")"
+  move_bin="${E2E_PROFILE_MV_BIN:-mv}"
   chmod 600 "$env_tmp" "$json_tmp"
-  trap 'rm -f "$env_tmp" "$json_tmp"' RETURN
 
   for key in "${keys[@]}"; do
     value="${!key:-}"
@@ -172,17 +216,25 @@ e2e_profile_write() {
   done
 
   now="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-  jq -n \
+  if ! jq -n \
     --arg profile "$name" \
     --arg updated_at "$now" \
     --arg app "$(e2e_profile_redacted "${LARK_APP_ID:-}")" \
     --arg bot "$(e2e_profile_redacted "${LARK_BOT_OPEN_ID:-}")" \
     --arg group "$(e2e_profile_redacted "${E2E_E2E_CHAT_ID:-}")" \
     --arg p2p "$(e2e_profile_redacted "${E2E_REAL_E2E_P2P_CHAT_ID:-}")" \
-    '{schema_version:1,profile:$profile,updated_at:$updated_at,identity:{app:$app,bot:$bot,group:$group,p2p:$p2p}}' >"$json_tmp"
+    '{schema_version:1,profile:$profile,updated_at:$updated_at,identity:{app:$app,bot:$bot,group:$group,p2p:$p2p}}' >"$json_tmp"; then
+    rm -f "$env_tmp" "$json_tmp"
+    return 1
+  fi
 
-  mv "$env_tmp" "$env_path"
-  mv "$json_tmp" "$json_path"
+  if ! "$move_bin" "$json_tmp" "$json_path"; then
+    rm -f "$env_tmp" "$json_tmp"
+    return 1
+  fi
+  if ! "$move_bin" "$env_tmp" "$env_path"; then
+    rm -f "$env_tmp"
+    return 1
+  fi
   chmod 600 "$env_path" "$json_path"
-  trap - RETURN
 }

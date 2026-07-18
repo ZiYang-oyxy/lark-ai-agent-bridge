@@ -43,6 +43,12 @@ jq -e '.schema_version == 1 and (.capabilities | length) == 3' "$json_path" >/de
 jq -e '.capabilities[] | has("name") and has("status") and has("reason_code") and has("summary") and has("remediation") and has("evidence_refs")' "$json_path" >/dev/null
 rg -q 'dm_delivery.*BLOCKED.*open_id_cross_app' "$summary_path"
 
+e2e_cap_reset
+e2e_cap_import_json "$json_path" dm_delivery wrapper
+assert_eq BLOCKED "$(e2e_cap_status dm_delivery)" "imported DM status"
+assert_eq FAIL "$(e2e_cap_status wrapper)" "imported wrapper status"
+assert_eq SKIPPED "$(e2e_cap_status credentials)" "unselected capability was not imported"
+
 LOCK_ROOT="$TEST_ROOT/locks"
 mkdir -p "$LOCK_ROOT"
 chmod 700 "$LOCK_ROOT"
@@ -162,6 +168,32 @@ run_expect_exit 3 env \
   bash "$ROOT/scripts/e2e-real.sh" --profile static-blocked --preflight-only --strict-capabilities --run-dir "$TEST_ROOT/preflight-static-blocked"
 if rg -q 'preflight unexpectedly invoked go|messages-send|serve|unexpectedly invoked claude' "$DOCTOR_LOG"; then
   fail "preflight ignored a blocked static prerequisite"
+fi
+
+LEGACY_STATE="$TEST_ROOT/legacy-state"
+mkdir -p "$LEGACY_STATE/.lark-agent-bridge"
+chmod 700 "$LEGACY_STATE/.lark-agent-bridge"
+cat >"$LEGACY_STATE/.lark-agent-bridge/e2e.env" <<'EOF'
+export LARK_APP_ID="cli_doctor_app"
+export LARK_APP_SECRET="legacy-doctor-secret"
+export LARK_BOT_OPEN_ID="ou_doctor_bot"
+export E2E_E2E_CHAT_ID="oc_doctor_group"
+export E2E_REAL_E2E_P2P_CHAT_ID="oc_doctor_p2p"
+export E2E_REAL_E2E_FAKE_CLAUDE="1"
+EOF
+chmod 600 "$LEGACY_STATE/.lark-agent-bridge/e2e.env"
+legacy_before="$(shasum -a 256 "$LEGACY_STATE/.lark-agent-bridge/e2e.env")"
+legacy_output="$TEST_ROOT/legacy-doctor.out"
+set +e
+E2E_STATE_ROOT="$LEGACY_STATE" DOCTOR_LOG="$DOCTOR_LOG" PATH="$DOCTOR_BIN:$PATH" E2E_CLAUDE_BIN="$DOCTOR_BIN/claude" \
+  bash "$ROOT/scripts/e2e-real.sh" --doctor --run-dir "$TEST_ROOT/legacy-doctor" >"$legacy_output" 2>&1
+legacy_status=$?
+set -e
+assert_eq 0 "$legacy_status" "legacy doctor exit"
+assert_eq "$legacy_before" "$(shasum -a 256 "$LEGACY_STATE/.lark-agent-bridge/e2e.env")" "legacy profile remained unchanged"
+rg -q 'legacy .lark-agent-bridge/e2e.env is in use' "$legacy_output"
+if rg -q 'legacy-doctor-secret|ou_doctor_bot|oc_doctor_' "$legacy_output"; then
+  fail "legacy doctor output leaked a secret or full ID"
 fi
 
 echo "e2e capability smoke ok"

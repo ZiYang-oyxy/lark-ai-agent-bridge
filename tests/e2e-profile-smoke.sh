@@ -60,6 +60,24 @@ assert_eq cli_test_app "$LARK_APP_ID" "loaded app id"
 assert_eq secret-do-not-print "$LARK_APP_SECRET" "loaded secret"
 assert_eq ou_profile_secret_bot "$LARK_BOT_OPEN_ID" "loaded bot id"
 
+chmod 755 "$(dirname "$personal_env")"
+assert_fail e2e_profile_load "$personal_env"
+chmod 700 "$(dirname "$personal_env")"
+
+old_env_contents="$(cat "$personal_env")"
+FAILING_MV="$TEST_ROOT/failing-mv"
+cat >"$FAILING_MV" <<'EOF'
+#!/usr/bin/env bash
+exit 1
+EOF
+chmod +x "$FAILING_MV"
+export LARK_APP_ID="cli_replacement_app"
+# shellcheck disable=SC2016
+assert_fail env E2E_PROFILE_MV_BIN="$FAILING_MV" bash -c \
+  'source "$1"; e2e_profile_write "$2" personal' _ "$ROOT/scripts/lib/e2e-profile.sh" "$TEST_ROOT"
+assert_eq "$old_env_contents" "$(cat "$personal_env")" "failed atomic write preserved old env"
+export LARK_APP_ID="cli_test_app"
+
 selection="$(e2e_profile_select "$TEST_ROOT" "")"
 assert_eq $'personal\t'"$personal_env"$'\t'"$personal_json" "$selection" "unique profile selection"
 
@@ -86,9 +104,19 @@ chmod 600 "$personal_env"
 
 rm -f "$TEST_ROOT/.lark-agent-bridge/e2e/profiles/"*.env "$TEST_ROOT/.lark-agent-bridge/e2e/profiles/"*.json
 printf '%s\n' 'LARK_APP_ID=legacy_app' >"$TEST_ROOT/.lark-agent-bridge/e2e.env"
+cat >"$TEST_ROOT/.lark-agent-bridge/e2e.env" <<'EOF'
+export LARK_APP_ID="legacy_app"
+export LARK_APP_SECRET="legacy_secret"
+export E2E_E2E_CHAT_ID="oc_legacy_group"
+export E2E_E2E_CHAT_TYPE="group"
+EOF
 chmod 600 "$TEST_ROOT/.lark-agent-bridge/e2e.env"
 selection="$(e2e_profile_select "$TEST_ROOT" "")"
 assert_eq $'legacy\t'"$TEST_ROOT/.lark-agent-bridge/e2e.env"$'\t-' "$selection" "legacy selection"
+unset LARK_APP_ID LARK_APP_SECRET E2E_E2E_CHAT_ID E2E_E2E_CHAT_TYPE
+e2e_profile_load_legacy "$TEST_ROOT/.lark-agent-bridge/e2e.env"
+assert_eq legacy_app "$LARK_APP_ID" "legacy app load"
+assert_eq group "$E2E_E2E_CHAT_TYPE" "legacy optional field load"
 
 assert_ok git -C "$ROOT" check-ignore -q .lark-agent-bridge/e2e/profiles/personal.env
 assert_ok git -C "$ROOT" check-ignore -q .cache/e2e/personal/run/capabilities.json
@@ -109,8 +137,15 @@ cat >"$FAKE_BIN/lark-cli" <<'EOF'
 case "$*" in
   'auth status --json --verify') printf '%s\n' '{"verified":true,"user":{"open_id":"ou_bootstrap_secret_user"}}' ;;
   *'im chats get'*'--chat-id oc_bootstrap_secret_group'*) printf '%s\n' '{"data":{"chat_id":"oc_bootstrap_secret_group"}}' ;;
-  *'im +chat-list'*'--types p2p'*) printf '%s\n' '{"items":[{"chat_id":"oc_unrelated"},{"chat_id":"oc_bootstrap_secret_p2p"}]}' ;;
+  *'im +chat-list'*'--types p2p'*)
+    case "${P2P_SCENARIO:-unique}" in
+      none) printf '%s\n' '{"items":[{"chat_id":"oc_unrelated"}]}' ;;
+      multiple) printf '%s\n' '{"items":[{"chat_id":"oc_bootstrap_secret_p2p"},{"chat_id":"oc_bootstrap_secret_p2p_two"}]}' ;;
+      *) printf '%s\n' '{"items":[{"chat_id":"oc_unrelated"},{"chat_id":"oc_bootstrap_secret_p2p"}]}' ;;
+    esac
+    ;;
   *'im +chat-members-list'*'--chat-id oc_unrelated'*) printf '%s\n' '{"bots":[]}' ;;
+  *'im +chat-members-list'*'--chat-id oc_bootstrap_secret_p2p_two'*) printf '%s\n' '{"bots":[{"member_id":"ou_bootstrap_secret_bot"}]}' ;;
   *'im +chat-members-list'*'--chat-id oc_bootstrap_secret_p2p'*) printf '%s\n' '{"bots":[{"member_id":"ou_bootstrap_secret_bot"}]}' ;;
   *) echo "unexpected fake lark-cli call: $*" >&2; exit 1 ;;
 esac
@@ -137,5 +172,27 @@ assert_ok rg -q '^E2E_REAL_E2E_P2P_CHAT_ID=oc_bootstrap_secret_p2p$' "$bootstrap
 if rg -e 'bootstrap-secret-do-not-print|ou_bootstrap_secret_bot|oc_bootstrap_secret_group|oc_bootstrap_secret_p2p' "$bootstrap_output" >/dev/null 2>&1; then
   fail "bootstrap output leaked a secret or full ID"
 fi
+
+unset LARK_APP_ID LARK_APP_SECRET LARK_BOT_OPEN_ID E2E_E2E_CHAT_ID E2E_REAL_E2E_P2P_CHAT_ID
+PATH="$FAKE_BIN:$PATH" E2E_REPO_ROOT="$BOOT_ROOT" \
+  bash "$ROOT/scripts/e2e-init.sh" --profile developer --non-interactive >"$bootstrap_output" 2>&1
+assert_ok rg -q '^LARK_APP_ID=cli_bootstrap_app$' "$bootstrap_env"
+
+for scenario in none multiple; do
+  blocked_root="$TEST_ROOT/bootstrap-$scenario"
+  blocked_output="$TEST_ROOT/bootstrap-$scenario.out"
+  mkdir -p "$blocked_root"
+  set +e
+  PATH="$FAKE_BIN:$PATH" E2E_REPO_ROOT="$blocked_root" P2P_SCENARIO="$scenario" \
+    LARK_APP_ID="cli_bootstrap_app" LARK_APP_SECRET="bootstrap-secret-do-not-print" \
+    LARK_BOT_OPEN_ID="" E2E_E2E_CHAT_ID="oc_bootstrap_secret_group" E2E_REAL_E2E_P2P_CHAT_ID="" \
+    bash "$ROOT/scripts/e2e-init.sh" --profile developer --non-interactive >"$blocked_output" 2>&1
+  blocked_status=$?
+  set -e
+  assert_eq 3 "$blocked_status" "$scenario P2P bootstrap status"
+  if rg -e 'bootstrap-secret-do-not-print|ou_bootstrap_secret_bot|oc_bootstrap_secret_group|oc_bootstrap_secret_p2p' "$blocked_output" >/dev/null 2>&1; then
+    fail "$scenario P2P bootstrap leaked a secret or full ID"
+  fi
+done
 
 echo "e2e profile smoke ok"

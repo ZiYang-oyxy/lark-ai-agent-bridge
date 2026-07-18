@@ -158,9 +158,28 @@ discover_p2p_chat() {
   export E2E_REAL_E2E_P2P_CHAT_ID
 }
 
+load_existing_profile_defaults() {
+  local env_path="$ROOT/.lark-agent-bridge/e2e/profiles/$PROFILE.env"
+  local app_set="${LARK_APP_ID+x}" secret_set="${LARK_APP_SECRET+x}" bot_set="${LARK_BOT_OPEN_ID+x}"
+  local group_set="${E2E_E2E_CHAT_ID+x}" p2p_set="${E2E_REAL_E2E_P2P_CHAT_ID+x}"
+  local app_value="${LARK_APP_ID-}" secret_value="${LARK_APP_SECRET-}" bot_value="${LARK_BOT_OPEN_ID-}"
+  local group_value="${E2E_E2E_CHAT_ID-}" p2p_value="${E2E_REAL_E2E_P2P_CHAT_ID-}"
+  [[ -f "$env_path" ]] || return 0
+  e2e_profile_load "$env_path"
+  if [[ -n "$app_set" ]]; then LARK_APP_ID="$app_value"; export LARK_APP_ID; fi
+  if [[ -n "$secret_set" ]]; then LARK_APP_SECRET="$secret_value"; export LARK_APP_SECRET; fi
+  if [[ -n "$bot_set" ]]; then LARK_BOT_OPEN_ID="$bot_value"; export LARK_BOT_OPEN_ID; fi
+  if [[ -n "$group_set" ]]; then E2E_E2E_CHAT_ID="$group_value"; export E2E_E2E_CHAT_ID; fi
+  if [[ -n "$p2p_set" ]]; then E2E_REAL_E2E_P2P_CHAT_ID="$p2p_value"; export E2E_REAL_E2E_P2P_CHAT_ID; fi
+  if [[ -z "$P2P_CHAT_ID" && -n "${E2E_REAL_E2E_P2P_CHAT_ID:-}" ]]; then
+    P2P_CHAT_ID="$E2E_REAL_E2E_P2P_CHAT_ID"
+  fi
+}
+
 require_cmd jq
 require_cmd curl
 require_cmd lark-cli
+load_existing_profile_defaults
 prompt_value LARK_APP_ID "Feishu app ID"
 prompt_value LARK_APP_SECRET "Feishu app secret" 1
 prompt_value E2E_E2E_CHAT_ID "Test group chat ID"
