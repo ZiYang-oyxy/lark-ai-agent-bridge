@@ -3,15 +3,59 @@ package main
 import (
 	"context"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
+	"lark-agent-bridge/internal/bridge"
 	"lark-agent-bridge/internal/config"
 	"lark-agent-bridge/internal/feishu"
 )
+
+type recordingInteractionFencer struct {
+	mu       sync.Mutex
+	sessions []string
+	releases int
+}
+
+func (f *recordingInteractionFencer) BeginCardInteraction(sessionID string) func() {
+	f.mu.Lock()
+	f.sessions = append(f.sessions, sessionID)
+	f.mu.Unlock()
+	return func() {
+		f.mu.Lock()
+		f.releases++
+		f.mu.Unlock()
+	}
+}
+
+func TestServeActionTransportsShareGatewayFencer(t *testing.T) {
+	fencer := &recordingInteractionFencer{}
+	longConnHandler, callbackHandler := newServeActionTransports(bridge.ActionGateway{Fencer: fencer}, 1000)
+	if _, err := longConnHandler(t.Context(), feishu.CardAction{SessionID: "long-session", ActionID: "stop"}); err == nil {
+		t.Fatal("long-connection action error = nil, want unavailable service")
+	}
+	req := httptest.NewRequest(http.MethodPost, "/card/callback", strings.NewReader(`{"operator":{"open_id":"user"},"action":{"value":{"session":"http-session","action_id":"stop"}}}`))
+	rec := httptest.NewRecorder()
+	callbackHandler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("callback status = %d, want %d", rec.Code, http.StatusInternalServerError)
+	}
+	fencer.mu.Lock()
+	defer fencer.mu.Unlock()
+	if got, want := fencer.sessions, []string{"long-session", "http-session"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("fenced sessions = %#v, want %#v", got, want)
+	}
+	if fencer.releases != 2 {
+		t.Fatalf("fence releases = %d, want 2", fencer.releases)
+	}
+}
 
 func TestNewServeAuditRecorderWritesFile(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "audit", "audit.jsonl")

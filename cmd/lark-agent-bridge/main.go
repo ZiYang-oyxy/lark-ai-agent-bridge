@@ -288,6 +288,7 @@ func runServe(args []string) error {
 	svc.CardTarget = cardRouter
 	svc.Reactions = sender
 	actionGateway := bridge.ActionGateway{Service: svc, Fencer: cardRouter}
+	actionHandler, callbackHandler := newServeActionTransports(actionGateway, cfg.CardMaxChars)
 	svc.ProcessRecoveryNotices(ctx)
 	mediaWiring := newServeMedia(cfg, tokens)
 	svc.MediaCache = mediaWiring.cache
@@ -295,20 +296,10 @@ func runServe(args []string) error {
 	svc.MediaGC = mediaWiring.gc
 	svc.SweepMediaCacheStartup()
 	client := feishu.NewLongConnClient(feishu.LongConnConfig{
-		AppID:     appID,
-		AppSecret: appSecret,
-		BotOpenID: botOpenID,
-		ActionHandler: func(ctx context.Context, action feishu.CardAction) (*feishu.CardActionResponse, error) {
-			result, err := actionGateway.Handle(ctx, actionRequestFromFeishu(action))
-			if err != nil {
-				return nil, err
-			}
-			prepared, err := result.PrepareCard(cfg.CardMaxChars)
-			if err != nil {
-				return nil, err
-			}
-			return &feishu.CardActionResponse{Card: prepared.PayloadCopy()}, nil
-		},
+		AppID:         appID,
+		AppSecret:     appSecret,
+		BotOpenID:     botOpenID,
+		ActionHandler: actionHandler,
 		MessageRecalledHandler: func(ctx context.Context, recall feishu.RecalledMessage) error {
 			return svc.HandleMessageRecalled(ctx, bridge.MessageRecall{
 				MessageID:  recall.MessageID,
@@ -319,7 +310,7 @@ func runServe(args []string) error {
 		},
 	})
 	if addr := os.Getenv("E2E_CALLBACK_ADDR"); addr != "" {
-		server := &http.Server{Addr: addr, Handler: bridge.NewCallbackHTTPHandler(actionGateway)}
+		server := &http.Server{Addr: addr, Handler: callbackHandler}
 		go func() {
 			if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 				fmt.Fprintln(os.Stderr, "callback server:", err)
@@ -347,6 +338,21 @@ func runServe(args []string) error {
 		return longConnErr
 	}
 	return shutdownErr
+}
+
+func newServeActionTransports(gateway bridge.ActionGateway, cardMaxChars int) (func(context.Context, feishu.CardAction) (*feishu.CardActionResponse, error), http.Handler) {
+	actionHandler := func(ctx context.Context, action feishu.CardAction) (*feishu.CardActionResponse, error) {
+		result, err := gateway.Handle(ctx, actionRequestFromFeishu(action))
+		if err != nil {
+			return nil, err
+		}
+		prepared, err := result.PrepareCard(cardMaxChars)
+		if err != nil {
+			return nil, err
+		}
+		return &feishu.CardActionResponse{Card: prepared.PayloadCopy()}, nil
+	}
+	return actionHandler, bridge.NewCallbackHTTPHandler(gateway)
 }
 
 func actionRequestFromFeishu(action feishu.CardAction) bridge.ActionRequest {
