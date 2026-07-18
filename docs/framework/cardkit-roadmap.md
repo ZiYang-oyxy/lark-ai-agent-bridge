@@ -1,6 +1,6 @@
 # CardKit 能力评估与演进路线
 
-> 状态：P0 容量保护与 recovery 收尾已完成；P2 原生文本流式已通过远端真实飞书 normal/stop E2E 与端点边界探测，production 默认启用 durable journal router；P3 全部暂缓。
+> 状态：P0 容量保护与 recovery 收尾已完成；P2 原生文本流式已通过远端真实飞书 normal/stop E2E 与端点边界探测，代码中 production router 默认启用 durable journal，远端生产 binary 尚待正式切换；P3 全部暂缓。
 >
 > 更新时间：2026-07-18（依据真实代码核实修订：优先级重排，纠正两处过时现状）
 
