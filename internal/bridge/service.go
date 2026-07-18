@@ -95,6 +95,11 @@ type AgentRunResult struct {
 	Model           string
 	Tokens          int
 	ClaudeSessionID string
+	// AnswerSegments 保存本次 run 内每个 assistant text message 的正文,按出现顺序排列。
+	// 供终态"只保留最后一段回复"裁剪使用;Segments 仍是聚合结果,兼容其他消费方。
+	AnswerSegments []string
+	// ToolCallCount 是本次 run 内唯一 tool_use.id 的数量,用于卡片过程区标题的稳定计数。
+	ToolCallCount int
 }
 
 type AgentStreamUpdate struct {
@@ -1457,6 +1462,7 @@ func parseClaudeStream(input io.Reader, copyTo *bytes.Buffer, onEvent func(Agent
 	var answer strings.Builder
 	var thought strings.Builder
 	var tool strings.Builder
+	state := &claudeParseState{seenToolUse: map[string]struct{}{}}
 	scanner := bufio.NewScanner(input)
 	scanner.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
 	parsedJSON := false
@@ -1473,6 +1479,7 @@ func parseClaudeStream(input io.Reader, copyTo *bytes.Buffer, onEvent func(Agent
 		if err := json.Unmarshal([]byte(line), &event); err != nil {
 			answer.WriteString(line)
 			answer.WriteByte('\n')
+			state.addAnswerSegment(line)
 			emitStreamUpdate(onEvent, AgentStreamUpdate{
 				Segments: []card.Segment{{Kind: card.SegmentText, Text: line}},
 				Activity: streamActivityAnswering,
@@ -1481,7 +1488,7 @@ func parseClaudeStream(input io.Reader, copyTo *bytes.Buffer, onEvent func(Agent
 		}
 		parsedJSON = true
 		emitStreamUpdate(onEvent, streamUpdateFromClaudeEvent(event))
-		consumeClaudeEvent(event, &answer, &thought, &tool, &result)
+		consumeClaudeEvent(event, &answer, &thought, &tool, &result, state)
 	}
 	if err := scanner.Err(); err != nil {
 		return result, err
@@ -1489,6 +1496,7 @@ func parseClaudeStream(input io.Reader, copyTo *bytes.Buffer, onEvent func(Agent
 	if !parsedJSON && strings.TrimSpace(answer.String()) == "" {
 		if copyTo != nil {
 			answer.Write(copyTo.Bytes())
+			state.addAnswerSegment(string(copyTo.Bytes()))
 		}
 	}
 	addSegment := func(kind card.SegmentKind, text string) {
@@ -1500,10 +1508,29 @@ func parseClaudeStream(input io.Reader, copyTo *bytes.Buffer, onEvent func(Agent
 	addSegment(card.SegmentText, answer.String())
 	addSegment(card.SegmentThought, thought.String())
 	addSegment(card.SegmentTool, tool.String())
+	result.AnswerSegments = state.answerSegments
+	result.ToolCallCount = len(state.seenToolUse)
 	return result, nil
 }
 
-func consumeClaudeEvent(event map[string]any, answer, thought, tool *strings.Builder, result *AgentRunResult) {
+// claudeParseState 跟踪解析 Claude stream-json 时的跨行状态:
+// 按 assistant message 边界收集的正文分段,以及去重后的 tool_use.id 集合。
+type claudeParseState struct {
+	answerSegments []string
+	seenToolUse    map[string]struct{}
+}
+
+func (s *claudeParseState) addAnswerSegment(text string) {
+	if s == nil {
+		return
+	}
+	text = strings.TrimSpace(text)
+	if text != "" {
+		s.answerSegments = append(s.answerSegments, text)
+	}
+}
+
+func consumeClaudeEvent(event map[string]any, answer, thought, tool *strings.Builder, result *AgentRunResult, state *claudeParseState) {
 	if id, ok := event["session_id"].(string); ok && result.ClaudeSessionID == "" {
 		result.ClaudeSessionID = id
 	}
@@ -1515,6 +1542,7 @@ func consumeClaudeEvent(event map[string]any, answer, thought, tool *strings.Bui
 		if text, ok := event["result"].(string); ok && strings.TrimSpace(text) != "" && strings.TrimSpace(answer.String()) == "" {
 			answer.WriteString(text)
 			answer.WriteByte('\n')
+			state.addAnswerSegment(text)
 		}
 		return
 	}
@@ -1529,7 +1557,11 @@ func consumeClaudeEvent(event map[string]any, answer, thought, tool *strings.Bui
 		result.Model = model
 	}
 	result.Tokens += tokensFromValue(message["usage"])
+	// 只有 assistant role 的 message 才创建正文分段;user / tool-result message 的文本不进正文。
+	role, _ := message["role"].(string)
+	isAssistant := role == "" || role == "assistant"
 	content, _ := message["content"].([]any)
+	var messageText strings.Builder
 	for _, raw := range content {
 		block, _ := raw.(map[string]any)
 		if block == nil {
@@ -1539,13 +1571,23 @@ func consumeClaudeEvent(event map[string]any, answer, thought, tool *strings.Bui
 		switch blockType {
 		case "text":
 			writeBlockText(answer, block)
+			if isAssistant {
+				writeBlockText(&messageText, block)
+			}
 		case "thinking", "reasoning", "redacted_thinking":
 			writeBlockText(thought, block)
 		case "tool_use":
 			writeToolUse(tool, block)
+			if id, ok := block["id"].(string); ok && id != "" {
+				state.seenToolUse[id] = struct{}{}
+			}
 		case "tool_result":
 			writeToolResult(tool, block)
 		}
+	}
+	// 同一个 assistant message 内的多个 text block 合并为一段回复(而非逐 block / 逐 delta 拆分)。
+	if isAssistant {
+		state.addAnswerSegment(messageText.String())
 	}
 }
 

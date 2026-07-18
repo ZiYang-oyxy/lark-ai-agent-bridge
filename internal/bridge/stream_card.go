@@ -206,8 +206,11 @@ func (s *agentCardStream) Finish(status string, meta card.Meta, result AgentRunR
 		s.meta.Tokens = result.Tokens
 		s.meta.TotalTokens = maxInt(s.meta.TotalTokens, s.totalBefore+result.Tokens)
 	}
+	if result.ToolCallCount > 0 {
+		s.toolCallCount = result.ToolCallCount
+	}
 	if len(result.Segments) > 0 {
-		s.mergeFinalSegmentsLocked(result.Segments)
+		s.mergeFinalSegmentsLocked(result.Segments, result.AnswerSegments)
 	}
 	if status == "stopped" {
 		s.stopVisible = true
@@ -383,16 +386,39 @@ func (s *agentCardStream) appendSegmentLocked(segment card.Segment) {
 	appendSegmentToBuilders(segment, &s.answer, &s.thought, &s.tools)
 }
 
-func (s *agentCardStream) mergeFinalSegmentsLocked(segments []card.Segment) {
-	var answer strings.Builder
+// mergeFinalSegmentsLocked 用终态结果重建卡片正文。
+// v2:正文只保留本次 run 的最后一段 assistant 回复(answerSegments 末尾),
+// 而非累积的全部中间发言;若 runner 追加了错误段,错误作为独立块附在最后一段之后,
+// 不参与"最后一段"的选取。thought/tools 仍取聚合结果。
+func (s *agentCardStream) mergeFinalSegmentsLocked(segments []card.Segment, answerSegments []string) {
+	var aggregateAnswer strings.Builder
 	var thought strings.Builder
 	var tools strings.Builder
+	var errorBlock strings.Builder
 	for _, segment := range segments {
-		appendSegmentToBuilders(segment, &answer, &thought, &tools)
+		switch segment.Kind {
+		case card.SegmentThought:
+			appendToBuilder(&thought, segment.Text)
+		case card.SegmentTool:
+			appendToBuilder(&tools, segment.Text)
+		case card.SegmentError:
+			appendToBuilder(&errorBlock, "**Error**\n"+strings.TrimSpace(segment.Text))
+		default:
+			appendToBuilder(&aggregateAnswer, segment.Text)
+		}
 	}
-	if answer.Len() > 0 {
+
+	finalAnswer := lastNonEmpty(answerSegments)
+	if finalAnswer == "" {
+		// 没有可靠的分段结果时回退到聚合正文(保持旧行为的超集)。
+		finalAnswer = strings.TrimSpace(aggregateAnswer.String())
+	}
+	if errorBlock.Len() > 0 {
+		finalAnswer = strings.TrimSpace(finalAnswer + "\n\n" + errorBlock.String())
+	}
+	if finalAnswer != "" {
 		s.answer.Reset()
-		s.answer.WriteString(answer.String())
+		s.answer.WriteString(finalAnswer)
 	}
 	if thought.Len() > 0 {
 		s.thought.Reset()
@@ -402,6 +428,26 @@ func (s *agentCardStream) mergeFinalSegmentsLocked(segments []card.Segment) {
 		s.tools.Reset()
 		s.tools.WriteString(tools.String())
 	}
+}
+
+func appendToBuilder(b *strings.Builder, text string) {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return
+	}
+	if b.Len() > 0 {
+		b.WriteString("\n\n")
+	}
+	b.WriteString(text)
+}
+
+func lastNonEmpty(segments []string) string {
+	for i := len(segments) - 1; i >= 0; i-- {
+		if text := strings.TrimSpace(segments[i]); text != "" {
+			return text
+		}
+	}
+	return ""
 }
 
 func (s *agentCardStream) eventLocked(initial bool) card.Event {

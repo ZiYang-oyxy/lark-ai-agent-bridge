@@ -2953,6 +2953,57 @@ func TestStreamUpdateParsesToolResultBlockIntoToolSegment(t *testing.T) {
 	}
 }
 
+func TestParseClaudeStreamSegmentsAssistantAnswersAndCountsUniqueTools(t *testing.T) {
+	// 两个 assistant message:第一段是过程性发言,第二段是最终结论。
+	// 一次工具调用被拆成 tool_use + tool_result 两条,同一 tool_use.id 只应计一次。
+	lines := []string{
+		`{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"让我先看看"}]}}`,
+		`{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","name":"Bash","id":"tu-1","input":{"command":"ls"}}]}}`,
+		`{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"tu-1","content":"file.txt"}]}}`,
+		`{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"最终结论:只有一个文件。"}]}}`,
+	}
+	data := []byte(strings.Join(lines, "\n"))
+	result, err := parseClaudeStream(bytes.NewReader(data), nil, func(AgentStreamUpdate) {})
+	if err != nil {
+		t.Fatalf("parse stream error: %v", err)
+	}
+	if len(result.AnswerSegments) != 2 {
+		t.Fatalf("answer segments = %#v, want 2 assistant answers", result.AnswerSegments)
+	}
+	if last := result.AnswerSegments[len(result.AnswerSegments)-1]; !strings.Contains(last, "最终结论") {
+		t.Fatalf("last answer segment = %q", last)
+	}
+	if result.ToolCallCount != 1 {
+		t.Fatalf("tool call count = %d, want 1 (deduped by tool_use.id)", result.ToolCallCount)
+	}
+}
+
+func TestFinishKeepsOnlyLastAssistantAnswer(t *testing.T) {
+	// 终态裁剪:正文只保留最后一段 assistant 回复,丢弃中间发言。
+	renderer := card.NewFakeRenderer()
+	svc := NewService(testConfig(t), card.NewFakeRenderer(), newFakeRunner(), audit.NewRecorder())
+	stream := newAgentCardStreamWithRenderer(svc, "s1", session.Session{ID: "s1"}, session.Input{ReplyToMessageID: "src", Time: time.Now()}, renderer, nil)
+	if err := stream.Start(); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	_, err := stream.Finish("completed", card.Meta{}, AgentRunResult{
+		Segments:       []card.Segment{{Kind: card.SegmentText, Text: "让我先看看\n\n最终结论:只有一个文件。"}},
+		AnswerSegments: []string{"让我先看看", "最终结论:只有一个文件。"},
+	})
+	if err != nil {
+		t.Fatalf("finish: %v", err)
+	}
+	events := renderer.Events()
+	terminal := events[len(events)-1]
+	if len(terminal.Segments) == 0 || terminal.Segments[0].Kind != card.SegmentText {
+		t.Fatalf("terminal segments = %#v", terminal.Segments)
+	}
+	body := terminal.Segments[0].Text
+	if strings.Contains(body, "让我先看看") || !strings.Contains(body, "最终结论") {
+		t.Fatalf("terminal answer = %q, want only last assistant segment", body)
+	}
+}
+
 func TestStreamUpdateParsesContentBlockLevelThinking(t *testing.T) {
 	var got []AgentStreamUpdate
 	// content_block_start with a redacted_thinking block must map to a thought
