@@ -840,6 +840,9 @@ func TestCardKitRouterRendererRecordsRenderAudit(t *testing.T) {
 	if observer.details[0] == "" || observer.details[2] == "" {
 		t.Fatalf("observer details missing: %#v", observer.details)
 	}
+	if !strings.Contains(observer.details[1], "message_id=msg-1") {
+		t.Fatalf("reply detail = %q, want reply message id", observer.details[1])
+	}
 	if !containsAll(observer.details[2], "event=stopped", "template=grey", "stop_visible=true", "stop_disabled=true") {
 		t.Fatalf("stopped detail = %q", observer.details[2])
 	}

@@ -268,9 +268,59 @@ if printf '%s\n' "$active_dm_source" | head -n 1 | rg -q 'p2p_chat'; then
   fail "active DM canary must not require a pre-existing P2P chat_id"
 fi
 
+startup_source="$(sed -n '/^start_server_if_needed() {/,/^}/p' "$ROOT/scripts/e2e-real.sh")"
+if ! printf '%s\n' "$startup_source" | rg -F 'connected to wss' >/dev/null; then
+  fail "bridge readiness must use the WSS connection log"
+fi
+if printf '%s\n' "$startup_source" | rg -F '/card/callback' >/dev/null; then
+  fail "bridge readiness must not depend on the callback endpoint"
+fi
+callback_probe_source="$(sed -n '/^wait_callback_ready() {/,/^}/p' "$ROOT/scripts/e2e-real.sh")"
+if ! printf '%s\n' "$callback_probe_source" | rg -F '"challenge":"e2e-ready"' >/dev/null; then
+  fail "action cases must retain the callback challenge probe"
+fi
+mget_source="$(sed -n '/^mget() {/,/^}/p' "$ROOT/scripts/e2e-real.sh")"
+if ! printf '%s\n' "$mget_source" | rg -F 'audit_reply_message_id' >/dev/null; then
+  fail "mget must resolve non-thread CardKit replies from the reply audit"
+fi
+fake_claude_source="$(sed -n '/^prepare_fake_claude_if_needed() {/,/^}/p' "$ROOT/scripts/e2e-real.sh")"
+if ! printf '%s\n' "$fake_claude_source" | rg -F "grep -Eo 'E2E_[A-Za-z0-9_-]+'" >/dev/null; then
+  fail "fake Claude must preserve the prompt marker for smoke/full assertions"
+fi
+if ! printf '%s\n' "$fake_claude_source" | rg -F '*E2E_*_STREAM*)' >/dev/null; then
+  fail "fake Claude must emit an intermediate delta for streaming_card"
+fi
+native_fake_source="$(printf '%s\n' "$fake_claude_source" | sed -n '/\*E2E_NATIVE_TEXT_STREAM_NORMAL\*)/,/;;/p')"
+if ! printf '%s\n' "$native_fake_source" | awk '
+  /native-normal-three/ { third = NR }
+  third && /sleep / { pause = NR }
+  /"type":"result"/ { result = NR }
+  END { exit !(third && pause > third && result > pause) }
+'; then
+  fail "native text stream fake must leave a preview interval between its final delta and terminal result"
+fi
+
 native_cases="$(bash "$ROOT/scripts/e2e-real.sh" --list-cases)"
 if ! printf '%s\n' "$native_cases" | rg -Fx 'native_text_stream' >/dev/null; then
   fail "native text stream must be an explicitly selectable E2E case"
+fi
+expected_l2_cases="$(cat <<'EOF'
+new_basic
+streaming_card
+session_restart_context
+recall_state
+media_attachment_only
+media_images
+media_text_files
+native_text_stream
+latest_restart_fallback
+EOF
+)"
+assert_eq "$expected_l2_cases" "$native_cases" "real E2E must contain only the L2 platform subset"
+
+latest_restart_source="$(sed -n '/^case_latest_restart_fallback() {/,/^}/p' "$ROOT/scripts/e2e-real.sh")"
+if ! printf '%s\n' "$latest_restart_source" | rg -F '服务重启，已中断，请重新发送' >/dev/null; then
+  fail "latest restart evidence must assert the rendered Chinese punctuation"
 fi
 
 native_case_source="$(sed -n '/^case_native_text_stream() {/,/^}/p' "$ROOT/scripts/e2e-real.sh")"

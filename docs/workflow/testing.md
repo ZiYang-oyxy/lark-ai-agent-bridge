@@ -221,6 +221,8 @@ profile 和 evidence 位于 `/.lark-agent-bridge/`、`/.cache/`，均已 Git ign
 ./scripts/e2e-real.sh --profile personal --mode full --strict-capabilities
 ```
 
+`e2e-real.sh` 的 bridge readiness 只观察本次启动后 serve 日志新增的 `connected to wss`,不依赖 `/card/callback`。callback challenge 仅在 stop/config 等 gateway 注入 action 前作为额外探针；因此非 action case 可在后续关闭 callback listener 后继续独立启动。真实飞书 `new_basic` 已验证该 readiness 通常约 2 秒内完成,并能继续走到 CardKit `event=result`。
+
 下面保留手动排查步骤，便于脚本失败时定位。
 
 1. 选择一个不会与其他开发会话共享 bot 的命名 profile。
@@ -267,7 +269,7 @@ lark-cli im +messages-reply --as user \
 
 当前飞书事件权限下，群话题内不 @bot 的普通文本不会推送到 bridge；可作为负向验证。带 @ 的话题回复应进入 `chat_id + thread_id` 对应会话，并创建新的执行卡片。
 
-`debounce_dm` 会使用 `lark-cli im +messages-send --as user --user-id "$BOT_OPEN_ID"` 并发发送两条真实 P2P 普通消息，因此不要求预先配置 P2P chat ID。bridge 以本机接收时间启动 250ms quiet window，而不是使用可能已经过期的平台 `create_time`。若当前用户态 `lark-cli` 与 bridge app 的 open_id 域不兼容，case 必须非零失败并保留 `dm-pair-*.err`，不得回退到群聊冒充 DM。
+DM/group debounce、topic scope 与无 @ 过滤已迁到 L1 service/parser tests,不再占用真实飞书回归窗口。
 
 ### Media 输入真实 E2E
 
@@ -275,29 +277,19 @@ Media case 必须设置 `E2E_REAL_E2E_FAKE_CLAUDE=1` 和 `E2E_REAL_E2E_P2P_CHAT_
 
 ```bash
 ./scripts/e2e-real.sh \
-  --case media_attachment_only --case media_images --case media_text_files \
-  --case media_partial --case media_rejected
+  --case media_attachment_only --case media_images --case media_text_files
 ```
 
 验收要求:
 
 - JPEG/PNG/WebP/GIF 和 `.txt/.md/.json/.csv` 的 SHA-256 cache path 出现在 fake Claude prompt。
-- mixed text+image 正常执行;不支持附件得到用户可见失败卡。
-- forged MIME/content、26 MiB oversized、PDF、DOCX、audio 和未知二进制均不启动 Agent,其预期 cache path 不得出现在 fake log。
-- 连续失败消息必须各自回复自己的消息;不得因复用 CardKit key 而更新上一张失败卡。
 - evidence 目录至少包含 `summary.md`、`audit.jsonl`、`messages.jsonl`、`fake-claude.log` 和 `mget/*.json`。
 
-### Runtime Config 真实 E2E
+mixed/partial、forged MIME、oversized、PDF/DOCX/audio/未知二进制拒绝和失败卡隔离均由 L1 media/service tests 覆盖。
 
-Runtime Config 使用真实飞书消息、CardKit form/callback 和 `mget` 读取,同时用 fake Claude 确定性校验 argv 与 actual model。它必须独占同一 app 的 bridge 连接,并在 Media 窗口关闭后、Reply Experience 窗口开始前串行运行:
+### Runtime Config L1
 
-```bash
-E2E_REAL_E2E_FAKE_CLAUDE=1 \
-E2E_MODEL=sonnet E2E_EFFORT=medium \
-./scripts/e2e-real.sh \
-  --case config_roundtrip --case config_reset --case config_frozen_queue \
-  --case requested_actual_model --case wrapper_preflight
-```
+Runtime Config 已迁到 config/service/doctor L1 tests,用 fake renderer 与 fake Claude 确定性校验 form action、持久化、argv、actual model 和 wrapper preflight,不再占用真实飞书窗口。
 
 验收要求:
 
@@ -310,15 +302,13 @@ E2E_MODEL=sonnet E2E_EFFORT=medium \
 
 2026-07-18 的证据位于 `.cache/evidence/e8cca6b/config-real/summary.md`,五个 case 均为 passed;补充的 `REQUIRE_E2E=1 ./scripts/evidence.sh` 报告为 `.cache/evidence/evidence-20260718-111543.md`。
 
-### Reply Experience 真实 E2E
+### Reply Experience 分层
 
-Reply Experience 必须在独占 bridge 窗口串行执行,使用 fake Claude 保证 timing、preview 和 restart 场景可重复:
+append/clean/latest policy、preview threshold 与 reaction 生命周期已迁到 L1。L2 只保留跨进程 stale CardKit mapping 场景:
 
 ```bash
 E2E_REAL_E2E_FAKE_CLAUDE=1 \
 ./scripts/e2e-real.sh \
-  --case reply_append --case reply_clean --case reply_latest \
-  --case preview_thresholds --case reaction_lifecycle \
   --case latest_restart_fallback
 ```
 

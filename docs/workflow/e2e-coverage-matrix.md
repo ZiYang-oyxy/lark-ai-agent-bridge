@@ -152,17 +152,31 @@ flowchart TD
 
 ### 已完成(纯本地可验证)
 - **readiness 探针轮询 1s → 0.3s**(`e2e-real.sh` startup 循环):server 通常亚秒级就绪,回收大部分启动等待,不增加风险。
+- **readiness 从 callback challenge 解耦**:`start_server_if_needed` 只匹配本次启动后新增的 `connected to wss`;callback challenge 保留为 gateway 注入 action 的额外探针。真实飞书 `new_basic` 已确认 readiness 约 2 秒内完成并继续产生 CardKit `event=result`。
 
 ### 剩余重构(需真实 e2e 环境验证,建议在有环境时执行)
 这些改动改的是 bash 编排层,改完只能在真实飞书环境端到端验证,不宜盲改:
 
 1. **消除 native_text_stream 中途重启**:该 case 需要 `E2E_CARD_UPDATE_MS=50` 高频更新,当前靠「切参数 → 重启 server」注入。因为该参数对其他 case 无害,可考虑常开该参数、去掉切换重启;但 `--case` 允许任意顺序,切回分支(`e2e-real.sh:2416`)在乱序执行时**不是死代码**,不能简单删除。安全做法:仅在检测到「下一个 case 需要不同参数」时才重启,而非每次切换都重启。
 2. **失败 recovery 从「重启进程」改为「软重置会话」**:当前失败 case 后 `stop_server` + `start_server`(`e2e-real.sh:2434-2446`)。改为新建 topic/chat 隔离,不重启 server。
-3. **readiness 探针从 callback challenge 解耦**:当前唯一 readiness 信号是 callback challenge,与「按 case 启用 callback」的目标冲突——拆掉 callback 的 case 会失去 readiness 探针。**必须先替换为不依赖 action transport 的健康信号(如 `/healthz` 或 audit 首行),再做 callback 按 case 启用。**
-4. **隔离性 case 按 chat/topic 分组并发**:`scope_parallel` 已证明不同 topic 互不干扰,DM/不同 topic/不同 chat 的 case 可并发投递。
+3. **隔离性 case 按 chat/topic 分组并发**:`scope_parallel` 已证明不同 topic 互不干扰,DM/不同 topic/不同 chat 的 case 可并发投递。
 
 ### 最大杠杆(阶段 3)
-上面的框架改动收益有限。真正的大头是**把 L1 可覆盖的 case 从 e2e-real.sh 迁走**:case 数从 ~38 降到 8-12 个「必须真实飞书」子集(真实 CardKit 渲染、media 上传、recall 事件、跨进程重启),其余业务语义全部由 L1 秒级覆盖。这才是回归提速的根本手段。
+真实列表已从 38 个收敛到 9 个。保留集合为 `new_basic`、`streaming_card`、`session_restart_context`、`recall_state`、`media_attachment_only`、`media_images`、`media_text_files`、`latest_restart_fallback`、`native_text_stream`。
+
+迁到 L1 门禁的 29 个原 case 按能力分组如下:
+
+- 本地环境:`preflight`、`wrapper_preflight` → `e2e-preflight.sh`、doctor tests。
+- 命令与 scope:`help`、`status`、`workdir_existing`、`topic_reply_at`、`topic_reply_without_at_negative` → parser/service tests。
+- recall 业务语义:`message_revoke`、`message_revoke_pending_workdir`、`message_revoke_queued_input` → `TestMessageRecall*`;L2 只保留事件投递 `recall_state`。
+- restart 状态语义:`restart_queued_cancel`、`restart_running_interrupted` → store restore/service recovery tests;L2 只保留两个跨进程代表场景。
+- 并发与 queue:`debounce_dm`、`debounce_group`、`busy_merge`、`queue_full`、`scope_parallel`、`stop_preserves_queue` → session/service tests。
+- media 业务校验:`media_partial`、`media_rejected` → media/service tests;L2 只保留三类真实上传与下载。
+- config/model:`config_roundtrip`、`config_reset`、`config_frozen_queue`、`requested_actual_model` → config/service tests。
+- reply:`reply_append`、`reply_clean`、`reply_latest` → reply policy tests。
+- preview/reaction:`preview_thresholds`、`reaction_lifecycle` → stream preview/reaction tests。
+
+决定性边界是:L1 证明业务语义,L2 只证明飞书 transport、CardKit、media、recall subscription 与跨进程集成没有断。
 
 ## 已知 flaky
 - `internal/doctor · TestClaudeWrapperPreflightUsesBoundedHarmlessInvocation`:全量并行跑时偶发 "timed out"(资源竞争),单独重跑稳定通过。属时间敏感测试,与业务逻辑无关。

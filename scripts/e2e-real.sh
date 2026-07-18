@@ -12,47 +12,18 @@ source "$ROOT/scripts/lib/e2e-profile.sh"
 source "$ROOT/scripts/lib/e2e-capabilities.sh"
 
 SMOKE_CASES=(
-  preflight
   new_basic
   streaming_card
-  help
-  status
-  workdir_existing
-  topic_reply_at
-  topic_reply_without_at_negative
 )
 
 FULL_EXTRA_CASES=(
-  message_revoke
-  message_revoke_pending_workdir
-  message_revoke_queued_input
   session_restart_context
-  restart_queued_cancel
-  restart_running_interrupted
-  debounce_dm
-  debounce_group
-  busy_merge
-  queue_full
-  scope_parallel
-  stop_preserves_queue
   recall_state
   media_attachment_only
   media_images
   media_text_files
-  media_partial
-  media_rejected
-  config_roundtrip
-  config_reset
-  config_frozen_queue
-  requested_actual_model
-  wrapper_preflight
-  reply_append
-  reply_clean
-  reply_latest
-  preview_thresholds
-  reaction_lifecycle
-  latest_restart_fallback
   native_text_stream
+  latest_restart_fallback
 )
 
 MODE="smoke"
@@ -482,6 +453,7 @@ prepare_fake_claude_if_needed() {
 set -eu
 args="$(printf '%s' "$*" | tr '\n' ' ')"
 printf 'pid=%s args=%s\n' "$$" "$args" >>"${FAKE_CLAUDE_LOG:?FAKE_CLAUDE_LOG is required}"
+marker="$(printf '%s\n' "$args" | grep -Eo 'E2E_[A-Za-z0-9_-]+' | tail -n 1 || true)"
 case "$args" in
   *E2E_NATIVE_TEXT_STREAM_STOP_E2E_BLOCK*)
     printf '%s\n' '{"type":"content_block_delta","delta":{"type":"text_delta","text":"native-stop-one "}}'
@@ -497,7 +469,14 @@ case "$args" in
     printf '%s\n' '{"type":"content_block_delta","delta":{"type":"text_delta","text":"native-normal-two "}}'
     sleep 1.2
     printf '%s\n' '{"type":"content_block_delta","delta":{"type":"text_delta","text":"native-normal-three "}}'
+    sleep 1.2
     printf '%s\n' '{"type":"result","result":"native-normal-final","model":"fake-claude-e2e","usage":{"output_tokens":1},"session_id":"fake-e2e-session"}'
+    exit 0
+    ;;
+  *E2E_*_STREAM*)
+    jq -nc --arg text "streaming ${marker}" '{type:"content_block_delta",delta:{type:"text_delta",text:$text}}'
+    sleep 1.2
+    jq -nc --arg result "FAKE_E2E_STARTED ${marker}" '{type:"result",result:$result,model:"fake-claude-e2e",usage:{output_tokens:1},session_id:"fake-e2e-session"}'
     exit 0
     ;;
   *E2E_PREVIEW_THRESHOLDS*)
@@ -519,7 +498,8 @@ case "$args" in
     exit 0
     ;;
 esac
-printf '%s\n' '{"type":"result","result":"FAKE_E2E_STARTED","model":"fake-claude-e2e","usage":{"output_tokens":1},"session_id":"fake-e2e-session"}'
+result="FAKE_E2E_STARTED${marker:+ $marker}"
+jq -nc --arg result "$result" '{type:"result",result:$result,model:"fake-claude-e2e",usage:{output_tokens:1},session_id:"fake-e2e-session"}'
 case "$args" in
   *E2E_BLOCK*) exec sleep 300 ;;
 esac
@@ -565,6 +545,10 @@ start_server_if_needed() {
   mkdir -p "$DEFAULT_WORKDIR"
   prepare_fake_claude_if_needed
   log "starting bridge serve"
+  local log_mark=0
+  if [[ -f "$SERVER_LOG" ]]; then
+    log_mark="$(wc -l <"$SERVER_LOG" | tr -d ' ')"
+  fi
   local -a server_env
   server_env=(
     "PATH=$FAKE_BIN_DIR:$PATH"
@@ -593,7 +577,7 @@ start_server_if_needed() {
   SERVER_PID=$!
   printf '%s %s\n' "$SERVER_PID" "$RUN_TOKEN" >"$SERVER_PID_FILE"
   summary "- bridge_pid: $SERVER_PID"
-  local start response
+  local start
   start="$(date +%s)"
   while true; do
     if ! kill -0 "$SERVER_PID" >/dev/null 2>&1; then
@@ -603,17 +587,32 @@ start_server_if_needed() {
       rm -f "$SERVER_PID_FILE"
       return 1
     fi
-    response="$(curl -fsS -X POST "http://$CALLBACK_ADDR/card/callback" -H 'Content-Type: application/json' -d '{"challenge":"e2e-ready"}' 2>/dev/null || true)"
-    if [[ "$(printf '%s' "$response" | jq -r '.challenge // empty' 2>/dev/null)" == "e2e-ready" ]]; then
+    if tail -n "+$((log_mark + 1))" "$SERVER_LOG" 2>/dev/null | grep -F 'connected to wss' >/dev/null 2>&1; then
       return 0
     fi
     if (( $(date +%s) - start >= 30 )); then
-      echo "bridge callback did not become ready; see $SERVER_LOG" >&2
+      echo "bridge WSS connection did not become ready; see $SERVER_LOG" >&2
       stop_server KILL
       return 1
     fi
     # The bridge is usually ready well under a second, so poll at a sub-second
     # interval to reclaim most of the startup wait without flooding the probe.
+    sleep 0.3
+  done
+}
+
+wait_callback_ready() {
+  local start response
+  start="$(date +%s)"
+  while true; do
+    response="$(curl -fsS -X POST "http://$CALLBACK_ADDR/card/callback" -H 'Content-Type: application/json' -d '{"challenge":"e2e-ready"}' 2>/dev/null || true)"
+    if [[ "$(printf '%s' "$response" | jq -r '.challenge // empty' 2>/dev/null)" == "e2e-ready" ]]; then
+      return 0
+    fi
+    if (( $(date +%s) - start >= 10 )); then
+      echo "bridge callback did not become ready; see $SERVER_LOG" >&2
+      return 1
+    fi
     sleep 0.3
   done
 }
@@ -933,8 +932,14 @@ reply_thread() {
 mget() {
   local case_name="$1"
   local msg_id="$2"
+  local lookup_id="$msg_id"
+  local reply_id=""
   local out="$MGET_DIR/$case_name-$msg_id.json"
-  lark_cli im +messages-mget --as user --message-ids "$msg_id" --format json >"$out"
+  reply_id="$(audit_reply_message_id "$msg_id" 2>/dev/null || true)"
+  if [[ -n "$reply_id" ]]; then
+    lookup_id="$reply_id"
+  fi
+  lark_cli im +messages-mget --as user --message-ids "$lookup_id" --format json >"$out"
   printf '%s\n' "$out"
 }
 
@@ -1223,6 +1228,7 @@ stop_card() {
   local session_id="$1"
   local out="$RUN_DIR/stop-${session_id//[^A-Za-z0-9._-]/_}.json"
   local payload
+  wait_callback_ready
   payload="$(jq -nc --arg session "$session_id" '{operator:{open_id:"e2e"},action:{value:{session:$session,action_id:"stop"}}}')"
   curl -fsS -X POST "http://$CALLBACK_ADDR/card/callback" -H 'Content-Type: application/json' -d "$payload" >"$out"
   jq -e '.ok == true and .card != null' "$out" >/dev/null
@@ -1248,6 +1254,7 @@ submit_config() {
   local conversation_mode="${6:-chat}"
   local out="$RUN_DIR/${case_name}-${model}-${effort}-${reply_mode}-${conversation_mode}.json"
   local payload mark
+  wait_callback_ready
   payload="$(jq -nc --arg session "$session_id" --arg model "$model" --arg effort "$effort" --arg reply_mode "$reply_mode" --arg conversation_mode "$conversation_mode" \
     '{operator:{open_id:"e2e"},action:{value:{session:$session,action_id:"config.save"},form_value:{model:$model,effort:$effort,reply_mode:$reply_mode,conversation_mode:$conversation_mode}}}')"
   mark="$(audit_mark)"
@@ -1265,6 +1272,7 @@ submit_invalid_config() {
   local session_id="$2"
   local out="$RUN_DIR/${case_name}-invalid.json"
   local payload mark
+  wait_callback_ready
   payload="$(jq -nc --arg session "$session_id" \
     '{operator:{open_id:"e2e"},action:{value:{session:$session,action_id:"config.save"},form_value:{model:"not-allowed",effort:"extreme",reply_mode:"replace",conversation_mode:"invalid"}}}')"
   mark="$(audit_mark)"
@@ -1339,6 +1347,22 @@ audit_card_reply_to() {
     return 1
   fi
   printf '%s\n' "$reply_to"
+}
+
+audit_reply_message_id() {
+  local reply_to="$1"
+  local line message_id
+  if [[ ! -f "$AUDIT" ]]; then
+    return 1
+  fi
+  line="$(jq -r --arg reply_to "$reply_to" \
+    'select(.Action == "cardkit_reply") | select((" " + (.Detail // "") + " ") | contains(" reply_to=" + $reply_to + " ")) | .Detail' \
+    "$AUDIT" | tail -n 1)"
+  message_id="$(printf '%s\n' "$line" | sed -n 's/.* message_id=\([^ ]*\).*/\1/p')"
+  if [[ -z "$message_id" ]]; then
+    return 1
+  fi
+  printf '%s\n' "$message_id"
 }
 
 assert_no_card_create_since() {
@@ -2341,7 +2365,7 @@ case_latest_restart_fallback() {
   wait_audit_since "$mark" "$active.*event=interrupted" 60
   interrupted_sequence="$(audit_card_sequence_since "$mark" "$active")"
   file="$(mget latest_restart_interrupted "$active_reply_to")"
-  assert_file_contains "$file" "服务重启,已中断,请重新发送"
+  assert_file_contains "$file" "服务重启，已中断，请重新发送"
   assert_fake_marker_not_started_after "$active_marker" "$active_before"
   assert_fake_marker_not_started_after "$queued_marker" "$queued_before"
 

@@ -252,7 +252,7 @@ func (r *CardKitRenderer) renderContext(ctx context.Context, e card.Event) error
 			r.cardID = cardID
 			r.createdAt = createdAt
 			r.snapshot = snapshotForPrepared(prepared)
-			r.recordRender("cardkit_reply", e, fmt.Sprintf("key=%s card_id=%s reply_to=%s event=%s %s", r.renderKey(e), cardID, r.replyToMessageID, e.Type, renderAuditState(e)))
+			r.recordRender("cardkit_reply", e, fmt.Sprintf("key=%s card_id=%s reply_to=%s message_id=%s event=%s %s", r.renderKey(e), cardID, r.replyToMessageID, replied.MessageID, e.Type, renderAuditState(e)))
 			return nil
 		}
 		r.cardID = cardID

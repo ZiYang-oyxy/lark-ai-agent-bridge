@@ -17,7 +17,7 @@ The E2E suite verifies the bridge as a real user would use it:
 - Stop and workdir button interactions are validated through historical Chrome MCP runs and local CardKit/action tests; the repository no longer keeps a self-written Chrome/CDP helper.
 - Evidence is written locally for later debugging.
 
-Media file E2E uses the existing P2P chat between the current `lark-cli` user and this bot. This avoids the invalid assumption that a Feishu `post` can contain a `{tag:file}` element. The separate `debounce_dm` case still uses `--user-id "$BOT_OPEN_ID"`; if that app-domain identifier is incompatible, that case remains an explicit nonzero external prerequisite rather than falling back to group chat.
+Media file E2E uses the existing P2P chat between the current `lark-cli` user and this bot. This avoids the invalid assumption that a Feishu `post` can contain a `{tag:file}` element.
 
 ## Developer-local profiles
 
@@ -79,8 +79,8 @@ E2E_CLAUDE_BIN=/absolute/path/to/claude
 ```
 
 `LARK_BOT_OPEN_ID` is optional. If it is omitted, `scripts/e2e-real.sh` queries `bot/v3/info` with the bridge app token. The script must never print app secret or tenant token.
-`E2E_REAL_E2E_CALLBACK_ADDR` is optional; it pins the local callback port used only by the `stop_preserves_queue` case. Without it, the script selects a loopback port for that run.
-`E2E_REAL_E2E_P2P_CHAT_ID` is optional at bootstrap and required by native media file cases. `debounce_dm` can create the direct chat by sending through the bot open_id and does not require a pre-existing chat ID. Bootstrap paginates the user's P2P chats before matching bot membership; if no unique match exists, it still creates a group-only profile and reports a `NOTICE`. It must never substitute a group chat or another similarly named bot.
+`E2E_REAL_E2E_CALLBACK_ADDR` is optional; it pins the local callback port used by the `native_text_stream` stop subcase. Without it, the script selects a loopback port for that run.
+`E2E_REAL_E2E_P2P_CHAT_ID` is optional at bootstrap and required by native media file cases. Bootstrap paginates the user's P2P chats before matching bot membership; if no unique match exists, it still creates a group-only profile and reports a `NOTICE`. It must never substitute a group chat or another similarly named bot.
 When `--p2p-chat-id` is supplied to `e2e-init.sh`, bootstrap verifies that the selected chat contains the resolved bot before saving it.
 `E2E_E2E_LARK_CLI_PROFILE` identifies the local named CLI configuration. If the name already exists for a different App ID, bootstrap returns `BLOCKED:lark_cli_profile_mismatch` and never overwrites or switches it. Bootstrap and doctor validate the complete E2E user-scope bundle once: send, group/P2P message observation, reaction observation, recall, resource access, and chat/member reads. A missing member produces `BLOCKED:user_e2e_scopes_missing` with one copy-pasteable authorization command.
 
@@ -139,9 +139,9 @@ lark-cli im +messages-send --as user \
   --text "lark-agent-bridge e2e probe"
 ```
 
-For full reliability mode, set `E2E_REAL_E2E_FAKE_CLAUDE=1`. The durable restart, batching, queue-capacity and scope-parallel cases require it so they can assert a deterministic child-process argv and lifecycle without spending model tokens. The fake Claude only affects the bridge process started by the E2E script; Feishu message delivery, long connection events, CardKit create/update, audit logging, and message revoke events are still real.
+For full reliability mode, set `E2E_REAL_E2E_FAKE_CLAUDE=1`. The restart, recall and media cases require deterministic child-process argv and lifecycle without spending model tokens. The fake Claude only affects the bridge process started by the E2E script; Feishu message delivery, long connection events, CardKit create/update, audit logging, and message revoke events are still real.
 
-The five media cases also require fake Claude. They assert exact accepted cache paths in the child prompt and prove rejected paths never start or reach a child. Upload, long-connection delivery, tenant-token resource download, cache validation, CardKit replies, and `mget` verification remain real.
+The three retained media cases also require fake Claude. They assert exact accepted cache paths in the child prompt. Upload, long-connection delivery, tenant-token resource download, cache validation, CardKit replies, and `mget` verification remain real; partial and rejection business semantics are covered in L1.
 
 ## Commands
 
@@ -195,8 +195,8 @@ Run selected cases:
 ```bash
 ./scripts/e2e-real.sh \
   --profile personal \
-  --case workdir_existing \
-  --case message_revoke_pending_workdir
+  --case media_images \
+  --case recall_state
 ```
 
 Run the native `element_id=answer` smoke and profile E2E only from a deliberately configured profile. The Go smoke is opt-in and must never be added to ordinary CI:
@@ -232,7 +232,28 @@ Use a custom evidence directory or default workdir:
 
 ## Case Matrix
 
-Smoke cases:
+`--mode smoke` 只跑两个真实平台主链:
+
+- `new_basic`:真实群消息接收、CardKit reply 与终态更新。
+- `streaming_card`:真实 CardKit stream update 先于 result。
+
+`--mode full` 在 smoke 基础上增加七个必须依赖真实飞书或跨进程边界的 case:
+
+- `session_restart_context`:真实进程重启后恢复 Claude session context。
+- `recall_state`:真实 `im.message.recalled_v1` 事件投递与 active/queued 状态处理。
+- `media_attachment_only`:真实 attachment-only 图片上传、下载与缓存路径。
+- `media_images`:JPEG/PNG/WebP/GIF 真实上传与资源下载。
+- `media_text_files`:`.txt/.md/.json/.csv` 原生 P2P file message 与资源下载。
+- `latest_restart_fallback`:跨进程恢复旧 CardKit mapping,并验证 stale card fallback。
+- `native_text_stream`:真实 CardKit native answer streaming、sequence 与 stop callback compatibility。
+
+其余 29 个原 L2 case 已由 L1 fake SDK / fake Claude / store 单测承担,不再出现在 `--list-cases`。对应函数暂保留为实现参考,但不属于发布门禁,也不能通过 `--case` 选择。
+
+### 历史 case 详细参考
+
+以下描述只用于追溯原 E2E 语义;是否可运行以本节上方九个 case 和 `--list-cases` 为准。
+
+Former smoke cases:
 
 - `preflight`: runs local Feishu preflight checks.
 - `new_basic`: sends `@bot /new ...` and verifies final CardKit result.
@@ -243,7 +264,7 @@ Smoke cases:
 - `topic_reply_at`: uses `/config` to switch to `topic`, replies in thread with `@bot`, verifies topic continuation, then restores `chat`.
 - `topic_reply_without_at_negative`: switches to `topic`, replies in thread without `@bot`, verifies bridge ignores it, then restores `chat`.
 
-Full-only cases:
+Former full-only cases:
 
 - `message_revoke`: revokes the current `lark-cli` user's own active prompt message and verifies the next request is not blocked by a leaked run.
 - `message_revoke_pending_workdir`: revokes a prompt waiting on workdir creation and verifies the workdir is not created and Claude does not start.
@@ -274,27 +295,12 @@ Run the media gate serially, with no other bridge process connected to the same 
 
 ```bash
 E2E_REAL_E2E_FAKE_CLAUDE=1 ./scripts/e2e-real.sh \
-  --case media_attachment_only --case media_images --case media_text_files \
-  --case media_partial --case media_rejected
+  --case media_attachment_only --case media_images --case media_text_files
 ```
 
 Feishu file resources currently return `application/octet-stream` for ordinary files and `application/x-xls` for CSV. The bridge maps those transport declarations only after an allowlisted extension match, then still requires byte-level content sniffing. A failure card is polled through `mget` because the read API can lag the successful CardKit reply audit by a few seconds.
 
-Run the runtime-configuration gate in a separate window after media and before reply-mode E2E. `fake Claude` keeps argv, queue boundaries and reported actual model deterministic; Feishu message delivery, `/config` CardKit rendering/callbacks and reply reads remain real:
-
-```bash
-E2E_REAL_E2E_FAKE_CLAUDE=1 \
-E2E_MODEL=sonnet E2E_EFFORT=medium \
-./scripts/e2e-real.sh \
-  --case config_roundtrip --case config_reset --case config_frozen_queue \
-  --case requested_actual_model --case wrapper_preflight
-```
-
-The gate also submits an invalid `model/effort` callback fixture and requires `config_save_failed` without changing the last valid persisted value. `config_reset` restarts the E2E bridge and proves the configured environment defaults regain precedence. Do not run another bridge process for the same Feishu app during this matrix.
-
-The restart cases codify the durable contract exactly: context resumes, pending does not. `debouncing`, `queued`, and `starting` inputs become `cancelled`; `running` becomes `interrupted`; old commands are never automatically re-run, so the user must send a new message after restart.
-
-The personal bridge deliberately has no global semaphore, FIFO, or fairness policy. The E2E suite checks only the intended boundary: serial execution within one chat/topic scope and parallel execution for distinct scopes.
+Config、reply policy、debounce、queue、scope isolation、workdir、reaction、preview threshold 和 media rejection 等业务语义均在 L1 确定性测试中验证。L2 不再重复这些断言。重启语义在 L1 证明完整状态机,L2 只保留 `session_restart_context` 与 `latest_restart_fallback` 两个跨进程代表场景。
 
 ## Evidence
 
