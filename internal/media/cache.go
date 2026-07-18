@@ -40,16 +40,15 @@ type Cache struct {
 	root   string
 	limits Limits
 
-	mu      sync.Mutex
-	pending map[string]int
-	// ioMu serializes cache mutation and sweeping. It never protects pending
-	// state, so the pending mutex is never held during filesystem IO.
-	ioMu sync.Mutex
+	mu         sync.Mutex
+	pending    map[string]int
+	generation uint64
+	deleting   map[string]chan struct{}
 }
 
 // NewCache constructs a media cache. The directory is created lazily.
 func NewCache(root string, limits Limits) *Cache {
-	return &Cache{root: root, limits: limits, pending: make(map[string]int)}
+	return &Cache{root: root, limits: limits, pending: make(map[string]int), deleting: make(map[string]chan struct{})}
 }
 
 // Resolve streams, validates and stores refs. Failure of one resource does
@@ -114,8 +113,6 @@ func (c *Cache) PendingPaths() map[string]struct{} {
 }
 
 func (c *Cache) resolveOne(ctx context.Context, downloader Downloader, ref Ref) (Attachment, *Failure) {
-	c.ioMu.Lock()
-	defer c.ioMu.Unlock()
 	if err := c.checkQuotaBeforeDownload(); err != nil {
 		if quota, ok := err.(*QuotaError); ok {
 			failed := failure(ref, string(QuotaExceeded), quota.Error())
@@ -209,14 +206,6 @@ func (c *Cache) resolveOne(ctx context.Context, downloader Downloader, ref Ref) 
 		failed := failure(ref, "file_too_large", "attachment exceeds per-file byte limit")
 		return Attachment{}, &failed
 	}
-	if err := c.checkQuotaAfterDownload(); err != nil {
-		if quota, ok := err.(*QuotaError); ok {
-			failed := failure(ref, string(QuotaExceeded), quota.Error())
-			return Attachment{}, &failed
-		}
-		failed := failure(ref, "cache_write_failed", err.Error())
-		return Attachment{}, &failed
-	}
 	if err := tmp.Sync(); err != nil {
 		failed := failure(ref, "cache_write_failed", err.Error())
 		return Attachment{}, &failed
@@ -233,12 +222,20 @@ func (c *Cache) resolveOne(ctx context.Context, downloader Downloader, ref Ref) 
 		return Attachment{}, &failed
 	}
 	finalPath := filepath.Join(c.root, digest+extension)
+	if err := c.admitFinalPath(finalPath); err != nil {
+		if quota, ok := err.(*QuotaError); ok {
+			failed := failure(ref, string(QuotaExceeded), quota.Error())
+			return Attachment{}, &failed
+		}
+		failed := failure(ref, "cache_write_failed", err.Error())
+		return Attachment{}, &failed
+	}
 	if err := os.Rename(tmpName, finalPath); err != nil {
+		c.releasePending(finalPath)
 		failed := failure(ref, "cache_write_failed", err.Error())
 		return Attachment{}, &failed
 	}
 	complete = true
-	c.acquirePending(finalPath)
 	return Attachment{Ref: ref, Path: finalPath, MIME: declared, SHA256: digest, Size: size}, nil
 }
 
@@ -271,24 +268,29 @@ func (c *Cache) checkQuotaBeforeDownload() error {
 	return nil
 }
 
-func (c *Cache) checkQuotaAfterDownload() error {
-	if c.limits.CacheQuotaBytes <= 0 {
-		return nil
+func (c *Cache) admitFinalPath(path string) error {
+	for {
+		generation := c.pendingGeneration()
+		if c.limits.CacheQuotaBytes > 0 {
+			usage, err := cacheUsageAfterCommit(c.root, path)
+			if err != nil {
+				return err
+			}
+			if usage > c.limits.CacheQuotaBytes {
+				if c.pendingGeneration() != generation {
+					continue
+				}
+				return &QuotaError{Usage: usage, Limit: c.limits.CacheQuotaBytes}
+			}
+		}
+		acquired, wait := c.acquirePendingAtGeneration(path, generation)
+		if acquired {
+			return nil
+		}
+		if wait != nil {
+			<-wait
+		}
 	}
-	usage, err := cacheUsage(c.root)
-	if err != nil {
-		return err
-	}
-	if usage > c.limits.CacheQuotaBytes {
-		return &QuotaError{Usage: usage, Limit: c.limits.CacheQuotaBytes}
-	}
-	return nil
-}
-
-func (c *Cache) acquirePending(path string) {
-	c.mu.Lock()
-	c.pending[path]++
-	c.mu.Unlock()
 }
 
 func (c *Cache) releasePending(path string) {
@@ -296,9 +298,74 @@ func (c *Cache) releasePending(path string) {
 	defer c.mu.Unlock()
 	if c.pending[path] <= 1 {
 		delete(c.pending, path)
-		return
+	} else {
+		c.pending[path]--
 	}
-	c.pending[path]--
+	c.generation++
+}
+
+func (c *Cache) pendingGeneration() uint64 {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.generation
+}
+
+func (c *Cache) pendingSnapshot() (map[string]struct{}, uint64) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	paths := make(map[string]struct{}, len(c.pending))
+	for path := range c.pending {
+		paths[path] = struct{}{}
+	}
+	return paths, c.generation
+}
+
+func (c *Cache) acquirePendingAtGeneration(path string, generation uint64) (bool, <-chan struct{}) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.generation != generation {
+		return false, nil
+	}
+	if done := c.deleting[path]; done != nil {
+		return false, done
+	}
+	c.pending[path]++
+	c.generation++
+	return true, nil
+}
+
+type deleteClaim int
+
+const (
+	deleteProtected deleteClaim = iota
+	deleteStale
+	deleteAcquired
+)
+
+func (c *Cache) claimDelete(path string, generation uint64) (deleteClaim, chan struct{}) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.generation != generation {
+		return deleteStale, nil
+	}
+	if c.pending[path] > 0 || c.deleting[path] != nil {
+		return deleteProtected, nil
+	}
+	done := make(chan struct{})
+	c.deleting[path] = done
+	return deleteAcquired, done
+}
+
+func (c *Cache) finishDelete(path string, done chan struct{}, generation uint64) (uint64, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	unchanged := c.generation == generation
+	if c.deleting[path] == done {
+		delete(c.deleting, path)
+		close(done)
+	}
+	c.generation++
+	return c.generation, unchanged
 }
 
 func validateDeclared(ref Ref, name, contentType string) (string, *Failure) {

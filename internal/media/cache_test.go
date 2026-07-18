@@ -183,6 +183,13 @@ func TestCacheEnforcesBatchBytesAndFileCount(t *testing.T) {
 	if got := downloader.opens; strings.Join(got, ",") != "one,two" {
 		t.Fatalf("opened resources = %v", got)
 	}
+	if got := cache.PendingPaths(); len(got) != 1 {
+		t.Fatalf("pending paths = %v, want only accepted attachment lease", got)
+	}
+	resolution.Release()
+	if got := cache.PendingPaths(); len(got) != 0 {
+		t.Fatalf("pending paths after release = %v, want none", got)
+	}
 }
 
 func TestCacheStopsOpeningResourcesAtFileLimit(t *testing.T) {

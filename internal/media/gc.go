@@ -7,7 +7,6 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
-	"sync"
 	"time"
 )
 
@@ -17,7 +16,9 @@ import (
 type GC struct {
 	cache     *Cache
 	retention time.Duration
-	mu        sync.Mutex
+	// beforeDelete is a package-private deterministic test seam. Production
+	// callers leave it nil.
+	beforeDelete func(string)
 }
 
 // SweepResult reports the observable storage effect of one sweep.
@@ -38,29 +39,25 @@ func (g *GC) Sweep(durableLive map[string]struct{}) (SweepResult, error) {
 	if g == nil || g.cache == nil {
 		return SweepResult{}, fmt.Errorf("media gc is not configured")
 	}
-	g.mu.Lock()
-	defer g.mu.Unlock()
-
-	// Coordinate with Resolve so a just-renamed file obtains its pending lease
-	// before this sweep can observe it. c.mu is held only by PendingPaths while
-	// copying the set, never during the subsequent filesystem walk.
-	g.cache.ioMu.Lock()
-	defer g.cache.ioMu.Unlock()
+	// The pending snapshot and generation are copied under a short cache lock.
+	// No cache or manager mutex is held during walk, stat, or delete.
+	pending, generation := g.cache.pendingSnapshot()
 	live := copyPaths(durableLive)
-	for path := range g.cache.PendingPaths() {
+	for path := range pending {
 		live[path] = struct{}{}
 	}
-	return sweepCache(g.cache.root, g.cache.limits.CacheQuotaBytes, g.retention, live)
+	return g.sweepCache(g.cache.root, g.cache.limits.CacheQuotaBytes, g.retention, live, generation)
 }
 
 type cacheFile struct {
 	path    string
 	size    int64
 	modTime time.Time
+	temp    bool
 	removed bool
 }
 
-func sweepCache(root string, quota int64, retention time.Duration, live map[string]struct{}) (SweepResult, error) {
+func (g *GC) sweepCache(root string, quota int64, retention time.Duration, live map[string]struct{}, generation uint64) (SweepResult, error) {
 	root, entries, usage, err := cacheFiles(root)
 	if err != nil {
 		return SweepResult{}, err
@@ -72,13 +69,20 @@ func sweepCache(root string, quota int64, retention time.Duration, live map[stri
 		cutoff := time.Now().Add(-retention)
 		for i := range entries {
 			entry := &entries[i]
+			if entry.temp {
+				continue
+			}
 			if _, keep := live[entry.path]; keep || !entry.modTime.Before(cutoff) {
 				continue
 			}
-			removed, err := removeRegularCacheFile(root, entry.path)
+			removed, stale, nextGeneration, err := g.removeCandidate(root, entry.path, generation)
 			if err != nil {
 				return result, err
 			}
+			if stale {
+				return result, nil
+			}
+			generation = nextGeneration
 			if removed {
 				entry.removed = true
 				result.RemovedFiles++
@@ -97,13 +101,20 @@ func sweepCache(root string, quota int64, retention time.Duration, live map[stri
 			if entry.removed {
 				continue
 			}
+			if entry.temp {
+				continue
+			}
 			if _, keep := live[entry.path]; keep {
 				continue
 			}
-			removed, err := removeRegularCacheFile(root, entry.path)
+			removed, stale, nextGeneration, err := g.removeCandidate(root, entry.path, generation)
 			if err != nil {
 				return result, err
 			}
+			if stale {
+				return result, nil
+			}
+			generation = nextGeneration
 			if removed {
 				entry.removed = true
 				result.RemovedFiles++
@@ -115,10 +126,55 @@ func sweepCache(root string, quota int64, retention time.Duration, live map[stri
 	return result, nil
 }
 
+func (g *GC) removeCandidate(root, path string, generation uint64) (bool, bool, uint64, error) {
+	if g.beforeDelete != nil {
+		g.beforeDelete(path)
+	}
+	claim, done := g.cache.claimDelete(path, generation)
+	switch claim {
+	case deleteProtected:
+		return false, false, generation, nil
+	case deleteStale:
+		return false, true, generation, nil
+	}
+
+	// The per-path claim prevents in-process Resolve commits from leasing this
+	// path until deletion finishes, without holding c.mu across Lstat/Remove.
+	// Threat model: the cache root is bridge-private. A hostile local process can
+	// still replace directory entries between Lstat and Remove; Remove does not
+	// follow a replacement symlink, but fully eliminating that filesystem TOCTOU
+	// would require dirfd/openat-style platform-specific operations.
+	removed, err := removeRegularCacheFile(root, path)
+	nextGeneration, unchanged := g.cache.finishDelete(path, done, generation)
+	if err != nil {
+		return false, !unchanged, nextGeneration, err
+	}
+	return removed, !unchanged, nextGeneration, nil
+}
+
 func cacheUsage(root string) (int64, error) {
 	_, entries, usage, err := cacheFiles(root)
 	_ = entries
 	return usage, err
+}
+
+func cacheUsageAfterCommit(root, finalPath string) (int64, error) {
+	_, entries, usage, err := cacheFiles(root)
+	if err != nil {
+		return 0, err
+	}
+	absoluteFinal, err := filepath.Abs(finalPath)
+	if err != nil {
+		return 0, err
+	}
+	absoluteFinal = filepath.Clean(absoluteFinal)
+	for _, entry := range entries {
+		if entry.path == absoluteFinal {
+			usage -= entry.size
+			break
+		}
+	}
+	return usage, nil
 }
 
 func cacheFiles(root string) (string, []cacheFile, int64, error) {
@@ -156,7 +212,7 @@ func cacheFiles(root string) (string, []cacheFile, int64, error) {
 		if !info.Mode().IsRegular() {
 			return nil
 		}
-		files = append(files, cacheFile{path: path, size: info.Size(), modTime: info.ModTime()})
+		files = append(files, cacheFile{path: path, size: info.Size(), modTime: info.ModTime(), temp: isDownloadTemp(path)})
 		usage += info.Size()
 		return nil
 	})
@@ -170,6 +226,14 @@ func cacheFiles(root string) (string, []cacheFile, int64, error) {
 		return files[i].modTime.Before(files[j].modTime)
 	})
 	return absoluteRoot, files, usage, nil
+}
+
+func isDownloadTemp(path string) bool {
+	// Resolve owns cleanup of these files on every success/error path. Skipping
+	// them keeps GC from racing an active stream while still counting their bytes
+	// toward quota through cacheFiles.
+	name := filepath.Base(path)
+	return strings.HasPrefix(name, ".download-") && strings.HasSuffix(name, ".tmp")
 }
 
 func removeRegularCacheFile(root, path string) (bool, error) {
