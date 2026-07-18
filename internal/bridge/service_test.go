@@ -313,6 +313,142 @@ func TestServicePassesFrozenModelAndEffortToRunner(t *testing.T) {
 	}
 }
 
+func TestServiceConfigCommandShowsCurrentPreferencesWithoutRunningAgent(t *testing.T) {
+	cfg := testConfig(t)
+	cfg.Model = "default"
+	cfg.Effort = "low"
+	cfg.AllowedModels = []string{"default", "sonnet", "opus", "haiku", "claude-custom-1"}
+	store, _ := testPreferenceStore(t, config.RuntimePreference{Model: "default", Effort: "low"}, cfg.AllowedModels)
+	if err := store.Set(config.RuntimePreference{Model: "opus", Effort: "high"}); err != nil {
+		t.Fatal(err)
+	}
+	renderer := card.NewFakeRenderer()
+	runner := newFakeRunner()
+	svc := NewService(cfg, renderer, runner, audit.NewRecorder())
+	svc.Preferences = store
+	if err := svc.HandleMessage(context.Background(), Message{ID: "config-open", ChatID: "chat", Sender: "user", Text: "/config", Time: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	events := renderer.Events()
+	if len(events) != 1 || events[0].ConfigForm == nil || events[0].ConfigForm.Model != "opus" || events[0].ConfigForm.Effort != "high" {
+		t.Fatalf("config events = %#v", events)
+	}
+	if len(runner.Calls()) != 0 {
+		t.Fatalf("/config started Agent: %#v", runner.Calls())
+	}
+}
+
+func TestServiceConfigResetRemovesOverride(t *testing.T) {
+	cfg := testConfig(t)
+	cfg.Model, cfg.Effort = "sonnet", "low"
+	cfg.AllowedModels = []string{"default", "sonnet", "opus", "haiku"}
+	defaults := config.RuntimePreference{Model: cfg.Model, Effort: cfg.Effort}
+	store, path := testPreferenceStore(t, defaults, cfg.AllowedModels)
+	if err := store.Set(config.RuntimePreference{Model: "opus", Effort: "high"}); err != nil {
+		t.Fatal(err)
+	}
+	svc := NewService(cfg, card.NewFakeRenderer(), newFakeRunner(), audit.NewRecorder())
+	svc.Preferences = store
+	if err := svc.HandleMessage(context.Background(), Message{ID: "config-reset", ChatID: "chat", Sender: "user", Text: "/config reset", Time: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	if got := store.Get(); got != defaults {
+		t.Fatalf("preference after reset = %#v, want %#v", got, defaults)
+	}
+	reopened, err := config.OpenPreferenceStore(path, defaults, cfg.AllowedModels)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := reopened.Get(); got != defaults {
+		t.Fatalf("reopened preference after reset = %#v", got)
+	}
+}
+
+func TestServiceConfigSavePersistsValidValuesAndRejectsInvalidValues(t *testing.T) {
+	cfg := testConfig(t)
+	cfg.Model, cfg.Effort = "default", "low"
+	cfg.AllowedModels = []string{"default", "sonnet", "opus", "haiku", "claude-custom-1"}
+	defaults := config.RuntimePreference{Model: cfg.Model, Effort: cfg.Effort}
+	store, path := testPreferenceStore(t, defaults, cfg.AllowedModels)
+	renderer := card.NewFakeRenderer()
+	svc := NewService(cfg, renderer, newFakeRunner(), audit.NewRecorder())
+	svc.Preferences = store
+	result, err := svc.HandleActionResult(context.Background(), ActionRequest{SessionID: "config-card", ActionID: "config.save", Actor: "user", FormValues: map[string]string{"model": "claude-custom-1", "effort": "medium"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Event == nil || result.Event.Type != "config_saved" || store.Get() != (config.RuntimePreference{Model: "claude-custom-1", Effort: "medium"}) {
+		t.Fatalf("save result/store = %#v / %#v", result, store.Get())
+	}
+	reopened, err := config.OpenPreferenceStore(path, defaults, cfg.AllowedModels)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := reopened.Get(); got != store.Get() {
+		t.Fatalf("reopened preference = %#v, want %#v", got, store.Get())
+	}
+	before := store.Get()
+	result, err = svc.HandleActionResult(context.Background(), ActionRequest{SessionID: "config-card", ActionID: "config.save", Actor: "user", FormValues: map[string]string{"model": "unknown", "effort": "extreme"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Event == nil || result.Event.Type != "error" || store.Get() != before {
+		t.Fatalf("invalid save result/store = %#v / %#v, want unchanged %#v", result, store.Get(), before)
+	}
+}
+
+func TestServiceFreezesPreferencesAtEnqueueTime(t *testing.T) {
+	cfg := testConfig(t)
+	cfg.Model, cfg.Effort = "sonnet", "low"
+	cfg.AllowedModels = []string{"default", "sonnet", "opus", "haiku"}
+	store, _ := testPreferenceStore(t, config.RuntimePreference{Model: cfg.Model, Effort: cfg.Effort}, cfg.AllowedModels)
+	svc := NewService(cfg, card.NewFakeRenderer(), newFakeRunner(), audit.NewRecorder())
+	svc.Preferences = store
+	now := time.Now()
+	if err := svc.HandleMessage(context.Background(), Message{ID: "before-config", ChatID: "chat", Sender: "user", Text: "first", Time: now}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.HandleActionResult(context.Background(), ActionRequest{SessionID: "config-card", ActionID: "config.save", Actor: "user", FormValues: map[string]string{"model": "opus", "effort": "high"}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.HandleMessage(context.Background(), Message{ID: "after-config", ChatID: "chat", Sender: "user", Text: "second", Time: now.Add(time.Millisecond)}); err != nil {
+		t.Fatal(err)
+	}
+	sess, ok := svc.Sessions.Get(session.Key{Agent: agent.Claude, ChatID: "chat"})
+	if !ok || len(sess.Queue) != 2 {
+		t.Fatalf("session queue = %#v", sess)
+	}
+	if first, second := sess.Queue[0], sess.Queue[1]; first.RequestedModel != "sonnet" || first.RequestedEffort != "low" || second.RequestedModel != "opus" || second.RequestedEffort != "high" {
+		t.Fatalf("frozen queue preferences = %#v", sess.Queue)
+	}
+}
+
+func TestServiceConfigPersistenceFailureShowsErrorAndAudits(t *testing.T) {
+	cfg := testConfig(t)
+	cfg.Model, cfg.Effort = "default", "low"
+	cfg.AllowedModels = []string{"default", "sonnet", "opus", "haiku"}
+	store, path := testPreferenceStore(t, config.RuntimePreference{Model: cfg.Model, Effort: cfg.Effort}, cfg.AllowedModels)
+	if err := store.Set(config.RuntimePreference{Model: "sonnet", Effort: "medium"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(path, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	recorder := audit.NewRecorder()
+	svc := NewService(cfg, card.NewFakeRenderer(), newFakeRunner(), recorder)
+	svc.Preferences = store
+	result, err := svc.HandleActionResult(context.Background(), ActionRequest{SessionID: "config-card", ActionID: "config.save", Actor: "user", FormValues: map[string]string{"model": "opus", "effort": "high"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Event == nil || result.Event.Type != "error" || store.Get() != (config.RuntimePreference{Model: "sonnet", Effort: "medium"}) || !auditContainsAction(recorder.Events(), "config_save_failed") {
+		t.Fatalf("failure result/store/audit = %#v / %#v / %#v", result, store.Get(), recorder.Events())
+	}
+}
+
 func TestServiceKeepsSuccessfulAttachmentsAndShowsPartialFailureSummary(t *testing.T) {
 	now := time.Now()
 	cache := &resolutionCacheStub{resolution: media.Resolution{
@@ -2084,6 +2220,16 @@ func TestStreamUpdateParsesClaudeDeltaThinking(t *testing.T) {
 func testConfig(t *testing.T) config.Config {
 	t.Helper()
 	return config.Config{DefaultAgent: "claude", DefaultWorkDir: t.TempDir(), CardMaxChars: 1000, InteractionTimeout: time.Second}
+}
+
+func testPreferenceStore(t *testing.T, defaults config.RuntimePreference, allowedModels []string) (*config.PreferenceStore, string) {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "preferences.json")
+	store, err := config.OpenPreferenceStore(path, defaults, allowedModels)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return store, path
 }
 
 func waitForEvents(t *testing.T, renderer *card.FakeRenderer, n int) {

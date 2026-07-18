@@ -74,6 +74,17 @@ func TestApplyDefaultWorkDirRebasesImplicitSessionStore(t *testing.T) {
 	}
 }
 
+func TestApplyDefaultWorkDirRebasesImplicitPreferenceStore(t *testing.T) {
+	t.Setenv("E2E_PREFERENCE_STORE", "")
+	cfg := config.Config{}
+	if err := applyDefaultWorkDir(&cfg, "/tmp/work"); err != nil {
+		t.Fatal(err)
+	}
+	if cfg.PreferenceStorePath != filepath.Join("/tmp/work", ".lark-agent-bridge", "preferences.json") {
+		t.Fatalf("preference store = %q", cfg.PreferenceStorePath)
+	}
+}
+
 func TestApplyDefaultWorkDirRebasesImplicitMediaCacheAsAbsolute(t *testing.T) {
 	t.Setenv("E2E_MEDIA_CACHE_DIR", "")
 	relative := filepath.Join("relative", "workspace")

@@ -255,6 +255,11 @@ func runServe(args []string) error {
 		return fmt.Errorf("restore session store: %w", err)
 	}
 	svc := bridge.NewServiceWithSessions(cfg, renderer, nil, recorder, sessions, notices)
+	preferences, err := config.OpenPreferenceStore(cfg.PreferenceStorePath, config.RuntimePreference{Model: cfg.Model, Effort: cfg.Effort}, cfg.AllowedModels)
+	if err != nil {
+		return fmt.Errorf("open runtime preference store: %w", err)
+	}
+	svc.Preferences = preferences
 	mediaWiring := newServeMedia(cfg, tokens)
 	svc.MediaCache = mediaWiring.cache
 	svc.MediaDownloader = mediaWiring.downloader
@@ -388,6 +393,9 @@ func applyDefaultWorkDir(cfg *config.Config, workDir string) error {
 	}
 	if os.Getenv("E2E_SESSION_STORE") == "" {
 		cfg.SessionStorePath = filepath.Join(workDir, ".lark-agent-bridge", "sessions.json")
+	}
+	if os.Getenv("E2E_PREFERENCE_STORE") == "" {
+		cfg.PreferenceStorePath = filepath.Join(workDir, ".lark-agent-bridge", "preferences.json")
 	}
 	if os.Getenv("E2E_MEDIA_CACHE_DIR") == "" {
 		absoluteWorkDir, err := filepath.Abs(workDir)

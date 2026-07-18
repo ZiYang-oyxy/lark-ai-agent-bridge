@@ -34,6 +34,7 @@ type Service struct {
 	MediaCache      mediaResolver
 	MediaDownloader media.Downloader
 	MediaGC         mediaSweeper
+	Preferences     *config.PreferenceStore
 	RestoreNotices  []session.RecoveryNotice
 
 	mu                 sync.Mutex
@@ -226,11 +227,65 @@ func (s *Service) HandleMessage(ctx context.Context, msg Message) error {
 		return s.renderText("command", msg.ID, card.SegmentError, cmd.Text)
 	case CommandStatus:
 		return s.renderText("status", msg.ID, card.SegmentText, s.statusText(cmd.Agent, msg))
+	case CommandConfig:
+		return s.handleConfigCommand(msg, cmd)
 	case CommandRun:
 		return s.run(ctx, cmd, msg)
 	default:
 		return s.renderText("command", msg.ID, card.SegmentError, "unsupported command")
 	}
+}
+
+func (s *Service) handleConfigCommand(msg Message, cmd Command) error {
+	switch strings.ToLower(strings.TrimSpace(cmd.Text)) {
+	case "":
+		preference := s.runtimePreference()
+		return s.Cards.Render(card.Event{
+			Type:             "config",
+			SessionID:        runID("config", msg.ID),
+			ReplyToMessageID: msg.ID,
+			ConfigForm: &card.ConfigForm{
+				Model:   preference.Model,
+				Effort:  preference.Effort,
+				Models:  s.configModelOptions(),
+				Efforts: []string{"default", "low", "medium", "high"},
+			},
+		})
+	case "reset":
+		if s.Preferences == nil {
+			return s.renderText("config-reset", msg.ID, card.SegmentError, "偏好存储尚未配置。")
+		}
+		if err := s.Preferences.Reset(); err != nil {
+			s.Audit.Record(msg.Sender, "config_reset_failed", "", err.Error())
+			return s.renderText("config-reset", msg.ID, card.SegmentError, "偏好重置失败，请检查存储状态。")
+		}
+		s.Audit.Record(msg.Sender, "config_reset", "", "runtime preferences reset")
+		return s.renderText("config-reset", msg.ID, card.SegmentText, "已恢复环境默认的 model / effort；下一条新消息开始生效。")
+	default:
+		return s.renderText("config", msg.ID, card.SegmentError, "用法：/config 或 /config reset")
+	}
+}
+
+func (s *Service) runtimePreference() config.RuntimePreference {
+	if s.Preferences != nil {
+		return s.Preferences.Get()
+	}
+	model := strings.TrimSpace(s.Config.Model)
+	if model == "" {
+		model = "default"
+	}
+	effort := strings.ToLower(strings.TrimSpace(s.Config.Effort))
+	if effort == "" {
+		effort = "low"
+	}
+	return config.RuntimePreference{Model: model, Effort: effort}
+}
+
+func (s *Service) configModelOptions() []string {
+	if len(s.Config.AllowedModels) > 0 {
+		return append([]string(nil), s.Config.AllowedModels...)
+	}
+	return []string{"default", "sonnet", "opus", "haiku"}
 }
 
 func (s *Service) HandleMessageRecalled(_ context.Context, recall MessageRecall) error {
@@ -300,7 +355,8 @@ func (s *Service) runWithCardSessionID(ctx context.Context, cmd Command, msg Mes
 		return summaryErr
 	}
 	receivedAt := time.Now()
-	input := session.Input{ID: msg.ID, Sender: msg.Sender, Text: text, Attachments: attachments, ReplyToMessageID: msg.ID, CardSessionID: cardSessionID, WorkDir: workDir, Time: effectiveMessageTime(msg), DebounceUntil: receivedAt.Add(DebounceFor(msg)), State: session.InputDebouncing, Reset: cmd.Reset}
+	preference := s.runtimePreference()
+	input := session.Input{ID: msg.ID, Sender: msg.Sender, Text: text, Attachments: attachments, ReplyToMessageID: msg.ID, CardSessionID: cardSessionID, WorkDir: workDir, RequestedModel: preference.Model, RequestedEffort: preference.Effort, Time: effectiveMessageTime(msg), DebounceUntil: receivedAt.Add(DebounceFor(msg)), State: session.InputDebouncing, Reset: cmd.Reset}
 	accepted, queued, err := s.Sessions.AcceptAndEnqueue(key, input, receivedAt, s.dedupTTL(), s.dedupMaxEntries(), s.batchLimits())
 	if err != nil {
 		action := "queue_rejected"
@@ -686,8 +742,33 @@ func (s *Service) HandleActionResult(ctx context.Context, req ActionRequest) (Ac
 			workDir = pending.WorkDir
 		}
 		return s.renderActionEvent(workDirActionEvent("workdir_cancelled", req.SessionID, workDir))
+	case "config.save":
+		if s.Preferences == nil {
+			err := errors.New("preference store is not configured")
+			s.Audit.Record(req.Actor, "config_save_failed", req.SessionID, err.Error())
+			return s.renderActionEvent(configSaveErrorEvent(req.SessionID))
+		}
+		preference := config.RuntimePreference{Model: req.FormValues["model"], Effort: req.FormValues["effort"]}
+		if err := s.Preferences.Set(preference); err != nil {
+			s.Audit.Record(req.Actor, "config_save_failed", req.SessionID, err.Error())
+			return s.renderActionEvent(configSaveErrorEvent(req.SessionID))
+		}
+		s.Audit.Record(req.Actor, "config_saved", req.SessionID, fmt.Sprintf("model=%s effort=%s", preference.Model, preference.Effort))
+		return s.renderActionEvent(card.Event{
+			Type:      "config_saved",
+			SessionID: req.SessionID,
+			Segments:  []card.Segment{{Kind: card.SegmentText, Text: fmt.Sprintf("偏好已保存。\n\nmodel=`%s`\neffort=`%s`\n\n下一条新消息开始生效。", preference.Model, preference.Effort)}},
+		})
 	default:
 		return s.renderActionEvent(card.Event{Type: "error", SessionID: req.SessionID, Segments: []card.Segment{{Kind: card.SegmentError, Text: "unknown action: " + req.ActionID}}})
+	}
+}
+
+func configSaveErrorEvent(sessionID string) card.Event {
+	return card.Event{
+		Type:      "error",
+		SessionID: sessionID,
+		Segments:  []card.Segment{{Kind: card.SegmentError, Text: "偏好保存失败，请检查选项或存储状态。"}},
 	}
 }
 
