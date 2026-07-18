@@ -21,6 +21,7 @@ import (
 	"lark-agent-bridge/internal/audit"
 	"lark-agent-bridge/internal/card"
 	"lark-agent-bridge/internal/config"
+	"lark-agent-bridge/internal/feishu"
 	"lark-agent-bridge/internal/media"
 	"lark-agent-bridge/internal/reply"
 	"lark-agent-bridge/internal/session"
@@ -38,12 +39,15 @@ type Service struct {
 	Preferences     *config.PreferenceStore
 	Replies         *reply.Store
 	CardTarget      reply.CardTarget
+	Reactions       feishu.ReactionSink
 	RestoreNotices  []session.RecoveryNotice
 
 	mu                 sync.Mutex
 	pendingRuns        map[string]pendingRun
 	activeRuns         map[string]activeRun
 	pendingCompletions map[string]pendingCompletion
+	waitingReactions   map[string]*reactionLifecycle
+	reactionDelay      time.Duration
 	startedAt          time.Time
 	accepting          bool
 	loopsCancel        context.CancelFunc
@@ -115,6 +119,7 @@ type activeRun struct {
 	WorkDir          string
 	Cancel           context.CancelFunc
 	Stream           *agentCardStream
+	Typing           *reactionLifecycle
 }
 
 type pendingCompletion struct {
@@ -182,6 +187,8 @@ func NewServiceWithSessions(cfg config.Config, renderer card.Renderer, runner Ag
 		pendingRuns:        map[string]pendingRun{},
 		activeRuns:         map[string]activeRun{},
 		pendingCompletions: map[string]pendingCompletion{},
+		waitingReactions:   map[string]*reactionLifecycle{},
+		reactionDelay:      defaultWaitingReactionDelay,
 		startedAt:          time.Now(),
 		accepting:          true,
 		RestoreNotices:     restoreNotices,
@@ -369,7 +376,8 @@ func (s *Service) HandleMessageRecalled(_ context.Context, recall MessageRecall)
 		return s.renderText("storage", recall.MessageID, card.SegmentError, "持久化失败，未执行。")
 	} else if ok {
 		s.Audit.Record("system", "message_recalled_queued_cancelled", sess.ID, input.ID)
-		return s.Cards.Render(card.Event{Type: "reaction", SessionID: runID(sess.ID, recall.MessageID), Message: "cancelled"})
+		s.closeWaitingReaction(input.ID)
+		return nil
 	}
 	s.Audit.Record("system", "message_recalled_ignored", recall.ChatID, recall.MessageID)
 	return nil
@@ -436,11 +444,11 @@ func (s *Service) runWithCardSessionID(ctx context.Context, cmd Command, msg Mes
 	}
 	sess, _ := s.Sessions.Get(key)
 	s.Audit.Record(msg.Sender, "queue_input", sess.ID, fmt.Sprintf("position=%d", queued.Position))
-	reactionErr := s.Cards.Render(card.Event{Type: "reaction", SessionID: runID(sess.ID, msg.ID), ReplyToMessageID: msg.ID, Message: fmt.Sprintf("queued (%d)", queued.Position)})
+	s.startWaitingReaction(msg.ID)
 	if summaryErr != nil {
 		return summaryErr
 	}
-	return reactionErr
+	return nil
 }
 
 func (s *Service) effectiveWorkDir(key session.Key, cmd Command) string {
@@ -477,6 +485,7 @@ func (s *Service) DrainReady(now time.Time) error {
 }
 
 func (s *Service) startBatch(parent context.Context, sess session.Session, batch session.Batch) {
+	s.closeBatchWaitingReactions(batch)
 	if !s.isAccepting() {
 		s.finishBatchOrRemember(sess, batch.ID, session.BatchCompletion{Status: session.InputCancelled, At: time.Now()}, "batch_finish_failed")
 		return
@@ -487,6 +496,7 @@ func (s *Service) startBatch(parent context.Context, sess session.Session, batch
 	anchor := batch.Inputs[len(batch.Inputs)-1]
 	id := runCardSessionID(sess.ID, anchor)
 	runCtx, cancel := context.WithCancel(parent)
+	typing := s.startTypingReaction(anchor.ReplyToMessageID)
 	sources := make([]string, 0, len(batch.Inputs)*2)
 	for _, in := range batch.Inputs {
 		sources = append(sources, in.ID, in.ReplyToMessageID)
@@ -497,6 +507,7 @@ func (s *Service) startBatch(parent context.Context, sess session.Session, batch
 		policyRun, err := reply.NewPolicy(s.CardTarget, s.Replies).Begin(runCtx, mode, sess.ID, id, anchor.ReplyToMessageID)
 		if err != nil {
 			cancel()
+			typing.Close()
 			_, _ = s.finishBatchOrRemember(sess, batch.ID, session.BatchCompletion{Status: session.InputFailed, At: time.Now()}, "batch_finish_failed")
 			s.Audit.Record("system", "reply_policy_start_failed", sess.ID, err.Error())
 			_ = s.Cards.Render(card.Event{Type: "error", SessionID: id, ReplyToMessageID: anchor.ReplyToMessageID, Segments: []card.Segment{{Kind: card.SegmentError, Text: "回复卡片初始化失败，请重试。"}}})
@@ -504,7 +515,7 @@ func (s *Service) startBatch(parent context.Context, sess session.Session, batch
 		}
 		stream = newAgentCardStreamWithRenderer(s, id, sess, anchor, card.NewLimitRenderer(policyRun, s.Config.CardMaxChars), policyRun)
 	}
-	s.storeActiveRun(id, activeRun{BaseSessionID: sess.ID, BatchID: batch.ID, SourceMessageIDs: sources, Key: sess.Key, WorkDir: sess.WorkDir, Cancel: cancel, Stream: stream})
+	s.storeActiveRun(id, activeRun{BaseSessionID: sess.ID, BatchID: batch.ID, SourceMessageIDs: sources, Key: sess.Key, WorkDir: sess.WorkDir, Cancel: cancel, Stream: stream, Typing: typing})
 	if s.afterStoreActiveRunHook != nil {
 		s.afterStoreActiveRunHook()
 	}
@@ -921,6 +932,7 @@ func (s *Service) Shutdown(ctx context.Context) error {
 		s.loopsCancel = nil
 	}
 	s.mu.Unlock()
+	s.closeAllWaitingReactions()
 	if err := waitGroupContext(ctx, &s.dispatchWG); err != nil {
 		s.cancelAllActiveRuns()
 		_ = waitGroupContext(context.Background(), &s.dispatchWG)
@@ -1033,8 +1045,12 @@ func (s *Service) storeActiveRun(id string, run activeRun) {
 
 func (s *Service) clearActiveRun(id string) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
+	run, ok := s.activeRuns[id]
 	delete(s.activeRuns, id)
+	s.mu.Unlock()
+	if ok {
+		run.Typing.Close()
+	}
 }
 
 func (s *Service) activeRun(id string) (activeRun, bool) {

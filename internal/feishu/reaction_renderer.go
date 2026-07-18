@@ -17,10 +17,7 @@ func NewReactionCardRenderer(sender Sender, cards card.Renderer) *ReactionCardRe
 
 func (r *ReactionCardRenderer) Render(e card.Event) error {
 	if e.Type == "reaction" && e.ReplyToMessageID != "" && r.Sender != nil {
-		_, err := r.Sender.AddReaction(context.Background(), ReactionRequest{
-			MessageID: e.ReplyToMessageID,
-			Type:      ReactionTypeGet,
-		})
+		_, err := r.Sender.AddReaction(context.Background(), e.ReplyToMessageID, ReactionTypeGet)
 		return err
 	}
 	if r.Cards == nil {

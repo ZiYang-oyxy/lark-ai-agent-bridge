@@ -8,19 +8,24 @@ import (
 )
 
 type fakeSender struct {
-	reactions []ReactionRequest
+	reactions []reactionCall
+}
+
+type reactionCall struct {
+	messageID string
+	typeName  ReactionType
 }
 
 func (f *fakeSender) SendReply(context.Context, Reply) (SendResult, error) {
 	return SendResult{}, nil
 }
 
-func (f *fakeSender) AddReaction(_ context.Context, req ReactionRequest) (ReactionResult, error) {
-	f.reactions = append(f.reactions, req)
-	return ReactionResult{ReactionID: "r1"}, nil
+func (f *fakeSender) AddReaction(_ context.Context, messageID string, typeName ReactionType) (string, error) {
+	f.reactions = append(f.reactions, reactionCall{messageID: messageID, typeName: typeName})
+	return "r1", nil
 }
 
-func (f *fakeSender) DeleteReaction(context.Context, ReactionDeleteRequest) error {
+func (f *fakeSender) DeleteReaction(context.Context, string, string) error {
 	return nil
 }
 
@@ -34,6 +39,9 @@ func TestReactionCardRendererRoutesQueuedReaction(t *testing.T) {
 	}
 	if len(sender.reactions) != 1 {
 		t.Fatalf("reactions len = %d, want 1", len(sender.reactions))
+	}
+	if sender.reactions[0] != (reactionCall{messageID: "m1", typeName: ReactionTypeGet}) {
+		t.Fatalf("reaction = %#v", sender.reactions[0])
 	}
 	if len(cards.Events()) != 0 {
 		t.Fatalf("card events len = %d, want 0", len(cards.Events()))

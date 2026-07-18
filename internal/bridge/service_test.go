@@ -83,6 +83,61 @@ func (r *bridgeReplyRenderer) Render(event card.Event) error {
 
 func (r *bridgeReplyRenderer) RenderRef() session.RenderRef { return r.ref }
 
+type fakeReactionSink struct {
+	mu        sync.Mutex
+	adds      []reactionCall
+	deletes   []reactionDelete
+	addErr    error
+	deleteErr error
+	blockType feishu.ReactionType
+	entered   chan struct{}
+	release   chan struct{}
+}
+
+type reactionCall struct {
+	messageID string
+	typeName  feishu.ReactionType
+}
+
+type reactionDelete struct {
+	messageID  string
+	reactionID string
+}
+
+func (s *fakeReactionSink) AddReaction(_ context.Context, messageID string, typeName feishu.ReactionType) (string, error) {
+	s.mu.Lock()
+	s.adds = append(s.adds, reactionCall{messageID: messageID, typeName: typeName})
+	call := len(s.adds)
+	block := s.blockType == typeName && s.release != nil
+	if block && s.entered != nil {
+		select {
+		case s.entered <- struct{}{}:
+		default:
+		}
+	}
+	s.mu.Unlock()
+	if block {
+		<-s.release
+	}
+	if s.addErr != nil {
+		return "", s.addErr
+	}
+	return fmt.Sprintf("reaction-%d", call), nil
+}
+
+func (s *fakeReactionSink) DeleteReaction(_ context.Context, messageID, reactionID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.deletes = append(s.deletes, reactionDelete{messageID: messageID, reactionID: reactionID})
+	return s.deleteErr
+}
+
+func (s *fakeReactionSink) snapshot() ([]reactionCall, []reactionDelete) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]reactionCall(nil), s.adds...), append([]reactionDelete(nil), s.deletes...)
+}
+
 type failingAuditWriter struct{}
 
 func (failingAuditWriter) Write([]byte) (int, error) { return 0, errors.New("audit disk full") }
@@ -530,6 +585,44 @@ func TestServiceRoutesBatchThroughReplyPolicyAndPersistsActiveRenderRef(t *testi
 	}
 }
 
+func TestServiceWaitingAndTypingReactionLifecycleForBatchedRun(t *testing.T) {
+	cfg := testConfig(t)
+	runner := newFakeRunner()
+	runner.block = make(chan struct{})
+	sink := &fakeReactionSink{}
+	renderer := card.NewFakeRenderer()
+	svc := NewService(cfg, renderer, runner, audit.NewRecorder())
+	svc.Reactions = sink
+	svc.reactionDelay = 5 * time.Millisecond
+	now := time.Now()
+	for _, msg := range []Message{
+		{ID: "first", ChatID: "chat", Sender: "user", Text: "one", Time: now},
+		{ID: "last", ChatID: "chat", Sender: "user", Text: "two", Time: now.Add(100 * time.Millisecond)},
+	} {
+		if err := svc.HandleMessage(context.Background(), msg); err != nil {
+			t.Fatal(err)
+		}
+	}
+	waitForReactionCounts(t, sink, 2, 0)
+	if err := svc.DrainReady(now.Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	<-runner.started
+	waitForReactionCounts(t, sink, 3, 2)
+	adds, _ := sink.snapshot()
+	if adds[0].typeName != feishu.ReactionTypeOneSecond || adds[1].typeName != feishu.ReactionTypeOneSecond || adds[2] != (reactionCall{messageID: "last", typeName: feishu.ReactionTypeTyping}) {
+		t.Fatalf("reaction adds = %#v", adds)
+	}
+	close(runner.block)
+	waitForSessionNoActiveBatch(t, svc, session.Key{Agent: agent.Claude, ChatID: "chat"})
+	waitForReactionCounts(t, sink, 3, 3)
+	for _, event := range renderer.Events() {
+		if event.Type == "reaction" {
+			t.Fatalf("legacy reaction card event = %#v", event)
+		}
+	}
+}
+
 func TestServiceConfigPersistenceFailureShowsErrorAndAudits(t *testing.T) {
 	cfg := testConfig(t)
 	cfg.Model, cfg.Effort = "default", "low"
@@ -631,7 +724,7 @@ func TestServiceReleasesResolutionWhenDurableEnqueueFails(t *testing.T) {
 	}
 }
 
-func TestServiceReleasesResolutionOnDuplicateAndReactionRenderFailure(t *testing.T) {
+func TestServiceReleasesResolutionOnDuplicateAndReactionFailure(t *testing.T) {
 	t.Run("duplicate", func(t *testing.T) {
 		cache := &resolutionCacheStub{resolution: media.Resolution{Attachments: []media.Attachment{{Path: "/absolute/cache/image.png", MIME: "image/png", Size: 7}}}}
 		svc := NewService(testConfig(t), card.NewFakeRenderer(), newFakeRunner(), audit.NewRecorder())
@@ -648,14 +741,18 @@ func TestServiceReleasesResolutionOnDuplicateAndReactionRenderFailure(t *testing
 		}
 	})
 
-	t.Run("reaction render failure", func(t *testing.T) {
+	t.Run("reaction failure is non-fatal", func(t *testing.T) {
 		cache := &resolutionCacheStub{resolution: media.Resolution{Attachments: []media.Attachment{{Path: "/absolute/cache/image.png", MIME: "image/png", Size: 7}}}}
-		svc := NewService(testConfig(t), errorRenderer{}, newFakeRunner(), audit.NewRecorder())
+		recorder := audit.NewRecorder()
+		svc := NewService(testConfig(t), card.NewFakeRenderer(), newFakeRunner(), recorder)
+		svc.Reactions = &fakeReactionSink{addErr: errors.New("reaction unavailable")}
+		svc.reactionDelay = 0
 		configureTestMedia(svc, cache)
 		err := svc.HandleMessage(context.Background(), Message{ID: "render-failure", ChatID: "chat", Sender: "alice", Text: "inspect", Attachments: []media.Ref{{FileKey: "image", Kind: "image"}}, Time: time.Now()})
-		if err == nil || cache.releases != 1 {
-			t.Fatalf("handle/release = %v/%d, want render error and one release", err, cache.releases)
+		if err != nil || cache.releases != 1 {
+			t.Fatalf("handle/release = %v/%d, want successful enqueue and one release", err, cache.releases)
 		}
+		waitForAuditAction(t, recorder, "reaction_add_failed")
 	})
 }
 
@@ -1034,11 +1131,11 @@ func TestServiceStreamsRunnerUpdatesIntoSameCard(t *testing.T) {
 	}
 	waitForEvents(t, renderer, 5)
 	events := renderer.Events()
-	if events[2].Type != "stream" || !events[2].ThoughtExpanded {
-		t.Fatalf("thought stream event = %#v", events[2])
+	if events[1].Type != "stream" || !events[1].ThoughtExpanded {
+		t.Fatalf("thought stream event = %#v", events[1])
 	}
-	if events[3].Type != "stream" || !events[3].ToolsExpanded {
-		t.Fatalf("tool stream event = %#v", events[3])
+	if events[2].Type != "stream" || !events[2].ToolsExpanded {
+		t.Fatalf("tool stream event = %#v", events[2])
 	}
 	last := events[len(events)-1]
 	if last.Type != "result" || last.HeaderTemplate != "green" {
@@ -1067,13 +1164,13 @@ func TestServiceNewWithoutPromptCreatesReadySession(t *testing.T) {
 	if err := svc.DrainReady(now.Add(time.Second)); err != nil {
 		t.Fatal(err)
 	}
-	waitForEvents(t, renderer, 3)
+	waitForEvents(t, renderer, 2)
 	if len(runner.Calls()) != 0 {
 		t.Fatalf("runner calls = %#v, want none", runner.Calls())
 	}
 	events := renderer.Events()
-	if len(events) < 3 || events[len(events)-1].Type != "result" {
-		t.Fatalf("events = %#v, want queued and ready terminal cards", events)
+	if len(events) < 2 || events[len(events)-1].Type != "result" {
+		t.Fatalf("events = %#v, want initial and ready terminal cards", events)
 	}
 }
 
@@ -1086,7 +1183,10 @@ func TestPlainTextAfterReadySessionKeepsWorkDir(t *testing.T) {
 	if err := svc.HandleMessage(context.Background(), Message{ID: "msg-1", ChatID: "chat", Sender: "u1", Text: "/new --workdir " + workDir, Time: time.Now()}); err != nil {
 		t.Fatalf("ready message error: %v", err)
 	}
-	waitForEvents(t, renderer, 1)
+	if err := svc.DrainReady(time.Now().Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	waitForEvents(t, renderer, 2)
 	if len(runner.Calls()) != 0 {
 		t.Fatalf("runner calls = %#v, want none for ready session", runner.Calls())
 	}
@@ -1142,7 +1242,7 @@ func TestTopicPlainTextContinuesStoredClaudeSession(t *testing.T) {
 	if calls[1].ClaudeSessionID != "sess-topic" {
 		t.Fatalf("second call session id = %q, want sess-topic", calls[1].ClaudeSessionID)
 	}
-	waitForEvents(t, renderer, 5)
+	waitForEvents(t, renderer, 4)
 	events := renderer.Events()
 	last := events[len(events)-1]
 	if last.Meta.RunTokens != 3 || last.Meta.TotalTokens != 5 {
@@ -1198,9 +1298,9 @@ func TestServiceQueuesSecondInputUntilFirstCompletes(t *testing.T) {
 	if err := svc.HandleMessage(context.Background(), Message{ID: "msg-2", ChatID: "chat", ThreadID: "topic-a", Sender: "u1", Text: "second", Time: time.Now()}); err != nil {
 		t.Fatalf("second message error: %v", err)
 	}
-	events := renderer.Events()
-	if events[len(events)-1].Type != "reaction" || !strings.HasPrefix(events[len(events)-1].Message, "queued") {
-		t.Fatalf("queued event = %#v", events[len(events)-1])
+	sess, ok := svc.Sessions.Get(session.Key{Agent: agent.Claude, ChatID: "chat", Thread: "topic-a"})
+	if !ok || len(sess.Queue) != 1 || sess.Queue[0].ID != "msg-2" {
+		t.Fatalf("queued session = %#v", sess)
 	}
 	close(runner.block)
 	waitForSessionNoActiveBatch(t, svc, session.Key{Agent: agent.Claude, ChatID: "chat", Thread: "topic-a"})
@@ -1276,7 +1376,7 @@ func TestServiceMissingWorkdirAsksThenRunsAfterCreate(t *testing.T) {
 	if events[1].Type != "workdir_created" || events[1].SessionID != "claude:chat:message:msg-1" {
 		t.Fatalf("terminal confirm event = %#v", events[1])
 	}
-	runEvent := events[3]
+	runEvent := events[2]
 	if runEvent.Type != "stream" || runEvent.SessionID == events[1].SessionID || runEvent.ReplyToMessageID != "msg-1" {
 		t.Fatalf("run event = %#v, want separate card replying to original message", runEvent)
 	}
@@ -1472,7 +1572,7 @@ func TestMessageRecallCancelsActiveRun(t *testing.T) {
 	if err := svc.HandleMessageRecalled(context.Background(), MessageRecall{MessageID: "msg-1", ChatID: "chat", RecallType: "user"}); err != nil {
 		t.Fatalf("recall message error: %v", err)
 	}
-	waitForEvents(t, renderer, 3)
+	waitForEvents(t, renderer, 2)
 	last := renderer.Events()[len(renderer.Events())-1]
 	if last.Type != "stopped" || !last.StopButton.Disabled || last.HeaderTemplate != "grey" {
 		t.Fatalf("recall stopped event = %#v", last)
@@ -1862,7 +1962,7 @@ func TestServiceRecallBeforeInitialCardRendersStopped(t *testing.T) {
 		t.Fatalf("runner calls = %d, want 0", got)
 	}
 	events := fake.Events()
-	if len(events) < 2 {
+	if len(events) < 1 {
 		t.Fatalf("events = %#v", events)
 	}
 	if last := events[len(events)-1]; last.Type != "stopped" || last.Streaming {
@@ -2080,7 +2180,7 @@ func TestServiceCompletionPersistFailureStillRendersResultAndAudits(t *testing.T
 		t.Fatal(err)
 	}
 	close(runner.block)
-	waitForEvents(t, renderer, 3)
+	waitForEvents(t, renderer, 2)
 	last := renderer.Events()[len(renderer.Events())-1]
 	if last.Type != "result" || !containsAll(last.Segments[0].Text, "captured result") {
 		t.Fatalf("terminal card = %#v", last)
@@ -2126,7 +2226,7 @@ func TestServiceRetriesPersistedCompletionBeforeStartingLaterQueue(t *testing.T)
 		t.Fatal(err)
 	}
 	close(runner.block)
-	waitForEvents(t, svc.Cards.(*card.LimitRenderer).Next.(*card.FakeRenderer), 4)
+	waitForEvents(t, svc.Cards.(*card.LimitRenderer).Next.(*card.FakeRenderer), 2)
 	if got := len(runner.Calls()); got != 1 {
 		t.Fatalf("runner calls before repair = %d, want 1", got)
 	}
@@ -2177,7 +2277,7 @@ func TestServiceBacksOffPendingCompletionRetries(t *testing.T) {
 		t.Fatal(err)
 	}
 	close(runner.block)
-	waitForEvents(t, svc.Cards.(*card.LimitRenderer).Next.(*card.FakeRenderer), 3)
+	waitForEvents(t, svc.Cards.(*card.LimitRenderer).Next.(*card.FakeRenderer), 2)
 	svc.mu.Lock()
 	var pending pendingCompletion
 	for _, entry := range svc.pendingCompletions {
@@ -2492,6 +2592,32 @@ func waitForCalls(t *testing.T, runner *fakeRunner, n int) {
 		time.Sleep(10 * time.Millisecond)
 	}
 	t.Fatalf("calls len = %d, want >= %d", len(runner.Calls()), n)
+}
+
+func waitForReactionCounts(t *testing.T, sink *fakeReactionSink, adds, deletes int) {
+	t.Helper()
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		gotAdds, gotDeletes := sink.snapshot()
+		if len(gotAdds) >= adds && len(gotDeletes) >= deletes {
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	gotAdds, gotDeletes := sink.snapshot()
+	t.Fatalf("reaction add/delete counts = %d/%d, want >= %d/%d", len(gotAdds), len(gotDeletes), adds, deletes)
+}
+
+func waitForAuditAction(t *testing.T, recorder *audit.Recorder, action string) {
+	t.Helper()
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		if auditContainsAction(recorder.Events(), action) {
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatalf("audit events = %#v, want action %q", recorder.Events(), action)
 }
 
 func waitForSessionNoActiveBatch(t *testing.T, svc *Service, key session.Key) {
