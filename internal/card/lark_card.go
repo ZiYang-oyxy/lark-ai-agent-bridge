@@ -75,6 +75,8 @@ func buildConfigFormElements(sessionID string, form ConfigForm) []any {
 				configSelect("model", form.Model, form.Models),
 				markdownElement("config_effort_label", "**Effort**\n`default` 表示不传 `--effort`。"),
 				configSelect("effort", form.Effort, form.Efforts),
+				markdownElement("config_reply_label", "**Reply mode**\n`append` 新建卡片；`append-clean-card` 完成后只保留结果；`latest-card` 复用当前会话的最新卡片。"),
+				configSelect("reply_mode", form.ReplyMode, form.ReplyModes),
 				map[string]any{
 					"tag":              "button",
 					"name":             "submit_runtime_config",
@@ -134,6 +136,9 @@ func splitCardSections(segments []Segment) (string, string, string) {
 }
 
 func shouldShowAgentPanels(e Event, thought, tools string) bool {
+	if e.HideAgentPanels {
+		return false
+	}
 	if strings.TrimSpace(thought) != "" || strings.TrimSpace(tools) != "" {
 		return true
 	}
@@ -306,7 +311,21 @@ func metaRows(meta Meta) ([]weightedMetaCell, []weightedMetaCell) {
 	if meta.Agent != "" {
 		first = append(first, weightedMetaCell{Weight: 10, Content: "🤖 " + displayAgent(meta.Agent), ID: "meta_agent"})
 	}
-	if meta.Model != "" {
+	if meta.ModelInfo != (ModelInfo{}) {
+		requested := meta.ModelInfo.Requested
+		if requested == "" {
+			requested = "unknown"
+		}
+		actual := meta.ModelInfo.Actual
+		if actual == "" {
+			actual = "unknown"
+		}
+		effort := meta.ModelInfo.Effort
+		if effort == "" {
+			effort = "unknown"
+		}
+		first = append(first, weightedMetaCell{Weight: 30, Content: fmt.Sprintf("🧠 requested: %s · actual: %s · effort: %s", requested, actual, effort), ID: "meta_model"})
+	} else if meta.Model != "" {
 		first = append(first, weightedMetaCell{Weight: 14, Content: "🧠 " + meta.Model, ID: "meta_model"})
 	}
 	runTokens := meta.RunTokens

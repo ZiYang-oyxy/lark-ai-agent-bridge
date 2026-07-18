@@ -78,6 +78,23 @@ type FeishuAPIError struct {
 	Message    string
 }
 
+var ErrStaleRenderRef = errors.New("stale card render ref")
+
+type StaleRenderRefError struct {
+	Cause error
+}
+
+func (e *StaleRenderRefError) Error() string {
+	if e == nil || e.Cause == nil {
+		return ErrStaleRenderRef.Error()
+	}
+	return ErrStaleRenderRef.Error() + ": " + e.Cause.Error()
+}
+
+func (e *StaleRenderRefError) Unwrap() error { return e.Cause }
+
+func (e *StaleRenderRefError) Is(target error) bool { return target == ErrStaleRenderRef }
+
 func (e *FeishuAPIError) Error() string {
 	if e == nil {
 		return ""
@@ -150,7 +167,7 @@ func (c *CardKitClient) UpdateCard(ctx context.Context, req CardKitUpdateCardReq
 		"sequence": req.Sequence,
 	}
 	path := "/open-apis/cardkit/v1/cards/" + url.PathEscape(req.CardID)
-	return c.doTenantJSON(ctx, http.MethodPut, path, body, nil)
+	return classifyRenderUpdateError(c.doTenantJSON(ctx, http.MethodPut, path, body, nil))
 }
 
 func (c *CardKitClient) UpdateSettings(ctx context.Context, req CardKitUpdateSettingsRequest) error {
@@ -258,14 +275,37 @@ func isRetryableFeishuError(err error) bool {
 	if apiErr.HTTPStatus == http.StatusTooManyRequests || apiErr.HTTPStatus >= 500 {
 		return true
 	}
-	if isInvalidCardIDFeishuError(apiErr) {
-		return true
+	if isStaleRenderRefError(apiErr) {
+		return false
 	}
 	switch apiErr.Code {
 	case 200400, 230020, 300120:
 		return true
 	default:
 		return false
+	}
+}
+
+func classifyRenderUpdateError(err error) error {
+	if err == nil || errors.Is(err, ErrStaleRenderRef) {
+		return err
+	}
+	if isStaleRenderRefError(err) {
+		return &StaleRenderRefError{Cause: err}
+	}
+	return err
+}
+
+func isStaleRenderRefError(err error) bool {
+	var apiErr *FeishuAPIError
+	if !errors.As(err, &apiErr) {
+		return false
+	}
+	switch apiErr.Code {
+	case 200740, 200750, 300317:
+		return true
+	default:
+		return isInvalidCardIDFeishuError(apiErr)
 	}
 }
 
@@ -278,7 +318,7 @@ func isInvalidCardIDFeishuError(err error) bool {
 		return false
 	}
 	normalized := strings.NewReplacer("_", "", " ", "", "-", "").Replace(strings.ToLower(apiErr.Message))
-	return apiErr.Code == 230099 &&
+	return (apiErr.Code == 230099 || apiErr.Code == 10002) &&
 		strings.Contains(normalized, "cardid") &&
 		strings.Contains(normalized, "invalid")
 }

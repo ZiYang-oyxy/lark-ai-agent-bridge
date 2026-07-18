@@ -36,25 +36,14 @@ type SendResult struct {
 	ChatID    string
 }
 
-type ReactionRequest struct {
-	MessageID string
-	Type      ReactionType
-}
-
-type ReactionResult struct {
-	ReactionID string
-}
-
-type ReactionDeleteRequest struct {
-	MessageID  string
-	ReactionID string
-	Type       ReactionType
+type ReactionSink interface {
+	AddReaction(ctx context.Context, messageID string, reactionType ReactionType) (string, error)
+	DeleteReaction(ctx context.Context, messageID, reactionID string) error
 }
 
 type Sender interface {
 	SendReply(ctx context.Context, reply Reply) (SendResult, error)
-	AddReaction(ctx context.Context, req ReactionRequest) (ReactionResult, error)
-	DeleteReaction(ctx context.Context, req ReactionDeleteRequest) error
+	ReactionSink
 }
 
 type NoopSender struct{}
@@ -63,10 +52,10 @@ func (NoopSender) SendReply(context.Context, Reply) (SendResult, error) {
 	return SendResult{}, nil
 }
 
-func (NoopSender) AddReaction(context.Context, ReactionRequest) (ReactionResult, error) {
-	return ReactionResult{}, nil
+func (NoopSender) AddReaction(context.Context, string, ReactionType) (string, error) {
+	return "", nil
 }
 
-func (NoopSender) DeleteReaction(context.Context, ReactionDeleteRequest) error {
+func (NoopSender) DeleteReaction(context.Context, string, string) error {
 	return nil
 }

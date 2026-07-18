@@ -20,6 +20,7 @@ import (
 	"lark-agent-bridge/internal/doctor"
 	"lark-agent-bridge/internal/feishu"
 	"lark-agent-bridge/internal/media"
+	"lark-agent-bridge/internal/reply"
 	"lark-agent-bridge/internal/session"
 )
 
@@ -118,13 +119,26 @@ func runDoctor(args []string) error {
 		return err
 	}
 	defaultWorkDir := fs.String("default-workdir", cfg.DefaultWorkDir, "default workdir for messages without --workdir")
+	strict := fs.Bool("strict", false, "treat wrapper preflight warnings as failures")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 	if err := applyDefaultWorkDir(&cfg, *defaultWorkDir); err != nil {
 		return err
 	}
-	fmt.Println(doctor.Summary(doctor.Run(cfg)))
+	checks := doctor.RunWithOptions(context.Background(), cfg, doctor.RunOptions{
+		WrapperPreflight: true,
+		Strict:           *strict,
+		PreflightTimeout: 20 * time.Second,
+	})
+	fmt.Println(doctor.Summary(checks))
+	if *strict {
+		for _, check := range checks {
+			if !check.OK {
+				return errors.New("doctor strict verification failed")
+			}
+		}
+	}
 	return nil
 }
 
@@ -248,13 +262,27 @@ func runServe(args []string) error {
 		return err
 	}
 	defer closeAudit()
-	renderer := feishu.NewReactionCardRenderer(sender, feishu.NewCardKitRouterRendererWithObserver(cardClient, recorder))
+	cardRouter := feishu.NewCardKitRouterRendererWithObserver(cardClient, recorder)
+	renderer := feishu.NewReactionCardRenderer(sender, cardRouter)
 	sessions := session.NewManagerWithStore(cfg.SessionStorePath)
 	notices, err := sessions.Restore()
 	if err != nil {
 		return fmt.Errorf("restore session store: %w", err)
 	}
 	svc := bridge.NewServiceWithSessions(cfg, renderer, nil, recorder, sessions, notices)
+	preferences, err := config.OpenPreferenceStore(cfg.PreferenceStorePath, config.RuntimePreference{Model: cfg.Model, Effort: cfg.Effort, ReplyMode: cfg.ReplyMode}, cfg.AllowedModels)
+	if err != nil {
+		return fmt.Errorf("open runtime preference store: %w", err)
+	}
+	svc.Preferences = preferences
+	replies, err := reply.OpenStore(cfg.ReplyStorePath)
+	if err != nil {
+		return fmt.Errorf("open reply store: %w", err)
+	}
+	svc.Replies = replies
+	svc.CardTarget = cardRouter
+	svc.Reactions = sender
+	svc.ProcessRecoveryNotices(ctx)
 	mediaWiring := newServeMedia(cfg, tokens)
 	svc.MediaCache = mediaWiring.cache
 	svc.MediaDownloader = mediaWiring.downloader
@@ -265,12 +293,7 @@ func runServe(args []string) error {
 		AppSecret: appSecret,
 		BotOpenID: botOpenID,
 		ActionHandler: func(ctx context.Context, action feishu.CardAction) (*feishu.CardActionResponse, error) {
-			result, err := svc.HandleActionResult(ctx, bridge.ActionRequest{
-				SessionID: action.SessionID,
-				ActionID:  action.ActionID,
-				Value:     action.Value,
-				Actor:     action.Actor,
-			})
+			result, err := svc.HandleActionResult(ctx, actionRequestFromFeishu(action))
 			if err != nil {
 				return nil, err
 			}
@@ -316,6 +339,23 @@ func runServe(args []string) error {
 	return shutdownErr
 }
 
+func actionRequestFromFeishu(action feishu.CardAction) bridge.ActionRequest {
+	formValues := make(map[string]string, len(action.FormValues))
+	for key, value := range action.FormValues {
+		formValues[key] = value
+	}
+	if len(formValues) == 0 {
+		formValues = nil
+	}
+	return bridge.ActionRequest{
+		SessionID:  action.SessionID,
+		ActionID:   action.ActionID,
+		Value:      action.Value,
+		Actor:      action.Actor,
+		FormValues: formValues,
+	}
+}
+
 func runLongConnUntilStopped(ctx context.Context, client feishu.LongConnClient, handler func(context.Context, feishu.InboundMessage) error) error {
 	errCh := make(chan error, 1)
 	go func() {
@@ -343,7 +383,7 @@ func printUsage() {
 	fmt.Println(`lark-agent-bridge
 
 Usage:
-  lark-agent-bridge doctor [--default-workdir /path]
+  lark-agent-bridge doctor [--strict] [--default-workdir /path]
   lark-agent-bridge simulate [--default-workdir /path] -text "/new hello"
   lark-agent-bridge simulate -text "/new first" -next-text "/new second"
   lark-agent-bridge simulate -text "/new --workdir /tmp/missing hello" -timeout-now
@@ -358,6 +398,10 @@ Environment:
   E2E_DEFAULT_WORKDIR    defaults to current directory
   E2E_CARD_UPDATE_MS     defaults to 800
   E2E_CARD_MAX_CHARS     defaults to 12000
+  E2E_CARD_MIN_DELTA_CHARS defaults to 30
+  E2E_CARD_PREVIEW_MAX_CHARS defaults to 2000
+  E2E_REPLY_MODE         append, append-clean-card, or latest-card
+  E2E_REPLY_STORE        defaults to <workdir>/.lark-agent-bridge/replies.json
   E2E_INTERACTION_TIMEOUT_SEC defaults to 120
   E2E_AUDIT_LOG          defaults to <workdir>/.lark-agent-bridge/audit.jsonl
   E2E_CALLBACK_ADDR      optional legacy HTTP callback listen address, e.g. :8080
@@ -376,6 +420,12 @@ func applyDefaultWorkDir(cfg *config.Config, workDir string) error {
 	}
 	if os.Getenv("E2E_SESSION_STORE") == "" {
 		cfg.SessionStorePath = filepath.Join(workDir, ".lark-agent-bridge", "sessions.json")
+	}
+	if os.Getenv("E2E_PREFERENCE_STORE") == "" {
+		cfg.PreferenceStorePath = filepath.Join(workDir, ".lark-agent-bridge", "preferences.json")
+	}
+	if os.Getenv("E2E_REPLY_STORE") == "" {
+		cfg.ReplyStorePath = filepath.Join(workDir, ".lark-agent-bridge", "replies.json")
 	}
 	if os.Getenv("E2E_MEDIA_CACHE_DIR") == "" {
 		absoluteWorkDir, err := filepath.Abs(workDir)

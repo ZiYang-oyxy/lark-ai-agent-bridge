@@ -41,6 +41,17 @@ FULL_EXTRA_CASES=(
   media_text_files
   media_partial
   media_rejected
+  config_roundtrip
+  config_reset
+  config_frozen_queue
+  requested_actual_model
+  wrapper_preflight
+  reply_append
+  reply_clean
+  reply_latest
+  preview_thresholds
+  reaction_lifecycle
+  latest_restart_fallback
 )
 
 MODE="smoke"
@@ -61,6 +72,9 @@ DEFAULT_WORKDIR="${E2E_REAL_E2E_DEFAULT_WORKDIR:-/tmp/lark-agent-bridge-real-$RU
 WAIT_TIMEOUT="${E2E_REAL_E2E_TIMEOUT_SEC:-420}"
 USE_FAKE_CLAUDE="${E2E_REAL_E2E_FAKE_CLAUDE:-0}"
 MEDIA_P2P_CHAT_ID="${E2E_REAL_E2E_P2P_CHAT_ID:-}"
+CONFIG_CUSTOM_MODEL="${E2E_REAL_E2E_CUSTOM_MODEL:-claude-e2e-custom}"
+CONFIG_DEFAULT_MODEL="${E2E_MODEL:-default}"
+CONFIG_DEFAULT_EFFORT="${E2E_EFFORT:-low}"
 FAKE_BIN_DIR=""
 SERVER_PID=""
 FAILURES=0
@@ -214,7 +228,10 @@ MESSAGES="$RUN_DIR/messages.jsonl"
 AUDIT="$RUN_DIR/audit.jsonl"
 MGET_DIR="$RUN_DIR/mget"
 SERVER_LOG="$RUN_DIR/server.log"
-SESSION_STORE="$RUN_DIR/sessions.json"
+STATE_DIR="$RUN_DIR/state"
+SESSION_STORE="$STATE_DIR/sessions.json"
+PREFERENCE_STORE="$STATE_DIR/preferences.json"
+REPLY_STORE="$STATE_DIR/replies.json"
 FAKE_CLAUDE_LOG="$RUN_DIR/fake-claude.log"
 MEDIA_CACHE_DIR="$RUN_DIR/media-cache"
 MEDIA_FIXTURE_DIR="$RUN_DIR/media-fixtures"
@@ -225,7 +242,8 @@ RUN_TOKEN="${RUN_ID}-$RANDOM-$$"
 CALLBACK_ADDR="${E2E_REAL_E2E_CALLBACK_ADDR:-127.0.0.1:$((20000 + RANDOM % 20000))}"
 SERVER_QUEUE_MAX_PENDING=""
 
-mkdir -p "$RUN_DIR" "$MGET_DIR" "$ROOT/.cache/go-build"
+mkdir -p "$RUN_DIR" "$MGET_DIR" "$STATE_DIR" "$ROOT/.cache/go-build"
+chmod 700 "$STATE_DIR"
 if [[ -e "$SERVER_PID_FILE" ]]; then
   echo "run directory already contains server state; choose a new --run-dir: $SERVER_PID_FILE" >&2
   exit 1
@@ -461,6 +479,26 @@ prepare_fake_claude_if_needed() {
 set -eu
 args="$(printf '%s' "$*" | tr '\n' ' ')"
 printf 'pid=%s args=%s\n' "$$" "$args" >>"${FAKE_CLAUDE_LOG:?FAKE_CLAUDE_LOG is required}"
+case "$args" in
+  *E2E_PREVIEW_THRESHOLDS*)
+    printf '%s\n' '{"type":"content_block_delta","delta":{"type":"text_delta","text":"PREVIEW_FIRST_"}}'
+    sleep 0.2
+    printf '%s\n' '{"type":"content_block_delta","delta":{"type":"text_delta","text":"BBBBBBBBBBBBBBBBBBBBBBBBBBBBBB"}}'
+    sleep 1
+    long="$(awk 'BEGIN { for (i = 0; i < 2100; i++) printf "C" }')PREVIEW_TAIL_HIDDEN"
+    printf '{"type":"content_block_delta","delta":{"type":"text_delta","text":"%s"}}\n' "$long"
+    sleep 3
+    printf '{"type":"result","result":"PREVIEW_FINAL_COMPLETE_%s","model":"fake-claude-e2e","usage":{"output_tokens":1},"session_id":"fake-e2e-session"}\n' "$long"
+    exit 0
+    ;;
+  *E2E_PROCESS_PANELS*)
+    printf '%s\n' '{"type":"content_block_delta","delta":{"type":"thinking_delta","thinking":"E2E_PRIVATE_THOUGHT"}}'
+    printf '%s\n' '{"type":"content_block_delta","delta":{"type":"input_json_delta","partial_json":"E2E_TOOL_CALL"}}'
+    printf '%s\n' '{"type":"content_block_delta","delta":{"type":"text_delta","text":"E2E_CLEAN_ANSWER"}}'
+    printf '%s\n' '{"type":"result","result":"E2E_CLEAN_ANSWER","model":"fake-claude-e2e","usage":{"output_tokens":1},"session_id":"fake-e2e-session"}'
+    exit 0
+    ;;
+esac
 printf '%s\n' '{"type":"result","result":"FAKE_E2E_STARTED","model":"fake-claude-e2e","usage":{"output_tokens":1},"session_id":"fake-e2e-session"}'
 case "$args" in
   *E2E_BLOCK*) exec sleep 300 ;;
@@ -508,7 +546,17 @@ start_server_if_needed() {
   prepare_fake_claude_if_needed
   log "starting bridge serve"
   local -a server_env
-  server_env=("PATH=$FAKE_BIN_DIR:$PATH" "E2E_AUDIT_LOG=$AUDIT" "E2E_SESSION_STORE=$SESSION_STORE" "E2E_MEDIA_CACHE_DIR=$MEDIA_CACHE_DIR" "E2E_CALLBACK_ADDR=$CALLBACK_ADDR" "GOCACHE=$GOCACHE")
+  server_env=(
+    "PATH=$FAKE_BIN_DIR:$PATH"
+    "E2E_AUDIT_LOG=$AUDIT"
+    "E2E_SESSION_STORE=$SESSION_STORE"
+    "E2E_PREFERENCE_STORE=$PREFERENCE_STORE"
+    "E2E_REPLY_STORE=$REPLY_STORE"
+    "E2E_MEDIA_CACHE_DIR=$MEDIA_CACHE_DIR"
+    "E2E_CALLBACK_ADDR=$CALLBACK_ADDR"
+    "E2E_ALLOWED_MODELS=${E2E_ALLOWED_MODELS:+$E2E_ALLOWED_MODELS,}$CONFIG_CUSTOM_MODEL"
+    "GOCACHE=$GOCACHE"
+  )
   if [[ "$USE_FAKE_CLAUDE" == "1" ]]; then
     server_env+=("E2E_CLAUDE_BIN=$FAKE_BIN_DIR/claude" "FAKE_CLAUDE_LOG=$FAKE_CLAUDE_LOG")
   fi
@@ -645,6 +693,17 @@ send_text() {
   if [[ -z "$msg_id" || "$msg_id" == "null" ]]; then
     echo "failed to send message: $text" >&2
     exit 1
+  fi
+  printf '%s\n' "$msg_id"
+}
+
+send_dm() {
+  local text="$1"
+  local msg_id
+  msg_id="$(lark_cli im +messages-send --as user --user-id "$BOT_OPEN_ID" --text "$text" --jq '.data.message_id // .message_id // .data.message_id' | tail -n 1)"
+  if [[ -z "$msg_id" || "$msg_id" == "null" ]]; then
+    echo "failed to send direct message: $text" >&2
+    return 1
   fi
   printf '%s\n' "$msg_id"
 }
@@ -1139,6 +1198,151 @@ stop_card() {
   payload="$(jq -nc --arg session "$session_id" '{operator:{open_id:"e2e"},action:{value:{session:$session,action_id:"stop"}}}')"
   curl -fsS -X POST "http://$CALLBACK_ADDR/card/callback" -H 'Content-Type: application/json' -d "$payload" >"$out"
   jq -e '.ok == true and .card != null' "$out" >/dev/null
+}
+
+open_config() {
+  local case_name="$1"
+  local msg file
+  msg="$(send_at "/config")"
+  wait_audit "$msg.*event=config" 60
+  file="$(mget "${case_name}_open" "$msg")"
+  assert_file_contains "$file" "个人运行偏好"
+  record_message "$case_name" config "$msg" "$file"
+  printf '%s\n' "$msg"
+}
+
+submit_config() {
+  local case_name="$1"
+  local session_id="$2"
+  local model="$3"
+  local effort="$4"
+  local reply_mode="${5:-append}"
+  local out="$RUN_DIR/${case_name}-${model}-${effort}-${reply_mode}.json"
+  local payload mark
+  payload="$(jq -nc --arg session "$session_id" --arg model "$model" --arg effort "$effort" --arg reply_mode "$reply_mode" \
+    '{operator:{open_id:"e2e"},action:{value:{session:$session,action_id:"config.save"},form_value:{model:$model,effort:$effort,reply_mode:$reply_mode}}}')"
+  mark="$(audit_mark)"
+  curl -fsS -X POST "http://$CALLBACK_ADDR/card/callback" -H 'Content-Type: application/json' -d "$payload" >"$out"
+  jq -e '.ok == true and .card != null' "$out" >/dev/null
+  wait_audit_since "$mark" '"Action":"config_saved"' 60
+  assert_file_contains "$out" "model=\`$model\`"
+  assert_file_contains "$out" "effort=\`$effort\`"
+  assert_file_contains "$out" "reply mode=\`$reply_mode\`"
+}
+
+submit_invalid_config() {
+  local case_name="$1"
+  local session_id="$2"
+  local out="$RUN_DIR/${case_name}-invalid.json"
+  local payload mark
+  payload="$(jq -nc --arg session "$session_id" \
+    '{operator:{open_id:"e2e"},action:{value:{session:$session,action_id:"config.save"},form_value:{model:"not-allowed",effort:"extreme",reply_mode:"replace"}}}')"
+  mark="$(audit_mark)"
+  curl -fsS -X POST "http://$CALLBACK_ADDR/card/callback" -H 'Content-Type: application/json' -d "$payload" >"$out"
+  jq -e '.ok == true and .card != null' "$out" >/dev/null
+  wait_audit_since "$mark" '"Action":"config_save_failed"' 60
+  assert_file_contains "$out" "偏好保存失败"
+}
+
+assert_persisted_config() {
+  local model="$1"
+  local effort="$2"
+  local reply_mode="${3:-append}"
+  jq -e --arg model "$model" --arg effort "$effort" --arg reply_mode "$reply_mode" \
+    '.schema_version == 1 and .override.model == $model and .override.effort == $effort and .override.reply_mode == $reply_mode' "$PREFERENCE_STORE" >/dev/null
+}
+
+audit_card_id_since() {
+  local mark="$1"
+  local message_id="$2"
+  local line card_id
+  line="$(audit_since "$mark" | jq -r --arg message_id "$message_id" \
+    'select((.SessionID // "") | contains($message_id)) | select((.Action // "") | startswith("cardkit_")) | .Detail' | tail -n 1)"
+  card_id="$(printf '%s\n' "$line" | sed -n 's/.*card_id=\([^ ]*\).*/\1/p')"
+  if [[ -z "$card_id" ]]; then
+    echo "no CardKit card id found for message $message_id after audit mark $mark" >&2
+    return 1
+  fi
+  printf '%s\n' "$card_id"
+}
+
+audit_card_sequence_since() {
+  local mark="$1"
+  local message_id="$2"
+  local line sequence
+  line="$(audit_since "$mark" | jq -r --arg message_id "$message_id" \
+    'select((.SessionID // "") | contains($message_id)) | select(.Action == "cardkit_update") | .Detail' | tail -n 1)"
+  sequence="$(printf '%s\n' "$line" | sed -n 's/.*sequence=\([0-9][0-9]*\).*/\1/p')"
+  if [[ -z "$sequence" ]]; then
+    echo "no CardKit sequence found for message $message_id after audit mark $mark" >&2
+    return 1
+  fi
+  printf '%s\n' "$sequence"
+}
+
+audit_card_reply_to() {
+  local card_id="$1"
+  local line reply_to
+  line="$(jq -r --arg card_id "$card_id" \
+    'select(.Action == "cardkit_create" or .Action == "cardkit_reply") | select((" " + (.Detail // "") + " ") | contains(" card_id=" + $card_id + " ")) | .Detail' \
+    "$AUDIT" | sed -n '1p')"
+  reply_to="$(printf '%s\n' "$line" | sed -n 's/.*reply_to=\([^ ]*\).*/\1/p')"
+  if [[ -z "$reply_to" ]]; then
+    echo "no reply target found for CardKit card $card_id" >&2
+    return 1
+  fi
+  printf '%s\n' "$reply_to"
+}
+
+assert_no_card_create_since() {
+  local mark="$1"
+  local message_id="$2"
+  if audit_since "$mark" | jq -e --arg message_id "$message_id" \
+    'select(.Action == "cardkit_create") | select((.SessionID // "") | contains($message_id))' >/dev/null; then
+    echo "latest-card unexpectedly created a new card for $message_id" >&2
+    return 1
+  fi
+}
+
+reply_topic_root() {
+  send_text "E2E_${RUN_ID}_TOPIC_ROOT_$RANDOM"
+}
+
+reply_in_topic() {
+  local root_message_id="$1"
+  local text="$2"
+  reply_thread "$root_message_id" "<at user_id=\"$BOT_OPEN_ID\"></at> $text"
+}
+
+assert_fake_config_argv_since() {
+  local mark="$1"
+  local marker="$2"
+  local model="$3"
+  local effort="$4"
+  local line
+  line="$(tail -n "+$((mark + 1))" "$FAKE_CLAUDE_LOG" | grep -F -- "$marker" | tail -n 1)"
+  if [[ -z "$line" ]]; then
+    echo "no fake Claude invocation found for config marker: $marker" >&2
+    return 1
+  fi
+  if [[ "$model" == "default" ]]; then
+    if printf '%s\n' "$line" | grep -E -- '(^| )--model( |$)' >/dev/null 2>&1; then
+      echo "default model unexpectedly emitted --model: $line" >&2
+      return 1
+    fi
+  elif ! printf '%s\n' "$line" | grep -F -- "--model $model" >/dev/null 2>&1; then
+    echo "fake Claude argv missing model $model: $line" >&2
+    return 1
+  fi
+  if [[ "$effort" == "default" ]]; then
+    if printf '%s\n' "$line" | grep -E -- '(^| )--effort( |$)' >/dev/null 2>&1; then
+      echo "default effort unexpectedly emitted --effort: $line" >&2
+      return 1
+    fi
+  elif ! printf '%s\n' "$line" | grep -F -- "--effort $effort" >/dev/null 2>&1; then
+    echo "fake Claude argv missing effort $effort: $line" >&2
+    return 1
+  fi
 }
 
 case_preflight() {
@@ -1685,6 +1889,408 @@ case_media_rejected() {
   run_media_rejection attachment_only_total_failure "$MEDIA_FIXTURE_DIR/unsupported.bin" unsupported_media
 }
 
+case_config_roundtrip() {
+  require_fake_claude
+  local config_msg session_id model effort marker msg file log_mark
+  local -a models=(default sonnet opus haiku "$CONFIG_CUSTOM_MODEL")
+  local -a efforts=(default low medium high high)
+  config_msg="$(open_config config_roundtrip)"
+  session_id="config:message:${config_msg}"
+  for index in "${!models[@]}"; do
+    model="${models[$index]}"
+    effort="${efforts[$index]}"
+    submit_config config_roundtrip "$session_id" "$model" "$effort"
+    assert_persisted_config "$model" "$effort"
+    marker="E2E_${RUN_ID}_CONFIG_${index}"
+    log_mark="$(fake_log_mark)"
+    msg="$(send_at "/new ${marker}")"
+    wait_audit "$msg.*event=result" 60
+    wait_file_contains "$FAKE_CLAUDE_LOG" "$marker" 60
+    assert_fake_config_argv_since "$log_mark" "$marker" "$model" "$effort"
+    file="$(mget "config_roundtrip_${index}" "$msg")"
+    assert_file_contains "$file" "requested: $model"
+    assert_file_contains "$file" "effort: $effort"
+    record_message config_roundtrip "run_${model}_${effort}" "$msg" "$file"
+  done
+  submit_invalid_config config_roundtrip "$session_id"
+  assert_persisted_config "$CONFIG_CUSTOM_MODEL" high
+  summary "- combinations: default/default, sonnet/low, opus/medium, haiku/high, ${CONFIG_CUSTOM_MODEL}/high"
+}
+
+case_config_reset() {
+  require_fake_claude
+  local config_msg session_id reset_msg reset_file reopened marker msg log_mark
+  config_msg="$(open_config config_reset)"
+  session_id="config:message:${config_msg}"
+  submit_config config_reset "$session_id" opus high
+  assert_persisted_config opus high
+  reset_msg="$(send_at "/config reset")"
+  wait_audit '"Action":"config_reset"' 60
+  wait_audit "reply_to=$reset_msg event=message" 60
+  reset_file="$(mget config_reset "$reset_msg")"
+  assert_file_contains "$reset_file" "已恢复环境默认"
+  jq -e '.schema_version == 1 and .override == null' "$PREFERENCE_STORE" >/dev/null
+  restart_server TERM
+  reopened="$(open_config config_reset_after_restart)"
+  jq -e '.schema_version == 1 and .override == null' "$PREFERENCE_STORE" >/dev/null
+  marker="E2E_${RUN_ID}_CONFIG_RESET_DEFAULTS"
+  log_mark="$(fake_log_mark)"
+  msg="$(send_at "/new ${marker}")"
+  wait_audit "$msg.*event=result" 60
+  wait_file_contains "$FAKE_CLAUDE_LOG" "$marker" 60
+  assert_fake_config_argv_since "$log_mark" "$marker" "$CONFIG_DEFAULT_MODEL" "$CONFIG_DEFAULT_EFFORT"
+  record_message config_reset reset "$reset_msg" "$reset_file"
+  record_message config_reset reopened "$reopened"
+  record_message config_reset defaults_run "$msg"
+  summary "- environment_defaults: model=$CONFIG_DEFAULT_MODEL effort=$CONFIG_DEFAULT_EFFORT"
+}
+
+case_config_frozen_queue() {
+  require_fake_claude
+  local config_msg session_id active old_queued new_queued mark log_mark old_file new_file
+  local active_marker="E2E_${RUN_ID}_CONFIG_ACTIVE_E2E_BLOCK"
+  local old_marker="E2E_${RUN_ID}_CONFIG_FROZEN_OLD"
+  local new_marker="E2E_${RUN_ID}_CONFIG_FROZEN_NEW"
+  config_msg="$(open_config config_frozen_queue)"
+  session_id="config:message:${config_msg}"
+  submit_config config_frozen_queue "$session_id" sonnet low
+  active="$(send_at "/new ${active_marker}")"
+  wait_audit "$active.*event=stream" 60
+  wait_file_contains "$FAKE_CLAUDE_LOG" "$active_marker" 60
+  log_mark="$(fake_log_mark)"
+  mark="$(audit_mark)"
+  old_queued="$(send_at "$old_marker")"
+  wait_audit_since "$mark" '"Action":"queue_input"' 60
+  submit_config config_frozen_queue "$session_id" opus high
+  mark="$(audit_mark)"
+  new_queued="$(send_at "$new_marker")"
+  wait_audit_since "$mark" '"Action":"queue_input"' 60
+  mark="$(audit_mark)"
+  stop_card "claude:${E2E_E2E_CHAT_ID}:message:${active}"
+  wait_audit_since "$mark" '"Action":"batch_stop_requested"' 60
+  wait_audit "$old_queued.*event=result" 60
+  wait_audit "$new_queued.*event=result" 60
+  wait_file_contains "$FAKE_CLAUDE_LOG" "$old_marker" 60
+  wait_file_contains "$FAKE_CLAUDE_LOG" "$new_marker" 60
+  assert_fake_config_argv_since "$log_mark" "$old_marker" sonnet low
+  assert_fake_config_argv_since "$log_mark" "$new_marker" opus high
+  old_file="$(mget config_frozen_queue_old "$old_queued")"
+  new_file="$(mget config_frozen_queue_new "$new_queued")"
+  assert_file_contains "$old_file" "requested: sonnet"
+  assert_file_contains "$new_file" "requested: opus"
+  record_message config_frozen_queue active "$active"
+  record_message config_frozen_queue frozen_old "$old_queued" "$old_file"
+  record_message config_frozen_queue frozen_new "$new_queued" "$new_file"
+}
+
+case_requested_actual_model() {
+  require_fake_claude
+  local config_msg session_id marker msg file mark
+  config_msg="$(open_config requested_actual_model)"
+  session_id="config:message:${config_msg}"
+  submit_config requested_actual_model "$session_id" opus high
+  marker="E2E_${RUN_ID}_REQUESTED_ACTUAL"
+  mark="$(audit_mark)"
+  msg="$(send_at "/new ${marker}")"
+  wait_audit "$msg.*event=result" 60
+  wait_audit_since "$mark" '"Action":"model_requested_actual_mismatch".*requested=opus actual=fake-claude-e2e' 60
+  file="$(mget requested_actual_model "$msg")"
+  assert_file_contains "$file" "requested: opus"
+  assert_file_contains "$file" "actual: fake-claude-e2e"
+  assert_file_contains "$file" "effort: high"
+  assert_file_not_contains "$file" "actual: opus"
+  record_message requested_actual_model result "$msg" "$file"
+}
+
+case_reply_append() {
+  require_fake_claude
+  local config_msg session_id first second first_mark second_mark first_card second_card
+  local topic_root topic_first topic_second topic_first_mark topic_second_mark topic_first_card topic_second_card
+  config_msg="$(open_config reply_append)"
+  session_id="config:message:${config_msg}"
+  submit_config reply_append "$session_id" default low append
+  assert_persisted_config default low append
+
+  first_mark="$(audit_mark)"
+  first="$(send_dm "/new E2E_${RUN_ID}_APPEND_DM_ONE")"
+  wait_audit_since "$first_mark" "$first.*event=result" 60
+  first_card="$(audit_card_id_since "$first_mark" "$first")"
+  second_mark="$(audit_mark)"
+  second="$(send_dm "/new E2E_${RUN_ID}_APPEND_DM_TWO")"
+  wait_audit_since "$second_mark" "$second.*event=result" 60
+  second_card="$(audit_card_id_since "$second_mark" "$second")"
+  if [[ "$first_card" == "$second_card" ]]; then
+    echo "append mode reused DM card $first_card" >&2
+    return 1
+  fi
+
+  topic_root="$(reply_topic_root)"
+  topic_first_mark="$(audit_mark)"
+  topic_first="$(reply_in_topic "$topic_root" "/new E2E_${RUN_ID}_APPEND_TOPIC_ONE")"
+  wait_audit_since "$topic_first_mark" "$topic_first.*event=result" 60
+  topic_first_card="$(audit_card_id_since "$topic_first_mark" "$topic_first")"
+  topic_second_mark="$(audit_mark)"
+  topic_second="$(reply_in_topic "$topic_root" "/new E2E_${RUN_ID}_APPEND_TOPIC_TWO")"
+  wait_audit_since "$topic_second_mark" "$topic_second.*event=result" 60
+  topic_second_card="$(audit_card_id_since "$topic_second_mark" "$topic_second")"
+  if [[ "$topic_first_card" == "$topic_second_card" ]]; then
+    echo "append mode reused topic card $topic_first_card" >&2
+    return 1
+  fi
+  record_message reply_append dm_first "$first"
+  record_message reply_append dm_second "$second"
+  record_message reply_append topic_first "$topic_first"
+  record_message reply_append topic_second "$topic_second"
+  summary "- dm_cards: $first_card, $second_card"
+  summary "- topic_cards: $topic_first_card, $topic_second_card"
+}
+
+case_reply_clean() {
+  require_fake_claude
+  local config_msg session_id dm topic_root topic file
+  config_msg="$(open_config reply_clean)"
+  session_id="config:message:${config_msg}"
+  submit_config reply_clean "$session_id" default low append-clean-card
+  assert_persisted_config default low append-clean-card
+
+  dm="$(send_dm "/new E2E_${RUN_ID}_DM_E2E_PROCESS_PANELS")"
+  wait_audit "$dm.*event=result" 60
+  file="$(mget reply_clean_dm "$dm")"
+  assert_file_contains "$file" "E2E_CLEAN_ANSWER"
+  assert_file_not_contains "$file" "E2E_PRIVATE_THOUGHT"
+  assert_file_not_contains "$file" "E2E_TOOL_CALL"
+  assert_file_not_contains "$file" "思考推理"
+  assert_file_not_contains "$file" "工具调用"
+  record_message reply_clean dm "$dm" "$file"
+
+  topic_root="$(reply_topic_root)"
+  topic="$(reply_in_topic "$topic_root" "/new E2E_${RUN_ID}_TOPIC_E2E_PROCESS_PANELS")"
+  wait_audit "$topic.*event=result" 60
+  file="$(mget reply_clean_topic "$topic")"
+  assert_file_contains "$file" "E2E_CLEAN_ANSWER"
+  assert_file_not_contains "$file" "E2E_PRIVATE_THOUGHT"
+  assert_file_not_contains "$file" "E2E_TOOL_CALL"
+  assert_file_not_contains "$file" "思考推理"
+  assert_file_not_contains "$file" "工具调用"
+  record_message reply_clean topic "$topic" "$file"
+}
+
+case_reply_latest() {
+  require_fake_claude
+  local config_msg session_id first second first_mark second_mark first_card second_card
+  local topic_root topic_first topic_second topic_first_mark topic_second_mark topic_first_card topic_second_card
+  config_msg="$(open_config reply_latest)"
+  session_id="config:message:${config_msg}"
+  submit_config reply_latest "$session_id" default low latest-card
+  assert_persisted_config default low latest-card
+
+  first_mark="$(audit_mark)"
+  first="$(send_dm "/new E2E_${RUN_ID}_LATEST_DM_ONE")"
+  wait_audit_since "$first_mark" "$first.*event=result" 60
+  first_card="$(audit_card_id_since "$first_mark" "$first")"
+  second_mark="$(audit_mark)"
+  second="$(send_dm "/new E2E_${RUN_ID}_LATEST_DM_TWO")"
+  wait_audit_since "$second_mark" "$second.*event=result" 60
+  second_card="$(audit_card_id_since "$second_mark" "$second")"
+  assert_no_card_create_since "$second_mark" "$second"
+  if [[ "$first_card" != "$second_card" ]]; then
+    echo "latest mode changed DM card: $first_card -> $second_card" >&2
+    return 1
+  fi
+
+  topic_root="$(reply_topic_root)"
+  topic_first_mark="$(audit_mark)"
+  topic_first="$(reply_in_topic "$topic_root" "/new E2E_${RUN_ID}_LATEST_TOPIC_ONE")"
+  wait_audit_since "$topic_first_mark" "$topic_first.*event=result" 60
+  topic_first_card="$(audit_card_id_since "$topic_first_mark" "$topic_first")"
+  topic_second_mark="$(audit_mark)"
+  topic_second="$(reply_in_topic "$topic_root" "/new E2E_${RUN_ID}_LATEST_TOPIC_TWO")"
+  wait_audit_since "$topic_second_mark" "$topic_second.*event=result" 60
+  topic_second_card="$(audit_card_id_since "$topic_second_mark" "$topic_second")"
+  assert_no_card_create_since "$topic_second_mark" "$topic_second"
+  if [[ "$topic_first_card" != "$topic_second_card" ]]; then
+    echo "latest mode changed topic card: $topic_first_card -> $topic_second_card" >&2
+    return 1
+  fi
+  record_message reply_latest dm_first "$first"
+  record_message reply_latest dm_second "$second"
+  record_message reply_latest topic_first "$topic_first"
+  record_message reply_latest topic_second "$topic_second"
+  summary "- dm_latest_card: $first_card"
+  summary "- topic_latest_card: $topic_first_card"
+}
+
+case_preview_thresholds() {
+  require_fake_claude
+  require_cmd python3
+  local config_msg session_id msg mark preview_file final_file
+  config_msg="$(open_config preview_thresholds)"
+  session_id="config:message:${config_msg}"
+  submit_config preview_thresholds "$session_id" default low append
+  mark="$(audit_mark)"
+  msg="$(send_dm "/new E2E_${RUN_ID}_E2E_PREVIEW_THRESHOLDS")"
+  wait_audit_count_since "$mark" '"Action":"cardkit_update".*event=stream' 3 60
+  preview_file="$(mget preview_thresholds_preview "$msg")"
+  assert_file_contains "$preview_file" "PREVIEW_FIRST_"
+  assert_file_not_contains "$preview_file" "PREVIEW_TAIL_HIDDEN"
+  python3 - "$AUDIT" "$mark" "$msg" <<'PY'
+import datetime as dt
+import json
+import sys
+
+path, mark, message_id = sys.argv[1], int(sys.argv[2]), sys.argv[3]
+events = []
+with open(path, encoding="utf-8") as source:
+    for index, line in enumerate(source, 1):
+        if index <= mark:
+            continue
+        event = json.loads(line)
+        if event.get("Action") == "cardkit_update" and message_id in event.get("SessionID", "") and "event=stream" in event.get("Detail", ""):
+            events.append(dt.datetime.fromisoformat(event["Time"].replace("Z", "+00:00")))
+if len(events) < 2:
+    raise SystemExit(f"expected at least two stream updates, got {len(events)}")
+gap = (events[1] - events[0]).total_seconds()
+if gap < 0.65:
+    raise SystemExit(f"preview updates were not throttled: gap={gap:.3f}s")
+print(f"first_preview_gap_sec={gap:.3f}")
+PY
+  wait_audit_since "$mark" "$msg.*event=result" 60
+  final_file="$(mget preview_thresholds_final "$msg")"
+  assert_file_contains "$final_file" "PREVIEW_FINAL_COMPLETE_"
+  assert_file_contains "$final_file" "PREVIEW_TAIL_HIDDEN"
+  record_message preview_thresholds result "$msg" "$final_file"
+}
+
+case_reaction_lifecycle() {
+  require_fake_claude
+  local quick active queued quick_mark active_mark
+  quick_mark="$(audit_mark)"
+  quick="$(send_at "/new E2E_${RUN_ID}_REACTION_QUICK")"
+  wait_audit_since "$quick_mark" "$quick.*event=result" 60
+  wait_audit_since "$quick_mark" '"Action":"reaction_added".*"SessionID":"'"$quick"'".*type=Typing' 60
+  wait_audit_since "$quick_mark" '"Action":"reaction_deleted".*"SessionID":"'"$quick"'".*type=Typing' 60
+  if audit_since "$quick_mark" | grep -F '"SessionID":"'"$quick"'"' | grep -F '"Action":"reaction_added"' | grep -F 'type=OneSecond' >/dev/null 2>&1; then
+    wait_audit_since "$quick_mark" '"Action":"reaction_deleted".*"SessionID":"'"$quick"'".*type=OneSecond' 60
+  fi
+
+  active_mark="$(audit_mark)"
+  active="$(send_at "E2E_${RUN_ID}_REACTION_ACTIVE_E2E_BLOCK")"
+  wait_audit_since "$active_mark" "$active.*event=stream" 60
+  queued="$(send_at "E2E_${RUN_ID}_REACTION_WAIT")"
+  wait_audit_since "$active_mark" '"Action":"reaction_added".*"SessionID":"'"$queued"'".*type=OneSecond' 60
+  stop_card "claude:${E2E_E2E_CHAT_ID}:message:${active}"
+  wait_audit_since "$active_mark" '"Action":"reaction_deleted".*"SessionID":"'"$queued"'".*type=OneSecond' 60
+  wait_audit_since "$active_mark" '"Action":"reaction_added".*"SessionID":"'"$queued"'".*type=Typing' 60
+  wait_audit_since "$active_mark" "$queued.*event=result" 60
+  wait_audit_since "$active_mark" '"Action":"reaction_deleted".*"SessionID":"'"$queued"'".*type=Typing' 60
+  record_message reaction_lifecycle quick "$quick"
+  record_message reaction_lifecycle active "$active"
+  record_message reaction_lifecycle delayed "$queued"
+}
+
+case_latest_restart_fallback() {
+  require_fake_claude
+  local config_msg session_id active queued follow stale_follow file mark active_card follow_card interrupted_sequence follow_sequence
+  local active_message_file active_reply_to dm_chat_id
+  local active_marker="E2E_${RUN_ID}_LATEST_RESTART_ACTIVE_E2E_BLOCK"
+  local queued_marker="E2E_${RUN_ID}_LATEST_RESTART_QUEUED"
+  local follow_marker="E2E_${RUN_ID}_LATEST_RESTART_FOLLOW"
+  local active_before queued_before invalid_card="e2e-invalid-card-id"
+  config_msg="$(open_config latest_restart_fallback)"
+  session_id="config:message:${config_msg}"
+  submit_config latest_restart_fallback "$session_id" default low latest-card
+  assert_persisted_config default low latest-card
+
+  mark="$(audit_mark)"
+  active="$(send_dm "/new ${active_marker}")"
+  wait_audit_since "$mark" "$active.*event=stream" 60
+  wait_file_contains "$FAKE_CLAUDE_LOG" "$active_marker" 60
+  active_card="$(audit_card_id_since "$mark" "$active")"
+  active_reply_to="$(audit_card_reply_to "$active_card")"
+  active_message_file="$(mget latest_restart_active "$active")"
+  dm_chat_id="$(jq -r '.data.messages[0].chat_id // empty' "$active_message_file")"
+  if [[ -z "$dm_chat_id" ]]; then
+    echo "could not derive P2P chat id from active message $active" >&2
+    return 1
+  fi
+  mark="$(audit_mark)"
+  queued="$(send_dm "$queued_marker")"
+  wait_audit_since "$mark" '"Action":"queue_input"' 60
+  active_before="$(fake_marker_count "$active_marker")"
+  queued_before="$(fake_marker_count "$queued_marker")"
+  mark="$(audit_mark)"
+  restart_server KILL
+  wait_audit_since "$mark" '"Action":"session_recovery_interrupted"' 60
+  wait_audit_since "$mark" '"Action":"session_recovery_cancelled"' 60
+  wait_audit_since "$mark" "$active.*event=interrupted" 60
+  interrupted_sequence="$(audit_card_sequence_since "$mark" "$active")"
+  file="$(mget latest_restart_interrupted "$active_reply_to")"
+  assert_file_contains "$file" "服务重启,已中断,请重新发送"
+  assert_fake_marker_not_started_after "$active_marker" "$active_before"
+  assert_fake_marker_not_started_after "$queued_marker" "$queued_before"
+
+  mark="$(audit_mark)"
+  follow="$(send_dm "/new ${follow_marker}")"
+  wait_audit_since "$mark" "$follow.*event=result" 60
+  follow_card="$(audit_card_id_since "$mark" "$follow")"
+  follow_sequence="$(audit_card_sequence_since "$mark" "$follow")"
+  assert_no_card_create_since "$mark" "$follow"
+  if [[ "$follow_card" != "$active_card" || "$follow_sequence" -le "$interrupted_sequence" ]]; then
+    echo "first latest run after restart did not advance old card: card $active_card/$follow_card sequence $interrupted_sequence/$follow_sequence" >&2
+    return 1
+  fi
+
+  stop_server TERM
+  jq --arg scope "claude:${dm_chat_id}" --arg card "$invalid_card" \
+    '.latest_by_scope[$scope].CardID = $card' "$REPLY_STORE" >"$REPLY_STORE.tmp"
+  chmod 600 "$REPLY_STORE.tmp"
+  mv "$REPLY_STORE.tmp" "$REPLY_STORE"
+  start_server_if_needed stale-restart
+  mark="$(audit_mark)"
+  stale_follow="$(send_dm "/new E2E_${RUN_ID}_LATEST_STALE_FALLBACK")"
+  wait_audit_since "$mark" "$stale_follow.*event=result" 60
+  wait_audit_since "$mark" '"Action":"cardkit_create"' 60
+  follow_card="$(audit_card_id_since "$mark" "$stale_follow")"
+  if [[ "$follow_card" == "$invalid_card" ]]; then
+    echo "stale latest mapping was not replaced" >&2
+    return 1
+  fi
+  record_message latest_restart_fallback interrupted "$active" "$file"
+  record_message latest_restart_fallback queued_cancelled "$queued"
+  record_message latest_restart_fallback resumed "$follow"
+  record_message latest_restart_fallback stale_replaced "$stale_follow"
+  summary "- recovered_card: $active_card sequence $interrupted_sequence -> $follow_sequence"
+  summary "- stale_replacement_card: $follow_card"
+}
+
+case_wrapper_preflight() {
+  require_fake_claude
+  local out="$RUN_DIR/wrapper-preflight.out"
+  local log_mark line
+  log_mark="$(fake_log_mark)"
+  env \
+    E2E_CLAUDE_BIN="$FAKE_BIN_DIR/claude" \
+    FAKE_CLAUDE_LOG="$FAKE_CLAUDE_LOG" \
+    E2E_AUDIT_LOG="$AUDIT" \
+    E2E_SESSION_STORE="$SESSION_STORE" \
+    E2E_PREFERENCE_STORE="$PREFERENCE_STORE" \
+    E2E_REPLY_STORE="$REPLY_STORE" \
+    E2E_MEDIA_CACHE_DIR="$MEDIA_CACHE_DIR" \
+    E2E_ALLOWED_MODELS="${E2E_ALLOWED_MODELS:+$E2E_ALLOWED_MODELS,}$CONFIG_CUSTOM_MODEL" \
+    "$SERVER_BIN" doctor --strict --default-workdir "$DEFAULT_WORKDIR" >"$out"
+  assert_file_contains "$out" "ok wrapper-preflight: passed"
+  line="$(tail -n "+$((log_mark + 1))" "$FAKE_CLAUDE_LOG" | tail -n 1)"
+  if ! printf '%s\n' "$line" | grep -F -- "-p --output-format stream-json --verbose --effort low Reply with exactly OK" >/dev/null 2>&1; then
+    echo "wrapper preflight did not use the bounded harmless invocation: $line" >&2
+    return 1
+  fi
+  if grep -F -- "$LARK_APP_SECRET" "$out" >/dev/null 2>&1; then
+    echo "wrapper preflight output leaked LARK_APP_SECRET" >&2
+    return 1
+  fi
+  summary "- doctor: strict wrapper preflight passed"
+}
+
 run_case() {
   local name="$1"
   start_server_if_needed "$name"
@@ -1730,6 +2336,13 @@ case_prerequisites() {
   case "$name" in
     debounce_dm)
       printf '%s\n' credentials lark_cli_auth bot_identity wrapper exclusive_runtime
+      ;;
+    reply_append|reply_clean|reply_latest|preview_thresholds|latest_restart_fallback)
+      if e2e_cap_index dm_delivery >/dev/null 2>&1; then
+        printf '%s\n' credentials lark_cli_auth bot_identity test_group dm_delivery wrapper exclusive_runtime
+      else
+        printf '%s\n' credentials lark_cli_auth bot_identity test_group wrapper exclusive_runtime
+      fi
       ;;
     media_attachment_only|media_images)
       if e2e_cap_index media_image >/dev/null 2>&1; then

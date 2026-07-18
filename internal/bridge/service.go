@@ -21,9 +21,13 @@ import (
 	"lark-agent-bridge/internal/audit"
 	"lark-agent-bridge/internal/card"
 	"lark-agent-bridge/internal/config"
+	"lark-agent-bridge/internal/feishu"
 	"lark-agent-bridge/internal/media"
+	"lark-agent-bridge/internal/reply"
 	"lark-agent-bridge/internal/session"
 )
+
+const recoveryNoticesTimeout = 5 * time.Second
 
 type Service struct {
 	Config          config.Config
@@ -34,12 +38,18 @@ type Service struct {
 	MediaCache      mediaResolver
 	MediaDownloader media.Downloader
 	MediaGC         mediaSweeper
+	Preferences     *config.PreferenceStore
+	Replies         *reply.Store
+	CardTarget      reply.CardTarget
+	Reactions       feishu.ReactionSink
 	RestoreNotices  []session.RecoveryNotice
 
 	mu                 sync.Mutex
 	pendingRuns        map[string]pendingRun
 	activeRuns         map[string]activeRun
 	pendingCompletions map[string]pendingCompletion
+	waitingReactions   map[string]*reactionLifecycle
+	reactionDelay      time.Duration
 	startedAt          time.Time
 	accepting          bool
 	loopsCancel        context.CancelFunc
@@ -111,6 +121,7 @@ type activeRun struct {
 	WorkDir          string
 	Cancel           context.CancelFunc
 	Stream           *agentCardStream
+	Typing           *reactionLifecycle
 }
 
 type pendingCompletion struct {
@@ -123,10 +134,11 @@ type pendingCompletion struct {
 }
 
 type ActionRequest struct {
-	SessionID string
-	ActionID  string
-	Value     string
-	Actor     string
+	SessionID  string
+	ActionID   string
+	Value      string
+	Actor      string
+	FormValues map[string]string
 }
 
 type ActionResult struct {
@@ -177,6 +189,8 @@ func NewServiceWithSessions(cfg config.Config, renderer card.Renderer, runner Ag
 		pendingRuns:        map[string]pendingRun{},
 		activeRuns:         map[string]activeRun{},
 		pendingCompletions: map[string]pendingCompletion{},
+		waitingReactions:   map[string]*reactionLifecycle{},
+		reactionDelay:      defaultWaitingReactionDelay,
 		startedAt:          time.Now(),
 		accepting:          true,
 		RestoreNotices:     restoreNotices,
@@ -193,6 +207,74 @@ func cloneRecoveryNotices(in []session.RecoveryNotice) []session.RecoveryNotice 
 		}
 	}
 	return out
+}
+
+// ProcessRecoveryNotices best-effort terminalizes cards that belonged to runs
+// interrupted by a restart. Notices are consumed once and stale cards are not
+// replaced, because restart recovery must never create a new reply or rerun an
+// old input.
+func (s *Service) ProcessRecoveryNotices(ctx context.Context) {
+	s.mu.Lock()
+	notices := s.RestoreNotices
+	s.RestoreNotices = nil
+	s.mu.Unlock()
+	recoveryCtx, cancel := context.WithTimeout(ctx, recoveryNoticesTimeout)
+	defer cancel()
+
+	seenCards := make(map[string]struct{}, len(notices))
+	for _, notice := range notices {
+		if err := recoveryCtx.Err(); err != nil {
+			s.Audit.Record("system", "recovery_card_update_failed", notice.SessionID, err.Error())
+			break
+		}
+		if notice.RenderRef == nil || notice.RenderRef.CardID == "" {
+			continue
+		}
+		if _, seen := seenCards[notice.RenderRef.CardID]; seen {
+			continue
+		}
+		seenCards[notice.RenderRef.CardID] = struct{}{}
+		if s.CardTarget == nil {
+			s.Audit.Record("system", "recovery_card_update_failed", notice.SessionID, "reply card target is unavailable")
+			continue
+		}
+		cardSessionID := notice.CardSessionID
+		if cardSessionID == "" {
+			cardSessionID = runID(notice.SessionID, notice.ReplyToMessageID)
+		}
+		renderer := s.CardTarget.Rehydrate(cardSessionID, *notice.RenderRef)
+		if renderer == nil {
+			s.Audit.Record("system", "recovery_card_update_failed", notice.SessionID, "reply card renderer is unavailable")
+			continue
+		}
+		event := card.Event{
+			Type:             "interrupted",
+			SessionID:        cardSessionID,
+			ReplyToMessageID: notice.ReplyToMessageID,
+			Segments:         []card.Segment{{Kind: card.SegmentError, Text: "服务重启,已中断,请重新发送"}},
+			Meta:             card.Meta{Status: string(session.InputInterrupted)},
+			Streaming:        false,
+		}
+		var renderErr error
+		if contextRenderer, ok := renderer.(feishu.ContextRenderer); ok {
+			renderErr = contextRenderer.RenderContext(recoveryCtx, event)
+		} else {
+			renderErr = renderer.Render(event)
+		}
+		if renderErr != nil {
+			s.Audit.Record("system", "recovery_card_update_failed", notice.SessionID, renderErr.Error())
+			continue
+		}
+		if s.Replies != nil {
+			latest := s.Replies.GetLatest(notice.SessionID)
+			if latest != nil && latest.CardID == notice.RenderRef.CardID {
+				advanced := renderer.RenderRef()
+				if err := s.Replies.SetLatest(notice.SessionID, &advanced); err != nil {
+					s.Audit.Record("system", "recovery_reply_ref_persist_failed", notice.SessionID, err.Error())
+				}
+			}
+		}
+	}
 }
 
 func (s *Service) HandleMessage(ctx context.Context, msg Message) error {
@@ -225,11 +307,71 @@ func (s *Service) HandleMessage(ctx context.Context, msg Message) error {
 		return s.renderText("command", msg.ID, card.SegmentError, cmd.Text)
 	case CommandStatus:
 		return s.renderText("status", msg.ID, card.SegmentText, s.statusText(cmd.Agent, msg))
+	case CommandConfig:
+		return s.handleConfigCommand(msg, cmd)
 	case CommandRun:
 		return s.run(ctx, cmd, msg)
 	default:
 		return s.renderText("command", msg.ID, card.SegmentError, "unsupported command")
 	}
+}
+
+func (s *Service) handleConfigCommand(msg Message, cmd Command) error {
+	switch strings.ToLower(strings.TrimSpace(cmd.Text)) {
+	case "":
+		preference := s.runtimePreference()
+		return s.Cards.Render(card.Event{
+			Type:             "config",
+			SessionID:        runID("config", msg.ID),
+			ReplyToMessageID: msg.ID,
+			ConfigForm: &card.ConfigForm{
+				Model:      preference.Model,
+				Effort:     preference.Effort,
+				ReplyMode:  string(preference.ReplyMode),
+				Models:     s.configModelOptions(),
+				Efforts:    []string{"default", "low", "medium", "high"},
+				ReplyModes: []string{string(config.ReplyModeAppend), string(config.ReplyModeAppendCleanCard), string(config.ReplyModeLatestCard)},
+			},
+		})
+	case "reset":
+		if s.Preferences == nil {
+			return s.renderText("config-reset", msg.ID, card.SegmentError, "偏好存储尚未配置。")
+		}
+		if err := s.Preferences.Reset(); err != nil {
+			s.Audit.Record(msg.Sender, "config_reset_failed", "", err.Error())
+			return s.renderText("config-reset", msg.ID, card.SegmentError, "偏好重置失败，请检查存储状态。")
+		}
+		s.Audit.Record(msg.Sender, "config_reset", "", "runtime preferences reset")
+		return s.renderText("config-reset", msg.ID, card.SegmentText, "已恢复环境默认的 model / effort / reply mode；下一条新消息开始生效。")
+	default:
+		return s.renderText("config", msg.ID, card.SegmentError, "用法：/config 或 /config reset")
+	}
+}
+
+func (s *Service) runtimePreference() config.RuntimePreference {
+	if s.Preferences != nil {
+		return s.Preferences.Get()
+	}
+	model := strings.TrimSpace(s.Config.Model)
+	if model == "" {
+		model = "default"
+	}
+	effort := strings.ToLower(strings.TrimSpace(s.Config.Effort))
+	if effort == "" {
+		effort = "low"
+	}
+	mode := s.Config.ReplyMode
+	if mode == "" {
+		mode = config.ReplyModeAppend
+	}
+	return config.RuntimePreference{Model: model, Effort: effort, ReplyMode: mode}
+}
+
+func (s *Service) configModelOptions() []string {
+	if len(s.Config.AllowedModels) > 0 {
+		return append([]string(nil), s.Config.AllowedModels...)
+	}
+	return []string{"default", "sonnet", "opus", "haiku"}
 }
 
 func (s *Service) HandleMessageRecalled(_ context.Context, recall MessageRecall) error {
@@ -250,7 +392,8 @@ func (s *Service) HandleMessageRecalled(_ context.Context, recall MessageRecall)
 		return s.renderText("storage", recall.MessageID, card.SegmentError, "持久化失败，未执行。")
 	} else if ok {
 		s.Audit.Record("system", "message_recalled_queued_cancelled", sess.ID, input.ID)
-		return s.Cards.Render(card.Event{Type: "reaction", SessionID: runID(sess.ID, recall.MessageID), Message: "cancelled"})
+		s.closeWaitingReaction(input.ID)
+		return nil
 	}
 	s.Audit.Record("system", "message_recalled_ignored", recall.ChatID, recall.MessageID)
 	return nil
@@ -299,7 +442,8 @@ func (s *Service) runWithCardSessionID(ctx context.Context, cmd Command, msg Mes
 		return summaryErr
 	}
 	receivedAt := time.Now()
-	input := session.Input{ID: msg.ID, Sender: msg.Sender, Text: text, Attachments: attachments, ReplyToMessageID: msg.ID, CardSessionID: cardSessionID, WorkDir: workDir, Time: effectiveMessageTime(msg), DebounceUntil: receivedAt.Add(DebounceFor(msg)), State: session.InputDebouncing, Reset: cmd.Reset}
+	preference := s.runtimePreference()
+	input := session.Input{ID: msg.ID, Sender: msg.Sender, Text: text, Attachments: attachments, ReplyToMessageID: msg.ID, CardSessionID: cardSessionID, WorkDir: workDir, RequestedModel: preference.Model, RequestedEffort: preference.Effort, Time: effectiveMessageTime(msg), DebounceUntil: receivedAt.Add(DebounceFor(msg)), State: session.InputDebouncing, Reset: cmd.Reset}
 	accepted, queued, err := s.Sessions.AcceptAndEnqueue(key, input, receivedAt, s.dedupTTL(), s.dedupMaxEntries(), s.batchLimits())
 	if err != nil {
 		action := "queue_rejected"
@@ -316,11 +460,11 @@ func (s *Service) runWithCardSessionID(ctx context.Context, cmd Command, msg Mes
 	}
 	sess, _ := s.Sessions.Get(key)
 	s.Audit.Record(msg.Sender, "queue_input", sess.ID, fmt.Sprintf("position=%d", queued.Position))
-	reactionErr := s.Cards.Render(card.Event{Type: "reaction", SessionID: runID(sess.ID, msg.ID), ReplyToMessageID: msg.ID, Message: fmt.Sprintf("queued (%d)", queued.Position)})
+	s.startWaitingReaction(msg.ID)
 	if summaryErr != nil {
 		return summaryErr
 	}
-	return reactionErr
+	return nil
 }
 
 func (s *Service) effectiveWorkDir(key session.Key, cmd Command) string {
@@ -357,6 +501,7 @@ func (s *Service) DrainReady(now time.Time) error {
 }
 
 func (s *Service) startBatch(parent context.Context, sess session.Session, batch session.Batch) {
+	s.closeBatchWaitingReactions(batch)
 	if !s.isAccepting() {
 		s.finishBatchOrRemember(sess, batch.ID, session.BatchCompletion{Status: session.InputCancelled, At: time.Now()}, "batch_finish_failed")
 		return
@@ -367,12 +512,26 @@ func (s *Service) startBatch(parent context.Context, sess session.Session, batch
 	anchor := batch.Inputs[len(batch.Inputs)-1]
 	id := runCardSessionID(sess.ID, anchor)
 	runCtx, cancel := context.WithCancel(parent)
+	typing := s.startTypingReaction(anchor.ReplyToMessageID)
 	sources := make([]string, 0, len(batch.Inputs)*2)
 	for _, in := range batch.Inputs {
 		sources = append(sources, in.ID, in.ReplyToMessageID)
 	}
 	stream := newAgentCardStream(s, id, sess, anchor)
-	s.storeActiveRun(id, activeRun{BaseSessionID: sess.ID, BatchID: batch.ID, SourceMessageIDs: sources, Key: sess.Key, WorkDir: sess.WorkDir, Cancel: cancel, Stream: stream})
+	if s.CardTarget != nil {
+		mode := s.runtimePreference().ReplyMode
+		policyRun, err := reply.NewPolicy(s.CardTarget, s.Replies).Begin(runCtx, mode, sess.ID, id, anchor.ReplyToMessageID)
+		if err != nil {
+			cancel()
+			typing.Close()
+			_, _ = s.finishBatchOrRemember(sess, batch.ID, session.BatchCompletion{Status: session.InputFailed, At: time.Now()}, "batch_finish_failed")
+			s.Audit.Record("system", "reply_policy_start_failed", sess.ID, err.Error())
+			_ = s.Cards.Render(card.Event{Type: "error", SessionID: id, ReplyToMessageID: anchor.ReplyToMessageID, Segments: []card.Segment{{Kind: card.SegmentError, Text: "回复卡片初始化失败，请重试。"}}})
+			return
+		}
+		stream = newAgentCardStreamWithRenderer(s, id, sess, anchor, card.NewLimitRenderer(policyRun, s.Config.CardMaxChars), policyRun)
+	}
+	s.storeActiveRun(id, activeRun{BaseSessionID: sess.ID, BatchID: batch.ID, SourceMessageIDs: sources, Key: sess.Key, WorkDir: sess.WorkDir, Cancel: cancel, Stream: stream, Typing: typing})
 	if s.afterStoreActiveRunHook != nil {
 		s.afterStoreActiveRunHook()
 	}
@@ -386,7 +545,7 @@ func (s *Service) startBatch(parent context.Context, sess session.Session, batch
 		s.Audit.Record("system", "card_render_failed", sess.ID, err.Error())
 		return
 	}
-	marked, _, err := s.Sessions.MarkBatchRunning(batchKey(sess, batch), batch.ID, nil, time.Now())
+	marked, _, err := s.Sessions.MarkBatchRunning(batchKey(sess, batch), batch.ID, stream.RenderRef(), time.Now())
 	if err != nil {
 		cancel()
 		s.finishStartingBatch(sess, batch, id, session.InputFailed, "failed", AgentRunResult{})
@@ -423,11 +582,25 @@ func (s *Service) executeBatch(ctx context.Context, sess session.Session, batch 
 		}
 		return
 	}
+	var actualModelMu sync.Mutex
+	streamedActualModel := ""
 	result, err := s.Runner.Run(ctx, AgentRunRequest{Kind: sess.Key.Agent, ClaudeBin: s.Config.ClaudeBin, Prompt: prompt, WorkDir: sess.WorkDir, ClaudeSessionID: sess.ClaudeSessionID, Model: batch.Inputs[0].RequestedModel, Effort: batch.Inputs[0].RequestedEffort, OnEvent: func(update AgentStreamUpdate) {
+		if model := strings.TrimSpace(update.Model); model != "" {
+			actualModelMu.Lock()
+			streamedActualModel = model
+			actualModelMu.Unlock()
+		}
 		if run, ok := s.activeRun(id); ok && run.BatchID == batch.ID && run.Stream != nil {
 			run.Stream.Handle(update)
 		}
 	}})
+	if strings.TrimSpace(result.Model) == "" {
+		actualModelMu.Lock()
+		result.Model = streamedActualModel
+		actualModelMu.Unlock()
+	} else {
+		result.Model = strings.TrimSpace(result.Model)
+	}
 	status, cardStatus := session.InputCompleted, "completed"
 	if errors.Is(ctx.Err(), context.Canceled) {
 		status, cardStatus = session.InputCancelled, "stopped"
@@ -437,6 +610,10 @@ func (s *Service) executeBatch(ctx context.Context, sess session.Session, batch 
 	}
 	if len(result.Segments) == 0 && status == session.InputCompleted {
 		result.Segments = []card.Segment{{Kind: card.SegmentText, Text: "Claude 未返回内容。"}}
+	}
+	requestedModel := strings.TrimSpace(batch.Inputs[0].RequestedModel)
+	if result.Model != "" && requestedModel != "" && !strings.EqualFold(requestedModel, "default") && result.Model != requestedModel {
+		s.Audit.Record("system", "model_requested_actual_mismatch", sess.ID, fmt.Sprintf("requested=%s actual=%s", requestedModel, result.Model))
 	}
 	updated, _ := s.finishBatchOrRemember(sess, batch.ID, session.BatchCompletion{Status: status, ClaudeSessionID: result.ClaudeSessionID, Model: result.Model, Tokens: result.Tokens, At: time.Now()}, "completion_persist_failed")
 	if run, ok := s.activeRun(id); ok && run.BatchID == batch.ID && run.Stream != nil {
@@ -685,8 +862,33 @@ func (s *Service) HandleActionResult(ctx context.Context, req ActionRequest) (Ac
 			workDir = pending.WorkDir
 		}
 		return s.renderActionEvent(workDirActionEvent("workdir_cancelled", req.SessionID, workDir))
+	case "config.save":
+		if s.Preferences == nil {
+			err := errors.New("preference store is not configured")
+			s.Audit.Record(req.Actor, "config_save_failed", req.SessionID, err.Error())
+			return s.renderActionEvent(configSaveErrorEvent(req.SessionID))
+		}
+		preference := config.RuntimePreference{Model: req.FormValues["model"], Effort: req.FormValues["effort"], ReplyMode: config.ReplyMode(req.FormValues["reply_mode"])}
+		if err := s.Preferences.Set(preference); err != nil {
+			s.Audit.Record(req.Actor, "config_save_failed", req.SessionID, err.Error())
+			return s.renderActionEvent(configSaveErrorEvent(req.SessionID))
+		}
+		s.Audit.Record(req.Actor, "config_saved", req.SessionID, fmt.Sprintf("model=%s effort=%s reply_mode=%s", preference.Model, preference.Effort, preference.ReplyMode))
+		return s.renderActionEvent(card.Event{
+			Type:      "config_saved",
+			SessionID: req.SessionID,
+			Segments:  []card.Segment{{Kind: card.SegmentText, Text: fmt.Sprintf("偏好已保存。\n\nmodel=`%s`\neffort=`%s`\nreply mode=`%s`\n\n下一条新消息开始生效。", preference.Model, preference.Effort, preference.ReplyMode)}},
+		})
 	default:
 		return s.renderActionEvent(card.Event{Type: "error", SessionID: req.SessionID, Segments: []card.Segment{{Kind: card.SegmentError, Text: "unknown action: " + req.ActionID}}})
+	}
+}
+
+func configSaveErrorEvent(sessionID string) card.Event {
+	return card.Event{
+		Type:      "error",
+		SessionID: sessionID,
+		Segments:  []card.Segment{{Kind: card.SegmentError, Text: "偏好保存失败，请检查选项或存储状态。"}},
 	}
 }
 
@@ -746,6 +948,7 @@ func (s *Service) Shutdown(ctx context.Context) error {
 		s.loopsCancel = nil
 	}
 	s.mu.Unlock()
+	s.closeAllWaitingReactions()
 	if err := waitGroupContext(ctx, &s.dispatchWG); err != nil {
 		s.cancelAllActiveRuns()
 		_ = waitGroupContext(context.Background(), &s.dispatchWG)
@@ -858,8 +1061,12 @@ func (s *Service) storeActiveRun(id string, run activeRun) {
 
 func (s *Service) clearActiveRun(id string) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
+	run, ok := s.activeRuns[id]
 	delete(s.activeRuns, id)
+	s.mu.Unlock()
+	if ok {
+		run.Typing.Close()
+	}
 }
 
 func (s *Service) activeRun(id string) (activeRun, bool) {
@@ -1011,6 +1218,7 @@ func (s *Service) statusText(kind agent.Kind, msg Message) string {
 	fmt.Fprintf(&b, "mode=claude_oneshot\n")
 	fmt.Fprintf(&b, "default_workdir=%s\n", s.Config.DefaultWorkDir)
 	fmt.Fprintf(&b, "current_session=%s\n", key.ID())
+	fmt.Fprintf(&b, "reply_mode=%s\n", s.runtimePreference().ReplyMode)
 	sess := s.findSession(key.ID())
 	if sess == nil {
 		b.WriteString("state=not_started")

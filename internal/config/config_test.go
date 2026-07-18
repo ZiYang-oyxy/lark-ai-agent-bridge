@@ -10,6 +10,8 @@ import (
 func TestLoadFromEnvParsesRuntimeTuning(t *testing.T) {
 	t.Setenv("E2E_CARD_UPDATE_MS", "250")
 	t.Setenv("E2E_CARD_MAX_CHARS", "4096")
+	t.Setenv("E2E_CARD_MIN_DELTA_CHARS", "31")
+	t.Setenv("E2E_CARD_PREVIEW_MAX_CHARS", "2001")
 	t.Setenv("E2E_INTERACTION_TIMEOUT_SEC", "15")
 	t.Setenv("E2E_DEFAULT_WORKDIR", "/tmp/lab-work")
 	t.Setenv("E2E_AUDIT_LOG", "/tmp/custom-audit.jsonl")
@@ -20,6 +22,9 @@ func TestLoadFromEnvParsesRuntimeTuning(t *testing.T) {
 	if cfg.CardMaxChars != 4096 {
 		t.Fatalf("card max chars = %d, want 4096", cfg.CardMaxChars)
 	}
+	if cfg.CardMinDeltaChars != 31 || cfg.CardPreviewMaxChars != 2001 {
+		t.Fatalf("preview tuning = min delta %d max %d", cfg.CardMinDeltaChars, cfg.CardPreviewMaxChars)
+	}
 	if cfg.InteractionTimeout != 15*time.Second {
 		t.Fatalf("interaction timeout = %s, want 15s", cfg.InteractionTimeout)
 	}
@@ -28,6 +33,24 @@ func TestLoadFromEnvParsesRuntimeTuning(t *testing.T) {
 	}
 	if cfg.AuditLogPath != "/tmp/custom-audit.jsonl" {
 		t.Fatalf("audit log path = %q, want custom path", cfg.AuditLogPath)
+	}
+}
+
+func TestLoadFromEnvPreviewDefaults(t *testing.T) {
+	cfg := LoadFromEnv()
+	if cfg.CardMinDeltaChars != 30 || cfg.CardPreviewMaxChars != 2000 {
+		t.Fatalf("preview defaults = min delta %d max %d", cfg.CardMinDeltaChars, cfg.CardPreviewMaxChars)
+	}
+}
+
+func TestLoadFromEnvStrictRejectsInvalidPreviewTuning(t *testing.T) {
+	for _, name := range []string{"E2E_CARD_MIN_DELTA_CHARS", "E2E_CARD_PREVIEW_MAX_CHARS"} {
+		t.Run(name, func(t *testing.T) {
+			t.Setenv(name, "0")
+			if _, err := LoadFromEnvStrict(); err == nil {
+				t.Fatalf("LoadFromEnvStrict() error = nil for %s=0", name)
+			}
+		})
 	}
 }
 
@@ -86,6 +109,32 @@ func TestLoadFromEnvRuntimePreferenceDefaultsAndOverrides(t *testing.T) {
 	t.Setenv("E2E_PREFERENCE_STORE", customPath)
 	if got := LoadFromEnv().PreferenceStorePath; got != customPath {
 		t.Fatalf("preference store override = %q, want %q", got, customPath)
+	}
+}
+
+func TestLoadFromEnvReplyDefaultsAndOverrides(t *testing.T) {
+	workDir := filepath.Join(t.TempDir(), "work")
+	t.Setenv("E2E_DEFAULT_WORKDIR", workDir)
+	cfg := LoadFromEnv()
+	if cfg.ReplyMode != ReplyModeAppend {
+		t.Fatalf("default reply mode = %q, want %q", cfg.ReplyMode, ReplyModeAppend)
+	}
+	if cfg.ReplyStorePath != filepath.Join(workDir, ".lark-agent-bridge", "replies.json") {
+		t.Fatalf("reply store path = %q", cfg.ReplyStorePath)
+	}
+	customPath := filepath.Join(t.TempDir(), "custom-replies.json")
+	t.Setenv("E2E_REPLY_MODE", string(ReplyModeLatestCard))
+	t.Setenv("E2E_REPLY_STORE", customPath)
+	cfg = LoadFromEnv()
+	if cfg.ReplyMode != ReplyModeLatestCard || cfg.ReplyStorePath != customPath {
+		t.Fatalf("reply config = mode %q store %q", cfg.ReplyMode, cfg.ReplyStorePath)
+	}
+}
+
+func TestLoadFromEnvStrictRejectsInvalidReplyMode(t *testing.T) {
+	t.Setenv("E2E_REPLY_MODE", "replace-everything")
+	if _, err := LoadFromEnvStrict(); err == nil {
+		t.Fatal("LoadFromEnvStrict() error = nil for invalid reply mode")
 	}
 }
 

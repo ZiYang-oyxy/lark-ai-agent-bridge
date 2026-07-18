@@ -34,6 +34,20 @@ func TestNewServeAuditRecorderWritesFile(t *testing.T) {
 	}
 }
 
+func TestActionRequestFromFeishuClonesFormValues(t *testing.T) {
+	action := feishu.CardAction{
+		SessionID:  "claude:chat",
+		ActionID:   "config.save",
+		Actor:      "user",
+		FormValues: map[string]string{"model": "opus", "effort": "high"},
+	}
+	req := actionRequestFromFeishu(action)
+	action.FormValues["model"] = "haiku"
+	if req.SessionID != "claude:chat" || req.ActionID != "config.save" || req.Actor != "user" || req.FormValues["model"] != "opus" || req.FormValues["effort"] != "high" {
+		t.Fatalf("action request form values = %#v", req.FormValues)
+	}
+}
+
 func TestApplyDefaultWorkDirPreservesExplicitAuditLog(t *testing.T) {
 	t.Setenv("E2E_AUDIT_LOG", "/tmp/custom-audit.jsonl")
 	cfg := config.Config{AuditLogPath: "/tmp/custom-audit.jsonl"}
@@ -57,6 +71,28 @@ func TestApplyDefaultWorkDirRebasesImplicitSessionStore(t *testing.T) {
 	}
 	if cfg.SessionStorePath != filepath.Join("/tmp/work", ".lark-agent-bridge", "sessions.json") {
 		t.Fatalf("session store = %q", cfg.SessionStorePath)
+	}
+}
+
+func TestApplyDefaultWorkDirRebasesImplicitPreferenceStore(t *testing.T) {
+	t.Setenv("E2E_PREFERENCE_STORE", "")
+	cfg := config.Config{}
+	if err := applyDefaultWorkDir(&cfg, "/tmp/work"); err != nil {
+		t.Fatal(err)
+	}
+	if cfg.PreferenceStorePath != filepath.Join("/tmp/work", ".lark-agent-bridge", "preferences.json") {
+		t.Fatalf("preference store = %q", cfg.PreferenceStorePath)
+	}
+}
+
+func TestApplyDefaultWorkDirRebasesImplicitReplyStore(t *testing.T) {
+	t.Setenv("E2E_REPLY_STORE", "")
+	cfg := config.Config{}
+	if err := applyDefaultWorkDir(&cfg, "/tmp/work"); err != nil {
+		t.Fatal(err)
+	}
+	if cfg.ReplyStorePath != filepath.Join("/tmp/work", ".lark-agent-bridge", "replies.json") {
+		t.Fatalf("reply store path = %q", cfg.ReplyStorePath)
 	}
 }
 
@@ -105,6 +141,26 @@ func TestRuntimeCommandsRejectInvalidMediaEnvironment(t *testing.T) {
 				t.Fatalf("error = %v, want strict media config rejection", err)
 			}
 		})
+	}
+}
+
+func TestRunDoctorWrapperPreflightWarningFailsOnlyInStrictMode(t *testing.T) {
+	workDir, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	bin := filepath.Join(workDir, "fake-claude")
+	if err := os.WriteFile(bin, []byte("#!/bin/sh\nprintf 'PRIVATE_WRAPPER_OUTPUT' >&2\nexit 78\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("E2E_CLAUDE_BIN", bin)
+	t.Setenv("LARK_APP_ID", "app")
+	t.Setenv("LARK_APP_SECRET", "secret")
+	if err := runDoctor([]string{"--default-workdir", workDir}); err != nil {
+		t.Fatalf("non-strict doctor error = %v, want warning-only success", err)
+	}
+	if err := runDoctor([]string{"--strict", "--default-workdir", workDir}); err == nil || err.Error() != "doctor strict verification failed" {
+		t.Fatalf("strict doctor error = %v, want strict verification failure", err)
 	}
 }
 

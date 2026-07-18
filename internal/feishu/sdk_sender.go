@@ -81,48 +81,47 @@ func (s *SDKSender) SendReply(ctx context.Context, reply Reply) (SendResult, err
 	return result, nil
 }
 
-func (s *SDKSender) AddReaction(ctx context.Context, req ReactionRequest) (ReactionResult, error) {
-	if req.MessageID == "" {
-		return ReactionResult{}, fmt.Errorf("missing reaction target message id")
+func (s *SDKSender) AddReaction(ctx context.Context, messageID string, reactionType ReactionType) (string, error) {
+	if messageID == "" {
+		return "", fmt.Errorf("missing reaction target message id")
 	}
-	if req.Type == "" {
-		return ReactionResult{}, fmt.Errorf("missing reaction type")
+	if reactionType == "" {
+		return "", fmt.Errorf("missing reaction type")
 	}
 	body := larkim.NewCreateMessageReactionReqBodyBuilder().
-		ReactionType(larkim.NewEmojiBuilder().EmojiType(string(req.Type)).Build()).
+		ReactionType(larkim.NewEmojiBuilder().EmojiType(string(reactionType)).Build()).
 		Build()
 	apiReq := larkim.NewCreateMessageReactionReqBuilder().
-		MessageId(req.MessageID).
+		MessageId(messageID).
 		Body(body).
 		Build()
 	apiReq.Body = body
 	resp, err := s.reactionAPI.Create(ctx, apiReq)
 	if err != nil {
-		return ReactionResult{}, fmt.Errorf("create feishu reaction: %w", err)
+		return "", fmt.Errorf("create feishu reaction: %w", err)
 	}
 	if resp == nil {
-		return ReactionResult{}, fmt.Errorf("create feishu reaction failed: empty response")
+		return "", fmt.Errorf("create feishu reaction failed: empty response")
 	}
 	if !resp.Success() {
-		return ReactionResult{}, fmt.Errorf("create feishu reaction failed: code=%d msg=%s", resp.Code, resp.Msg)
+		return "", fmt.Errorf("create feishu reaction failed: code=%d msg=%s", resp.Code, resp.Msg)
 	}
-	result := ReactionResult{}
 	if resp.Data != nil && resp.Data.ReactionId != nil {
-		result.ReactionID = *resp.Data.ReactionId
+		return *resp.Data.ReactionId, nil
 	}
-	return result, nil
+	return "", fmt.Errorf("create feishu reaction returned empty reaction id")
 }
 
-func (s *SDKSender) DeleteReaction(ctx context.Context, req ReactionDeleteRequest) error {
-	if req.MessageID == "" {
+func (s *SDKSender) DeleteReaction(ctx context.Context, messageID, reactionID string) error {
+	if messageID == "" {
 		return fmt.Errorf("missing reaction target message id")
 	}
-	if req.ReactionID == "" {
+	if reactionID == "" {
 		return fmt.Errorf("missing reaction id")
 	}
 	apiReq := larkim.NewDeleteMessageReactionReqBuilder().
-		MessageId(req.MessageID).
-		ReactionId(req.ReactionID).
+		MessageId(messageID).
+		ReactionId(reactionID).
 		Build()
 	resp, err := s.reactionAPI.Delete(ctx, apiReq)
 	if err != nil {

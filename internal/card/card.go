@@ -21,6 +21,12 @@ type Segment struct {
 	Text string
 }
 
+type ModelInfo struct {
+	Requested string
+	Actual    string
+	Effort    string
+}
+
 type Meta struct {
 	Agent       string
 	Model       string
@@ -31,6 +37,7 @@ type Meta struct {
 	IP          string
 	WorkDir     string
 	Status      string
+	ModelInfo   ModelInfo
 }
 
 type StopButton struct {
@@ -46,10 +53,12 @@ type Action struct {
 }
 
 type ConfigForm struct {
-	Model   string
-	Effort  string
-	Models  []string
-	Efforts []string
+	Model      string
+	Effort     string
+	ReplyMode  string
+	Models     []string
+	Efforts    []string
+	ReplyModes []string
 }
 
 type Event struct {
@@ -67,6 +76,7 @@ type Event struct {
 	Activity         string
 	ThoughtExpanded  bool
 	ToolsExpanded    bool
+	HideAgentPanels  bool
 	ConfigForm       *ConfigForm
 }
 

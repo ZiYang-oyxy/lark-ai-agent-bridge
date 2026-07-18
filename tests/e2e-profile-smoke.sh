@@ -25,10 +25,36 @@ assert_fail() {
   fi
 }
 
+[[ -x "$ROOT/scripts/e2e-init.sh" ]] || fail "scripts/e2e-init.sh must be executable"
+
 TEST_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/lab-e2e-profile.XXXXXX")"
 trap 'rm -rf "$TEST_ROOT"' EXIT
 mkdir -p "$TEST_ROOT/.lark-agent-bridge/e2e/profiles"
 chmod 700 "$TEST_ROOT/.lark-agent-bridge" "$TEST_ROOT/.lark-agent-bridge/e2e" "$TEST_ROOT/.lark-agent-bridge/e2e/profiles"
+
+GNU_STAT_BIN="$TEST_ROOT/gnu-stat-bin"
+mkdir -p "$GNU_STAT_BIN"
+cat >"$GNU_STAT_BIN/stat" <<'EOF'
+#!/usr/bin/env bash
+if [[ "$1" == "-c" && "$2" == "%a" ]]; then
+  printf '600\n'
+  exit 0
+fi
+if [[ "$1" == "-c" && "$2" == "%u" ]]; then
+  printf '1234\n'
+  exit 0
+fi
+if [[ "$1" == "-f" ]]; then
+  printf 'GNU filesystem details that must not leak\n'
+  exit 1
+fi
+exit 2
+EOF
+chmod +x "$GNU_STAT_BIN/stat"
+gnu_mode="$(PATH="$GNU_STAT_BIN:$PATH" e2e_profile_mode fixture)"
+gnu_owner="$(PATH="$GNU_STAT_BIN:$PATH" e2e_profile_owner_uid fixture)"
+assert_eq 600 "$gnu_mode" "GNU stat mode"
+assert_eq 1234 "$gnu_owner" "GNU stat owner"
 
 assert_ok e2e_profile_validate_name personal
 assert_ok e2e_profile_validate_name dev.alice-1

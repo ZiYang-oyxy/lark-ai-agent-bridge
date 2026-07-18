@@ -12,7 +12,7 @@
 
 ## 结论先行
 
-主线现状是一个**能跑通的最小可用体**:单 agent(claude)、纯内存、按 chat/topic 串行、one-shot + `--resume` 续接、CardKit 流式卡片。它**不缺骨架,缺的是「重启不丢 + 谁能用 + 能发图」这三类生产必需能力**。
+主线已具备个人使用所需的完整 P0/P1 能力:单 agent(claude)、JSON 会话快照、按 chat/topic 串行、one-shot + `--resume` 续接、附件输入、持久化运行偏好、三种回复展示模式、预览节流和 reaction 生命周期。P0/P1 个人版已于 2026-07-18 收敛。
 
 gist 的企业级方案对当前体量**严重过度设计**,近期一律不进主清单,只作远期备注(见文末)。近期该做的绝大多数能从 **lcab 近乎平移**(模型同构),cc-connect 提供几个轻量补充小件。
 
@@ -21,14 +21,14 @@ gist 的企业级方案对当前体量**严重过度设计**,近期一律不进�
 | 维度 | 现状 | 关键位置 |
 |---|---|---|
 | Agent | 仅 claude,one-shot 子进程(非常驻) | `internal/agent/agent.go:42-56`,`ParseKind` 不识别 codex `agent.go:24-30` |
-| 会话 | 纯内存 `map`,重启全丢;有内部 `--resume` 续接,无面向用户的 `/resume` | `internal/session/session.go:64-70`,`agent/agent.go:52-54` |
+| 会话 | JSON 原子快照保存上下文;重启恢复 `ClaudeSessionID/history`,但 queued/running 不自动重跑 | `internal/session/store.go`,`internal/bridge/service.go` |
 | session key | `{Agent, ChatID, Thread}` | `internal/session/session.go:11-22` |
 | 鉴权 | **完全无鉴权** + 硬编码 `--dangerously-skip-permissions` | `internal/agent/agent.go:51` |
-| 去重 | 内存 map + TTL,重启丢失 | `internal/feishu/dedupe.go:9-31` |
-| 并发 | 按 session key(chat/topic)串行,不同 key 并行;队列无上界 | `internal/session/session.go:98-153` |
+| 去重 | 与 session snapshot 一起持久化,带 TTL/容量上限与启动 watermark | `internal/session/store.go`,`internal/bridge/service.go` |
+| 并发 | scope 内串行、不同 scope 并行;busy 输入有界排队并按兼容配置聚合下一批 | `internal/session/session.go`,`internal/bridge/service.go` |
 | 卡片渲染 | 已有 reducer 中间层(`agentCardStream`):流式 append + 终态 replace | `internal/bridge/stream_card.go` |
-| 附件/图片 | **不支持**,只解析 text/post | `internal/feishu/sdk_message.go:117-186` |
-| model | bridge 不可控(由 wrapper profile 决定),`--effort low` 硬编码 | `internal/agent/agent.go:51` |
+| 附件/图片 | 支持图片及纯文本类文件;下载、内容校验、cache/GC 与失败反馈已接线 | `internal/media/`,`internal/feishu/media_downloader.go` |
+| model | `/config` 持久化 requested model/effort;卡片区分 requested 与 CLI 实际报告值 | `internal/config/preferences.go`,`internal/bridge/service.go` |
 
 ---
 
@@ -36,24 +36,15 @@ gist 的企业级方案对当前体量**严重过度设计**,近期一律不进�
 
 ### P0-1 · 会话持久化 + 重启恢复 + `/resume`
 
-- **问题**:会话态、prompt 历史、去重表全在内存(`internal/session/session.go` 纯 `map`),进程重启全丢。主线 backlog 自列的第一条。
-- **方案**:JSON 快照 + 原子写(临时文件 rename)+ `--resume`,**不上 SQLite**。
-  - cc-connect 的会话持久化实际也是 JSON 快照(`core/session.go` 的 `sessionSnapshot` + `AtomicWriteFile`),**未用 SQLite**——可直接照此思路。
-  - session key 结构升级参考 lcab `session/catalog.ts`:`scopeId + agentId + cwdRealpath + policyFingerprint`,避免换目录/换权限后错误复用旧会话。
-  - 面向用户的 `/resume` 参考 lcab `commands/index.ts` `handleResume` + 一次性 nonce 选择机制(10 分钟有效,绑 catalog identity)。
-- **平移索引**:cc-connect `core/session.go`(JSON 快照/原子写/`PastAgentSessionIDs` 归属追踪);lcab `session/catalog.ts`、`session/store.ts`、`commands/index.ts:handleResume`。
-- **成本**:中低。主线已有内部 `ClaudeSessionID` 续接,补的是「落盘 + 恢复 + 列表选择」。
+- **状态(2026-07-18)**:✅ 个人版已完成。JSON v1 snapshot 使用 `0600` 原子写,保存 session/history/dedup/input 状态;启动时只恢复可继续的 Claude 上下文。
+- **恢复语义**:重启不调度旧输入。`debouncing/queued/starting` 终结为 `cancelled`,`running` 终结为 `interrupted`,并写入 recovery audit;用户需重新发送,下一条新消息可用保存的 `ClaudeSessionID` 续接上下文。
+- **边界**:`/resume` 继续保持禁用;个人版不需要跨用户 catalog/nonce 选择器。
+- **证据**:`.cache/evidence/dee05c5/core-regression-green/summary.md` 的 session restart、pending cancel/interrupted、DM/group debounce、busy merge、queue full、scope parallel、stop 与 recall 十个核心 case 全部通过。
 
 ### P0-2 · 访问控制(owner / allowlist / invite)
 
-- **问题**:当前**完全无鉴权 + 硬编码 skip-permissions**,任何能 @bot 的人都能在本机执行命令。安全红线。
-- **方案**:纯函数决策 + owner 定期刷新 + fail-closed。
-  - lcab `policy/access.ts` 几乎可平移:`isCreator / canUseDm / canUseGroup / canRunAdminCommand`,名单来自 `profile.access.{allowedUsers, admins, allowedChats}`。
-  - `owner.ts`:定期(30 分钟)拉 bot owner,**`unknown` 时 `isCreator` 一律 false(fail-closed)**。
-  - invite 体系:lcab `/invite user|admin|group`、`/remove`(`commands/index.ts:handleInvite`)。
-- **校验触点**:入站 intake、卡片回调、命令三处都要加(参考 lcab `bot/channel.ts` intake、`card/dispatcher.ts`、`commands/index.ts` 的 `ADMIN_COMMANDS`)。
-- **平移索引**:lcab `policy/access.ts`、`policy/owner.ts`、`commands/index.ts`。
-- **成本**:中。
+- **个人版决定(2026-07-18)**:⏸️ 本轮明确不做 owner/allowlist/invite/审批体系,不把企业级安全特性作为 P0/P1 完成门槛。
+- **适用边界**:部署者负责把 bot 只放在个人可控 chat/tenant 中。若未来扩大使用人群,再恢复 lcab `policy/access.ts` 的 owner/allowlist 方案。
 
 ### P0-3 · 文件 / 图片输入
 
@@ -75,30 +66,24 @@ gist 的企业级方案对当前体量**严重过度设计**,近期一律不进�
 
 ### P1-1 · 去重/防重放持久化 + 有界队列背压
 
-- **问题**:去重(`internal/feishu/dedupe.go`)纯内存,重启后可能重放未 ack 的旧消息;队列无上界。
-- **方案**:两个 cc-connect 自包含小件直接抄:
-  - `StartTime` 防重放:启动前 ~2s 的消息丢弃(cc-connect `IsOldMessage()`)。
-  - 有界队列:`maxQueued` 上限,busy 时消息合并进下一批、**不中途写 stdin**(cc-connect `defaultMaxQueuedMessages`、`pendingMessages`)。
-  - 可选:lcab per-scope debounce(`bot/pending-queue.ts`,p2p 250ms / 带附件 600ms)。
-- **平移索引**:cc-connect `core/dedup.go`、`core/engine.go`(watermark / 队列);lcab `bot/pending-queue.ts`。
-- **成本**:低。均为 <100 行小件。
+- **状态(2026-07-18)**:✅ 已完成。dedup/watermark 与 session snapshot 一起落盘;每个 scope 有界排队,同 scope 串行、不同 scope 并行。
+- **队列语义**:busy 时兼容的连续输入可进入下一 batch;配置/workdir/附件边界不同则保持独立 batch。重启一律清空未终态输入,不自动重放。
+- **未引入**:全局 semaphore/FIFO/公平性与跨重启 durable job queue,这些对个人版收益不足。
+- **证据**:`.cache/evidence/dee05c5/core-regression-green/summary.md` 覆盖 DM/group debounce、busy merge、queue full、scope parallel 与 stop-preserves-queue。
 
 ### P1-2 · 可选 model / effort 指定
 
-- **问题**:model 完全由 wrapper profile 决定、bridge 不可控(AGENTS.md 已记为已知风险);`--effort low` 硬编码在 `agent.go:51`。
-- **方案**:给 `BuildOneShotCommand` 加可选 `--model` / `--effort`,`default` 表示不传;经 `/config` 卡片选择。
-- **平移索引**:lcab `agent/models.ts`(`supportedModels` / `resolveModelArg`)、`card/config-card.ts`。
-- **成本**:低。
+- **状态(2026-07-18)**:✅ 已完成。`/config` CardKit 表单持久化一份个人 model/effort 偏好;`default` 分别表示省略 `--model`/`--effort`,配置在消息入队时冻结。
+- **可观测性**:结果卡明确展示 requested / actual / effort;actual 只信任 CLI stream/result,缺失时显示 `unknown`,不以 requested 冒充。
+- **诊断**:`doctor` 默认执行 20 秒 bounded wrapper preflight并报告 warning;`doctor --strict` 将 warning 作为失败。exit 78 给出 wrapper prerequisites 提示且不打印命令输出或环境值。
+- **证据**:`.cache/evidence/e8cca6b/config-real/summary.md` 的 `config_roundtrip`、`config_reset`、`config_frozen_queue`、`requested_actual_model`、`wrapper_preflight` 全部通过;环境默认 `sonnet/medium` 在 reset+restart 后生效。
 
 ### P1-3 · 回复展示模式可配 + typing/reaction 反馈
 
-- **问题**:当前卡片策略固定。
-- **方案**:
-  - lcab `ReplyDisplayMode`:`append` / `latest-card` / `append-clean-card`(`config/schema.ts:71`,分发在 `bot/channel.ts`)。
-  - cc-connect preview 双门限节流:interval + minDelta(`core/streaming.go`),freeze/unfreeze/discard/finish 降级完备。
-  - reaction 表示「处理中」:lcab `bot/message-work-reactions.ts`。
-- **平移索引**:lcab `card/run-state.ts`(主线已有对应的 `stream_card.go` reducer,扩展策略即可)、cc-connect `core/streaming.go`。
-- **成本**:低中。主线已有 reducer 层,扩展即可。
+- **状态(2026-07-18)**:✅ 已完成。`/config` 可选择 `append`、`append-clean-card`、`latest-card`;偏好与 latest mapping 使用原子 JSON 持久化。
+- **回复语义**:`append` 每轮新建卡;`append-clean-card` 终态隐藏思考/工具过程区;`latest-card` 按 conversation scope 复用卡片,跨重启继续递增 sequence。旧卡 ID 失效时清除 mapping 并新建卡,真实飞书返回的 `10002 cardid invalid` 已纳入 stale 判定。
+- **流式体验**:preview 同时满足时间间隔与新增字符门限,终态不截断;等待输入使用 `OneSecond`,运行使用 `Typing`,所有完成/停止/重启/竞态路径统一清理 reaction。
+- **证据**:`.cache/evidence/dee05c5/reply-final-summary.md` 汇总六个最终通过的 Reply E2E,并链接保留首轮失败现场与两次定向绿色重跑。
 
 ---
 
@@ -138,4 +123,4 @@ gist 的企业级方案对当前体量**严重过度设计**,近期一律不进�
 
 ## 推荐落地顺序
 
-`P0-1(持久化)→ P0-2(鉴权)→ P0-3(图片)` 是一条自洽主线:先「重启不丢」,再「谁能用」,再「能发图」。P1 三项均为低成本增量,可穿插。P2 视 codex / 上线运营 / 收紧权限的实际需求再定。
+个人版 P0/P1 已完成。下一步不再扩张本轮范围;P2 仅在确有 Codex、多人使用、审批或运营观测需求时启动。若使用范围从个人可控 chat/tenant 扩大,应优先恢复访问控制与权限收紧,再考虑其他 P2 能力。

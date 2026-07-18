@@ -1,7 +1,10 @@
 package doctor
 
 import (
+	"context"
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -9,6 +12,7 @@ import (
 	"time"
 
 	"lark-agent-bridge/internal/config"
+	"lark-agent-bridge/internal/reply"
 	"lark-agent-bridge/internal/session"
 )
 
@@ -19,7 +23,36 @@ type Check struct {
 	Detail  string
 }
 
+type RunOptions struct {
+	WrapperPreflight bool
+	Strict           bool
+	PreflightTimeout time.Duration
+}
+
 func Run(cfg config.Config) []Check {
+	return runStatic(cfg)
+}
+
+func RunWithOptions(ctx context.Context, cfg config.Config, opts RunOptions) []Check {
+	checks := runStatic(cfg)
+	if !opts.WrapperPreflight {
+		return checks
+	}
+	timeout := opts.PreflightTimeout
+	if timeout <= 0 {
+		timeout = 20 * time.Second
+	}
+	preflightCtx, cancel := context.WithTimeout(ctx, timeout)
+	check := ClaudeWrapperPreflight(preflightCtx, cfg)
+	cancel()
+	if opts.Strict && check.Warning {
+		check.OK = false
+		check.Warning = false
+	}
+	return append(checks, check)
+}
+
+func runStatic(cfg config.Config) []Check {
 	claudeBin := cfg.ClaudeBin
 	if claudeBin == "" {
 		claudeBin = "claude"
@@ -32,13 +65,54 @@ func Run(cfg config.Config) []Check {
 		dirExists("default_workdir", cfg.DefaultWorkDir),
 		auditLogWritable(cfg.AuditLogPath),
 		sessionStoreWritable(cfg.SessionStorePath),
+		preferenceStoreWritable(cfg),
+		replyStoreWritable(cfg.ReplyStorePath),
 		mediaCacheWritable(cfg.MediaCacheDir),
 		optionalEnv("E2E_CALLBACK_ADDR"),
 		durationPositive("card_update_every", cfg.CardUpdateEvery),
 		durationPositive("interaction_timeout", cfg.InteractionTimeout),
 		intPositive("card_max_chars", cfg.CardMaxChars),
+		intPositive("card_min_delta_chars", cfg.CardMinDeltaChars),
+		intPositive("card_preview_max_chars", cfg.CardPreviewMaxChars),
 	}
 	return checks
+}
+
+func ClaudeWrapperPreflight(ctx context.Context, cfg config.Config) Check {
+	const name = "wrapper-preflight"
+	claudeBin := cfg.ClaudeBin
+	if claudeBin == "" {
+		claudeBin = "claude"
+	}
+	path, err := exec.LookPath(claudeBin)
+	if err != nil {
+		return Check{Name: name, OK: true, Warning: true, Detail: "skipped: claude executable not found"}
+	}
+	if info, err := os.Stat(cfg.DefaultWorkDir); err != nil || !info.IsDir() {
+		return Check{Name: name, OK: true, Warning: true, Detail: "skipped: default workdir unavailable"}
+	}
+	cmd := exec.CommandContext(ctx, path,
+		"-p", "--output-format", "stream-json", "--verbose", "--effort", "low",
+		"Reply with exactly OK. Do not use tools.",
+	)
+	cmd.Dir = cfg.DefaultWorkDir
+	cmd.Stdout = io.Discard
+	cmd.Stderr = io.Discard
+	err = cmd.Run()
+	if err == nil {
+		return Check{Name: name, OK: true, Detail: "passed"}
+	}
+	if ctx.Err() != nil {
+		return Check{Name: name, OK: true, Warning: true, Detail: "timed out"}
+	}
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) {
+		if exitErr.ExitCode() == 78 {
+			return Check{Name: name, OK: true, Warning: true, Detail: "exit 78: check wrapper .env mode 0600 and prerequisites"}
+		}
+		return Check{Name: name, OK: true, Warning: true, Detail: fmt.Sprintf("failed with exit %d", exitErr.ExitCode())}
+	}
+	return Check{Name: name, OK: true, Warning: true, Detail: "failed to start"}
 }
 
 func mediaCacheWritable(path string) Check {
@@ -169,6 +243,114 @@ func sessionStoreWritable(path string) Check {
 		return Check{Name: "session_store", OK: false, Detail: "invalid_snapshot: " + path}
 	}
 	return Check{Name: "session_store", OK: true, Detail: path}
+}
+
+func preferenceStoreWritable(cfg config.Config) Check {
+	path := cfg.PreferenceStorePath
+	if path == "" {
+		return Check{Name: "preference_store", OK: false, Detail: "empty"}
+	}
+	dir := filepath.Dir(path)
+	info, err := os.Lstat(dir)
+	if os.IsNotExist(err) {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			return Check{Name: "preference_store", OK: false, Detail: "parent_create_failed: " + path}
+		}
+		info, err = os.Lstat(dir)
+	}
+	if err != nil {
+		return Check{Name: "preference_store", OK: false, Detail: "parent_stat_failed: " + path}
+	}
+	if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+		return Check{Name: "preference_store", OK: false, Detail: "parent_not_directory: " + path}
+	}
+	if info.Mode().Perm() != 0o700 {
+		return Check{Name: "preference_store", OK: false, Detail: "parent_insecure_permissions: " + path}
+	}
+	probe, err := os.CreateTemp(dir, ".preference-store-probe-*")
+	if err != nil {
+		return Check{Name: "preference_store", OK: false, Detail: "write_probe_failed: " + path}
+	}
+	probePath := probe.Name()
+	if err := probe.Close(); err != nil {
+		_ = os.Remove(probePath)
+		return Check{Name: "preference_store", OK: false, Detail: "write_probe_failed: " + path}
+	}
+	if err := os.Remove(probePath); err != nil {
+		return Check{Name: "preference_store", OK: false, Detail: "write_probe_cleanup_failed: " + path}
+	}
+
+	info, err = os.Lstat(path)
+	if os.IsNotExist(err) {
+		return Check{Name: "preference_store", OK: true, Detail: path}
+	}
+	if err != nil {
+		return Check{Name: "preference_store", OK: false, Detail: "store_stat_failed: " + path}
+	}
+	if !info.Mode().IsRegular() {
+		return Check{Name: "preference_store", OK: false, Detail: "not_regular: " + path}
+	}
+	if info.Mode().Perm() != 0o600 {
+		return Check{Name: "preference_store", OK: false, Detail: "insecure_permissions: " + path}
+	}
+	defaults := config.RuntimePreference{Model: cfg.Model, Effort: cfg.Effort, ReplyMode: cfg.ReplyMode}
+	if _, err := config.OpenPreferenceStore(path, defaults, cfg.AllowedModels); err != nil {
+		return Check{Name: "preference_store", OK: false, Detail: "invalid_snapshot: " + path}
+	}
+	return Check{Name: "preference_store", OK: true, Detail: path}
+}
+
+func replyStoreWritable(path string) Check {
+	const name = "reply_store"
+	if path == "" {
+		return Check{Name: name, OK: false, Detail: "empty"}
+	}
+	dir := filepath.Dir(path)
+	info, err := os.Lstat(dir)
+	if os.IsNotExist(err) {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			return Check{Name: name, OK: false, Detail: "parent_create_failed: " + path}
+		}
+		info, err = os.Lstat(dir)
+	}
+	if err != nil {
+		return Check{Name: name, OK: false, Detail: "parent_stat_failed: " + path}
+	}
+	if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+		return Check{Name: name, OK: false, Detail: "parent_not_directory: " + path}
+	}
+	if info.Mode().Perm() != 0o700 {
+		return Check{Name: name, OK: false, Detail: "parent_insecure_permissions: " + path}
+	}
+	probe, err := os.CreateTemp(dir, ".reply-store-probe-*")
+	if err != nil {
+		return Check{Name: name, OK: false, Detail: "write_probe_failed: " + path}
+	}
+	probePath := probe.Name()
+	if err := probe.Close(); err != nil {
+		_ = os.Remove(probePath)
+		return Check{Name: name, OK: false, Detail: "write_probe_failed: " + path}
+	}
+	if err := os.Remove(probePath); err != nil {
+		return Check{Name: name, OK: false, Detail: "write_probe_cleanup_failed: " + path}
+	}
+	info, err = os.Lstat(path)
+	if os.IsNotExist(err) {
+		return Check{Name: name, OK: true, Detail: path}
+	}
+	if err != nil {
+		return Check{Name: name, OK: false, Detail: "store_stat_failed: " + path}
+	}
+	if !info.Mode().IsRegular() {
+		return Check{Name: name, OK: false, Detail: "not_regular: " + path}
+	}
+	if info.Mode().Perm() != 0o600 {
+		return Check{Name: name, OK: false, Detail: "insecure_permissions: " + path}
+	}
+	if _, err := reply.OpenStore(path); err != nil {
+		return Check{Name: name, OK: false, Detail: "invalid_snapshot: " + path}
+	}
+	return Check{Name: name, OK: true, Detail: path}
 }
 
 func Summary(checks []Check) string {

@@ -16,7 +16,9 @@ import (
 	"lark-agent-bridge/internal/audit"
 	"lark-agent-bridge/internal/card"
 	"lark-agent-bridge/internal/config"
+	"lark-agent-bridge/internal/feishu"
 	"lark-agent-bridge/internal/media"
+	"lark-agent-bridge/internal/reply"
 	"lark-agent-bridge/internal/session"
 )
 
@@ -28,6 +30,152 @@ type fakeRunner struct {
 	updates []AgentStreamUpdate
 	block   chan struct{}
 	started chan struct{}
+}
+
+type bridgeReplyTarget struct {
+	mu             sync.Mutex
+	newCalls       int
+	rehydrateCalls int
+	newRef         session.RenderRef
+	rehydratedRef  session.RenderRef
+	events         []card.Event
+	renderErr      error
+}
+
+func (t *bridgeReplyTarget) NewStreaming(context.Context, string, string) (feishu.ResumableRenderer, error) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.newCalls++
+	ref := t.newRef
+	if ref.CardID == "" {
+		ref = session.RenderRef{CardID: "new-card", ReplyMessageID: "new-reply"}
+	}
+	return &bridgeReplyRenderer{target: t, ref: ref}, nil
+}
+
+func (t *bridgeReplyTarget) AppendTerminal(_ context.Context, _ string, event card.Event) error {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.events = append(t.events, event)
+	return nil
+}
+
+func (t *bridgeReplyTarget) Rehydrate(_ string, ref session.RenderRef) feishu.ResumableRenderer {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.rehydrateCalls++
+	t.rehydratedRef = ref
+	return &bridgeReplyRenderer{target: t, ref: ref}
+}
+
+type bridgeReplyRenderer struct {
+	target *bridgeReplyTarget
+	ref    session.RenderRef
+}
+
+func (r *bridgeReplyRenderer) Render(event card.Event) error {
+	r.target.mu.Lock()
+	defer r.target.mu.Unlock()
+	r.target.events = append(r.target.events, event)
+	r.ref.Version++
+	return r.target.renderErr
+}
+
+func (r *bridgeReplyRenderer) RenderRef() session.RenderRef { return r.ref }
+
+type contextBlockingRecoveryTarget struct {
+	renderer *contextBlockingRecoveryRenderer
+}
+
+func (t *contextBlockingRecoveryTarget) NewStreaming(context.Context, string, string) (feishu.ResumableRenderer, error) {
+	return nil, errors.New("unexpected new streaming call")
+}
+
+func (t *contextBlockingRecoveryTarget) AppendTerminal(context.Context, string, card.Event) error {
+	return errors.New("unexpected append terminal call")
+}
+
+func (t *contextBlockingRecoveryTarget) Rehydrate(string, session.RenderRef) feishu.ResumableRenderer {
+	return t.renderer
+}
+
+type contextBlockingRecoveryRenderer struct {
+	mu            sync.Mutex
+	legacyCalled  bool
+	contextCalled bool
+	ref           session.RenderRef
+}
+
+func (r *contextBlockingRecoveryRenderer) Render(card.Event) error {
+	r.mu.Lock()
+	r.legacyCalled = true
+	r.mu.Unlock()
+	return errors.New("legacy render should not be used")
+}
+
+func (r *contextBlockingRecoveryRenderer) RenderContext(ctx context.Context, _ card.Event) error {
+	r.mu.Lock()
+	r.contextCalled = true
+	r.mu.Unlock()
+	<-ctx.Done()
+	return ctx.Err()
+}
+
+func (r *contextBlockingRecoveryRenderer) RenderRef() session.RenderRef { return r.ref }
+
+type fakeReactionSink struct {
+	mu        sync.Mutex
+	adds      []reactionCall
+	deletes   []reactionDelete
+	addErr    error
+	deleteErr error
+	blockType feishu.ReactionType
+	entered   chan struct{}
+	release   chan struct{}
+}
+
+type reactionCall struct {
+	messageID string
+	typeName  feishu.ReactionType
+}
+
+type reactionDelete struct {
+	messageID  string
+	reactionID string
+}
+
+func (s *fakeReactionSink) AddReaction(_ context.Context, messageID string, typeName feishu.ReactionType) (string, error) {
+	s.mu.Lock()
+	s.adds = append(s.adds, reactionCall{messageID: messageID, typeName: typeName})
+	call := len(s.adds)
+	block := s.blockType == typeName && s.release != nil
+	if block && s.entered != nil {
+		select {
+		case s.entered <- struct{}{}:
+		default:
+		}
+	}
+	s.mu.Unlock()
+	if block {
+		<-s.release
+	}
+	if s.addErr != nil {
+		return "", s.addErr
+	}
+	return fmt.Sprintf("reaction-%d", call), nil
+}
+
+func (s *fakeReactionSink) DeleteReaction(_ context.Context, messageID, reactionID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.deletes = append(s.deletes, reactionDelete{messageID: messageID, reactionID: reactionID})
+	return s.deleteErr
+}
+
+func (s *fakeReactionSink) snapshot() ([]reactionCall, []reactionDelete) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]reactionCall(nil), s.adds...), append([]reactionDelete(nil), s.deletes...)
 }
 
 type failingAuditWriter struct{}
@@ -313,6 +461,249 @@ func TestServicePassesFrozenModelAndEffortToRunner(t *testing.T) {
 	}
 }
 
+func TestServiceConfigCommandShowsCurrentPreferencesWithoutRunningAgent(t *testing.T) {
+	cfg := testConfig(t)
+	cfg.Model = "default"
+	cfg.Effort = "low"
+	cfg.AllowedModels = []string{"default", "sonnet", "opus", "haiku", "claude-custom-1"}
+	store, _ := testPreferenceStore(t, config.RuntimePreference{Model: "default", Effort: "low"}, cfg.AllowedModels)
+	if err := store.Set(config.RuntimePreference{Model: "opus", Effort: "high", ReplyMode: config.ReplyModeLatestCard}); err != nil {
+		t.Fatal(err)
+	}
+	renderer := card.NewFakeRenderer()
+	runner := newFakeRunner()
+	svc := NewService(cfg, renderer, runner, audit.NewRecorder())
+	svc.Preferences = store
+	if err := svc.HandleMessage(context.Background(), Message{ID: "config-open", ChatID: "chat", Sender: "user", Text: "/config", Time: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	events := renderer.Events()
+	if len(events) != 1 || events[0].ConfigForm == nil || events[0].ConfigForm.Model != "opus" || events[0].ConfigForm.Effort != "high" || events[0].ConfigForm.ReplyMode != string(config.ReplyModeLatestCard) {
+		t.Fatalf("config events = %#v", events)
+	}
+	if len(runner.Calls()) != 0 {
+		t.Fatalf("/config started Agent: %#v", runner.Calls())
+	}
+}
+
+func TestServiceStatusShowsGlobalReplyModeBeforeSessionStarts(t *testing.T) {
+	cfg := testConfig(t)
+	cfg.Model, cfg.Effort, cfg.ReplyMode = "default", "low", config.ReplyModeAppend
+	store, _ := testPreferenceStore(t, config.RuntimePreference{Model: cfg.Model, Effort: cfg.Effort, ReplyMode: cfg.ReplyMode}, cfg.AllowedModels)
+	if err := store.Set(config.RuntimePreference{Model: "default", Effort: "low", ReplyMode: config.ReplyModeAppendCleanCard}); err != nil {
+		t.Fatal(err)
+	}
+	svc := NewService(cfg, card.NewFakeRenderer(), newFakeRunner(), audit.NewRecorder())
+	svc.Preferences = store
+	status := svc.statusText(agent.Claude, Message{ChatID: "chat"})
+	if !strings.Contains(status, "reply_mode=append-clean-card") {
+		t.Fatalf("status = %q", status)
+	}
+}
+
+func TestServiceConfigResetRemovesOverride(t *testing.T) {
+	cfg := testConfig(t)
+	cfg.Model, cfg.Effort = "sonnet", "low"
+	cfg.AllowedModels = []string{"default", "sonnet", "opus", "haiku"}
+	defaults := config.RuntimePreference{Model: cfg.Model, Effort: cfg.Effort, ReplyMode: config.ReplyModeAppend}
+	store, path := testPreferenceStore(t, defaults, cfg.AllowedModels)
+	if err := store.Set(config.RuntimePreference{Model: "opus", Effort: "high", ReplyMode: config.ReplyModeLatestCard}); err != nil {
+		t.Fatal(err)
+	}
+	svc := NewService(cfg, card.NewFakeRenderer(), newFakeRunner(), audit.NewRecorder())
+	svc.Preferences = store
+	if err := svc.HandleMessage(context.Background(), Message{ID: "config-reset", ChatID: "chat", Sender: "user", Text: "/config reset", Time: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	if got := store.Get(); got != defaults {
+		t.Fatalf("preference after reset = %#v, want %#v", got, defaults)
+	}
+	reopened, err := config.OpenPreferenceStore(path, defaults, cfg.AllowedModels)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := reopened.Get(); got != defaults {
+		t.Fatalf("reopened preference after reset = %#v", got)
+	}
+}
+
+func TestServiceConfigSavePersistsValidValuesAndRejectsInvalidValues(t *testing.T) {
+	cfg := testConfig(t)
+	cfg.Model, cfg.Effort = "default", "low"
+	cfg.AllowedModels = []string{"default", "sonnet", "opus", "haiku", "claude-custom-1"}
+	defaults := config.RuntimePreference{Model: cfg.Model, Effort: cfg.Effort}
+	store, path := testPreferenceStore(t, defaults, cfg.AllowedModels)
+	renderer := card.NewFakeRenderer()
+	svc := NewService(cfg, renderer, newFakeRunner(), audit.NewRecorder())
+	svc.Preferences = store
+	result, err := svc.HandleActionResult(context.Background(), ActionRequest{SessionID: "config-card", ActionID: "config.save", Actor: "user", FormValues: map[string]string{"model": "claude-custom-1", "effort": "medium", "reply_mode": "latest-card"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Event == nil || result.Event.Type != "config_saved" || store.Get() != (config.RuntimePreference{Model: "claude-custom-1", Effort: "medium", ReplyMode: config.ReplyModeLatestCard}) {
+		t.Fatalf("save result/store = %#v / %#v", result, store.Get())
+	}
+	reopened, err := config.OpenPreferenceStore(path, defaults, cfg.AllowedModels)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := reopened.Get(); got != store.Get() {
+		t.Fatalf("reopened preference = %#v, want %#v", got, store.Get())
+	}
+	before := store.Get()
+	result, err = svc.HandleActionResult(context.Background(), ActionRequest{SessionID: "config-card", ActionID: "config.save", Actor: "user", FormValues: map[string]string{"model": "unknown", "effort": "extreme", "reply_mode": "replace"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Event == nil || result.Event.Type != "error" || store.Get() != before {
+		t.Fatalf("invalid save result/store = %#v / %#v, want unchanged %#v", result, store.Get(), before)
+	}
+}
+
+func TestServiceFreezesPreferencesAtEnqueueTime(t *testing.T) {
+	cfg := testConfig(t)
+	cfg.Model, cfg.Effort = "sonnet", "low"
+	cfg.AllowedModels = []string{"default", "sonnet", "opus", "haiku"}
+	store, _ := testPreferenceStore(t, config.RuntimePreference{Model: cfg.Model, Effort: cfg.Effort}, cfg.AllowedModels)
+	svc := NewService(cfg, card.NewFakeRenderer(), newFakeRunner(), audit.NewRecorder())
+	svc.Preferences = store
+	now := time.Now()
+	if err := svc.HandleMessage(context.Background(), Message{ID: "before-config", ChatID: "chat", Sender: "user", Text: "first", Time: now}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.HandleActionResult(context.Background(), ActionRequest{SessionID: "config-card", ActionID: "config.save", Actor: "user", FormValues: map[string]string{"model": "opus", "effort": "high"}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.HandleMessage(context.Background(), Message{ID: "after-config", ChatID: "chat", Sender: "user", Text: "second", Time: now.Add(time.Millisecond)}); err != nil {
+		t.Fatal(err)
+	}
+	sess, ok := svc.Sessions.Get(session.Key{Agent: agent.Claude, ChatID: "chat"})
+	if !ok || len(sess.Queue) != 2 {
+		t.Fatalf("session queue = %#v", sess)
+	}
+	if first, second := sess.Queue[0], sess.Queue[1]; first.RequestedModel != "sonnet" || first.RequestedEffort != "low" || second.RequestedModel != "opus" || second.RequestedEffort != "high" {
+		t.Fatalf("frozen queue preferences = %#v", sess.Queue)
+	}
+}
+
+func TestServiceRoutesBatchThroughReplyPolicyAndPersistsActiveRenderRef(t *testing.T) {
+	cfg := testConfig(t)
+	cfg.Model, cfg.Effort = "default", "low"
+	cfg.ReplyMode = config.ReplyModeAppend
+	preferences, _ := testPreferenceStore(t, config.RuntimePreference{Model: cfg.Model, Effort: cfg.Effort, ReplyMode: cfg.ReplyMode}, cfg.AllowedModels)
+	if err := preferences.Set(config.RuntimePreference{Model: cfg.Model, Effort: cfg.Effort, ReplyMode: config.ReplyModeLatestCard}); err != nil {
+		t.Fatal(err)
+	}
+	replies, err := reply.OpenStore(filepath.Join(t.TempDir(), "replies.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantRef := session.RenderRef{CardID: "latest-card", ReplyMessageID: "latest-reply", Version: 7}
+	if err := replies.SetLatest("claude:chat", &wantRef); err != nil {
+		t.Fatal(err)
+	}
+	runner := newFakeRunner()
+	runner.block = make(chan struct{})
+	target := &bridgeReplyTarget{}
+	fallback := card.NewFakeRenderer()
+	svc := NewService(cfg, fallback, runner, audit.NewRecorder())
+	svc.Preferences = preferences
+	svc.Replies = replies
+	svc.CardTarget = target
+	now := time.Now()
+	if err := svc.HandleMessage(context.Background(), Message{ID: "reply-mode", ChatID: "chat", Sender: "user", Text: "hello", Time: now}); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.DrainReady(now.Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	<-runner.started
+	sess, ok := svc.Sessions.Get(session.Key{Agent: agent.Claude, ChatID: "chat"})
+	if !ok || sess.ActiveBatch == nil || sess.ActiveBatch.RenderRef == nil {
+		t.Fatalf("active session = %#v, want durable render ref", sess)
+	}
+	if got := *sess.ActiveBatch.RenderRef; got.CardID != wantRef.CardID || got.ReplyMessageID != wantRef.ReplyMessageID || got.Version != wantRef.Version+1 {
+		t.Fatalf("active render ref = %#v, want advanced %#v", got, wantRef)
+	}
+	target.mu.Lock()
+	newCalls, rehydrateCalls, rehydrated := target.newCalls, target.rehydrateCalls, target.rehydratedRef
+	target.mu.Unlock()
+	if newCalls != 0 || rehydrateCalls != 1 || rehydrated != wantRef {
+		t.Fatalf("reply target new/rehydrate/ref = %d/%d/%#v", newCalls, rehydrateCalls, rehydrated)
+	}
+	close(runner.block)
+	waitForSessionNoActiveBatch(t, svc, session.Key{Agent: agent.Claude, ChatID: "chat"})
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := svc.Shutdown(shutdownCtx); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestServiceWaitingAndTypingReactionLifecycleForBatchedRun(t *testing.T) {
+	cfg := testConfig(t)
+	runner := newFakeRunner()
+	runner.block = make(chan struct{})
+	sink := &fakeReactionSink{}
+	renderer := card.NewFakeRenderer()
+	svc := NewService(cfg, renderer, runner, audit.NewRecorder())
+	svc.Reactions = sink
+	svc.reactionDelay = 5 * time.Millisecond
+	now := time.Now()
+	for _, msg := range []Message{
+		{ID: "first", ChatID: "chat", Sender: "user", Text: "one", Time: now},
+		{ID: "last", ChatID: "chat", Sender: "user", Text: "two", Time: now.Add(100 * time.Millisecond)},
+	} {
+		if err := svc.HandleMessage(context.Background(), msg); err != nil {
+			t.Fatal(err)
+		}
+	}
+	waitForReactionCounts(t, sink, 2, 0)
+	if err := svc.DrainReady(now.Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	<-runner.started
+	waitForReactionCounts(t, sink, 3, 2)
+	adds, _ := sink.snapshot()
+	if adds[0].typeName != feishu.ReactionTypeOneSecond || adds[1].typeName != feishu.ReactionTypeOneSecond || adds[2] != (reactionCall{messageID: "last", typeName: feishu.ReactionTypeTyping}) {
+		t.Fatalf("reaction adds = %#v", adds)
+	}
+	close(runner.block)
+	waitForSessionNoActiveBatch(t, svc, session.Key{Agent: agent.Claude, ChatID: "chat"})
+	waitForReactionCounts(t, sink, 3, 3)
+	for _, event := range renderer.Events() {
+		if event.Type == "reaction" {
+			t.Fatalf("legacy reaction card event = %#v", event)
+		}
+	}
+}
+
+func TestServiceConfigPersistenceFailureShowsErrorAndAudits(t *testing.T) {
+	cfg := testConfig(t)
+	cfg.Model, cfg.Effort = "default", "low"
+	cfg.AllowedModels = []string{"default", "sonnet", "opus", "haiku"}
+	store, path := testPreferenceStore(t, config.RuntimePreference{Model: cfg.Model, Effort: cfg.Effort}, cfg.AllowedModels)
+	if err := store.Set(config.RuntimePreference{Model: "sonnet", Effort: "medium"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(path, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	recorder := audit.NewRecorder()
+	svc := NewService(cfg, card.NewFakeRenderer(), newFakeRunner(), recorder)
+	svc.Preferences = store
+	result, err := svc.HandleActionResult(context.Background(), ActionRequest{SessionID: "config-card", ActionID: "config.save", Actor: "user", FormValues: map[string]string{"model": "opus", "effort": "high"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Event == nil || result.Event.Type != "error" || store.Get() != (config.RuntimePreference{Model: "sonnet", Effort: "medium", ReplyMode: config.ReplyModeAppend}) || !auditContainsAction(recorder.Events(), "config_save_failed") {
+		t.Fatalf("failure result/store/audit = %#v / %#v / %#v", result, store.Get(), recorder.Events())
+	}
+}
+
 func TestServiceKeepsSuccessfulAttachmentsAndShowsPartialFailureSummary(t *testing.T) {
 	now := time.Now()
 	cache := &resolutionCacheStub{resolution: media.Resolution{
@@ -388,7 +779,7 @@ func TestServiceReleasesResolutionWhenDurableEnqueueFails(t *testing.T) {
 	}
 }
 
-func TestServiceReleasesResolutionOnDuplicateAndReactionRenderFailure(t *testing.T) {
+func TestServiceReleasesResolutionOnDuplicateAndReactionFailure(t *testing.T) {
 	t.Run("duplicate", func(t *testing.T) {
 		cache := &resolutionCacheStub{resolution: media.Resolution{Attachments: []media.Attachment{{Path: "/absolute/cache/image.png", MIME: "image/png", Size: 7}}}}
 		svc := NewService(testConfig(t), card.NewFakeRenderer(), newFakeRunner(), audit.NewRecorder())
@@ -405,14 +796,18 @@ func TestServiceReleasesResolutionOnDuplicateAndReactionRenderFailure(t *testing
 		}
 	})
 
-	t.Run("reaction render failure", func(t *testing.T) {
+	t.Run("reaction failure is non-fatal", func(t *testing.T) {
 		cache := &resolutionCacheStub{resolution: media.Resolution{Attachments: []media.Attachment{{Path: "/absolute/cache/image.png", MIME: "image/png", Size: 7}}}}
-		svc := NewService(testConfig(t), errorRenderer{}, newFakeRunner(), audit.NewRecorder())
+		recorder := audit.NewRecorder()
+		svc := NewService(testConfig(t), card.NewFakeRenderer(), newFakeRunner(), recorder)
+		svc.Reactions = &fakeReactionSink{addErr: errors.New("reaction unavailable")}
+		svc.reactionDelay = 0
 		configureTestMedia(svc, cache)
 		err := svc.HandleMessage(context.Background(), Message{ID: "render-failure", ChatID: "chat", Sender: "alice", Text: "inspect", Attachments: []media.Ref{{FileKey: "image", Kind: "image"}}, Time: time.Now()})
-		if err == nil || cache.releases != 1 {
-			t.Fatalf("handle/release = %v/%d, want render error and one release", err, cache.releases)
+		if err != nil || cache.releases != 1 {
+			t.Fatalf("handle/release = %v/%d, want successful enqueue and one release", err, cache.releases)
 		}
+		waitForAuditAction(t, recorder, "reaction_add_failed")
 	})
 }
 
@@ -520,6 +915,104 @@ func TestServiceNewRunsClaudeOneShotAndRendersResult(t *testing.T) {
 	if !containsAll(status, "claude_session=sess-1", "state=idle") {
 		t.Fatalf("status = %q, want stored claude session", status)
 	}
+}
+
+func TestServiceSeparatesRequestedAndActualModel(t *testing.T) {
+	t.Run("reported actual and mismatch audit", func(t *testing.T) {
+		cfg := testConfig(t)
+		cfg.Model, cfg.Effort = "opus", "high"
+		renderer := card.NewFakeRenderer()
+		runner := newFakeRunner()
+		runner.results = []AgentRunResult{{Model: "claude-opus-4-1", Segments: []card.Segment{{Kind: card.SegmentText, Text: "answer"}}}}
+		recorder := audit.NewRecorder()
+		svc := NewService(cfg, renderer, runner, recorder)
+		now := time.Now()
+		if err := svc.HandleMessage(context.Background(), Message{ID: "model-provenance", ChatID: "chat", Sender: "user", Text: "hello", Time: now}); err != nil {
+			t.Fatal(err)
+		}
+		if err := svc.DrainReady(now.Add(time.Second)); err != nil {
+			t.Fatal(err)
+		}
+		waitForCalls(t, runner, 1)
+		waitForSessionNoActiveBatch(t, svc, session.Key{Agent: agent.Claude, ChatID: "chat"})
+		events := renderer.Events()
+		var initial, terminal *card.Event
+		for i := range events {
+			switch events[i].Type {
+			case "stream":
+				if initial == nil {
+					initial = &events[i]
+				}
+			case "result":
+				terminal = &events[i]
+			}
+		}
+		if initial == nil || initial.Meta.ModelInfo.Requested != "opus" || initial.Meta.ModelInfo.Effort != "high" || initial.Meta.ModelInfo.Actual != "" {
+			t.Fatalf("initial model provenance = %#v", initial)
+		}
+		if terminal == nil || terminal.Meta.ModelInfo.Requested != "opus" || terminal.Meta.ModelInfo.Actual != "claude-opus-4-1" || terminal.Meta.ModelInfo.Effort != "high" {
+			t.Fatalf("terminal model provenance = %#v", terminal)
+		}
+		if !auditContainsAction(recorder.Events(), "model_requested_actual_mismatch") {
+			t.Fatalf("audit = %#v, want model_requested_actual_mismatch", recorder.Events())
+		}
+	})
+
+	t.Run("missing actual remains unknown", func(t *testing.T) {
+		cfg := testConfig(t)
+		cfg.Model, cfg.Effort = "sonnet", "medium"
+		renderer := card.NewFakeRenderer()
+		runner := newFakeRunner()
+		runner.results = []AgentRunResult{{Segments: []card.Segment{{Kind: card.SegmentText, Text: "answer"}}}}
+		svc := NewService(cfg, renderer, runner, audit.NewRecorder())
+		now := time.Now()
+		if err := svc.HandleMessage(context.Background(), Message{ID: "model-unknown", ChatID: "chat", Sender: "user", Text: "hello", Time: now}); err != nil {
+			t.Fatal(err)
+		}
+		if err := svc.DrainReady(now.Add(time.Second)); err != nil {
+			t.Fatal(err)
+		}
+		waitForSessionNoActiveBatch(t, svc, session.Key{Agent: agent.Claude, ChatID: "chat"})
+		events := renderer.Events()
+		terminal := events[len(events)-1]
+		if terminal.Meta.ModelInfo.Requested != "sonnet" || terminal.Meta.ModelInfo.Actual != "" {
+			t.Fatalf("terminal model provenance = %#v", terminal.Meta.ModelInfo)
+		}
+		payload := card.BuildLarkCard(terminal)
+		var text string
+		for _, raw := range payload["body"].(map[string]any)["elements"].([]any) {
+			element := raw.(map[string]any)
+			if element["tag"] == "column_set" {
+				text += fmt.Sprint(element)
+			}
+		}
+		if !strings.Contains(text, "actual: unknown") || strings.Contains(text, "actual: sonnet") {
+			t.Fatalf("rendered model provenance = %q", text)
+		}
+	})
+
+	t.Run("stream-only actual reaches durable result and audit", func(t *testing.T) {
+		cfg := testConfig(t)
+		cfg.Model, cfg.Effort = "opus", "high"
+		runner := newFakeRunner()
+		runner.updates = []AgentStreamUpdate{{Model: "claude-stream-only"}}
+		runner.results = []AgentRunResult{{Segments: []card.Segment{{Kind: card.SegmentText, Text: "answer"}}}}
+		recorder := audit.NewRecorder()
+		svc := NewService(cfg, card.NewFakeRenderer(), runner, recorder)
+		now := time.Now()
+		key := session.Key{Agent: agent.Claude, ChatID: "stream-model"}
+		if err := svc.HandleMessage(context.Background(), Message{ID: "stream-only-model", ChatID: key.ChatID, Sender: "user", Text: "hello", Time: now}); err != nil {
+			t.Fatal(err)
+		}
+		if err := svc.DrainReady(now.Add(time.Second)); err != nil {
+			t.Fatal(err)
+		}
+		waitForSessionNoActiveBatch(t, svc, key)
+		sess, ok := svc.Sessions.Get(key)
+		if !ok || sess.Model != "claude-stream-only" || !auditContainsAction(recorder.Events(), "model_requested_actual_mismatch") {
+			t.Fatalf("session/audit = %#v / %#v", sess, recorder.Events())
+		}
+	})
 }
 
 func TestServiceQueuesRunUntilExplicitDrain(t *testing.T) {
@@ -693,11 +1186,11 @@ func TestServiceStreamsRunnerUpdatesIntoSameCard(t *testing.T) {
 	}
 	waitForEvents(t, renderer, 5)
 	events := renderer.Events()
-	if events[2].Type != "stream" || !events[2].ThoughtExpanded {
-		t.Fatalf("thought stream event = %#v", events[2])
+	if events[1].Type != "stream" || !events[1].ThoughtExpanded {
+		t.Fatalf("thought stream event = %#v", events[1])
 	}
-	if events[3].Type != "stream" || !events[3].ToolsExpanded {
-		t.Fatalf("tool stream event = %#v", events[3])
+	if events[2].Type != "stream" || !events[2].ToolsExpanded {
+		t.Fatalf("tool stream event = %#v", events[2])
 	}
 	last := events[len(events)-1]
 	if last.Type != "result" || last.HeaderTemplate != "green" {
@@ -726,13 +1219,13 @@ func TestServiceNewWithoutPromptCreatesReadySession(t *testing.T) {
 	if err := svc.DrainReady(now.Add(time.Second)); err != nil {
 		t.Fatal(err)
 	}
-	waitForEvents(t, renderer, 3)
+	waitForEvents(t, renderer, 2)
 	if len(runner.Calls()) != 0 {
 		t.Fatalf("runner calls = %#v, want none", runner.Calls())
 	}
 	events := renderer.Events()
-	if len(events) < 3 || events[len(events)-1].Type != "result" {
-		t.Fatalf("events = %#v, want queued and ready terminal cards", events)
+	if len(events) < 2 || events[len(events)-1].Type != "result" {
+		t.Fatalf("events = %#v, want initial and ready terminal cards", events)
 	}
 }
 
@@ -745,7 +1238,10 @@ func TestPlainTextAfterReadySessionKeepsWorkDir(t *testing.T) {
 	if err := svc.HandleMessage(context.Background(), Message{ID: "msg-1", ChatID: "chat", Sender: "u1", Text: "/new --workdir " + workDir, Time: time.Now()}); err != nil {
 		t.Fatalf("ready message error: %v", err)
 	}
-	waitForEvents(t, renderer, 1)
+	if err := svc.DrainReady(time.Now().Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	waitForEvents(t, renderer, 2)
 	if len(runner.Calls()) != 0 {
 		t.Fatalf("runner calls = %#v, want none for ready session", runner.Calls())
 	}
@@ -801,7 +1297,7 @@ func TestTopicPlainTextContinuesStoredClaudeSession(t *testing.T) {
 	if calls[1].ClaudeSessionID != "sess-topic" {
 		t.Fatalf("second call session id = %q, want sess-topic", calls[1].ClaudeSessionID)
 	}
-	waitForEvents(t, renderer, 5)
+	waitForEvents(t, renderer, 4)
 	events := renderer.Events()
 	last := events[len(events)-1]
 	if last.Meta.RunTokens != 3 || last.Meta.TotalTokens != 5 {
@@ -857,9 +1353,9 @@ func TestServiceQueuesSecondInputUntilFirstCompletes(t *testing.T) {
 	if err := svc.HandleMessage(context.Background(), Message{ID: "msg-2", ChatID: "chat", ThreadID: "topic-a", Sender: "u1", Text: "second", Time: time.Now()}); err != nil {
 		t.Fatalf("second message error: %v", err)
 	}
-	events := renderer.Events()
-	if events[len(events)-1].Type != "reaction" || !strings.HasPrefix(events[len(events)-1].Message, "queued") {
-		t.Fatalf("queued event = %#v", events[len(events)-1])
+	sess, ok := svc.Sessions.Get(session.Key{Agent: agent.Claude, ChatID: "chat", Thread: "topic-a"})
+	if !ok || len(sess.Queue) != 1 || sess.Queue[0].ID != "msg-2" {
+		t.Fatalf("queued session = %#v", sess)
 	}
 	close(runner.block)
 	waitForSessionNoActiveBatch(t, svc, session.Key{Agent: agent.Claude, ChatID: "chat", Thread: "topic-a"})
@@ -935,7 +1431,7 @@ func TestServiceMissingWorkdirAsksThenRunsAfterCreate(t *testing.T) {
 	if events[1].Type != "workdir_created" || events[1].SessionID != "claude:chat:message:msg-1" {
 		t.Fatalf("terminal confirm event = %#v", events[1])
 	}
-	runEvent := events[3]
+	runEvent := events[2]
 	if runEvent.Type != "stream" || runEvent.SessionID == events[1].SessionID || runEvent.ReplyToMessageID != "msg-1" {
 		t.Fatalf("run event = %#v, want separate card replying to original message", runEvent)
 	}
@@ -1131,7 +1627,7 @@ func TestMessageRecallCancelsActiveRun(t *testing.T) {
 	if err := svc.HandleMessageRecalled(context.Background(), MessageRecall{MessageID: "msg-1", ChatID: "chat", RecallType: "user"}); err != nil {
 		t.Fatalf("recall message error: %v", err)
 	}
-	waitForEvents(t, renderer, 3)
+	waitForEvents(t, renderer, 2)
 	last := renderer.Events()[len(renderer.Events())-1]
 	if last.Type != "stopped" || !last.StopButton.Disabled || last.HeaderTemplate != "grey" {
 		t.Fatalf("recall stopped event = %#v", last)
@@ -1521,7 +2017,7 @@ func TestServiceRecallBeforeInitialCardRendersStopped(t *testing.T) {
 		t.Fatalf("runner calls = %d, want 0", got)
 	}
 	events := fake.Events()
-	if len(events) < 2 {
+	if len(events) < 1 {
 		t.Fatalf("events = %#v", events)
 	}
 	if last := events[len(events)-1]; last.Type != "stopped" || last.Streaming {
@@ -1677,6 +2173,61 @@ func TestNewServiceWithSessionsKeepsRecoveryAuditWriteErrorsObservable(t *testin
 	}
 }
 
+func TestServiceProcessesRestartCardRecoveryOnceWithoutReplacement(t *testing.T) {
+	ref := &session.RenderRef{CardID: "old-card", ReplyMessageID: "old-reply", Version: 4}
+	notices := []session.RecoveryNotice{
+		{SessionID: "claude:chat", ReplyToMessageID: "queued-source", Status: session.InputCancelled},
+		{SessionID: "claude:chat", ReplyToMessageID: "running-source", Status: session.InputInterrupted, RenderRef: ref},
+		{SessionID: "claude:chat", ReplyToMessageID: "batched-source", Status: session.InputInterrupted, RenderRef: ref},
+	}
+	runner := newFakeRunner()
+	target := &bridgeReplyTarget{renderErr: feishu.ErrStaleRenderRef}
+	recorder := audit.NewRecorder()
+	svc := NewServiceWithSessions(testConfig(t), card.NewFakeRenderer(), runner, recorder, session.NewManager(), notices)
+	svc.CardTarget = target
+	svc.ProcessRecoveryNotices(context.Background())
+	svc.ProcessRecoveryNotices(context.Background())
+
+	target.mu.Lock()
+	newCalls, rehydrateCalls := target.newCalls, target.rehydrateCalls
+	events := append([]card.Event(nil), target.events...)
+	target.mu.Unlock()
+	if newCalls != 0 || rehydrateCalls != 1 || len(events) != 1 {
+		t.Fatalf("recovery target new/rehydrate/events = %d/%d/%#v", newCalls, rehydrateCalls, events)
+	}
+	if len(events[0].Segments) != 1 || events[0].Segments[0].Text != "服务重启,已中断,请重新发送" || events[0].Streaming {
+		t.Fatalf("recovery event = %#v", events[0])
+	}
+	if len(runner.Calls()) != 0 {
+		t.Fatalf("recovery runner calls = %#v", runner.Calls())
+	}
+	if !auditContainsAction(recorder.Events(), "recovery_card_update_failed") {
+		t.Fatalf("recovery audit = %#v", recorder.Events())
+	}
+}
+
+func TestServiceRecoveryCardUpdateHonorsCallerDeadline(t *testing.T) {
+	ref := session.RenderRef{CardID: "old-card", ReplyMessageID: "old-reply", Version: 4}
+	renderer := &contextBlockingRecoveryRenderer{ref: ref}
+	svc := NewServiceWithSessions(testConfig(t), card.NewFakeRenderer(), newFakeRunner(), audit.NewRecorder(), session.NewManager(), []session.RecoveryNotice{{
+		SessionID: "claude:chat", ReplyToMessageID: "source", Status: session.InputInterrupted, RenderRef: &ref,
+	}})
+	svc.CardTarget = &contextBlockingRecoveryTarget{renderer: renderer}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	started := time.Now()
+	svc.ProcessRecoveryNotices(ctx)
+	if elapsed := time.Since(started); elapsed > time.Second {
+		t.Fatalf("recovery elapsed = %s, want bounded by caller deadline", elapsed)
+	}
+	renderer.mu.Lock()
+	legacyCalled, contextCalled := renderer.legacyCalled, renderer.contextCalled
+	renderer.mu.Unlock()
+	if legacyCalled || !contextCalled {
+		t.Fatalf("legacy/context render calls = %t/%t, want false/true", legacyCalled, contextCalled)
+	}
+}
+
 func TestServiceCompletionPersistFailureStillRendersResultAndAudits(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "sessions.json")
@@ -1706,7 +2257,7 @@ func TestServiceCompletionPersistFailureStillRendersResultAndAudits(t *testing.T
 		t.Fatal(err)
 	}
 	close(runner.block)
-	waitForEvents(t, renderer, 3)
+	waitForEvents(t, renderer, 2)
 	last := renderer.Events()[len(renderer.Events())-1]
 	if last.Type != "result" || !containsAll(last.Segments[0].Text, "captured result") {
 		t.Fatalf("terminal card = %#v", last)
@@ -1752,7 +2303,7 @@ func TestServiceRetriesPersistedCompletionBeforeStartingLaterQueue(t *testing.T)
 		t.Fatal(err)
 	}
 	close(runner.block)
-	waitForEvents(t, svc.Cards.(*card.LimitRenderer).Next.(*card.FakeRenderer), 4)
+	waitForEvents(t, svc.Cards.(*card.LimitRenderer).Next.(*card.FakeRenderer), 2)
 	if got := len(runner.Calls()); got != 1 {
 		t.Fatalf("runner calls before repair = %d, want 1", got)
 	}
@@ -1803,7 +2354,7 @@ func TestServiceBacksOffPendingCompletionRetries(t *testing.T) {
 		t.Fatal(err)
 	}
 	close(runner.block)
-	waitForEvents(t, svc.Cards.(*card.LimitRenderer).Next.(*card.FakeRenderer), 3)
+	waitForEvents(t, svc.Cards.(*card.LimitRenderer).Next.(*card.FakeRenderer), 2)
 	svc.mu.Lock()
 	var pending pendingCompletion
 	for _, entry := range svc.pendingCompletions {
@@ -2086,6 +2637,16 @@ func testConfig(t *testing.T) config.Config {
 	return config.Config{DefaultAgent: "claude", DefaultWorkDir: t.TempDir(), CardMaxChars: 1000, InteractionTimeout: time.Second}
 }
 
+func testPreferenceStore(t *testing.T, defaults config.RuntimePreference, allowedModels []string) (*config.PreferenceStore, string) {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "preferences.json")
+	store, err := config.OpenPreferenceStore(path, defaults, allowedModels)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return store, path
+}
+
 func waitForEvents(t *testing.T, renderer *card.FakeRenderer, n int) {
 	t.Helper()
 	deadline := time.Now().Add(time.Second)
@@ -2108,6 +2669,32 @@ func waitForCalls(t *testing.T, runner *fakeRunner, n int) {
 		time.Sleep(10 * time.Millisecond)
 	}
 	t.Fatalf("calls len = %d, want >= %d", len(runner.Calls()), n)
+}
+
+func waitForReactionCounts(t *testing.T, sink *fakeReactionSink, adds, deletes int) {
+	t.Helper()
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		gotAdds, gotDeletes := sink.snapshot()
+		if len(gotAdds) >= adds && len(gotDeletes) >= deletes {
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	gotAdds, gotDeletes := sink.snapshot()
+	t.Fatalf("reaction add/delete counts = %d/%d, want >= %d/%d", len(gotAdds), len(gotDeletes), adds, deletes)
+}
+
+func waitForAuditAction(t *testing.T, recorder *audit.Recorder, action string) {
+	t.Helper()
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		if auditContainsAction(recorder.Events(), action) {
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatalf("audit events = %#v, want action %q", recorder.Events(), action)
 }
 
 func waitForSessionNoActiveBatch(t *testing.T, svc *Service, key session.Key) {

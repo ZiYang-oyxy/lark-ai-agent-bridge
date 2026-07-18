@@ -9,7 +9,8 @@
 - 执行中、流式输出、结果、停止和错误使用同一张 CardKit 卡片展示。
 - 卡片按钮生产路径使用长连接 `card.action.trigger`，同步返回终态卡片并保留异步 CardKit update 兜底，不依赖公网 HTTP callback。
 - 第一版只适配 `claude`，`codex` 暂缓。
-- 群聊默认只响应 @bot；单聊逻辑默认全量响应，但真实单聊 E2E 暂缓。
+- 群聊默认只响应 @bot；单聊默认全量响应，真实 P2P delivery、debounce、配置、文件输入和回复模式已纳入命名 E2E profile。
+- 个人版 P0/P1 已完成：重启只恢复上下文、不重放 pending；支持图片/文本附件、运行偏好、三种回复模式、预览节流和 reaction 生命周期。
 
 ## 已闭环范围
 
@@ -17,7 +18,7 @@
 
 - `/new`、`/help`、`/status` 命令面。
 - `/resume`、`/codex` 等撤回入口不再开放。
-- Claude one-shot 命令构造，固定 `--dangerously-skip-permissions --effort low`。
+- Claude one-shot 命令构造，保留 `--dangerously-skip-permissions`；model/effort 由入队时冻结的个人偏好决定。
 - Claude stream-json 输出解析：正文、思考、工具调用、model、tokens、session id，并支持增量更新卡片。
 - topic 内普通文本续接保存的 Claude session id。
 - `/new` 重置当前 chat/topic 会话。
@@ -40,7 +41,11 @@
 - 已验证 Codex Chrome 插件可以直接操作当前已登录的飞书 Web 标签页，完成真实 `Create directory` 点击和后续 workdir 继承查询。
 - 自写 Chrome/CDP full 路径已移除；真实撤回场景改为通过 `lark-cli im messages delete --as user` 自动验证，按钮类历史证据仍保留在 audit/evidence 中。
 - 已验证群话题内 @bot 续聊进入 `thread:<thread_id>` 会话；当前飞书权限下，群话题内不 @bot 的消息不会推送到 bridge。
-- 单聊 E2E 仍暂缓；需要同 bridge app 用户 OAuth profile，或手动建立 P2P 后记录 chat_id。
+- 已使用同 bridge app 的隔离用户 OAuth profile 完成真实 P2P 与文件输入验证。
+- 已完成 Reply Experience 六项真实 E2E：`append`、`append-clean-card`、`latest-card`、preview 双门限、reaction cleanup、restart/stale-card fallback。
+- 已在最终 integration 版本重跑十项核心真实 E2E，session restart、pending recovery、DM/group debounce、busy merge、queue full、scope parallel、stop 和 recall 全部通过。
+- 独立 reviewer 提出的两项 Important 已关闭:preview 不会在 final 后覆盖终态,recovery 卡片更新使用整批 5 秒 context budget。
+- 2026-07-18 最终部署二进制 SHA-256 为 `c8bbd15bd3b505f4df53f5c5da3885e9bbccd9e3476cca1d6daa8eb158c101f1`；生产进程已恢复并确认 WSS connected。
 
 ## 标准验证命令
 
