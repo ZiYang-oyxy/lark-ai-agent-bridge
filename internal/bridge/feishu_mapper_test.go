@@ -1,10 +1,12 @@
 package bridge
 
 import (
+	"reflect"
 	"testing"
 	"time"
 
 	"lark-agent-bridge/internal/feishu"
+	"lark-agent-bridge/internal/media"
 )
 
 func TestMessageFromFeishuMapsGroupMention(t *testing.T) {
@@ -28,5 +30,21 @@ func TestMessageFromFeishuMapsGroupMention(t *testing.T) {
 	}
 	if got.ThreadID != "topic" {
 		t.Fatalf("thread = %q", got.ThreadID)
+	}
+}
+
+func TestMessageFromFeishuCopiesAttachments(t *testing.T) {
+	in := feishu.InboundMessage{Attachments: []media.Ref{{MessageID: "m1", FileKey: "file", Kind: "file", Name: "one.txt"}}}
+	got := MessageFromFeishu(in)
+	want := []media.Ref{{MessageID: "m1", FileKey: "file", Kind: "file", Name: "one.txt"}}
+	if !reflect.DeepEqual(got.Attachments, want) {
+		t.Fatalf("attachments = %#v, want %#v", got.Attachments, want)
+	}
+	if !got.HasAttachments {
+		t.Fatal("HasAttachments = false, want true")
+	}
+	in.Attachments[0].Name = "changed.txt"
+	if got.Attachments[0].Name != "one.txt" {
+		t.Fatalf("attachments were not copied: %#v", got.Attachments)
 	}
 }

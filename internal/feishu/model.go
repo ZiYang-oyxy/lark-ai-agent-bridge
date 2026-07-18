@@ -1,6 +1,10 @@
 package feishu
 
-import "time"
+import (
+	"time"
+
+	"lark-agent-bridge/internal/media"
+)
 
 type EventKind string
 
@@ -29,6 +33,7 @@ type InboundMessage struct {
 	SenderType  string
 	TenantKey   string
 	Text        string
+	Attachments []media.Ref
 	MentionsBot bool
 	Mentions    []Mention
 	OccurredAt  time.Time
@@ -59,6 +64,7 @@ type Event struct {
 	SenderType  string
 	TenantKey   string
 	Text        string
+	Attachments []media.Ref
 	MentionsBot bool
 	Mentions    []Mention
 	OccurredAt  time.Time
@@ -89,6 +95,7 @@ func BuildEvent(msg InboundMessage) Event {
 		SenderType:  msg.SenderType,
 		TenantKey:   msg.TenantKey,
 		Text:        msg.Text,
+		Attachments: append([]media.Ref(nil), msg.Attachments...),
 		MentionsBot: msg.MentionsBot,
 		Mentions:    append([]Mention(nil), msg.Mentions...),
 		OccurredAt:  occurredAt,

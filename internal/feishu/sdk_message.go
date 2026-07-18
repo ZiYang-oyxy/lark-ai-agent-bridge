@@ -2,12 +2,15 @@ package feishu
 
 import (
 	"encoding/json"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
 
 	larkevent "github.com/larksuite/oapi-sdk-go/v3/event"
 	larkim "github.com/larksuite/oapi-sdk-go/v3/service/im/v1"
+
+	"lark-agent-bridge/internal/media"
 )
 
 type textContent struct {
@@ -65,9 +68,90 @@ func BuildInboundMessageFromLark(event *larkim.P2MessageReceiveV1, botOpenID str
 		SenderType:  senderType,
 		TenantKey:   tenantKey,
 		Text:        parseMessageText(content),
+		Attachments: parseMessageAttachments(messageID, messageType, content),
 		MentionsBot: mentionsIncludeBot(parsedMentions, botOpenID),
 		Mentions:    parsedMentions,
 		OccurredAt:  parseCreateTime(createTime, eventHeader(event)),
+	}
+}
+
+func parseMessageAttachments(messageID, messageType, content string) []media.Ref {
+	if messageID == "" || content == "" {
+		return nil
+	}
+
+	refs := make([]media.Ref, 0)
+	seen := make(map[attachmentKey]struct{})
+	appendRef := func(kind, fileKey, name string) {
+		if fileKey == "" {
+			return
+		}
+		key := attachmentKey{messageID: messageID, fileKey: fileKey, kind: kind}
+		if _, ok := seen[key]; ok {
+			return
+		}
+		seen[key] = struct{}{}
+		refs = append(refs, media.Ref{MessageID: messageID, FileKey: fileKey, Kind: kind, Name: name})
+	}
+
+	switch messageType {
+	case "image":
+		var payload struct {
+			ImageKey string `json:"image_key"`
+		}
+		if json.Unmarshal([]byte(content), &payload) == nil {
+			appendRef("image", payload.ImageKey, "")
+		}
+	case "file":
+		var payload struct {
+			FileKey  string `json:"file_key"`
+			FileName string `json:"file_name"`
+		}
+		if json.Unmarshal([]byte(content), &payload) == nil {
+			appendRef("file", payload.FileKey, payload.FileName)
+		}
+	case "post":
+		var payload any
+		if json.Unmarshal([]byte(content), &payload) == nil {
+			collectPostAttachmentRefs(payload, appendRef)
+		}
+	}
+
+	return refs
+}
+
+type attachmentKey struct {
+	messageID string
+	fileKey   string
+	kind      string
+}
+
+func collectPostAttachmentRefs(v any, appendRef func(kind, fileKey, name string)) {
+	switch typed := v.(type) {
+	case []any:
+		for _, child := range typed {
+			collectPostAttachmentRefs(child, appendRef)
+		}
+	case map[string]any:
+		tag, _ := typed["tag"].(string)
+		switch tag {
+		case "img":
+			fileKey, _ := typed["image_key"].(string)
+			appendRef("image", fileKey, "")
+		case "file":
+			fileKey, _ := typed["file_key"].(string)
+			name, _ := typed["file_name"].(string)
+			appendRef("file", fileKey, name)
+		}
+
+		keys := make([]string, 0, len(typed))
+		for key := range typed {
+			keys = append(keys, key)
+		}
+		sort.Strings(keys)
+		for _, key := range keys {
+			collectPostAttachmentRefs(typed[key], appendRef)
+		}
 	}
 }
 

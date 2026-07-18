@@ -1,6 +1,10 @@
 package bridge
 
-import "time"
+import (
+	"time"
+
+	"lark-agent-bridge/internal/media"
+)
 
 type Message struct {
 	ID             string
@@ -8,6 +12,7 @@ type Message struct {
 	ThreadID       string
 	Sender         string
 	Text           string
+	Attachments    []media.Ref
 	IsGroup        bool
 	HasAttachments bool
 	Mentioned      bool
