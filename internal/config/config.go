@@ -1,9 +1,11 @@
 package config
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -22,6 +24,11 @@ type Config struct {
 	DedupTTL           time.Duration
 	DedupMaxEntries    int
 	ShutdownGrace      time.Duration
+	MediaCacheDir      string
+	MediaMaxFileBytes  int64
+	MediaMaxBatchBytes int64
+	MediaCacheMaxBytes int64
+	MediaRetention     time.Duration
 }
 
 func LoadFromEnv() Config {
@@ -41,7 +48,12 @@ func LoadFromEnv() Config {
 		DedupTTL:           24 * time.Hour,
 		DedupMaxEntries:    10000,
 		ShutdownGrace:      5 * time.Second,
+		MediaMaxFileBytes:  25 << 20,
+		MediaMaxBatchBytes: 100 << 20,
+		MediaCacheMaxBytes: 500 << 20,
+		MediaRetention:     72 * time.Hour,
 	}
+	cfg.MediaCacheDir = defaultMediaCacheDir(cfg.DefaultWorkDir)
 	if v := os.Getenv("E2E_DEFAULT_AGENT"); v != "" {
 		cfg.DefaultAgent = v
 	}
@@ -52,6 +64,7 @@ func LoadFromEnv() Config {
 		cfg.DefaultWorkDir = v
 		cfg.AuditLogPath = filepath.Join(v, ".lark-agent-bridge", "audit.jsonl")
 		cfg.SessionStorePath = filepath.Join(v, ".lark-agent-bridge", "sessions.json")
+		cfg.MediaCacheDir = defaultMediaCacheDir(v)
 	}
 	if v := os.Getenv("E2E_CARD_MAX_CHARS"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n > 0 {
@@ -105,6 +118,70 @@ func LoadFromEnv() Config {
 		}
 	}
 	return cfg
+}
+
+// LoadFromEnvStrict returns the runtime configuration and rejects an explicit
+// invalid media setting. New startup paths should use this function so an
+// operator cannot silently weaken media storage limits through the environment.
+func LoadFromEnvStrict() (Config, error) {
+	cfg := LoadFromEnv()
+	var err error
+	if cfg.MediaCacheDir, err = explicitMediaDir("E2E_MEDIA_CACHE_DIR", cfg.MediaCacheDir); err != nil {
+		return Config{}, err
+	}
+	if cfg.MediaMaxFileBytes, err = explicitMediaMiB("E2E_MEDIA_MAX_FILE_MB", cfg.MediaMaxFileBytes); err != nil {
+		return Config{}, err
+	}
+	if cfg.MediaMaxBatchBytes, err = explicitMediaMiB("E2E_MEDIA_MAX_BATCH_MB", cfg.MediaMaxBatchBytes); err != nil {
+		return Config{}, err
+	}
+	if cfg.MediaCacheMaxBytes, err = explicitMediaMiB("E2E_MEDIA_CACHE_MAX_MB", cfg.MediaCacheMaxBytes); err != nil {
+		return Config{}, err
+	}
+	if cfg.MediaRetention, err = explicitMediaHours("E2E_MEDIA_RETENTION_HOURS", cfg.MediaRetention); err != nil {
+		return Config{}, err
+	}
+	return cfg, nil
+}
+
+func defaultMediaCacheDir(workDir string) string {
+	return filepath.Join(workDir, ".lark-agent-bridge", "media")
+}
+
+func explicitMediaDir(name, fallback string) (string, error) {
+	value, ok := os.LookupEnv(name)
+	if !ok {
+		return fallback, nil
+	}
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return "", fmt.Errorf("%s must be a non-empty path", name)
+	}
+	return value, nil
+}
+
+func explicitMediaMiB(name string, fallback int64) (int64, error) {
+	value, ok := os.LookupEnv(name)
+	if !ok {
+		return fallback, nil
+	}
+	n, err := strconv.ParseInt(strings.TrimSpace(value), 10, 64)
+	if err != nil || n <= 0 || n > int64(^uint64(0)>>1)/(1<<20) {
+		return 0, fmt.Errorf("%s must be a positive integer MiB", name)
+	}
+	return n << 20, nil
+}
+
+func explicitMediaHours(name string, fallback time.Duration) (time.Duration, error) {
+	value, ok := os.LookupEnv(name)
+	if !ok {
+		return fallback, nil
+	}
+	n, err := strconv.ParseInt(strings.TrimSpace(value), 10, 64)
+	if err != nil || n <= 0 || n > int64((time.Duration(1<<63-1))/time.Hour) {
+		return 0, fmt.Errorf("%s must be a positive integer hour count", name)
+	}
+	return time.Duration(n) * time.Hour, nil
 }
 
 func mustGetwd() string {

@@ -15,6 +15,7 @@ func TestRunChecksRuntimeConfig(t *testing.T) {
 	workDir := t.TempDir()
 	auditPath := filepath.Join(workDir, ".lark-agent-bridge", "audit.jsonl")
 	storePath := filepath.Join(workDir, ".lark-agent-bridge", "sessions.json")
+	cachePath := filepath.Join(workDir, ".lark-agent-bridge", "media")
 	t.Setenv("E2E_CALLBACK_ADDR", ":18080")
 
 	checks := Run(config.Config{
@@ -25,12 +26,14 @@ func TestRunChecksRuntimeConfig(t *testing.T) {
 		CardMaxChars:       12000,
 		AuditLogPath:       auditPath,
 		SessionStorePath:   storePath,
+		MediaCacheDir:      cachePath,
 	})
 
 	assertCheck(t, checks, "default_agent", true, "claude")
 	assertCheck(t, checks, "default_workdir", true, workDir)
 	assertCheck(t, checks, "audit_log", true, auditPath)
 	assertCheck(t, checks, "session_store", true, storePath)
+	assertCheck(t, checks, "media_cache", true, cachePath)
 	assertCheck(t, checks, "E2E_CALLBACK_ADDR", true, ":18080")
 	assertCheck(t, checks, "card_update_every", true, "1s")
 	assertCheck(t, checks, "interaction_timeout", true, "2s")
@@ -48,6 +51,9 @@ func TestRunChecksRuntimeConfig(t *testing.T) {
 	}
 	if _, err := os.Stat(storePath); !os.IsNotExist(err) {
 		t.Fatalf("session store probe unexpectedly created store: %v", err)
+	}
+	if probes, err := filepath.Glob(filepath.Join(cachePath, ".media-cache-probe-*")); err != nil || len(probes) != 0 {
+		t.Fatalf("media cache probe files = %q, err = %v; want none", probes, err)
 	}
 }
 
@@ -67,6 +73,79 @@ func TestRunReportsMissingWorkdir(t *testing.T) {
 	check := findCheck(t, checks, "default_workdir")
 	if check.OK {
 		t.Fatalf("default_workdir check OK = true, want false")
+	}
+}
+
+func TestRunRejectsSymlinkMediaCacheWithoutMutatingTarget(t *testing.T) {
+	target := t.TempDir()
+	link := filepath.Join(t.TempDir(), "media-link")
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatal(err)
+	}
+	cfg := doctorTestConfig(t.TempDir(), filepath.Join(t.TempDir(), "sessions.json"))
+	cfg.MediaCacheDir = link
+	check := findCheck(t, Run(cfg), "media_cache")
+	if check.OK {
+		t.Fatalf("media_cache check = %#v, want symlink failure", check)
+	}
+	if entries, err := os.ReadDir(target); err != nil || len(entries) != 0 {
+		t.Fatalf("media cache target was mutated: entries=%v err=%v", entries, err)
+	}
+}
+
+func TestRunRejectsRegularFileMediaCache(t *testing.T) {
+	cachePath := filepath.Join(t.TempDir(), "media")
+	if err := os.WriteFile(cachePath, []byte("not a cache directory"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := doctorTestConfig(t.TempDir(), filepath.Join(t.TempDir(), "sessions.json"))
+	cfg.MediaCacheDir = cachePath
+
+	check := findCheck(t, Run(cfg), "media_cache")
+	if check.OK {
+		t.Fatalf("media_cache check = %#v, want regular-file failure", check)
+	}
+}
+
+func TestRunRejectsMediaCacheWhenParentCannotBeCreated(t *testing.T) {
+	blockingFile := filepath.Join(t.TempDir(), "not-a-directory")
+	if err := os.WriteFile(blockingFile, []byte("blocks child directory"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := doctorTestConfig(t.TempDir(), filepath.Join(t.TempDir(), "sessions.json"))
+	cfg.MediaCacheDir = filepath.Join(blockingFile, "media")
+
+	check := findCheck(t, Run(cfg), "media_cache")
+	if check.OK {
+		t.Fatalf("media_cache check = %#v, want parent creation failure", check)
+	}
+}
+
+func TestRunCreatesPrivateMediaCacheWithoutChangingExistingParent(t *testing.T) {
+	workDir := t.TempDir()
+	parent := filepath.Join(workDir, "existing-parent")
+	if err := os.Mkdir(parent, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	before := filePermissions(t, parent)
+	cachePath := filepath.Join(parent, "new", "media")
+	cfg := doctorTestConfig(workDir, filepath.Join(workDir, "sessions.json"))
+	cfg.MediaCacheDir = cachePath
+
+	check := findCheck(t, Run(cfg), "media_cache")
+	if !check.OK {
+		t.Fatalf("media_cache check = %#v, want success", check)
+	}
+	if after := filePermissions(t, parent); after != before {
+		t.Fatalf("existing parent permissions changed from %o to %o", before, after)
+	}
+	for _, path := range []string{filepath.Join(parent, "new"), cachePath} {
+		if got := filePermissions(t, path); got != 0o700 {
+			t.Fatalf("new media cache directory %q permissions = %o, want 700", path, got)
+		}
+	}
+	if probes, err := filepath.Glob(filepath.Join(cachePath, ".media-cache-probe-*")); err != nil || len(probes) != 0 {
+		t.Fatalf("media cache probe files = %q, err = %v; want none", probes, err)
 	}
 }
 
@@ -263,6 +342,7 @@ func doctorTestConfig(workDir, storePath string) config.Config {
 		CardMaxChars:       12000,
 		AuditLogPath:       filepath.Join(workDir, "audit.jsonl"),
 		SessionStorePath:   storePath,
+		MediaCacheDir:      filepath.Join(workDir, "media"),
 	}
 }
 

@@ -57,3 +57,64 @@ func TestLoadFromEnvDurableSchedulerDefaultsAndOverrides(t *testing.T) {
 		t.Fatalf("durable config = %#v", cfg)
 	}
 }
+
+func TestLoadFromEnvStrictMediaDefaultsFollowWorkdir(t *testing.T) {
+	workDir := filepath.Join(t.TempDir(), "work")
+	t.Setenv("E2E_DEFAULT_WORKDIR", workDir)
+
+	cfg, err := LoadFromEnvStrict()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.MediaCacheDir != filepath.Join(workDir, ".lark-agent-bridge", "media") {
+		t.Fatalf("media cache dir = %q, want default under workdir", cfg.MediaCacheDir)
+	}
+	if cfg.MediaMaxFileBytes != 25<<20 || cfg.MediaMaxBatchBytes != 100<<20 || cfg.MediaCacheMaxBytes != 500<<20 || cfg.MediaRetention != 72*time.Hour {
+		t.Fatalf("media configuration = %#v", cfg)
+	}
+}
+
+func TestLoadFromEnvStrictParsesMediaOverrides(t *testing.T) {
+	cacheDir := filepath.Join(t.TempDir(), "cache")
+	t.Setenv("E2E_MEDIA_CACHE_DIR", cacheDir)
+	t.Setenv("E2E_MEDIA_MAX_FILE_MB", "26")
+	t.Setenv("E2E_MEDIA_MAX_BATCH_MB", "101")
+	t.Setenv("E2E_MEDIA_CACHE_MAX_MB", "501")
+	t.Setenv("E2E_MEDIA_RETENTION_HOURS", "73")
+
+	cfg, err := LoadFromEnvStrict()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.MediaCacheDir != cacheDir {
+		t.Fatalf("media cache dir = %q, want %q", cfg.MediaCacheDir, cacheDir)
+	}
+	if cfg.MediaMaxFileBytes != 26<<20 || cfg.MediaMaxBatchBytes != 101<<20 || cfg.MediaCacheMaxBytes != 501<<20 || cfg.MediaRetention != 73*time.Hour {
+		t.Fatalf("media configuration = %#v", cfg)
+	}
+}
+
+func TestLoadFromEnvStrictRejectsInvalidExplicitMediaSettings(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		env   string
+		value string
+	}{
+		{name: "empty_cache_dir", env: "E2E_MEDIA_CACHE_DIR", value: ""},
+		{name: "non_number_file_limit", env: "E2E_MEDIA_MAX_FILE_MB", value: "many"},
+		{name: "zero_batch_limit", env: "E2E_MEDIA_MAX_BATCH_MB", value: "0"},
+		{name: "negative_cache_limit", env: "E2E_MEDIA_CACHE_MAX_MB", value: "-1"},
+		{name: "non_number_retention", env: "E2E_MEDIA_RETENTION_HOURS", value: "tomorrow"},
+		{name: "zero_retention", env: "E2E_MEDIA_RETENTION_HOURS", value: "0"},
+		{name: "negative_retention", env: "E2E_MEDIA_RETENTION_HOURS", value: "-1"},
+		{name: "file_limit_overflow", env: "E2E_MEDIA_MAX_FILE_MB", value: "8796093022208"},
+		{name: "retention_overflow", env: "E2E_MEDIA_RETENTION_HOURS", value: "2562048"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv(tc.env, tc.value)
+			if _, err := LoadFromEnvStrict(); err == nil {
+				t.Fatalf("LoadFromEnvStrict() error = nil, want failure for %s=%q", tc.env, tc.value)
+			}
+		})
+	}
+}

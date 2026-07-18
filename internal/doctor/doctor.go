@@ -32,12 +32,52 @@ func Run(cfg config.Config) []Check {
 		dirExists("default_workdir", cfg.DefaultWorkDir),
 		auditLogWritable(cfg.AuditLogPath),
 		sessionStoreWritable(cfg.SessionStorePath),
+		mediaCacheWritable(cfg.MediaCacheDir),
 		optionalEnv("E2E_CALLBACK_ADDR"),
 		durationPositive("card_update_every", cfg.CardUpdateEvery),
 		durationPositive("interaction_timeout", cfg.InteractionTimeout),
 		intPositive("card_max_chars", cfg.CardMaxChars),
 	}
 	return checks
+}
+
+func mediaCacheWritable(path string) Check {
+	if path == "" {
+		return Check{Name: "media_cache", OK: false, Detail: "empty"}
+	}
+	info, err := os.Lstat(path)
+	if err == nil && info.Mode()&os.ModeSymlink != 0 {
+		return Check{Name: "media_cache", OK: false, Detail: "symlink_path: " + path}
+	}
+	if err != nil && !os.IsNotExist(err) {
+		return Check{Name: "media_cache", OK: false, Detail: "stat_failed: " + path}
+	}
+	if err := os.MkdirAll(path, 0o700); err != nil {
+		return Check{Name: "media_cache", OK: false, Detail: "create_failed: " + path}
+	}
+	info, err = os.Lstat(path)
+	if err != nil {
+		return Check{Name: "media_cache", OK: false, Detail: "stat_failed: " + path}
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return Check{Name: "media_cache", OK: false, Detail: "symlink_path: " + path}
+	}
+	if !info.IsDir() {
+		return Check{Name: "media_cache", OK: false, Detail: "not_directory: " + path}
+	}
+	probe, err := os.CreateTemp(path, ".media-cache-probe-*")
+	if err != nil {
+		return Check{Name: "media_cache", OK: false, Detail: "write_probe_failed: " + path}
+	}
+	probePath := probe.Name()
+	if err := probe.Close(); err != nil {
+		_ = os.Remove(probePath)
+		return Check{Name: "media_cache", OK: false, Detail: "write_probe_failed: " + path}
+	}
+	if err := os.Remove(probePath); err != nil {
+		return Check{Name: "media_cache", OK: false, Detail: "write_probe_cleanup_failed: " + path}
+	}
+	return Check{Name: "media_cache", OK: true, Detail: path}
 }
 
 func sessionStoreWritable(path string) Check {
