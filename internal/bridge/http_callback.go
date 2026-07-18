@@ -6,7 +6,7 @@ import (
 	"net/http"
 )
 
-func NewCallbackHTTPHandler(service *Service) http.Handler {
+func NewCallbackHTTPHandler(gateway ActionGateway) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/card/callback", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
@@ -29,14 +29,18 @@ func NewCallbackHTTPHandler(service *Service) http.Handler {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
-		result, err := service.HandleActionResult(r.Context(), req)
+		result, err := gateway.Handle(r.Context(), req)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
 		resp := map[string]any{"ok": true}
-		prepared, err := result.PrepareCard(service.Config.CardMaxChars)
+		if gateway.Service == nil {
+			http.Error(w, "action service unavailable", http.StatusInternalServerError)
+			return
+		}
+		prepared, err := result.PrepareCard(gateway.Service.Config.CardMaxChars)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return

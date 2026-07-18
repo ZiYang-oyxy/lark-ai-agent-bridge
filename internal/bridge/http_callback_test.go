@@ -29,7 +29,7 @@ func TestCallbackHTTPHandlerDispatchesAction(t *testing.T) {
 	body := `{"operator":{"open_id":"u1"},"action":{"value":{"session":"claude:chat:message:msg-1","action_id":"stop"}}}`
 	req := httptest.NewRequest(http.MethodPost, "/card/callback", strings.NewReader(body))
 	rec := httptest.NewRecorder()
-	NewCallbackHTTPHandler(service).ServeHTTP(rec, req)
+	NewCallbackHTTPHandler(ActionGateway{Service: service}).ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
 	}
@@ -51,7 +51,7 @@ func TestCallbackHTTPHandlerRespondsToChallenge(t *testing.T) {
 	service := NewService(cfg, card.NewFakeRenderer(), newFakeRunner(), audit.NewRecorder())
 	req := httptest.NewRequest(http.MethodPost, "/card/callback", strings.NewReader(`{"challenge":"abc123"}`))
 	rec := httptest.NewRecorder()
-	NewCallbackHTTPHandler(service).ServeHTTP(rec, req)
+	NewCallbackHTTPHandler(ActionGateway{Service: service}).ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
 	}

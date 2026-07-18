@@ -28,8 +28,34 @@ type CardKitRenderer struct {
 	cardID           string
 	sequence         int
 	createdAt        time.Time
+	interactionDepth int
 	observer         CardKitRenderObserver
 	routerKey        string
+}
+
+func (r *CardKitRouterRenderer) BeginCardInteraction(sessionID string) func() {
+	if r == nil || sessionID == "" {
+		return func() {}
+	}
+	r.mu.Lock()
+	renderer := r.renderers[sessionID]
+	r.mu.Unlock()
+	if renderer == nil {
+		return func() {}
+	}
+	renderer.mu.Lock()
+	renderer.interactionDepth++
+	renderer.mu.Unlock()
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			renderer.mu.Lock()
+			if renderer.interactionDepth > 0 {
+				renderer.interactionDepth--
+			}
+			renderer.mu.Unlock()
+		})
+	}
 }
 
 type CardKitRouterRenderer struct {
