@@ -306,7 +306,21 @@ func metaRows(meta Meta) ([]weightedMetaCell, []weightedMetaCell) {
 	if meta.Agent != "" {
 		first = append(first, weightedMetaCell{Weight: 10, Content: "🤖 " + displayAgent(meta.Agent), ID: "meta_agent"})
 	}
-	if meta.Model != "" {
+	if meta.ModelInfo != (ModelInfo{}) {
+		requested := meta.ModelInfo.Requested
+		if requested == "" {
+			requested = "unknown"
+		}
+		actual := meta.ModelInfo.Actual
+		if actual == "" {
+			actual = "unknown"
+		}
+		effort := meta.ModelInfo.Effort
+		if effort == "" {
+			effort = "unknown"
+		}
+		first = append(first, weightedMetaCell{Weight: 30, Content: fmt.Sprintf("🧠 requested: %s · actual: %s · effort: %s", requested, actual, effort), ID: "meta_model"})
+	} else if meta.Model != "" {
 		first = append(first, weightedMetaCell{Weight: 14, Content: "🧠 " + meta.Model, ID: "meta_model"})
 	}
 	runTokens := meta.RunTokens

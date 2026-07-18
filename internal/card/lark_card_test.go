@@ -60,6 +60,34 @@ func TestBuildLarkCardIncludesActionsAndMeta(t *testing.T) {
 	assertColumnWeights(t, columnSets[1], []int{10, 12, 30})
 }
 
+func TestBuildLarkCardLabelsRequestedAndActualModel(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		info ModelInfo
+		want []string
+		not  []string
+	}{
+		{name: "reported actual", info: ModelInfo{Requested: "opus", Actual: "claude-opus-4-1", Effort: "high"}, want: []string{"requested: opus", "actual: claude-opus-4-1", "effort: high"}},
+		{name: "missing actual", info: ModelInfo{Requested: "sonnet", Effort: "medium"}, want: []string{"requested: sonnet", "actual: unknown", "effort: medium"}, not: []string{"actual: sonnet"}},
+		{name: "default requested", info: ModelInfo{Requested: "default", Effort: "low"}, want: []string{"requested: default", "actual: unknown", "effort: low"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			payload := BuildLarkCard(Event{Type: "result", Meta: Meta{Agent: "claude", Model: "legacy-must-not-win", ModelInfo: tc.info}})
+			elements := payload["body"].(map[string]any)["elements"].([]any)
+			var text string
+			for _, raw := range elements {
+				element := raw.(map[string]any)
+				if element["tag"] == "column_set" {
+					text += columnSetText(element)
+				}
+			}
+			if !containsAll(text, tc.want...) || containsAny(text, tc.not...) || strings.Contains(text, "legacy-must-not-win") {
+				t.Fatalf("model provenance text = %q, want %#v without %#v", text, tc.want, tc.not)
+			}
+		})
+	}
+}
+
 func TestBuildLarkCardRendersRuntimeConfigForm(t *testing.T) {
 	payload := BuildLarkCard(Event{
 		Type:      "config",
@@ -68,7 +96,7 @@ func TestBuildLarkCardRendersRuntimeConfigForm(t *testing.T) {
 			Model:   "opus",
 			Effort:  "high",
 			Models:  []string{"default", "sonnet", "opus", "haiku"},
-			Efforts: []string{"default", "low", "medium", "high"},
+			Efforts: []string{"REDACTED", "REDACTED", "REDACTED", "REDACTED"},
 		},
 		Segments:  []Segment{{Kind: SegmentText, Text: "must not appear beside the form"}},
 		Streaming: true,
@@ -96,7 +124,7 @@ func TestBuildLarkCardRendersRuntimeConfigForm(t *testing.T) {
 		if control["tag"] == "select_static" {
 			selects[control["name"].(string)] = control
 		}
-		if control["REDACTED"] == "REDACTED" {
+		if control["tag"] == "button" {
 			submit = control
 		}
 	}

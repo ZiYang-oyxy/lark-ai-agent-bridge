@@ -658,6 +658,104 @@ func TestServiceNewRunsClaudeOneShotAndRendersResult(t *testing.T) {
 	}
 }
 
+func TestServiceSeparatesRequestedAndActualModel(t *testing.T) {
+	t.Run("reported actual and mismatch audit", func(t *testing.T) {
+		cfg := testConfig(t)
+		cfg.Model, cfg.Effort = "opus", "high"
+		renderer := card.NewFakeRenderer()
+		runner := newFakeRunner()
+		runner.results = []AgentRunResult{{Model: "claude-opus-4-1", Segments: []card.Segment{{Kind: card.SegmentText, Text: "answer"}}}}
+		recorder := audit.NewRecorder()
+		svc := NewService(cfg, renderer, runner, recorder)
+		now := time.Now()
+		if err := svc.HandleMessage(context.Background(), Message{ID: "model-provenance", ChatID: "chat", Sender: "user", Text: "hello", Time: now}); err != nil {
+			t.Fatal(err)
+		}
+		if err := svc.DrainReady(now.Add(time.Second)); err != nil {
+			t.Fatal(err)
+		}
+		waitForCalls(t, runner, 1)
+		waitForSessionNoActiveBatch(t, svc, session.Key{Agent: agent.Claude, ChatID: "chat"})
+		events := renderer.Events()
+		var initial, terminal *card.Event
+		for i := range events {
+			switch events[i].Type {
+			case "stream":
+				if initial == nil {
+					initial = &events[i]
+				}
+			case "result":
+				terminal = &events[i]
+			}
+		}
+		if initial == nil || initial.Meta.ModelInfo.Requested != "opus" || initial.Meta.ModelInfo.Effort != "high" || initial.Meta.ModelInfo.Actual != "" {
+			t.Fatalf("initial model provenance = %#v", initial)
+		}
+		if terminal == nil || terminal.Meta.ModelInfo.Requested != "opus" || terminal.Meta.ModelInfo.Actual != "claude-opus-4-1" || terminal.Meta.ModelInfo.Effort != "high" {
+			t.Fatalf("terminal model provenance = %#v", terminal)
+		}
+		if !auditContainsAction(recorder.Events(), "model_requested_actual_mismatch") {
+			t.Fatalf("audit = %#v, want model_requested_actual_mismatch", recorder.Events())
+		}
+	})
+
+	t.Run("missing actual remains unknown", func(t *testing.T) {
+		cfg := testConfig(t)
+		cfg.Model, cfg.Effort = "sonnet", "medium"
+		renderer := card.NewFakeRenderer()
+		runner := newFakeRunner()
+		runner.results = []AgentRunResult{{Segments: []card.Segment{{Kind: card.SegmentText, Text: "answer"}}}}
+		svc := NewService(cfg, renderer, runner, audit.NewRecorder())
+		now := time.Now()
+		if err := svc.HandleMessage(context.Background(), Message{ID: "model-unknown", ChatID: "chat", Sender: "user", Text: "hello", Time: now}); err != nil {
+			t.Fatal(err)
+		}
+		if err := svc.DrainReady(now.Add(time.Second)); err != nil {
+			t.Fatal(err)
+		}
+		waitForSessionNoActiveBatch(t, svc, session.Key{Agent: agent.Claude, ChatID: "chat"})
+		events := renderer.Events()
+		terminal := events[len(events)-1]
+		if terminal.Meta.ModelInfo.Requested != "sonnet" || terminal.Meta.ModelInfo.Actual != "" {
+			t.Fatalf("terminal model provenance = %#v", terminal.Meta.ModelInfo)
+		}
+		payload := card.BuildLarkCard(terminal)
+		var text string
+		for _, raw := range payload["body"].(map[string]any)["elements"].([]any) {
+			element := raw.(map[string]any)
+			if element["tag"] == "column_set" {
+				text += fmt.Sprint(element)
+			}
+		}
+		if !strings.Contains(text, "actual: unknown") || strings.Contains(text, "actual: sonnet") {
+			t.Fatalf("rendered model provenance = %q", text)
+		}
+	})
+
+	t.Run("stream-only actual reaches durable result and audit", func(t *testing.T) {
+		cfg := testConfig(t)
+		cfg.Model, cfg.Effort = "opus", "high"
+		runner := newFakeRunner()
+		runner.updates = []AgentStreamUpdate{{Model: "claude-stream-only"}}
+		runner.results = []AgentRunResult{{Segments: []card.Segment{{Kind: card.SegmentText, Text: "answer"}}}}
+		recorder := audit.NewRecorder()
+		svc := NewService(cfg, card.NewFakeRenderer(), runner, recorder)
+		now := time.Now()
+		key := session.Key{Agent: agent.Claude, ChatID: "stream-model"}
+		if err := svc.HandleMessage(context.Background(), Message{ID: "stream-only-model", ChatID: key.ChatID, Sender: "user", Text: "hello", Time: now}); err != nil {
+			t.Fatal(err)
+		}
+		if err := svc.DrainReady(now.Add(time.Second)); err != nil {
+			t.Fatal(err)
+		}
+		waitForSessionNoActiveBatch(t, svc, key)
+		sess, ok := svc.Sessions.Get(key)
+		if !ok || sess.Model != "claude-stream-only" || !auditContainsAction(recorder.Events(), "model_requested_actual_mismatch") {
+			t.Fatalf("session/audit = %#v / %#v", sess, recorder.Events())
+		}
+	})
+}
+
 func TestServiceQueuesRunUntilExplicitDrain(t *testing.T) {
 	cfg := testConfig(t)
 	renderer := card.NewFakeRenderer()

@@ -52,7 +52,7 @@ func newAgentCardStream(service *Service, sessionID string, sess session.Session
 		flushEvery:  flushEvery,
 		status:      "running",
 		activity:    streamActivityReasoning,
-		meta:        metaFromSession(sess),
+		meta:        metaForRun(sess, input),
 		totalBefore: sess.Tokens,
 		stopVisible: true,
 	}
@@ -75,6 +75,7 @@ func (s *agentCardStream) Handle(update AgentStreamUpdate) {
 	}
 	if update.Model != "" {
 		s.meta.Model = update.Model
+		s.meta.ModelInfo.Actual = update.Model
 	}
 	if update.Tokens > 0 {
 		s.meta.RunTokens += update.Tokens
@@ -104,7 +105,7 @@ func (s *agentCardStream) Finish(status string, meta card.Meta, result AgentRunR
 	if meta.Agent != "" {
 		s.meta.Agent = meta.Agent
 	}
-	if meta.Model != "" {
+	if meta.Model != "" && s.meta.ModelInfo == (card.ModelInfo{}) {
 		s.meta.Model = meta.Model
 	}
 	if meta.Tokens > 0 {
@@ -122,6 +123,7 @@ func (s *agentCardStream) Finish(status string, meta card.Meta, result AgentRunR
 	}
 	if result.Model != "" {
 		s.meta.Model = result.Model
+		s.meta.ModelInfo.Actual = result.Model
 	}
 	if result.Tokens > 0 {
 		s.meta.RunTokens = result.Tokens
@@ -137,6 +139,13 @@ func (s *agentCardStream) Finish(status string, meta card.Meta, result AgentRunR
 	s.closed = true
 	s.mu.Unlock()
 	return s.render(false)
+}
+
+func metaForRun(sess session.Session, input session.Input) card.Meta {
+	meta := metaFromSession(sess)
+	meta.Model = ""
+	meta.ModelInfo = card.ModelInfo{Requested: input.RequestedModel, Effort: input.RequestedEffort}
+	return meta
 }
 
 func (s *agentCardStream) Flush() error {

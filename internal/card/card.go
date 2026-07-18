@@ -21,6 +21,12 @@ type Segment struct {
 	Text string
 }
 
+type ModelInfo struct {
+	Requested string
+	Actual    string
+	Effort    string
+}
+
 type Meta struct {
 	Agent       string
 	Model       string
@@ -31,6 +37,7 @@ type Meta struct {
 	IP          string
 	WorkDir     string
 	Status      string
+	ModelInfo   ModelInfo
 }
 
 type StopButton struct {

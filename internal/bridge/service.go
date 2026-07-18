@@ -480,11 +480,25 @@ func (s *Service) executeBatch(ctx context.Context, sess session.Session, batch 
 		}
 		return
 	}
+	var actualModelMu sync.Mutex
+	streamedActualModel := ""
 	result, err := s.Runner.Run(ctx, AgentRunRequest{Kind: sess.Key.Agent, ClaudeBin: s.Config.ClaudeBin, Prompt: prompt, WorkDir: sess.WorkDir, ClaudeSessionID: sess.ClaudeSessionID, Model: batch.Inputs[0].RequestedModel, Effort: batch.Inputs[0].RequestedEffort, OnEvent: func(update AgentStreamUpdate) {
+		if model := strings.TrimSpace(update.Model); model != "" {
+			actualModelMu.Lock()
+			streamedActualModel = model
+			actualModelMu.Unlock()
+		}
 		if run, ok := s.activeRun(id); ok && run.BatchID == batch.ID && run.Stream != nil {
 			run.Stream.Handle(update)
 		}
 	}})
+	if strings.TrimSpace(result.Model) == "" {
+		actualModelMu.Lock()
+		result.Model = streamedActualModel
+		actualModelMu.Unlock()
+	} else {
+		result.Model = strings.TrimSpace(result.Model)
+	}
 	status, cardStatus := session.InputCompleted, "completed"
 	if errors.Is(ctx.Err(), context.Canceled) {
 		status, cardStatus = session.InputCancelled, "stopped"
@@ -494,6 +508,10 @@ func (s *Service) executeBatch(ctx context.Context, sess session.Session, batch 
 	}
 	if len(result.Segments) == 0 && status == session.InputCompleted {
 		result.Segments = []card.Segment{{Kind: card.SegmentText, Text: "Claude 未返回内容。"}}
+	}
+	requestedModel := strings.TrimSpace(batch.Inputs[0].RequestedModel)
+	if result.Model != "" && requestedModel != "" && !strings.EqualFold(requestedModel, "default") && result.Model != requestedModel {
+		s.Audit.Record("system", "model_requested_actual_mismatch", sess.ID, fmt.Sprintf("requested=%s actual=%s", requestedModel, result.Model))
 	}
 	updated, _ := s.finishBatchOrRemember(sess, batch.ID, session.BatchCompletion{Status: status, ClaudeSessionID: result.ClaudeSessionID, Model: result.Model, Tokens: result.Tokens, At: time.Now()}, "completion_persist_failed")
 	if run, ok := s.activeRun(id); ok && run.BatchID == batch.ID && run.Stream != nil {
