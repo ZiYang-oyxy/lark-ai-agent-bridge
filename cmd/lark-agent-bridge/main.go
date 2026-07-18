@@ -398,6 +398,10 @@ Environment:
   E2E_DEFAULT_WORKDIR    defaults to current directory
   E2E_CARD_UPDATE_MS     defaults to 800
   E2E_CARD_MAX_CHARS     defaults to 12000
+  E2E_CARD_MIN_DELTA_CHARS defaults to 30
+  E2E_CARD_PREVIEW_MAX_CHARS defaults to 2000
+  E2E_REPLY_MODE         append, append-clean-card, or latest-card
+  E2E_REPLY_STORE        defaults to <workdir>/.lark-agent-bridge/replies.json
   E2E_INTERACTION_TIMEOUT_SEC defaults to 120
   E2E_AUDIT_LOG          defaults to <workdir>/.lark-agent-bridge/audit.jsonl
   E2E_CALLBACK_ADDR      optional legacy HTTP callback listen address, e.g. :8080

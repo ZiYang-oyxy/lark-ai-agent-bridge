@@ -427,7 +427,7 @@ func TestServiceConfigCommandShowsCurrentPreferencesWithoutRunningAgent(t *testi
 	cfg.Effort = "low"
 	cfg.AllowedModels = []string{"default", "sonnet", "opus", "haiku", "claude-custom-1"}
 	store, _ := testPreferenceStore(t, config.RuntimePreference{Model: "default", Effort: "low"}, cfg.AllowedModels)
-	if err := store.Set(config.RuntimePreference{Model: "opus", Effort: "high"}); err != nil {
+	if err := store.Set(config.RuntimePreference{Model: "opus", Effort: "high", ReplyMode: config.ReplyModeLatestCard}); err != nil {
 		t.Fatal(err)
 	}
 	renderer := card.NewFakeRenderer()
@@ -438,11 +438,26 @@ func TestServiceConfigCommandShowsCurrentPreferencesWithoutRunningAgent(t *testi
 		t.Fatal(err)
 	}
 	events := renderer.Events()
-	if len(events) != 1 || events[0].ConfigForm == nil || events[0].ConfigForm.Model != "opus" || events[0].ConfigForm.Effort != "high" {
+	if len(events) != 1 || events[0].ConfigForm == nil || events[0].ConfigForm.Model != "opus" || events[0].ConfigForm.Effort != "high" || events[0].ConfigForm.ReplyMode != string(config.ReplyModeLatestCard) {
 		t.Fatalf("config events = %#v", events)
 	}
 	if len(runner.Calls()) != 0 {
 		t.Fatalf("/config started Agent: %#v", runner.Calls())
+	}
+}
+
+func TestServiceStatusShowsGlobalReplyModeBeforeSessionStarts(t *testing.T) {
+	cfg := testConfig(t)
+	cfg.Model, cfg.Effort, cfg.ReplyMode = "default", "low", config.ReplyModeAppend
+	store, _ := testPreferenceStore(t, config.RuntimePreference{Model: cfg.Model, Effort: cfg.Effort, ReplyMode: cfg.ReplyMode}, cfg.AllowedModels)
+	if err := store.Set(config.RuntimePreference{Model: "default", Effort: "low", ReplyMode: config.ReplyModeAppendCleanCard}); err != nil {
+		t.Fatal(err)
+	}
+	svc := NewService(cfg, card.NewFakeRenderer(), newFakeRunner(), audit.NewRecorder())
+	svc.Preferences = store
+	status := svc.statusText(agent.Claude, Message{ChatID: "chat"})
+	if !strings.Contains(status, "reply_mode=append-clean-card") {
+		t.Fatalf("status = %q", status)
 	}
 }
 
@@ -452,7 +467,7 @@ func TestServiceConfigResetRemovesOverride(t *testing.T) {
 	cfg.AllowedModels = []string{"default", "sonnet", "opus", "haiku"}
 	defaults := config.RuntimePreference{Model: cfg.Model, Effort: cfg.Effort, ReplyMode: config.ReplyModeAppend}
 	store, path := testPreferenceStore(t, defaults, cfg.AllowedModels)
-	if err := store.Set(config.RuntimePreference{Model: "opus", Effort: "high"}); err != nil {
+	if err := store.Set(config.RuntimePreference{Model: "opus", Effort: "high", ReplyMode: config.ReplyModeLatestCard}); err != nil {
 		t.Fatal(err)
 	}
 	svc := NewService(cfg, card.NewFakeRenderer(), newFakeRunner(), audit.NewRecorder())
@@ -481,11 +496,11 @@ func TestServiceConfigSavePersistsValidValuesAndRejectsInvalidValues(t *testing.
 	renderer := card.NewFakeRenderer()
 	svc := NewService(cfg, renderer, newFakeRunner(), audit.NewRecorder())
 	svc.Preferences = store
-	result, err := svc.HandleActionResult(context.Background(), ActionRequest{SessionID: "config-card", ActionID: "config.save", Actor: "user", FormValues: map[string]string{"model": "claude-custom-1", "effort": "medium"}})
+	result, err := svc.HandleActionResult(context.Background(), ActionRequest{SessionID: "config-card", ActionID: "config.save", Actor: "user", FormValues: map[string]string{"model": "claude-custom-1", "effort": "medium", "reply_mode": "latest-card"}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Event == nil || result.Event.Type != "config_saved" || store.Get() != (config.RuntimePreference{Model: "claude-custom-1", Effort: "medium", ReplyMode: config.ReplyModeAppend}) {
+	if result.Event == nil || result.Event.Type != "config_saved" || store.Get() != (config.RuntimePreference{Model: "claude-custom-1", Effort: "medium", ReplyMode: config.ReplyModeLatestCard}) {
 		t.Fatalf("save result/store = %#v / %#v", result, store.Get())
 	}
 	reopened, err := config.OpenPreferenceStore(path, defaults, cfg.AllowedModels)
@@ -496,7 +511,7 @@ func TestServiceConfigSavePersistsValidValuesAndRejectsInvalidValues(t *testing.
 		t.Fatalf("reopened preference = %#v, want %#v", got, store.Get())
 	}
 	before := store.Get()
-	result, err = svc.HandleActionResult(context.Background(), ActionRequest{SessionID: "config-card", ActionID: "config.save", Actor: "user", FormValues: map[string]string{"model": "unknown", "effort": "extreme"}})
+	result, err = svc.HandleActionResult(context.Background(), ActionRequest{SessionID: "config-card", ActionID: "config.save", Actor: "user", FormValues: map[string]string{"model": "unknown", "effort": "extreme", "reply_mode": "replace"}})
 	if err != nil {
 		t.Fatal(err)
 	}

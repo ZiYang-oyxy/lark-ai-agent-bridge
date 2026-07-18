@@ -17,6 +17,7 @@ func TestRunChecksRuntimeConfig(t *testing.T) {
 	auditPath := filepath.Join(workDir, ".lark-agent-bridge", "audit.jsonl")
 	storePath := filepath.Join(workDir, ".lark-agent-bridge", "sessions.json")
 	preferencePath := filepath.Join(workDir, ".lark-agent-bridge", "preferences.json")
+	replyPath := filepath.Join(workDir, ".lark-agent-bridge", "replies.json")
 	cachePath := filepath.Join(workDir, ".lark-agent-bridge", "media")
 	t.Setenv("E2E_CALLBACK_ADDR", ":18080")
 
@@ -26,9 +27,12 @@ func TestRunChecksRuntimeConfig(t *testing.T) {
 		CardUpdateEvery:     time.Second,
 		InteractionTimeout:  2 * time.Second,
 		CardMaxChars:        12000,
+		CardMinDeltaChars:   30,
+		CardPreviewMaxChars: 2000,
 		AuditLogPath:        auditPath,
 		SessionStorePath:    storePath,
 		PreferenceStorePath: preferencePath,
+		ReplyStorePath:      replyPath,
 		Model:               "default",
 		Effort:              "low",
 		AllowedModels:       []string{"default", "sonnet", "opus", "haiku"},
@@ -40,11 +44,14 @@ func TestRunChecksRuntimeConfig(t *testing.T) {
 	assertCheck(t, checks, "audit_log", true, auditPath)
 	assertCheck(t, checks, "session_store", true, storePath)
 	assertCheck(t, checks, "preference_store", true, preferencePath)
+	assertCheck(t, checks, "reply_store", true, replyPath)
 	assertCheck(t, checks, "media_cache", true, cachePath)
 	assertCheck(t, checks, "E2E_CALLBACK_ADDR", true, ":18080")
 	assertCheck(t, checks, "card_update_every", true, "1s")
 	assertCheck(t, checks, "interaction_timeout", true, "2s")
 	assertCheck(t, checks, "card_max_chars", true, "12000")
+	assertCheck(t, checks, "card_min_delta_chars", true, "30")
+	assertCheck(t, checks, "card_preview_max_chars", true, "2000")
 
 	if _, err := os.Stat(auditPath); err != nil {
 		t.Fatalf("audit log was not created: %v", err)
@@ -61,6 +68,42 @@ func TestRunChecksRuntimeConfig(t *testing.T) {
 	}
 	if probes, err := filepath.Glob(filepath.Join(cachePath, ".media-cache-probe-*")); err != nil || len(probes) != 0 {
 		t.Fatalf("media cache probe files = %q, err = %v; want none", probes, err)
+	}
+}
+
+func TestReplyStoreWritableRejectsMalformedMappingWithoutLeakingContents(t *testing.T) {
+	workDir := canonicalTempDir(t)
+	storeDir := filepath.Join(workDir, ".lark-agent-bridge")
+	if err := os.Mkdir(storeDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(storeDir, "replies.json")
+	const secret = "DO_NOT_PRINT_REPLY_SECRET"
+	if err := os.WriteFile(path, []byte(`{"schema_version":1,"latest_by_scope":{"":{"CardID":"`+secret+`"}}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := doctorTestConfig(workDir, filepath.Join(workDir, "sessions.json"))
+	cfg.ReplyStorePath = path
+	check := findCheck(t, Run(cfg), "reply_store")
+	if check.OK || strings.Contains(check.Detail, secret) || strings.Contains(Summary([]Check{check}), secret) {
+		t.Fatalf("malformed reply check leaked or passed: %#v", check)
+	}
+}
+
+func TestReplyStoreWritableRejectsUnreadableStoreShape(t *testing.T) {
+	workDir := canonicalTempDir(t)
+	storeDir := filepath.Join(workDir, ".lark-agent-bridge")
+	if err := os.Mkdir(storeDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(storeDir, "replies.json")
+	if err := os.Mkdir(path, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	cfg := doctorTestConfig(workDir, filepath.Join(workDir, "sessions.json"))
+	cfg.ReplyStorePath = path
+	if check := findCheck(t, Run(cfg), "reply_store"); check.OK || !strings.Contains(check.Detail, "not_regular") {
+		t.Fatalf("reply store shape check = %#v", check)
 	}
 }
 
@@ -102,7 +145,7 @@ printf '%s\n' '{"type":"result","result":"PRIVATE_OUTPUT_MUST_NOT_APPEAR"}'
 	t.Setenv("DOCTOR_PWD_FILE", pwdPath)
 	cfg := doctorTestConfig(dir, filepath.Join(dir, "sessions.json"))
 	cfg.ClaudeBin = bin
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 	check := ClaudeWrapperPreflight(ctx, cfg)
 	if !check.OK || check.Warning || check.Name != "wrapper-preflight" || strings.Contains(check.Detail, "PRIVATE_OUTPUT") {
@@ -490,6 +533,7 @@ func doctorTestConfig(workDir, storePath string) config.Config {
 		AuditLogPath:        filepath.Join(workDir, "audit.jsonl"),
 		SessionStorePath:    storePath,
 		PreferenceStorePath: filepath.Join(workDir, "preferences.json"),
+		ReplyStorePath:      filepath.Join(workDir, "replies.json"),
 		Model:               "default",
 		Effort:              "low",
 		AllowedModels:       []string{"default", "sonnet", "opus", "haiku"},

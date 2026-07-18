@@ -93,10 +93,12 @@ func TestBuildLarkCardRendersRuntimeConfigForm(t *testing.T) {
 		Type:      "config",
 		SessionID: "claude:chat:message:config-1",
 		ConfigForm: &ConfigForm{
-			Model:   "opus",
-			Effort:  "high",
-			Models:  []string{"default", "sonnet", "opus", "haiku"},
-			Efforts: []string{"REDACTED", "REDACTED", "REDACTED", "REDACTED"},
+			Model:      "opus",
+			Effort:     "high",
+			ReplyMode:  "latest-card",
+			Models:     []string{"REDACTED", "REDACTED", "REDACTED", "REDACTED"},
+			Efforts:    []string{"default", "low", "medium", "high"},
+			ReplyModes: []string{"append", "append-clean-card", "latest-card"},
 		},
 		Segments:  []Segment{{Kind: SegmentText, Text: "must not appear beside the form"}},
 		Streaming: true,
@@ -128,11 +130,11 @@ func TestBuildLarkCardRendersRuntimeConfigForm(t *testing.T) {
 			submit = control
 		}
 	}
-	if len(selects) != 2 || selects["model"]["initial_option"] != "opus" || selects["effort"]["initial_option"] != "high" {
+	if len(selects) != 3 || selects["model"]["initial_option"] != "opus" || selects["effort"]["initial_option"] != "high" || selects["reply_mode"]["initial_option"] != "latest-card" {
 		t.Fatalf("select controls = %#v", selects)
 	}
-	if len(selects["model"]["options"].([]any)) != 4 || len(selects["effort"]["options"].([]any)) != 4 {
-		t.Fatalf("select options = model %#v effort %#v", selects["model"]["options"], selects["effort"]["options"])
+	if len(selects["model"]["options"].([]any)) != 4 || len(selects["effort"]["options"].([]any)) != 4 || len(selects["reply_mode"]["options"].([]any)) != 3 {
+		t.Fatalf("select options = model %#v effort %#v reply %#v", selects["model"]["options"], selects["effort"]["options"], selects["reply_mode"]["options"])
 	}
 	if submit == nil || submit["form_action_type"] != "submit" {
 		t.Fatalf("submit button = %#v", submit)

@@ -75,6 +75,8 @@ func buildConfigFormElements(sessionID string, form ConfigForm) []any {
 				configSelect("model", form.Model, form.Models),
 				markdownElement("config_effort_label", "**Effort**\n`default` 表示不传 `--effort`。"),
 				configSelect("effort", form.Effort, form.Efforts),
+				markdownElement("config_reply_mode_label", "**Reply mode**\n`append` 新建卡片；`append-clean-card` 完成后只保留结果；`latest-card` 复用当前会话的最新卡片。"),
+				configSelect("reply_mode", form.ReplyMode, form.ReplyModes),
 				map[string]any{
 					"tag":              "button",
 					"name":             "submit_runtime_config",

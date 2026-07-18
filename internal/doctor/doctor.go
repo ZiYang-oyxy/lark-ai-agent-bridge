@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"lark-agent-bridge/internal/config"
+	"lark-agent-bridge/internal/reply"
 	"lark-agent-bridge/internal/session"
 )
 
@@ -65,11 +66,14 @@ func runStatic(cfg config.Config) []Check {
 		auditLogWritable(cfg.AuditLogPath),
 		sessionStoreWritable(cfg.SessionStorePath),
 		preferenceStoreWritable(cfg),
+		replyStoreWritable(cfg.ReplyStorePath),
 		mediaCacheWritable(cfg.MediaCacheDir),
 		optionalEnv("E2E_CALLBACK_ADDR"),
 		durationPositive("card_update_every", cfg.CardUpdateEvery),
 		durationPositive("interaction_timeout", cfg.InteractionTimeout),
 		intPositive("card_max_chars", cfg.CardMaxChars),
+		intPositive("card_min_delta_chars", cfg.CardMinDeltaChars),
+		intPositive("card_preview_max_chars", cfg.CardPreviewMaxChars),
 	}
 	return checks
 }
@@ -289,11 +293,64 @@ func preferenceStoreWritable(cfg config.Config) Check {
 	if info.Mode().Perm() != 0o600 {
 		return Check{Name: "preference_store", OK: false, Detail: "insecure_permissions: " + path}
 	}
-	defaults := config.RuntimePreference{Model: cfg.Model, Effort: cfg.Effort}
+	defaults := config.RuntimePreference{Model: cfg.Model, Effort: cfg.Effort, ReplyMode: cfg.ReplyMode}
 	if _, err := config.OpenPreferenceStore(path, defaults, cfg.AllowedModels); err != nil {
 		return Check{Name: "preference_store", OK: false, Detail: "invalid_snapshot: " + path}
 	}
 	return Check{Name: "preference_store", OK: true, Detail: path}
+}
+
+func replyStoreWritable(path string) Check {
+	const name = "reply_store"
+	if path == "" {
+		return Check{Name: name, OK: false, Detail: "empty"}
+	}
+	dir := filepath.Dir(path)
+	info, err := os.Lstat(dir)
+	if os.IsNotExist(err) {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			return Check{Name: name, OK: false, Detail: "parent_create_failed: " + path}
+		}
+		info, err = os.Lstat(dir)
+	}
+	if err != nil {
+		return Check{Name: name, OK: false, Detail: "parent_stat_failed: " + path}
+	}
+	if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+		return Check{Name: name, OK: false, Detail: "parent_not_directory: " + path}
+	}
+	if info.Mode().Perm() != 0o700 {
+		return Check{Name: name, OK: false, Detail: "parent_insecure_permissions: " + path}
+	}
+	probe, err := os.CreateTemp(dir, ".reply-store-probe-*")
+	if err != nil {
+		return Check{Name: name, OK: false, Detail: "write_probe_failed: " + path}
+	}
+	probePath := probe.Name()
+	if err := probe.Close(); err != nil {
+		_ = os.Remove(probePath)
+		return Check{Name: name, OK: false, Detail: "write_probe_failed: " + path}
+	}
+	if err := os.Remove(probePath); err != nil {
+		return Check{Name: name, OK: false, Detail: "write_probe_cleanup_failed: " + path}
+	}
+	info, err = os.Lstat(path)
+	if os.IsNotExist(err) {
+		return Check{Name: name, OK: true, Detail: path}
+	}
+	if err != nil {
+		return Check{Name: name, OK: false, Detail: "store_stat_failed: " + path}
+	}
+	if !info.Mode().IsRegular() {
+		return Check{Name: name, OK: false, Detail: "not_regular: " + path}
+	}
+	if info.Mode().Perm() != 0o600 {
+		return Check{Name: name, OK: false, Detail: "insecure_permissions: " + path}
+	}
+	if _, err := reply.OpenStore(path); err != nil {
+		return Check{Name: name, OK: false, Detail: "invalid_snapshot: " + path}
+	}
+	return Check{Name: name, OK: true, Detail: path}
 }
 
 func Summary(checks []Check) string {

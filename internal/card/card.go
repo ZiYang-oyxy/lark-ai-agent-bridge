@@ -53,10 +53,12 @@ type Action struct {
 }
 
 type ConfigForm struct {
-	Model   string
-	Effort  string
-	Models  []string
-	Efforts []string
+	Model      string
+	Effort     string
+	ReplyMode  string
+	Models     []string
+	Efforts    []string
+	ReplyModes []string
 }
 
 type Event struct {

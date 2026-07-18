@@ -311,10 +311,12 @@ func (s *Service) handleConfigCommand(msg Message, cmd Command) error {
 			SessionID:        runID("config", msg.ID),
 			ReplyToMessageID: msg.ID,
 			ConfigForm: &card.ConfigForm{
-				Model:   preference.Model,
-				Effort:  preference.Effort,
-				Models:  s.configModelOptions(),
-				Efforts: []string{"default", "low", "medium", "high"},
+				Model:      preference.Model,
+				Effort:     preference.Effort,
+				ReplyMode:  string(preference.ReplyMode),
+				Models:     s.configModelOptions(),
+				Efforts:    []string{"default", "low", "medium", "high"},
+				ReplyModes: []string{string(config.ReplyModeAppend), string(config.ReplyModeAppendCleanCard), string(config.ReplyModeLatestCard)},
 			},
 		})
 	case "reset":
@@ -326,7 +328,7 @@ func (s *Service) handleConfigCommand(msg Message, cmd Command) error {
 			return s.renderText("config-reset", msg.ID, card.SegmentError, "偏好重置失败，请检查存储状态。")
 		}
 		s.Audit.Record(msg.Sender, "config_reset", "", "runtime preferences reset")
-		return s.renderText("config-reset", msg.ID, card.SegmentText, "已恢复环境默认的 model / effort；下一条新消息开始生效。")
+		return s.renderText("config-reset", msg.ID, card.SegmentText, "已恢复环境默认的 model / effort / reply mode；下一条新消息开始生效。")
 	default:
 		return s.renderText("config", msg.ID, card.SegmentError, "用法：/config 或 /config reset")
 	}
@@ -852,16 +854,16 @@ func (s *Service) HandleActionResult(ctx context.Context, req ActionRequest) (Ac
 			s.Audit.Record(req.Actor, "config_save_failed", req.SessionID, err.Error())
 			return s.renderActionEvent(configSaveErrorEvent(req.SessionID))
 		}
-		preference := config.RuntimePreference{Model: req.FormValues["model"], Effort: req.FormValues["effort"], ReplyMode: s.runtimePreference().ReplyMode}
+		preference := config.RuntimePreference{Model: req.FormValues["model"], Effort: req.FormValues["effort"], ReplyMode: config.ReplyMode(req.FormValues["reply_mode"])}
 		if err := s.Preferences.Set(preference); err != nil {
 			s.Audit.Record(req.Actor, "config_save_failed", req.SessionID, err.Error())
 			return s.renderActionEvent(configSaveErrorEvent(req.SessionID))
 		}
-		s.Audit.Record(req.Actor, "config_saved", req.SessionID, fmt.Sprintf("model=%s effort=%s", preference.Model, preference.Effort))
+		s.Audit.Record(req.Actor, "config_saved", req.SessionID, fmt.Sprintf("model=%s effort=%s reply_mode=%s", preference.Model, preference.Effort, preference.ReplyMode))
 		return s.renderActionEvent(card.Event{
 			Type:      "config_saved",
 			SessionID: req.SessionID,
-			Segments:  []card.Segment{{Kind: card.SegmentText, Text: fmt.Sprintf("偏好已保存。\n\nmodel=`%s`\neffort=`%s`\n\n下一条新消息开始生效。", preference.Model, preference.Effort)}},
+			Segments:  []card.Segment{{Kind: card.SegmentText, Text: fmt.Sprintf("偏好已保存。\n\nmodel=`%s`\neffort=`%s`\nreply mode=`%s`\n\n下一条新消息开始生效。", preference.Model, preference.Effort, preference.ReplyMode)}},
 		})
 	default:
 		return s.renderActionEvent(card.Event{Type: "error", SessionID: req.SessionID, Segments: []card.Segment{{Kind: card.SegmentError, Text: "unknown action: " + req.ActionID}}})
@@ -1202,6 +1204,7 @@ func (s *Service) statusText(kind agent.Kind, msg Message) string {
 	fmt.Fprintf(&b, "mode=claude_oneshot\n")
 	fmt.Fprintf(&b, "default_workdir=%s\n", s.Config.DefaultWorkDir)
 	fmt.Fprintf(&b, "current_session=%s\n", key.ID())
+	fmt.Fprintf(&b, "reply_mode=%s\n", s.runtimePreference().ReplyMode)
 	sess := s.findSession(key.ID())
 	if sess == nil {
 		b.WriteString("state=not_started")
