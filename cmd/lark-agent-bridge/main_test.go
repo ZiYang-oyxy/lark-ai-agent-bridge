@@ -14,9 +14,93 @@ import (
 	"time"
 
 	"lark-agent-bridge/internal/bridge"
+	"lark-agent-bridge/internal/card"
 	"lark-agent-bridge/internal/config"
 	"lark-agent-bridge/internal/feishu"
 )
+
+type serveCardKitClientFake struct {
+	fullUpdates    int
+	elementUpdates int
+}
+
+func (f *serveCardKitClientFake) CreateCard(context.Context, feishu.CardKitCreateRequest) (feishu.CardKitCreateResult, error) {
+	return feishu.CardKitCreateResult{CardID: "card"}, nil
+}
+
+func (f *serveCardKitClientFake) ReplyCard(context.Context, feishu.CardKitReplyRequest) (feishu.CardKitReplyResult, error) {
+	return feishu.CardKitReplyResult{MessageID: "message"}, nil
+}
+
+func (f *serveCardKitClientFake) UpdateCard(context.Context, feishu.CardKitUpdateCardRequest) error {
+	f.fullUpdates++
+	return nil
+}
+
+func (f *serveCardKitClientFake) UpdateSettings(context.Context, feishu.CardKitUpdateSettingsRequest) error {
+	return nil
+}
+
+func (f *serveCardKitClientFake) UpdateElementContent(context.Context, feishu.CardKitUpdateElementContentRequest) error {
+	f.elementUpdates++
+	return nil
+}
+
+type serveNativeJournalFake struct {
+	prepares int
+}
+
+func (f *serveNativeJournalFake) PrepareNative(context.Context, feishu.NativeSequenceIntent) error {
+	f.prepares++
+	return nil
+}
+
+func (*serveNativeJournalFake) ConfirmNative(context.Context, feishu.NativeSequenceIntent) error {
+	return nil
+}
+
+func (*serveNativeJournalFake) AbortNative(context.Context, feishu.NativeSequenceIntent) error {
+	return nil
+}
+
+func renderServeNativePreview(t *testing.T, router *feishu.CardKitRouterRenderer) {
+	t.Helper()
+	renderer, err := router.NewStreamingBound(t.Context(), feishu.RenderBinding{
+		BaseSessionID: "claude:chat", BatchID: "batch", RunCardSessionID: "run",
+	}, "reply")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := renderer.Render(card.Event{Type: "stream", Streaming: true, SessionID: "run"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := renderer.Render(card.Event{Type: "stream", Streaming: true, SessionID: "run", Segments: []card.Segment{{Kind: card.SegmentText, Text: "answer"}}}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestNewServeCardRouterKeepsNativeDisabledByDefault(t *testing.T) {
+	client := &serveCardKitClientFake{}
+	journal := &serveNativeJournalFake{}
+	router := newServeCardRouter(client, nil, journal, false)
+	renderServeNativePreview(t, router)
+	if client.elementUpdates != 0 || journal.prepares != 0 || client.fullUpdates != 1 {
+		t.Fatalf("disabled gate element/prepare/full = %d/%d/%d", client.elementUpdates, journal.prepares, client.fullUpdates)
+	}
+}
+
+func TestNewServeCardRouterInjectsJournalForExplicitValidation(t *testing.T) {
+	client := &serveCardKitClientFake{}
+	journal := &serveNativeJournalFake{}
+	router := newServeCardRouter(client, nil, journal, true)
+	renderServeNativePreview(t, router)
+	if client.elementUpdates != 1 || journal.prepares != 1 || client.fullUpdates != 0 {
+		t.Fatalf("enabled gate element/prepare/full = %d/%d/%d", client.elementUpdates, journal.prepares, client.fullUpdates)
+	}
+}
+
+var _ feishu.CardKitClientAPI = (*serveCardKitClientFake)(nil)
+var _ feishu.NativeSequenceJournal = (*serveNativeJournalFake)(nil)
 
 type recordingInteractionFencer struct {
 	mu       sync.Mutex

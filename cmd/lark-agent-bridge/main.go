@@ -262,28 +262,28 @@ func runServe(args []string) error {
 		return err
 	}
 	defer closeAudit()
-	cardRouter := feishu.NewCardKitRouterRendererWithObserver(cardClient, recorder)
-	renderer := feishu.NewReactionCardRenderer(sender, cardRouter)
 	sessions := session.NewManagerWithStore(cfg.SessionStorePath)
 	notices, err := sessions.Restore()
 	if err != nil {
 		return fmt.Errorf("restore session store: %w", err)
 	}
-	svc := bridge.NewServiceWithSessions(cfg, renderer, nil, recorder, sessions, notices)
 	preferences, err := config.OpenPreferenceStore(cfg.PreferenceStorePath, config.RuntimePreference{Model: cfg.Model, Effort: cfg.Effort, ReplyMode: cfg.ReplyMode}, cfg.AllowedModels)
 	if err != nil {
 		return fmt.Errorf("open runtime preference store: %w", err)
 	}
-	svc.Preferences = preferences
 	replies, err := reply.OpenStore(cfg.ReplyStorePath)
 	if err != nil {
 		return fmt.Errorf("open reply store: %w", err)
 	}
-	svc.Replies = replies
 	sequenceJournal, err := bridge.NewNativeSequenceJournal(filepath.Join(filepath.Dir(cfg.SessionStorePath), "native-sequence-journal.json"), sessions, replies)
 	if err != nil {
 		return fmt.Errorf("open native sequence journal: %w", err)
 	}
+	cardRouter := newServeCardRouter(cardClient, recorder, sequenceJournal, os.Getenv("E2E_REAL_CARDKIT") == "1")
+	renderer := feishu.NewReactionCardRenderer(sender, cardRouter)
+	svc := bridge.NewServiceWithSessions(cfg, renderer, nil, recorder, sessions, notices)
+	svc.Preferences = preferences
+	svc.Replies = replies
 	svc.SequenceResolver = sequenceJournal
 	svc.CardTarget = cardRouter
 	svc.Reactions = sender
@@ -338,6 +338,13 @@ func runServe(args []string) error {
 		return longConnErr
 	}
 	return shutdownErr
+}
+
+func newServeCardRouter(client feishu.CardKitClientAPI, observer feishu.CardKitRenderObserver, journal feishu.NativeSequenceJournal, enableNative bool) *feishu.CardKitRouterRenderer {
+	if enableNative {
+		return feishu.NewCardKitRouterRendererWithObserverAndJournal(client, observer, journal)
+	}
+	return feishu.NewCardKitRouterRendererWithObserver(client, observer)
 }
 
 func newServeActionTransports(gateway bridge.ActionGateway, cardMaxChars int) (func(context.Context, feishu.CardAction) (*feishu.CardActionResponse, error), http.Handler) {
