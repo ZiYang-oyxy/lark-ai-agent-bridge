@@ -110,6 +110,7 @@ type pendingRun struct {
 	Command          Command
 	Message          Message
 	WorkDir          string
+	Preference       config.RuntimePreference
 	ExpiresAt        time.Time
 }
 
@@ -290,11 +291,12 @@ func (s *Service) HandleMessage(ctx context.Context, msg Message) error {
 	if cmd.Type == CommandIgnored {
 		return nil
 	}
+	preference := s.runtimePreference()
 	if cmd.Type != CommandRun {
 		accepted, err := s.Sessions.AcceptMessage(msg.ID, effectiveMessageTime(msg), s.dedupTTL(), s.dedupMaxEntries())
 		if err != nil {
 			s.Audit.Record(msg.Sender, "command_persist_failed", "", err.Error())
-			return s.renderText("storage", msg.ID, card.SegmentError, "持久化失败，未执行。")
+			return s.renderTextWithMode("storage", msg.ID, card.SegmentError, "持久化失败，未执行。", preference.ConversationMode)
 		}
 		if !accepted {
 			return nil
@@ -302,49 +304,51 @@ func (s *Service) HandleMessage(ctx context.Context, msg Message) error {
 	}
 	switch cmd.Type {
 	case CommandHelp:
-		return s.renderText("help", msg.ID, card.SegmentText, HelpText())
+		return s.renderTextWithMode("help", msg.ID, card.SegmentText, HelpText(), preference.ConversationMode)
 	case CommandUnknown:
-		return s.renderText("command", msg.ID, card.SegmentError, cmd.Text)
+		return s.renderTextWithMode("command", msg.ID, card.SegmentError, cmd.Text, preference.ConversationMode)
 	case CommandStatus:
-		return s.renderText("status", msg.ID, card.SegmentText, s.statusText(cmd.Agent, msg))
+		return s.renderTextWithMode("status", msg.ID, card.SegmentText, s.statusTextWithPreference(cmd.Agent, msg, preference), preference.ConversationMode)
 	case CommandConfig:
-		return s.handleConfigCommand(msg, cmd)
+		return s.handleConfigCommand(msg, cmd, preference)
 	case CommandRun:
-		return s.run(ctx, cmd, msg)
+		return s.runWithPreference(ctx, cmd, msg, "", preference)
 	default:
-		return s.renderText("command", msg.ID, card.SegmentError, "unsupported command")
+		return s.renderTextWithMode("command", msg.ID, card.SegmentError, "unsupported command", preference.ConversationMode)
 	}
 }
 
-func (s *Service) handleConfigCommand(msg Message, cmd Command) error {
+func (s *Service) handleConfigCommand(msg Message, cmd Command, preference config.RuntimePreference) error {
 	switch strings.ToLower(strings.TrimSpace(cmd.Text)) {
 	case "":
-		preference := s.runtimePreference()
 		return s.Cards.Render(card.Event{
 			Type:             "config",
 			SessionID:        runID("config", msg.ID),
 			ReplyToMessageID: msg.ID,
+			ReplyInThread:    preference.ConversationMode == config.ConversationModeTopic,
 			ConfigForm: &card.ConfigForm{
-				Model:      preference.Model,
-				Effort:     preference.Effort,
-				ReplyMode:  string(preference.ReplyMode),
-				Models:     s.configModelOptions(),
-				Efforts:    []string{"default", "low", "medium", "high"},
-				ReplyModes: []string{string(config.ReplyModeAppend), string(config.ReplyModeAppendCleanCard), string(config.ReplyModeLatestCard)},
+				Model:             preference.Model,
+				Effort:            preference.Effort,
+				ReplyMode:         string(preference.ReplyMode),
+				ConversationMode:  string(preference.ConversationMode),
+				Models:            s.configModelOptions(),
+				Efforts:           []string{"default", "low", "medium", "high"},
+				ReplyModes:        []string{string(config.ReplyModeAppend), string(config.ReplyModeAppendCleanCard), string(config.ReplyModeLatestCard)},
+				ConversationModes: []string{string(config.ConversationModeChat), string(config.ConversationModeTopic)},
 			},
 		})
 	case "reset":
 		if s.Preferences == nil {
-			return s.renderText("config-reset", msg.ID, card.SegmentError, "偏好存储尚未配置。")
+			return s.renderTextWithMode("config-reset", msg.ID, card.SegmentError, "偏好存储尚未配置。", preference.ConversationMode)
 		}
 		if err := s.Preferences.Reset(); err != nil {
 			s.Audit.Record(msg.Sender, "config_reset_failed", "", err.Error())
-			return s.renderText("config-reset", msg.ID, card.SegmentError, "偏好重置失败，请检查存储状态。")
+			return s.renderTextWithMode("config-reset", msg.ID, card.SegmentError, "偏好重置失败，请检查存储状态。", preference.ConversationMode)
 		}
 		s.Audit.Record(msg.Sender, "config_reset", "", "runtime preferences reset")
-		return s.renderText("config-reset", msg.ID, card.SegmentText, "已恢复环境默认的 model / effort / reply mode；下一条新消息开始生效。")
+		return s.renderTextWithMode("config-reset", msg.ID, card.SegmentText, "已恢复环境默认的 model / effort / reply mode / conversation mode；下一条新消息开始生效。", preference.ConversationMode)
 	default:
-		return s.renderText("config", msg.ID, card.SegmentError, "用法：/config 或 /config reset")
+		return s.renderTextWithMode("config", msg.ID, card.SegmentError, "用法：/config 或 /config reset", preference.ConversationMode)
 	}
 }
 
@@ -364,7 +368,11 @@ func (s *Service) runtimePreference() config.RuntimePreference {
 	if mode == "" {
 		mode = config.ReplyModeAppend
 	}
-	return config.RuntimePreference{Model: model, Effort: effort, ReplyMode: mode}
+	conversationMode := s.Config.ConversationMode
+	if conversationMode == "" {
+		conversationMode = config.ConversationModeChat
+	}
+	return config.RuntimePreference{Model: model, Effort: effort, ReplyMode: mode, ConversationMode: conversationMode}
 }
 
 func (s *Service) configModelOptions() []string {
@@ -399,24 +407,20 @@ func (s *Service) HandleMessageRecalled(_ context.Context, recall MessageRecall)
 	return nil
 }
 
-func (s *Service) run(ctx context.Context, cmd Command, msg Message) error {
-	return s.runWithCardSessionID(ctx, cmd, msg, "")
-}
-
-func (s *Service) runWithCardSessionID(ctx context.Context, cmd Command, msg Message, cardSessionID string) error {
+func (s *Service) runWithPreference(ctx context.Context, cmd Command, msg Message, cardSessionID string, preference config.RuntimePreference) error {
 	if !s.isAccepting() {
-		return s.renderText("service-stopping", msg.ID, card.SegmentError, "服务正在停止，暂不接受新的执行请求。")
+		return s.renderTextWithMode("service-stopping", msg.ID, card.SegmentError, "服务正在停止，暂不接受新的执行请求。", preference.ConversationMode)
 	}
 	if cmd.Agent == "" {
 		cmd.Agent = agent.Claude
 	}
 	if cmd.Agent != agent.Claude {
-		return s.renderText("unsupported-agent", msg.ID, card.SegmentError, "当前 bridge 只适配 claude。")
+		return s.renderTextWithMode("unsupported-agent", msg.ID, card.SegmentError, "当前 bridge 只适配 claude。", preference.ConversationMode)
 	}
-	key := s.sessionKey(cmd.Agent, msg)
+	key := sessionKeyForMode(cmd.Agent, msg, preference.ConversationMode)
 	workDir := s.effectiveWorkDir(key, cmd)
 	pendingID := runID(key.ID(), msg.ID)
-	asked, err := s.ensureWorkDirOrAsk(workDir, pendingID, msg.ID)
+	asked, err := s.ensureWorkDirOrAsk(workDir, pendingID, msg.ID, preference.ConversationMode)
 	if err != nil {
 		return err
 	}
@@ -425,25 +429,24 @@ func (s *Service) runWithCardSessionID(ctx context.Context, cmd Command, msg Mes
 		if runCardSessionID == "" {
 			runCardSessionID = runID(key.ID(), msg.ID+":run")
 		}
-		s.storePendingRun(pendingID, pendingRun{RunCardSessionID: runCardSessionID, Command: cmd, Message: msg, WorkDir: workDir})
+		s.storePendingRun(pendingID, pendingRun{RunCardSessionID: runCardSessionID, Command: cmd, Message: msg, WorkDir: workDir, Preference: preference})
 		return nil
 	}
 	text := strings.TrimSpace(cmd.Text)
 	if text == "" && len(msg.Attachments) == 0 && !cmd.Reset {
-		return s.renderText("empty", msg.ID, card.SegmentError, "empty prompt")
+		return s.renderTextWithMode("empty", msg.ID, card.SegmentError, "empty prompt", preference.ConversationMode)
 	}
 	attachments, failures, release := s.resolveAttachments(ctx, msg.Attachments)
 	defer release()
 	var summaryErr error
 	if len(failures) > 0 {
-		summaryErr = s.renderText("attachment-failure", msg.ID, card.SegmentError, attachmentFailureSummary(failures, len(attachments) > 0))
+		summaryErr = s.renderTextWithMode("attachment-failure", msg.ID, card.SegmentError, attachmentFailureSummary(failures, len(attachments) > 0), preference.ConversationMode)
 	}
 	if len(msg.Attachments) > 0 && len(attachments) == 0 && text == "" {
 		return summaryErr
 	}
 	receivedAt := time.Now()
-	preference := s.runtimePreference()
-	input := session.Input{ID: msg.ID, Sender: msg.Sender, Text: text, Attachments: attachments, ReplyToMessageID: msg.ID, CardSessionID: cardSessionID, WorkDir: workDir, RequestedModel: preference.Model, RequestedEffort: preference.Effort, Time: effectiveMessageTime(msg), DebounceUntil: receivedAt.Add(DebounceFor(msg)), State: session.InputDebouncing, Reset: cmd.Reset}
+	input := session.Input{ID: msg.ID, Sender: msg.Sender, Text: text, Attachments: attachments, ReplyToMessageID: msg.ID, CardSessionID: cardSessionID, WorkDir: workDir, RequestedModel: preference.Model, RequestedEffort: preference.Effort, ConversationMode: preference.ConversationMode, Time: effectiveMessageTime(msg), DebounceUntil: receivedAt.Add(DebounceFor(msg)), State: session.InputDebouncing, Reset: cmd.Reset}
 	accepted, queued, err := s.Sessions.AcceptAndEnqueue(key, input, receivedAt, s.dedupTTL(), s.dedupMaxEntries(), s.batchLimits())
 	if err != nil {
 		action := "queue_rejected"
@@ -453,7 +456,7 @@ func (s *Service) runWithCardSessionID(ctx context.Context, cmd Command, msg Mes
 			message = "持久化失败，未执行。"
 		}
 		s.Audit.Record(msg.Sender, action, key.ID(), err.Error())
-		return s.renderText("queue-error", msg.ID, card.SegmentError, message)
+		return s.renderTextWithMode("queue-error", msg.ID, card.SegmentError, message, preference.ConversationMode)
 	}
 	if !accepted {
 		return summaryErr
@@ -850,7 +853,7 @@ func (s *Service) HandleActionResult(ctx context.Context, req ActionRequest) (Ac
 			return result, err
 		}
 		if hasPending {
-			if err := s.runWithCardSessionID(ctx, pending.Command, pending.Message, pending.RunCardSessionID); err != nil {
+			if err := s.runWithPreference(ctx, pending.Command, pending.Message, pending.RunCardSessionID, pending.Preference); err != nil {
 				return result, err
 			}
 		}
@@ -868,16 +871,17 @@ func (s *Service) HandleActionResult(ctx context.Context, req ActionRequest) (Ac
 			s.Audit.Record(req.Actor, "config_save_failed", req.SessionID, err.Error())
 			return s.renderActionEvent(configSaveErrorEvent(req.SessionID))
 		}
-		preference := config.RuntimePreference{Model: req.FormValues["model"], Effort: req.FormValues["effort"], ReplyMode: config.ReplyMode(req.FormValues["reply_mode"])}
+		preference := config.RuntimePreference{Model: req.FormValues["model"], Effort: req.FormValues["effort"], ReplyMode: config.ReplyMode(req.FormValues["reply_mode"]), ConversationMode: config.ConversationMode(req.FormValues["conversation_mode"])}
 		if err := s.Preferences.Set(preference); err != nil {
 			s.Audit.Record(req.Actor, "config_save_failed", req.SessionID, err.Error())
 			return s.renderActionEvent(configSaveErrorEvent(req.SessionID))
 		}
-		s.Audit.Record(req.Actor, "config_saved", req.SessionID, fmt.Sprintf("model=%s effort=%s reply_mode=%s", preference.Model, preference.Effort, preference.ReplyMode))
+		preference = s.Preferences.Get()
+		s.Audit.Record(req.Actor, "config_saved", req.SessionID, fmt.Sprintf("model=%s effort=%s reply_mode=%s conversation_mode=%s", preference.Model, preference.Effort, preference.ReplyMode, preference.ConversationMode))
 		return s.renderActionEvent(card.Event{
 			Type:      "config_saved",
 			SessionID: req.SessionID,
-			Segments:  []card.Segment{{Kind: card.SegmentText, Text: fmt.Sprintf("偏好已保存。\n\nmodel=`%s`\neffort=`%s`\nreply mode=`%s`\n\n下一条新消息开始生效。", preference.Model, preference.Effort, preference.ReplyMode)}},
+			Segments:  []card.Segment{{Kind: card.SegmentText, Text: fmt.Sprintf("偏好已保存。\n\nmodel=`%s`\neffort=`%s`\nreply mode=`%s`\nconversation mode=`%s`\n\n下一条新消息开始生效。", preference.Model, preference.Effort, preference.ReplyMode, preference.ConversationMode)}},
 		})
 	default:
 		return s.renderActionEvent(card.Event{Type: "error", SessionID: req.SessionID, Segments: []card.Segment{{Kind: card.SegmentError, Text: "unknown action: " + req.ActionID}}})
@@ -1161,7 +1165,7 @@ func (s *Service) duePendingRuns(now time.Time) []pendingRun {
 	return due
 }
 
-func (s *Service) ensureWorkDirOrAsk(workDir, sessionID, replyToMessageID string) (bool, error) {
+func (s *Service) ensureWorkDirOrAsk(workDir, sessionID, replyToMessageID string, mode config.ConversationMode) (bool, error) {
 	if workDir == "" {
 		return false, fmt.Errorf("workdir is empty")
 	}
@@ -1179,18 +1183,23 @@ func (s *Service) ensureWorkDirOrAsk(workDir, sessionID, replyToMessageID string
 		Type:             "workdir_confirm",
 		SessionID:        sessionID,
 		ReplyToMessageID: replyToMessageID,
+		ReplyInThread:    mode == config.ConversationModeTopic,
 		Segments:         []card.Segment{{Kind: card.SegmentText, Text: "Workdir does not exist: " + workDir}},
 		Actions:          card.WorkDirCreateActions(workDir),
 	})
 }
 
 func (s *Service) renderText(id, replyToMessageID string, kind card.SegmentKind, text string) error {
+	return s.renderTextWithMode(id, replyToMessageID, kind, text, s.runtimePreference().ConversationMode)
+}
+
+func (s *Service) renderTextWithMode(id, replyToMessageID string, kind card.SegmentKind, text string, mode config.ConversationMode) error {
 	for i, page := range card.SplitLongText(text, s.Config.CardMaxChars) {
 		eventID := runID(id, replyToMessageID)
 		if i > 0 {
 			eventID = fmt.Sprintf("%s-page-%d", eventID, i+1)
 		}
-		if err := s.Cards.Render(card.Event{Type: "message", SessionID: eventID, ReplyToMessageID: replyToMessageID, Segments: []card.Segment{{Kind: kind, Text: page}}}); err != nil {
+		if err := s.Cards.Render(card.Event{Type: "message", SessionID: eventID, ReplyToMessageID: replyToMessageID, ReplyInThread: mode == config.ConversationModeTopic, Segments: []card.Segment{{Kind: kind, Text: page}}}); err != nil {
 			return err
 		}
 	}
@@ -1213,12 +1222,17 @@ func (s *Service) renderStream(event card.Event) error {
 }
 
 func (s *Service) statusText(kind agent.Kind, msg Message) string {
-	key := s.sessionKey(kind, msg)
+	return s.statusTextWithPreference(kind, msg, s.runtimePreference())
+}
+
+func (s *Service) statusTextWithPreference(kind agent.Kind, msg Message, preference config.RuntimePreference) string {
+	key := sessionKeyForMode(kind, msg, preference.ConversationMode)
 	var b strings.Builder
 	fmt.Fprintf(&b, "mode=claude_oneshot\n")
 	fmt.Fprintf(&b, "default_workdir=%s\n", s.Config.DefaultWorkDir)
 	fmt.Fprintf(&b, "current_session=%s\n", key.ID())
-	fmt.Fprintf(&b, "reply_mode=%s\n", s.runtimePreference().ReplyMode)
+	fmt.Fprintf(&b, "reply_mode=%s\n", preference.ReplyMode)
+	fmt.Fprintf(&b, "conversation_mode=%s\n", preference.ConversationMode)
 	sess := s.findSession(key.ID())
 	if sess == nil {
 		b.WriteString("state=not_started")
@@ -1264,7 +1278,15 @@ func (s *Service) countChatSessions(chatID string) int {
 }
 
 func (s *Service) sessionKey(kind agent.Kind, msg Message) session.Key {
-	return session.Key{Agent: kind, ChatID: msg.ChatID, Thread: msg.ThreadID}
+	return sessionKeyForMode(kind, msg, s.runtimePreference().ConversationMode)
+}
+
+func sessionKeyForMode(kind agent.Kind, msg Message, mode config.ConversationMode) session.Key {
+	key := session.Key{Agent: kind, ChatID: msg.ChatID}
+	if mode == config.ConversationModeTopic {
+		key.Thread = msg.ThreadID
+	}
+	return key
 }
 
 func metaFromSession(sess session.Session) card.Meta {

@@ -20,7 +20,7 @@ func TestBuildLarkCardUsesValidElementIDs(t *testing.T) {
 		BuildLarkCard(Event{
 			Type: "stream", SessionID: "claude:chat", Streaming: true,
 			Segments: []Segment{{Kind: SegmentText, Text: "answer"}, {Kind: SegmentThought, Text: "thought"}, {Kind: SegmentTool, Text: "tool"}},
-			Actions: WorkDirCreateActions("/tmp/work"), StopButton: StopButton{Visible: true},
+			Actions:  WorkDirCreateActions("/tmp/work"), StopButton: StopButton{Visible: true},
 		}),
 	}
 	var walk func(any)
@@ -136,18 +136,20 @@ func TestBuildLarkCardRendersRuntimeConfigForm(t *testing.T) {
 		Type:      "config",
 		SessionID: "claude:chat:message:config-1",
 		ConfigForm: &ConfigForm{
-			Model:      "opus",
-			Effort:     "high",
-			ReplyMode:  "latest-card",
-			Models:     []string{"default", "sonnet", "opus", "haiku"},
-			Efforts:    []string{"default", "low", "medium", "high"},
-			ReplyModes: []string{"append", "append-clean-card", "latest-card"},
+			Model:             "opus",
+			Effort:            "high",
+			ReplyMode:         "latest-card",
+			ConversationMode:  "chat",
+			Models:            []string{"default", "sonnet", "opus", "haiku"},
+			Efforts:           []string{"default", "low", "medium", "high"},
+			ReplyModes:        []string{"append", "append-clean-card", "latest-card"},
+			ConversationModes: []string{"chat", "topic"},
 		},
 		Segments:  []Segment{{Kind: SegmentText, Text: "must not appear beside the form"}},
 		Streaming: true,
 	})
-	body := payload["REDACTED"].(map[string]any)
-	elements := body["REDACTED"].([]any)
+	body := payload["body"].(map[string]any)
+	elements := body["elements"].([]any)
 	var form map[string]any
 	for _, raw := range elements {
 		element := raw.(map[string]any)
@@ -173,10 +175,10 @@ func TestBuildLarkCardRendersRuntimeConfigForm(t *testing.T) {
 			submit = control
 		}
 	}
-	if len(selects) != 3 || selects["model"]["initial_option"] != "opus" || selects["effort"]["initial_option"] != "high" || selects["reply_mode"]["initial_option"] != "latest-card" {
+	if len(selects) != 4 || selects["model"]["initial_option"] != "opus" || selects["effort"]["initial_option"] != "high" || selects["reply_mode"]["initial_option"] != "latest-card" || selects["conversation_mode"]["initial_option"] != "chat" {
 		t.Fatalf("select controls = %#v", selects)
 	}
-	if len(selects["model"]["options"].([]any)) != 4 || len(selects["effort"]["options"].([]any)) != 4 || len(selects["reply_mode"]["options"].([]any)) != 3 {
+	if len(selects["model"]["options"].([]any)) != 4 || len(selects["effort"]["options"].([]any)) != 4 || len(selects["reply_mode"]["options"].([]any)) != 3 || len(selects["conversation_mode"]["options"].([]any)) != 2 {
 		t.Fatalf("select options = model %#v effort %#v reply %#v", selects["model"]["options"], selects["effort"]["options"], selects["reply_mode"]["options"])
 	}
 	if submit == nil || submit["form_action_type"] != "submit" {
@@ -188,7 +190,7 @@ func TestBuildLarkCardRendersRuntimeConfigForm(t *testing.T) {
 		t.Fatalf("submit callback = %#v", value)
 	}
 	if payload["config"].(map[string]any)["streaming_mode"] != false {
-		t.Fatalf("config form must disable streaming: %#v", payload["config"])
+		t.Fatalf("REDACTED", payload["REDACTED"])
 	}
 }
 

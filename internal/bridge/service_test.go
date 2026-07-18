@@ -478,7 +478,7 @@ func TestServiceConfigCommandShowsCurrentPreferencesWithoutRunningAgent(t *testi
 		t.Fatal(err)
 	}
 	events := renderer.Events()
-	if len(events) != 1 || events[0].ConfigForm == nil || events[0].ConfigForm.Model != "opus" || events[0].ConfigForm.Effort != "high" || events[0].ConfigForm.ReplyMode != string(config.ReplyModeLatestCard) {
+	if len(events) != 1 || events[0].ConfigForm == nil || events[0].ConfigForm.Model != "opus" || events[0].ConfigForm.Effort != "high" || events[0].ConfigForm.ReplyMode != string(config.ReplyModeLatestCard) || events[0].ConfigForm.ConversationMode != string(config.ConversationModeChat) {
 		t.Fatalf("config events = %#v", events)
 	}
 	if len(runner.Calls()) != 0 {
@@ -496,8 +496,80 @@ func TestServiceStatusShowsGlobalReplyModeBeforeSessionStarts(t *testing.T) {
 	svc := NewService(cfg, card.NewFakeRenderer(), newFakeRunner(), audit.NewRecorder())
 	svc.Preferences = store
 	status := svc.statusText(agent.Claude, Message{ChatID: "chat"})
-	if !strings.Contains(status, "reply_mode=append-clean-card") {
+	if !strings.Contains(status, "reply_mode=append-clean-card") || !strings.Contains(status, "conversation_mode=chat") {
 		t.Fatalf("status = %q", status)
+	}
+}
+
+func TestServiceChatConversationModeSharesSessionAcrossThreads(t *testing.T) {
+	cfg := testConfig(t)
+	cfg.ConversationMode = config.ConversationModeChat
+	svc := NewService(cfg, card.NewFakeRenderer(), newFakeRunner(), audit.NewRecorder())
+	now := time.Now()
+	for _, msg := range []Message{
+		{ID: "one", ChatID: "chat", ThreadID: "topic-a", Sender: "user", Text: "one", Time: now},
+		{ID: "two", ChatID: "chat", ThreadID: "topic-b", Sender: "user", Text: "two", Time: now},
+	} {
+		if err := svc.HandleMessage(context.Background(), msg); err != nil {
+			t.Fatal(err)
+		}
+	}
+	list := svc.Sessions.List()
+	if len(list) != 1 || list[0].ID != "claude:chat" || len(list[0].Queue) != 2 {
+		t.Fatalf("chat sessions = %#v", list)
+	}
+}
+
+func TestServiceTopicConversationModeIsolatesSessionsAndRepliesInThread(t *testing.T) {
+	cfg := testConfig(t)
+	cfg.ConversationMode = config.ConversationModeTopic
+	renderer := card.NewFakeRenderer()
+	svc := NewService(cfg, renderer, newFakeRunner(), audit.NewRecorder())
+	now := time.Now()
+	for _, msg := range []Message{
+		{ID: "one", ChatID: "chat", ThreadID: "topic-a", Sender: "user", Text: "one", Time: now},
+		{ID: "two", ChatID: "chat", ThreadID: "topic-b", Sender: "user", Text: "two", Time: now},
+	} {
+		if err := svc.HandleMessage(context.Background(), msg); err != nil {
+			t.Fatal(err)
+		}
+	}
+	list := svc.Sessions.List()
+	if len(list) != 2 {
+		t.Fatalf("topic sessions = %#v", list)
+	}
+	if err := svc.HandleMessage(context.Background(), Message{ID: "help", ChatID: "chat", ThreadID: "topic-a", Sender: "user", Text: "/help", Time: now}); err != nil {
+		t.Fatal(err)
+	}
+	events := renderer.Events()
+	if len(events) != 1 || !events[0].ReplyInThread {
+		t.Fatalf("topic command events = %#v", events)
+	}
+}
+
+func TestServiceFreezesConversationModeAtEnqueueTime(t *testing.T) {
+	cfg := testConfig(t)
+	cfg.ConversationMode = config.ConversationModeTopic
+	defaults := config.RuntimePreference{Model: "default", Effort: "low", ReplyMode: config.ReplyModeAppend, ConversationMode: config.ConversationModeTopic}
+	store, _ := testPreferenceStore(t, defaults, cfg.AllowedModels)
+	renderer := card.NewFakeRenderer()
+	svc := NewService(cfg, renderer, newFakeRunner(), audit.NewRecorder())
+	svc.Preferences = store
+	now := time.Now()
+	if err := svc.HandleMessage(context.Background(), Message{ID: "queued-topic", ChatID: "chat", ThreadID: "topic-a", Sender: "user", Text: "hello", Time: now}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.HandleActionResult(context.Background(), ActionRequest{SessionID: "config", ActionID: "config.save", Actor: "user", FormValues: map[string]string{"model": "default", "effort": "low", "reply_mode": "append", "conversation_mode": "chat"}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.DrainReady(now.Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	waitForEvents(t, renderer, 3)
+	for _, event := range renderer.Events() {
+		if event.ReplyToMessageID == "queued-topic" && !event.ReplyInThread {
+			t.Fatalf("queued topic event lost frozen mode: %#v", event)
+		}
 	}
 }
 
@@ -505,7 +577,7 @@ func TestServiceConfigResetRemovesOverride(t *testing.T) {
 	cfg := testConfig(t)
 	cfg.Model, cfg.Effort = "sonnet", "low"
 	cfg.AllowedModels = []string{"default", "sonnet", "opus", "haiku"}
-	defaults := config.RuntimePreference{Model: cfg.Model, Effort: cfg.Effort, ReplyMode: config.ReplyModeAppend}
+	defaults := config.RuntimePreference{Model: cfg.Model, Effort: cfg.Effort, ReplyMode: config.ReplyModeAppend, ConversationMode: config.ConversationModeChat}
 	store, path := testPreferenceStore(t, defaults, cfg.AllowedModels)
 	if err := store.Set(config.RuntimePreference{Model: "opus", Effort: "high", ReplyMode: config.ReplyModeLatestCard}); err != nil {
 		t.Fatal(err)
@@ -536,11 +608,11 @@ func TestServiceConfigSavePersistsValidValuesAndRejectsInvalidValues(t *testing.
 	renderer := card.NewFakeRenderer()
 	svc := NewService(cfg, renderer, newFakeRunner(), audit.NewRecorder())
 	svc.Preferences = store
-	result, err := svc.HandleActionResult(context.Background(), ActionRequest{SessionID: "config-card", ActionID: "config.save", Actor: "user", FormValues: map[string]string{"model": "claude-custom-1", "effort": "medium", "reply_mode": "latest-card"}})
+	result, err := svc.HandleActionResult(context.Background(), ActionRequest{SessionID: "config-card", ActionID: "config.save", Actor: "user", FormValues: map[string]string{"model": "claude-custom-1", "effort": "medium", "reply_mode": "latest-card", "conversation_mode": "topic"}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Event == nil || result.Event.Type != "config_saved" || store.Get() != (config.RuntimePreference{Model: "claude-custom-1", Effort: "medium", ReplyMode: config.ReplyModeLatestCard}) {
+	if result.Event == nil || result.Event.Type != "config_saved" || store.Get() != (config.RuntimePreference{Model: "claude-custom-1", Effort: "medium", ReplyMode: config.ReplyModeLatestCard, ConversationMode: config.ConversationModeTopic}) {
 		t.Fatalf("save result/store = %#v / %#v", result, store.Get())
 	}
 	reopened, err := config.OpenPreferenceStore(path, defaults, cfg.AllowedModels)
@@ -699,7 +771,7 @@ func TestServiceConfigPersistenceFailureShowsErrorAndAudits(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Event == nil || result.Event.Type != "error" || store.Get() != (config.RuntimePreference{Model: "sonnet", Effort: "medium", ReplyMode: config.ReplyModeAppend}) || !auditContainsAction(recorder.Events(), "config_save_failed") {
+	if result.Event == nil || result.Event.Type != "error" || store.Get() != (config.RuntimePreference{Model: "sonnet", Effort: "medium", ReplyMode: config.ReplyModeAppend, ConversationMode: config.ConversationModeChat}) || !auditContainsAction(recorder.Events(), "config_save_failed") {
 		t.Fatalf("failure result/store/audit = %#v / %#v / %#v", result, store.Get(), recorder.Events())
 	}
 }
@@ -1391,7 +1463,7 @@ func TestDifferentTopicsRunInParallel(t *testing.T) {
 func TestServiceMissingWorkdirAsksThenRunsAfterCreate(t *testing.T) {
 	root := t.TempDir()
 	missing := filepath.Join(root, "missing")
-	cfg := config.Config{DefaultAgent: "claude", DefaultWorkDir: root, CardMaxChars: 1000, InteractionTimeout: time.Second}
+	cfg := config.Config{DefaultAgent: "claude", DefaultWorkDir: root, CardMaxChars: 1000, InteractionTimeout: time.Second, ConversationMode: config.ConversationModeTopic}
 	renderer := card.NewFakeRenderer()
 	runner := newFakeRunner()
 	svc := NewService(cfg, renderer, runner, audit.NewRecorder())
@@ -1406,6 +1478,10 @@ func TestServiceMissingWorkdirAsksThenRunsAfterCreate(t *testing.T) {
 	if events[0].SessionID != "claude:chat:message:msg-1" {
 		t.Fatalf("confirm session id = %q", events[0].SessionID)
 	}
+	if !events[0].ReplyInThread {
+		t.Fatalf("workdir confirmation did not freeze topic reply mode: %#v", events[0])
+	}
+	svc.Config.ConversationMode = config.ConversationModeChat
 	result, err := svc.HandleActionResult(context.Background(), ActionRequest{SessionID: "claude:chat:message:msg-1", ActionID: "create_workdir", Actor: "u1"})
 	if err != nil {
 		t.Fatalf("create action error: %v", err)
@@ -1432,7 +1508,7 @@ func TestServiceMissingWorkdirAsksThenRunsAfterCreate(t *testing.T) {
 		t.Fatalf("terminal confirm event = %#v", events[1])
 	}
 	runEvent := events[2]
-	if runEvent.Type != "stream" || runEvent.SessionID == events[1].SessionID || runEvent.ReplyToMessageID != "msg-1" {
+	if runEvent.Type != "stream" || runEvent.SessionID == events[1].SessionID || runEvent.ReplyToMessageID != "msg-1" || !runEvent.ReplyInThread {
 		t.Fatalf("run event = %#v, want separate card replying to original message", runEvent)
 	}
 }
@@ -2634,7 +2710,7 @@ func TestStreamUpdateParsesClaudeDeltaThinking(t *testing.T) {
 
 func testConfig(t *testing.T) config.Config {
 	t.Helper()
-	return config.Config{DefaultAgent: "claude", DefaultWorkDir: t.TempDir(), CardMaxChars: 1000, InteractionTimeout: time.Second}
+	return config.Config{DefaultAgent: "claude", DefaultWorkDir: t.TempDir(), CardMaxChars: 1000, InteractionTimeout: time.Second, ConversationMode: config.ConversationModeTopic}
 }
 
 func testPreferenceStore(t *testing.T, defaults config.RuntimePreference, allowedModels []string) (*config.PreferenceStore, string) {

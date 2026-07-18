@@ -270,7 +270,7 @@ func runServe(args []string) error {
 		return fmt.Errorf("restore session store: %w", err)
 	}
 	svc := bridge.NewServiceWithSessions(cfg, renderer, nil, recorder, sessions, notices)
-	preferences, err := config.OpenPreferenceStore(cfg.PreferenceStorePath, config.RuntimePreference{Model: cfg.Model, Effort: cfg.Effort, ReplyMode: cfg.ReplyMode}, cfg.AllowedModels)
+	preferences, err := config.OpenPreferenceStore(cfg.PreferenceStorePath, config.RuntimePreference{Model: cfg.Model, Effort: cfg.Effort, ReplyMode: cfg.ReplyMode, ConversationMode: cfg.ConversationMode}, cfg.AllowedModels)
 	if err != nil {
 		return fmt.Errorf("open runtime preference store: %w", err)
 	}

@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"lark-agent-bridge/internal/card"
+	"lark-agent-bridge/internal/config"
 	"lark-agent-bridge/internal/session"
 )
 
@@ -53,6 +54,7 @@ type agentCardStream struct {
 	lastFlushedRunes int
 	sessionID        string
 	replyTo          string
+	replyInThread    bool
 	startedAt        time.Time
 	status           string
 	activity         string
@@ -102,6 +104,7 @@ func newAgentCardStreamWithClock(service *Service, sessionID string, sess sessio
 		previewPolicy: policy,
 		sessionID:     sessionID,
 		replyTo:       input.ReplyToMessageID,
+		replyInThread: input.ConversationMode == config.ConversationModeTopic,
 		startedAt:     startedAt,
 		status:        "running",
 		activity:      streamActivityReasoning,
@@ -412,6 +415,7 @@ func (s *agentCardStream) eventLocked(initial bool) card.Event {
 		Type:             s.statusEventTypeLocked(),
 		SessionID:        s.sessionID,
 		ReplyToMessageID: s.replyTo,
+		ReplyInThread:    s.replyInThread,
 		Segments:         segments,
 		Meta:             s.meta,
 		StopButton:       card.StopButton{Visible: stopVisible, Disabled: stopDisabled},

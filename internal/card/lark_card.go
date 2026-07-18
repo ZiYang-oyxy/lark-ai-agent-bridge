@@ -77,6 +77,8 @@ func buildConfigFormElements(sessionID string, form ConfigForm) []any {
 				configSelect("effort", form.Effort, form.Efforts),
 				markdownElement("config_reply_label", "**Reply mode**\n`append` 新建卡片；`append-clean-card` 完成后只保留结果；`latest-card` 复用当前会话的最新卡片。"),
 				configSelect("reply_mode", form.ReplyMode, form.ReplyModes),
+				markdownElement("config_scope_label", "**Conversation mode**\n`chat` 回复到普通聊天并按 chat 共用会话；`topic` 回复到话题并按 thread 隔离会话。"),
+				configSelect("conversation_mode", form.ConversationMode, form.ConversationModes),
 				map[string]any{
 					"tag":              "button",
 					"name":             "submit_runtime_config",
