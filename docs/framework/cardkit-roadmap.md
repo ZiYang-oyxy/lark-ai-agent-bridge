@@ -197,9 +197,11 @@ AI CardKit 2.0 路径已经使用：
 
 ### P0：JSON 容量保护与错误降级（唯一线上炸点，先做）
 
+**状态：已完成（2026-07-18）。** `internal/card` 负责最终 JSON 的 28 KiB / 200-component 测量、不可伪造的 `PreparedLarkCard` 与分级压缩；`internal/feishu` 在 Create/Update 前做最后校验并发送精确预检字节。长连接 callback 与 HTTP compatibility callback 都使用同一 prepared factory，因此同步返回卡片也受保护。无法保留可用调用方内容时，使用不含 session、workdir、model、tool output 或 action 的静态 emergency 卡。
+
 目标：在发送前确定卡片不会因为体积或组件数量超限而中断整个回复。
 
-建议方案：
+已实现方案：
 
 1. 以最终 `json.Marshal` 后的字节数为准，设置约 28 KB 软上限。插入点即 `cardkit_client.go` 中 `UpdateCard`/`CreateCard` 现有 `json.Marshal(req.Card)` 之后。
 2. 统计组件和元素数量，预留终态按钮和 footer 的空间。

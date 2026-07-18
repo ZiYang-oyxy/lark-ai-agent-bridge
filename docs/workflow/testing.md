@@ -30,6 +30,7 @@ GOCACHE=$PWD/.cache/go-build go test ./...
 - 只有 `/new` 重置当前会话并形成独占 batch boundary
 - Claude one-shot 命令构造和 stream-json 解析
 - CardKit 流式更新、标题颜色和 `⏱` 耗时、分栏底部状态栏、折叠面板、停止按钮、工作目录确认按钮
+- CardKit 最终 JSON 的 28 KiB / 200-component 容量闸门、UTF-8 多字节测量、分级压缩、静态 emergency fallback，以及 Create/Update 和两种 callback transport 的 prepared-card 边界
 - 工作目录创建、取消和超时
 - `/new --workdir` 的 Claude 子进程 `pwd` 和 `$PWD`
 - 长连接 `card.action.trigger` action 解析
