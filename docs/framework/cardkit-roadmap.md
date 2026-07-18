@@ -2,19 +2,19 @@
 
 > 状态：技术备忘，作为后续 CardKit 相关工作的决策依据，不代表当前迭代承诺。
 >
-> 更新时间：2026-07-18
+> 更新时间：2026-07-18（依据真实代码核实修订：优先级重排，纠正两处过时现状）
 
 ## 结论
 
 当前 bridge 已经覆盖 CardKit 2.0 在 AI Agent 运行卡场景中的核心展示能力：同一卡片创建与更新、状态标题、Markdown 正文、思考与工具折叠面板、停止和工作目录操作按钮、分栏元数据以及 `card.action.trigger` 回调。
 
-当前主要差距不在“缺少更多视觉组件”，而在以下三类生产能力：
+当前真正的生产能力差距只有一类是硬缺口，其余两类此前评估偏保守：
 
-1. 正文仍通过节流后的全卡替换更新，没有使用按 `element_id` 更新的原生文本流式接口。
-2. 容量控制主要依据文本字符数，没有以最终 JSON 字节数、组件数量和 CardKit 错误类型为依据做分级压缩与降级。
-3. `card_id`、消息 ID 和 `sequence` 尚未持久化，进程重启后不能继续更新或收敛旧卡片。
+1. **容量控制只按文本字符（rune）截断，没有以最终 JSON 字节数为准的闸门与分级降级**。这是当前唯一的线上炸点：字符数不等于字节数，中文、markdown、折叠面板与工具 JSON 输出都可能让「12000 字符」超过飞书 30 KB / 200 组件的硬限制，导致整次更新被拒、用户拿不到最终答案。
+2. 正文仍通过节流后的全卡替换更新，没有使用按 `element_id` 更新的原生文本流式接口。用户已能看到打字机式增量，因此这属于**网络开销优化，不是用户可感知的新能力**。
+3. 卡片引用持久化与重启恢复**已基本实现**（`RenderRef` 随会话快照落盘、重启走 `Rehydrate` 恢复 `sequence`），只剩「遗留 running 卡片收敛为 interrupted」「14 天过期后新建卡」两个收尾。
 
-因此，后续应优先补齐流式更新、容量保护和卡片引用恢复，再考虑配置表单、回复显示模式和反馈按钮。图表、模板、多语言、循环容器等能力暂不优先。
+因此优先级重排为：先补 **JSON 字节级容量保护**（独立、纯单测可验证、不碰安全面、不依赖任何未完成项），再做**重启恢复收尾**。原生文本流式更新降级为「按需性能优化」，等真实 E2E 观测到全卡刷新造成明显限流或卡顿再做。访问控制及其下游的敏感 CardKit 交互统一放入 P3，本轮不实施；图表、模板、多语言、循环容器等展示能力同样暂缓。
 
 ## 评估范围
 
@@ -103,10 +103,19 @@ PUT /open-apis/cardkit/v1/cards/{card_id}/elements/{element_id}/content
 - 组件和元素数量检查。
 - reasoning、tool 和 answer 分区的分级压缩策略。
 - CardKit oversize、expired、not-found、invalid-sequence、interaction-in-progress 等错误的类型化分类。
-- `card_id`、reply message ID、最后成功 `sequence` 的持久化。
-- 重启后 rehydrate 并把遗留 running 卡片更新为 interrupted 的能力。
 
-`CardKitClient.UpdateSettings` 已实现，但当前没有生产调用方，不能视为已落地能力。
+已具备能力（此前评估偏保守，实测已落地）：
+
+- `card_id`、reply message ID、最后成功 `sequence` 已持久化：封装为 `session.RenderRef{CardID, ReplyMessageID, Version}`，随 `Batch` 通过 `SaveSnapshot` 原子写盘（`session/store.go`）。
+- 重启后已能 rehydrate：`CardTarget.Rehydrate` 用持久化的 `CardID/ReplyMessageID/Version` 重建 renderer 并恢复 `sequence`（`bridge/service.go:245`、`cardkit_renderer.go:84-93`）。
+- 已有单卡串行分配 `sequence`：每 session 一个 `CardKitRenderer`，`renderer.mu` 与上层 `agentCardStream.renderMu` 双层锁保证顺序，无需再新造独立 coordinator（`cardkit_renderer.go:172-186`、`stream_card.go`）。
+
+遗留缺口（属重启恢复的收尾，非新工程）：
+
+- 遗留 running 卡片恢复后仅恢复了 `sequence`，尚未主动关闭 `streaming_mode`、置灰按钮并收敛为 interrupted。
+- `ActiveBatch` 结束清空后，对应 `RenderRef` 不再随快照保留；以及 14 天过期后应新建卡。
+
+`CardKitClient.UpdateSettings` 已定义，但当前没有生产调用方，不能视为已落地能力。
 
 ### 覆盖度判断
 
@@ -184,15 +193,79 @@ AI CardKit 2.0 路径已经使用：
 
 ## 推荐路线
 
-### P0：原生文本流式更新
+> 优先级已按「发生概率高、验证成本低、影响范围大」重排。原 P0「原生文本流式更新」因用户已能看到增量、且实现最复杂、最易引入乱序回归，降级为 P2 性能优化；原 P1「持久化恢复」因代码已基本落地，降级为 P0 收尾。
 
-目标：正文增量输出只更新指定 Markdown 组件，结构或状态变化才全量更新卡片。
+### P0：JSON 容量保护与错误降级（唯一线上炸点，先做）
+
+目标：在发送前确定卡片不会因为体积或组件数量超限而中断整个回复。
 
 建议方案：
 
-1. 为回答正文保留稳定 `element_id`，例如 `answer`。
-2. 在 CardKit client 增加文本流式更新接口。
-3. 每张卡片只维护一个串行 update coordinator，统一分配 `sequence`。
+1. 以最终 `json.Marshal` 后的字节数为准，设置约 28 KB 软上限。插入点即 `cardkit_client.go` 中 `UpdateCard`/`CreateCard` 现有 `json.Marshal(req.Card)` 之后。
+2. 统计组件和元素数量，预留终态按钮和 footer 的空间。
+3. 按以下顺序压缩：旧工具完整输出、旧思考内容、旧工具摘要、正文末尾。
+4. 无正文时必须保留最近工具或思考摘要，禁止降级成空白卡片。
+5. 错误类型化**先只做 oversize 一类**；expired、not-found、invalid-sequence、interaction-in-progress 等目前无消费方，属过度设计，留到真遇到再加。
+6. transient error 保留映射并重试；明确 stale/expired 后才清理映射并创建新卡。
+
+验收条件：
+
+- 超长 reasoning/tool 组合不会生成超过软上限的 payload。
+- 压缩后仍可识别当前状态、最近工具和最终回答。
+- 卡片超限错误不会导致 Agent run 失败或用户无最终回复。
+- 单测覆盖每一级压缩和最终 fallback（用现有 `fakeCardKitClient` 即可，不依赖真飞书）。
+
+### P0 收尾：重启恢复的两个缺口
+
+目标：补齐已落地的持久化恢复能力，而非新建存储。`RenderRef` 落盘与 `Rehydrate` 已实现（见「当前容量与恢复能力」），此项只补两个边界。
+
+建议方案：
+
+1. 在现有 `Rehydrate` 路径上，对遗留 running 卡片补一次终态全卡更新：关闭 `streaming_mode`、置灰按钮、标题收敛为 interrupted。
+2. 处理 `ActiveBatch` 结束后 `RenderRef` 不再随快照保留的边界，以及 14 天过期后自动新建卡。
+
+验收条件：
+
+- 重启后不会复用低于历史值的 `sequence`（现已满足，回归保护）。
+- 遗留 running 卡片可更新为 interrupted。
+- 超过 14 天或服务端明确返回 stale 时自动创建新卡。
+- 网络或 5xx 错误不会误删有效映射。
+
+### P1：现有 CardKit 配置表单收口（已完成，不新增能力）
+
+当前 `/config` CardKit 2.0 表单、`form_value` 解析和全局 model/effort/reply mode 偏好持久化已经实现。此处不再作为待开发功能；在 P3 访问控制落地前，维持“仅部署在个人可控 chat/tenant”的既有适用边界，不继续扩大配置表单能力或投放范围。
+
+目标：在需要时用 `/config` 卡片承载 model、effort、回复模式等少量运行偏好。
+
+建议仅引入当前确有业务入口的组件：
+
+- `form`
+- `select_static`
+- `input`
+- submit/cancel button
+- `form_value`
+
+后续若进入多人或不可信 chat/tenant，表单必须纳入 P3 的访问控制与 callback capability 校验，不能继续以“卡片可见即可提交”作为授权依据。
+
+P3 安全收口的验收条件：
+
+- 表单值只从可信的 `form_value` 读取。
+- 点击者通过 owner/admin/access policy 校验。
+- action 绑定 scope、active run 或一次性 nonce，不能跨会话重放。
+- 提交后同步返回成功或失败终态，并禁用重复提交。
+- secret 不预填、不回显、不进入 audit。
+
+### P2：原生文本流式更新（性能优化，非功能补齐）
+
+> 原列为 P0。降级理由：用户借由现有「节流全卡刷新 + `streaming_mode`」已能看到打字机式增量，本项优化的是**网络开销**而非用户可感知能力；且它是整份 roadmap 里实现最复杂、最易引入乱序 / `invalid sequence` 回归的一项（要引入 element 级接口、处理全卡与文本流式共享 `sequence` 的竞争、以及「交互进行中不能并发流式」的官方限制）。收益/风险比最差，应等真实 E2E 观测到全卡刷新造成明显限流或卡顿再做。
+
+目标：正文增量输出只更新指定 Markdown 组件，结构或状态变化才全量更新卡片。前置依赖（单卡串行分配 `sequence`）已具备，主要风险在竞争处理。
+
+建议方案：
+
+1. 复用回答正文已有的稳定 `element_id`（`answer`，见 `card/lark_card.go`）。
+2. 在 CardKit client 增加文本流式更新接口（`PUT .../cards/{card_id}/elements/{element_id}/content`）。
+3. 复用现有单卡串行锁统一分配 `sequence`，全卡与文本更新共享同一序号，不各自维护。
 4. answer delta 只进入文本更新；思考、工具、header、按钮和 footer 变化进入全卡更新。
 5. 完成、失败、停止必须通过全卡更新关闭 `streaming_mode` 并收敛按钮终态。
 6. 原生文本流式失败时回退到当前全卡更新，不中断 Agent run。
@@ -206,83 +279,35 @@ AI CardKit 2.0 路径已经使用：
 - stop、error、result 终态与当前行为一致。
 - 真实飞书 E2E 能观察到原生打字机效果，audit 能区分 text stream 和 full update。
 
-### P0：JSON 容量保护与错误降级
-
-目标：在发送前确定卡片不会因为体积或组件数量超限而中断整个回复。
-
-建议方案：
-
-1. 以最终 `json.Marshal` 后的字节数为准，设置约 28 KB 软上限。
-2. 统计组件和元素数量，预留终态按钮和 footer 的空间。
-3. 按以下顺序压缩：旧工具完整输出、旧思考内容、旧工具摘要、正文末尾。
-4. 无正文时必须保留最近工具或思考摘要，禁止降级成空白卡片。
-5. 为 oversize、expired、not-found、invalid-sequence、rate-limit 和 interaction-in-progress 建立类型化错误。
-6. transient error 保留映射并重试；明确 stale/expired 后才清理映射并创建新卡。
-
-验收条件：
-
-- 超长 reasoning/tool 组合不会生成超过软上限的 payload。
-- 压缩后仍可识别当前状态、最近工具和最终回答。
-- 卡片超限错误不会导致 Agent run 失败或用户无最终回复。
-- 单测覆盖每一级压缩和最终 fallback。
-
-### P1：卡片引用持久化与重启恢复
-
-目标：进程重启后能识别旧运行卡并收敛为 interrupted，或在未过期时继续更新 latest card。
-
-建议持久化：
-
-```text
-scope/session key
-card_id
-reply message_id
-last successful sequence
-created_at
-last card state
-```
-
-实现应与会话快照和 reply display mode 统一设计，不新增另一套互不关联的状态文件。
-
-验收条件：
-
-- 重启后不会复用低于历史值的 `sequence`。
-- 遗留 running 卡片可更新为 interrupted。
-- 超过 14 天或服务端明确返回 stale 时自动创建新卡。
-- 网络或 5xx 错误不会误删有效映射。
-
-### P1：CardKit 配置表单
-
-目标：在需要时用 `/config` 卡片承载 model、effort、回复模式等少量运行偏好。
-
-建议仅引入当前确有业务入口的组件：
-
-- `form`
-- `select_static`
-- `input`
-- submit/cancel button
-- `form_value`
-
-表单落地必须与访问控制一起完成，不能在当前“任意按钮操作者都可触发”的前提下开放 model、workdir 或运行配置修改。
-
-验收条件：
-
-- 表单值只从可信的 `form_value` 读取。
-- 点击者通过 owner/admin/access policy 校验。
-- action 绑定 scope、active run 或一次性 nonce，不能跨会话重放。
-- 提交后同步返回成功或失败终态，并禁用重复提交。
-- secret 不预填、不回显、不进入 audit。
-
 ### P2：回复显示与反馈体验
 
-可选能力：
+已完成能力：
 
 - `append`：每轮新卡片。
 - `latest-card`：每个 scope 复用最新结果卡。
 - `append-clean-card`：运行中展示过程，完成后只保留最终答案。
+
+暂缓到 P3 的能力：
+
 - 完成后增加点赞、点踩或“继续处理”按钮。
 - 通过组件级更新删除停止按钮、添加反馈区。
 
-这些能力依赖可靠的 card ref 持久化和访问控制，应在 P1 完成后再考虑。
+这些新增 action 依赖可靠的 card ref 持久化（已落地）以及 P3 的访问控制、服务端 action 绑定和防重放能力。P3 前不新增反馈或“继续处理”按钮。
+
+### P3：访问控制与敏感 CardKit 交互
+
+本阶段统一承接访问控制模型及其所有下游敏感 action，本轮明确不实施。
+
+目标能力：
+
+- 消息入口按 owner、admin、allowed users 和 allowed chats 做 fail-closed 授权。
+- `/config`、`/config reset` 和 `config.save` 只允许 owner/admin。
+- stop、workdir、反馈和“继续处理” action 绑定可信 actor、scope、run/card、action、过期时间和一次性 nonce。
+- callback capability 持久化并原子消费，进程重启后仍能拒绝重放；策略变化后旧 capability 失效。
+- HTTP callback 若保留生产用途，先做可信 transport/签名校验，再进入与长连接相同的授权管线。
+- “继续处理”只能从服务端保存的会话上下文创建新输入，不能把客户端任意 `value` 直接作为 prompt。
+
+首版推荐采用本地显式 owner/admin/allowlist + signed nonce capability；飞书 owner 自动发现和 `/invite` 管理命令作为后续增强，不作为首版前置。
 
 ### P3：按真实需求引入展示组件
 
@@ -302,13 +327,13 @@ last card state
 - 不为了 CardKit 抽象提前改造成多平台 `core.Card`。
 - 不为展示技术能力而加入图表、模板、循环容器等无实际消费方的组件。
 - 不让 CardKit 网络或渲染失败回滚已经持久化的 Agent 执行状态。
-- 不在 CardKit action 中信任客户端提交的 session、scope、workdir 或配置值，必须用服务端状态校验。
+- P3 访问控制落地后，不在 CardKit action 中信任客户端提交的 session、scope、workdir 或配置值，必须用服务端状态和一次性 capability 校验。
 
 ## 实施依赖与风险
 
 ### `sequence` 竞争
 
-原生文本流式、全卡更新、配置更新和回调后异步更新都操作同一张卡片。若各自维护序号，会产生乱序或 `invalid sequence`。必须通过单卡串行 coordinator 分配所有序号。
+原生文本流式、全卡更新、配置更新和回调后异步更新都操作同一张卡片。若各自维护序号，会产生乱序或 `invalid sequence`。当前已有单卡串行分配（每 session 一个 renderer + `renderer.mu`/`renderMu` 双层锁），新增更新路径必须复用这一序号来源，不新造第二套序号。
 
 ### 回调与流式更新竞争
 
