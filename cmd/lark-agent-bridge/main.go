@@ -279,7 +279,7 @@ func runServe(args []string) error {
 	if err != nil {
 		return fmt.Errorf("open native sequence journal: %w", err)
 	}
-	cardRouter := newServeCardRouter(cardClient, recorder, sequenceJournal, os.Getenv("E2E_REAL_CARDKIT") == "1")
+	cardRouter := newServeCardRouter(cardClient, recorder, sequenceJournal)
 	renderer := feishu.NewReactionCardRenderer(sender, cardRouter)
 	svc := bridge.NewServiceWithSessions(cfg, renderer, nil, recorder, sessions, notices)
 	svc.Preferences = preferences
@@ -340,11 +340,8 @@ func runServe(args []string) error {
 	return shutdownErr
 }
 
-func newServeCardRouter(client feishu.CardKitClientAPI, observer feishu.CardKitRenderObserver, journal feishu.NativeSequenceJournal, enableNative bool) *feishu.CardKitRouterRenderer {
-	if enableNative {
-		return feishu.NewCardKitRouterRendererWithObserverAndJournal(client, observer, journal)
-	}
-	return feishu.NewCardKitRouterRendererWithObserver(client, observer)
+func newServeCardRouter(client feishu.CardKitClientAPI, observer feishu.CardKitRenderObserver, journal feishu.NativeSequenceJournal) *feishu.CardKitRouterRenderer {
+	return feishu.NewCardKitRouterRendererWithObserverAndJournal(client, observer, journal)
 }
 
 func newServeActionTransports(gateway bridge.ActionGateway, cardMaxChars int) (func(context.Context, feishu.CardAction) (*feishu.CardActionResponse, error), http.Handler) {

@@ -79,23 +79,13 @@ func renderServeNativePreview(t *testing.T, router *feishu.CardKitRouterRenderer
 	}
 }
 
-func TestNewServeCardRouterKeepsNativeDisabledByDefault(t *testing.T) {
+func TestNewServeCardRouterAlwaysInjectsDurableJournal(t *testing.T) {
 	client := &serveCardKitClientFake{}
 	journal := &serveNativeJournalFake{}
-	router := newServeCardRouter(client, nil, journal, false)
-	renderServeNativePreview(t, router)
-	if client.elementUpdates != 0 || journal.prepares != 0 || client.fullUpdates != 1 {
-		t.Fatalf("disabled gate element/prepare/full = %d/%d/%d", client.elementUpdates, journal.prepares, client.fullUpdates)
-	}
-}
-
-func TestNewServeCardRouterInjectsJournalForExplicitValidation(t *testing.T) {
-	client := &serveCardKitClientFake{}
-	journal := &serveNativeJournalFake{}
-	router := newServeCardRouter(client, nil, journal, true)
+	router := newServeCardRouter(client, nil, journal)
 	renderServeNativePreview(t, router)
 	if client.elementUpdates != 1 || journal.prepares != 1 || client.fullUpdates != 0 {
-		t.Fatalf("enabled gate element/prepare/full = %d/%d/%d", client.elementUpdates, journal.prepares, client.fullUpdates)
+		t.Fatalf("production router element/prepare/full = %d/%d/%d", client.elementUpdates, journal.prepares, client.fullUpdates)
 	}
 }
 

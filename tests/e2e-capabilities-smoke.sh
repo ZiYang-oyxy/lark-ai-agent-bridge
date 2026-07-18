@@ -287,18 +287,8 @@ for required in \
   fi
 done
 
-native_run_case_source="$(sed -n '/^run_case() {/,/^}/p' "$ROOT/scripts/e2e-real.sh")"
-server_start_source="$(sed -n '/^start_server_if_needed() {/,/^}/p' "$ROOT/scripts/e2e-real.sh")"
-for required in \
-  'SERVER_REAL_CARDKIT=1' \
-  'SERVER_REAL_CARDKIT=""' \
-  'E2E_REAL_CARDKIT=$SERVER_REAL_CARDKIT'; do
-  if ! printf '%s\n%s\n' "$native_run_case_source" "$server_start_source" | rg -F -- "$required" >/dev/null; then
-    fail "native validation server gate is missing: $required"
-  fi
-done
-if [[ "$(printf '%s\n' "$native_run_case_source" | rg -c -F 'SERVER_REAL_CARDKIT=1')" -ne 1 ]]; then
-  fail "native validation gate must be enabled only by the native_text_stream run_case branch"
+if rg -F 'SERVER_REAL_CARDKIT' "$ROOT/scripts/e2e-real.sh" >/dev/null || rg -F 'E2E_REAL_CARDKIT=$SERVER_REAL_CARDKIT' "$ROOT/scripts/e2e-real.sh" >/dev/null; then
+  fail "retired native validation gate is still present"
 fi
 
 echo "e2e capability smoke ok"

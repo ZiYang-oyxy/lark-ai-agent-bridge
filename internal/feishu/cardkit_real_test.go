@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -145,6 +146,58 @@ func TestRealCardKitElementContentRequestShape(t *testing.T) {
 	// then its non-sensitive status/code/byte evidence must be reviewed before
 	// adding production constants or enabling UpdateElementContent.
 	t.Fatalf("raw element-content probe observed http=%d code=%d encoded_bytes=%d; evidence is not frozen, native streaming remains disabled", resp.StatusCode, envelope.Code, len(body))
+}
+
+func TestRealCardKitElementContentOversizeDoesNotConsumeSequence(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	client := realCardKitSmokeClient(t)
+	prepared, err := card.PrepareLarkCard(card.Event{Type: "stream", Streaming: true, SessionID: "cardkit-element-content-oversize-probe"})
+	if err != nil {
+		t.Fatal("oversize probe failed while preparing card")
+	}
+	created, err := client.CreateCard(ctx, CardKitCreateRequest{Prepared: &prepared})
+	if err != nil {
+		t.Fatal("oversize probe failed while creating card")
+	}
+	token, err := client.tokens.Token(ctx)
+	if err != nil {
+		t.Fatal("oversize probe failed while obtaining token")
+	}
+	path := "/open-apis/cardkit/v1/cards/" + url.PathEscape(created.CardID) + "/elements/answer/content"
+	boundaryBody, err := json.Marshal(map[string]any{
+		"content":  strings.Repeat("x", 100_000),
+		"sequence": 1,
+		"uuid":     "cardkit-element-content-boundary-probe-1",
+	})
+	if err != nil {
+		t.Fatal("boundary probe failed while encoding request")
+	}
+	if err := client.doOnce(ctx, http.MethodPut, path, token, boundaryBody, nil); err != nil {
+		t.Fatal("element-content rejected 100,000 character boundary candidate")
+	}
+	body, err := json.Marshal(map[string]any{
+		"content":  strings.Repeat("x", 100_001),
+		"sequence": 2,
+		"uuid":     "cardkit-element-content-oversize-probe-2",
+	})
+	if err != nil {
+		t.Fatal("oversize probe failed while encoding request")
+	}
+	err = client.doOnce(ctx, http.MethodPut, path, token, body, nil)
+	var apiErr *FeishuAPIError
+	if !errors.As(err, &apiErr) || apiErr.HTTPStatus != http.StatusBadRequest || apiErr.Code != 99992402 {
+		if apiErr != nil {
+			t.Fatalf("oversize probe expected http=400 code=99992402, got http=%d code=%d", apiErr.HTTPStatus, apiErr.Code)
+		}
+		t.Fatalf("oversize probe expected http=400 code=99992402, got %T", err)
+	}
+	if err := client.UpdateElementContent(ctx, CardKitUpdateElementContentRequest{
+		CardID: created.CardID, ElementID: "answer", Content: "sequence-two-after-rejection", Sequence: 2,
+		UUID: "cardkit-element-content-after-oversize-probe-2",
+	}); err != nil {
+		t.Fatal("oversize rejection consumed sequence or left card unwritable")
+	}
 }
 
 func TestRealCardKitNativeAnswerStream(t *testing.T) {
