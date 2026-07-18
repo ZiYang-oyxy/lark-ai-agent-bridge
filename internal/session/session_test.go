@@ -1,6 +1,8 @@
 package session
 
 import (
+	"bytes"
+	"encoding/json"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -489,11 +491,12 @@ func TestSessionClonesDoNotLeakDurableQueueOrActiveBatch(t *testing.T) {
 }
 
 func TestCloneSessionDeepCopiesRenderRef(t *testing.T) {
+	created := time.Date(2026, 7, 18, 9, 30, 0, 0, time.UTC)
 	original := &Session{
 		Queue: []Input{{ID: "queued", Text: "queued", Attachments: []media.Attachment{{Path: "/cache/queued.png"}}}},
 		ActiveBatch: &Batch{
 			Inputs:    []Input{{ID: "active", Text: "active", Attachments: []media.Attachment{{Path: "/cache/active.png"}}}},
-			RenderRef: &RenderRef{CardID: "card", ReplyMessageID: "reply", Version: 1},
+			RenderRef: &RenderRef{CardID: "card", ReplyMessageID: "reply", Version: 1, CreatedAt: created, SequenceUnknown: true, PendingSequence: 2},
 		},
 	}
 	cloned := cloneSession(original)
@@ -505,8 +508,40 @@ func TestCloneSessionDeepCopiesRenderRef(t *testing.T) {
 
 	if original.Queue[0].Text != "queued" || original.ActiveBatch.Inputs[0].Text != "active" ||
 		original.Queue[0].Attachments[0].Path != "/cache/queued.png" || original.ActiveBatch.Inputs[0].Attachments[0].Path != "/cache/active.png" ||
-		original.ActiveBatch.RenderRef.CardID != "card" {
+		original.ActiveBatch.RenderRef.CardID != "card" || !original.ActiveBatch.RenderRef.CreatedAt.Equal(created) || !original.ActiveBatch.RenderRef.SequenceUnknown || original.ActiveBatch.RenderRef.PendingSequence != 2 {
 		t.Fatalf("clone mutated original: %#v", original)
+	}
+}
+
+func TestRenderRefJSONKeepsCreatedAtAndOmitsInactiveP2Fields(t *testing.T) {
+	created := time.Date(2026, 7, 18, 9, 30, 0, 0, time.UTC)
+	ref := RenderRef{CardID: "card", ReplyMessageID: "reply", Version: 4, CreatedAt: created}
+	data, err := json.Marshal(ref)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(data, []byte("sequence_unknown")) || bytes.Contains(data, []byte("pending_sequence")) {
+		t.Fatalf("inactive P2 fields leaked into JSON: %s", data)
+	}
+	ref.SequenceUnknown = true
+	ref.PendingSequence = 5
+	data, err = json.Marshal(ref)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var roundTrip RenderRef
+	if err := json.Unmarshal(data, &roundTrip); err != nil {
+		t.Fatal(err)
+	}
+	if !roundTrip.CreatedAt.Equal(created) || !roundTrip.SequenceUnknown || roundTrip.PendingSequence != 5 {
+		t.Fatalf("round trip = %#v", roundTrip)
+	}
+	var legacy RenderRef
+	if err := json.Unmarshal([]byte(`{"CardID":"old","ReplyMessageID":"reply","Version":3}`), &legacy); err != nil {
+		t.Fatal(err)
+	}
+	if !legacy.CreatedAt.IsZero() || legacy.SequenceUnknown || legacy.PendingSequence != 0 {
+		t.Fatalf("legacy ref = %#v", legacy)
 	}
 }
 
@@ -562,7 +597,8 @@ func TestMarkBatchRunningTransitionsAndReturnsIsolatedClones(t *testing.T) {
 	if err != nil || frozen == nil {
 		t.Fatalf("freeze batch=%#v err=%v", frozen, err)
 	}
-	ref := &RenderRef{CardID: "card", ReplyMessageID: "reply", Version: 1}
+	created := time.Date(2026, 7, 18, 9, 30, 0, 0, time.UTC)
+	ref := &RenderRef{CardID: "card", ReplyMessageID: "reply", Version: 1, CreatedAt: created, SequenceUnknown: true, PendingSequence: 2}
 	sess, batch, err := m.MarkBatchRunning(key, frozen.ID, ref, now.Add(time.Second))
 	if err != nil {
 		t.Fatal(err)
@@ -570,7 +606,7 @@ func TestMarkBatchRunningTransitionsAndReturnsIsolatedClones(t *testing.T) {
 	if sess.State != StateRunning || sess.ActiveBatch == nil || sess.ActiveBatch.State != InputRunning || sess.ActiveBatch.StartedAt != now.Add(time.Second) || sess.ActiveBatch.Inputs[0].State != InputRunning {
 		t.Fatalf("running session = %#v", sess)
 	}
-	if batch == nil || batch.State != InputRunning || batch.RenderRef == nil || batch.RenderRef.CardID != "card" {
+	if batch == nil || batch.State != InputRunning || batch.RenderRef == nil || batch.RenderRef.CardID != "card" || !batch.RenderRef.CreatedAt.Equal(created) || !batch.RenderRef.SequenceUnknown || batch.RenderRef.PendingSequence != 2 {
 		t.Fatalf("running batch = %#v", batch)
 	}
 

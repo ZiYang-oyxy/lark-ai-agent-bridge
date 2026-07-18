@@ -169,6 +169,7 @@ func TestLoadSnapshotRejectsUnknownVersionWithoutChangingFile(t *testing.T) {
 func TestRestoreKeepsContextButClearsPending(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "sessions.json")
 	key := Key{Agent: agent.Claude, ChatID: "c"}
+	created := time.Date(2026, 7, 18, 9, 30, 0, 0, time.UTC)
 	seed := Session{
 		Key:             key,
 		ID:              key.ID(),
@@ -180,7 +181,7 @@ func TestRestoreKeepsContextButClearsPending(t *testing.T) {
 		ActiveBatch: &Batch{
 			ID:        "b",
 			State:     InputRunning,
-			RenderRef: &RenderRef{CardID: "card-1", Version: 3},
+			RenderRef: &RenderRef{CardID: "card-1", Version: 3, CreatedAt: created, SequenceUnknown: true, PendingSequence: 2},
 			Inputs:    []Input{{ID: "r", ReplyToMessageID: "m1", State: InputRunning}},
 		},
 	}
@@ -200,7 +201,7 @@ func TestRestoreKeepsContextButClearsPending(t *testing.T) {
 	if len(got.Queue) != 0 || got.ActiveBatch != nil || got.State != StateIdle {
 		t.Fatalf("pending survived: %#v", got)
 	}
-	if len(notices) != 2 || notices[0].Status != InputCancelled || notices[0].RenderRef != nil || notices[1].Status != InputInterrupted || notices[1].RenderRef == nil || notices[1].RenderRef.CardID != "card-1" {
+	if len(notices) != 2 || notices[0].Status != InputCancelled || notices[0].RenderRef != nil || notices[1].Status != InputInterrupted || notices[1].RenderRef == nil || notices[1].RenderRef.CardID != "card-1" || !notices[1].RenderRef.CreatedAt.Equal(created) || !notices[1].RenderRef.SequenceUnknown || notices[1].RenderRef.PendingSequence != 2 {
 		t.Fatalf("notices = %#v", notices)
 	}
 	persisted, err := LoadSnapshot(path)
@@ -343,14 +344,15 @@ func TestStoreAwareBatchLifecyclePersistsRunningAndTerminalState(t *testing.T) {
 	if err != nil || frozen == nil {
 		t.Fatalf("freeze batch=%#v err=%v", frozen, err)
 	}
-	if _, _, err := m.MarkBatchRunning(key, frozen.ID, &RenderRef{CardID: "card"}, now.Add(time.Second)); err != nil {
+	created := time.Date(2026, 7, 18, 9, 30, 0, 0, time.UTC)
+	if _, _, err := m.MarkBatchRunning(key, frozen.ID, &RenderRef{CardID: "card", CreatedAt: created, SequenceUnknown: true, PendingSequence: 2}, now.Add(time.Second)); err != nil {
 		t.Fatal(err)
 	}
 	running, err := LoadSnapshot(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if running.Revision != 3 || len(running.Sessions) != 1 || running.Sessions[0].State != StateRunning || running.Sessions[0].ActiveBatch == nil || running.Sessions[0].ActiveBatch.State != InputRunning || running.Sessions[0].ActiveBatch.Inputs[0].State != InputRunning || running.Sessions[0].ActiveBatch.RenderRef == nil || running.Sessions[0].ActiveBatch.RenderRef.CardID != "card" {
+	if running.Revision != 3 || len(running.Sessions) != 1 || running.Sessions[0].State != StateRunning || running.Sessions[0].ActiveBatch == nil || running.Sessions[0].ActiveBatch.State != InputRunning || running.Sessions[0].ActiveBatch.Inputs[0].State != InputRunning || running.Sessions[0].ActiveBatch.RenderRef == nil || running.Sessions[0].ActiveBatch.RenderRef.CardID != "card" || !running.Sessions[0].ActiveBatch.RenderRef.CreatedAt.Equal(created) || !running.Sessions[0].ActiveBatch.RenderRef.SequenceUnknown || running.Sessions[0].ActiveBatch.RenderRef.PendingSequence != 2 {
 		t.Fatalf("running snapshot = %#v", running)
 	}
 

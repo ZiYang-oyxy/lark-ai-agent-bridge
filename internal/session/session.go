@@ -80,9 +80,12 @@ type BatchCompletion struct {
 }
 
 type RenderRef struct {
-	CardID         string
-	ReplyMessageID string
-	Version        int
+	CardID          string
+	ReplyMessageID  string
+	Version         int
+	CreatedAt       time.Time
+	SequenceUnknown bool `json:"sequence_unknown,omitempty"`
+	PendingSequence int  `json:"pending_sequence,omitempty"`
 }
 
 type BatchLimits struct {
