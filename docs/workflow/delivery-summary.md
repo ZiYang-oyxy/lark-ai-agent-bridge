@@ -44,7 +44,8 @@
 - 已使用同 bridge app 的隔离用户 OAuth profile 完成真实 P2P 与文件输入验证。
 - 已完成 Reply Experience 六项真实 E2E：`append`、`append-clean-card`、`latest-card`、preview 双门限、reaction cleanup、restart/stale-card fallback。
 - 已在最终 integration 版本重跑十项核心真实 E2E，session restart、pending recovery、DM/group debounce、busy merge、queue full、scope parallel、stop 和 recall 全部通过。
-- 2026-07-18 最终部署二进制 SHA-256 为 `6f2a7bb0903726597091b7dd5083296dab0faff76c0dcf693ed47f7deefa70b1`；生产进程已恢复并确认 WSS connected。
+- 独立 reviewer 提出的两项 Important 已关闭:preview 不会在 final 后覆盖终态,recovery 卡片更新使用整批 5 秒 context budget。
+- 2026-07-18 最终部署二进制 SHA-256 为 `c8bbd15bd3b505f4df53f5c5da3885e9bbccd9e3476cca1d6daa8eb158c101f1`；生产进程已恢复并确认 WSS connected。
 
 ## 标准验证命令
 

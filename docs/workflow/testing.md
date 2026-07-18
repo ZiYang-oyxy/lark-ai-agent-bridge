@@ -331,6 +331,8 @@ E2E_REAL_E2E_FAKE_CLAUDE=1 \
 
 2026-07-18 的最终汇总证据为 `.cache/evidence/dee05c5/reply-final-summary.md`;它链接三段原始 evidence:reply modes/preview、reaction 定向重跑、restart stale fallback 定向重跑。最终六个 case 均为 passed,首轮失败现场未覆盖或删除。
 
+独立 reviewer 后的增量门禁位于 `.cache/evidence/db4e556/reviewer-final-summary.md`:preview 在取得渲染锁后复检 generation/closed,不会晚于 final 覆盖终态;整批 recovery 卡片更新共享 5 秒 context budget,不会无限阻塞 WSS 启动。对应 `preview_thresholds` 与 `latest_restart_fallback` 均重新通过。
+
 ## 证据报告
 
 生成本地证据报告：
