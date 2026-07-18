@@ -50,7 +50,7 @@ func buildClaudeOneShotCommand(cfg OneShotConfig) ([]string, error) {
 	if bin == "" {
 		bin = "claude"
 	}
-	args := []string{bin, "-p", "--output-format", "stream-json", "--verbose", "--dangerously-skip-permissions"}
+	args := []string{bin, "-p", "--output-format", "stream-json", "--verbose", "--include-partial-messages", "--dangerously-skip-permissions"}
 	effort := strings.TrimSpace(cfg.Effort)
 	if effort == "" {
 		effort = "low"
