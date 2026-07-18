@@ -1116,11 +1116,12 @@ func TestServiceSeparatesRequestedAndActualModel(t *testing.T) {
 		var text string
 		for _, raw := range payload["body"].(map[string]any)["elements"].([]any) {
 			element := raw.(map[string]any)
-			if element["tag"] == "column_set" {
-				text += fmt.Sprint(element)
+			if id, _ := element["element_id"].(string); id == "meta_primary" || id == "meta_runtime" {
+				text += element["content"].(string)
 			}
 		}
-		if !strings.Contains(text, "actual: unknown") || strings.Contains(text, "actual: sonnet") {
+		// v2:model 用实际值,缺失显 unknown;不再泄漏 requested 值(sonnet)。
+		if !strings.Contains(text, "unknown") || strings.Contains(text, "sonnet") {
 			t.Fatalf("rendered model provenance = %q", text)
 		}
 	})
@@ -1320,10 +1321,11 @@ func TestServiceStreamsRunnerUpdatesIntoSameCard(t *testing.T) {
 	}
 	waitForEvents(t, renderer, 5)
 	events := renderer.Events()
-	if events[1].Type != "stream" || !events[1].ThoughtExpanded {
+	// v2:面板固定折叠(ProcessExpanded=false),阶段仍由 Activity 反映。
+	if events[1].Type != "stream" || events[1].Activity != streamActivityReasoning {
 		t.Fatalf("thought stream event = %#v", events[1])
 	}
-	if events[2].Type != "stream" || !events[2].ToolsExpanded {
+	if events[2].Type != "stream" || events[2].Activity != streamActivityTool {
 		t.Fatalf("tool stream event = %#v", events[2])
 	}
 	last := events[len(events)-1]

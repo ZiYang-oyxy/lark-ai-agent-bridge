@@ -65,6 +65,7 @@ type agentCardStream struct {
 	answer           strings.Builder
 	thought          strings.Builder
 	tools            strings.Builder
+	toolCallCount    int
 }
 
 func newAgentCardStream(service *Service, sessionID string, sess session.Session, input session.Input) *agentCardStream {
@@ -424,8 +425,9 @@ func (s *agentCardStream) eventLocked(initial bool) card.Event {
 		HeaderTemplate:   s.headerTemplateLocked(),
 		Streaming:        s.status == "running",
 		Activity:         s.activity,
-		ThoughtExpanded:  s.status == "running" && s.activity == streamActivityReasoning,
-		ToolsExpanded:    s.status == "running" && s.activity == streamActivityTool,
+		// v2:过程折叠区在运行期固定折叠,不随 activity 开合,保持骨架稳定以便 native 流式命中。
+		ProcessExpanded: false,
+		ToolCallCount:   s.toolCallCount,
 	}
 }
 

@@ -7,12 +7,53 @@ import (
 	"testing"
 )
 
+func TestBuildLarkCardRunningEmptyProcessOmitsPanel(t *testing.T) {
+	// v2:运行中若思考/工具都为空,不为占位而显示空面板。
+	payload := BuildLarkCard(Event{Type: "stream", Streaming: true, Segments: []Segment{{Kind: SegmentText, Text: "writing"}}})
+	for _, raw := range payload["body"].(map[string]any)["elements"].([]any) {
+		if m, _ := raw.(map[string]any); m["REDACTED"] == "REDACTED" {
+			t.Fatalf("empty process should not render panel: %#v", m)
+		}
+	}
+}
+
+func TestBuildLarkCardMergesProcessPanelWithStableExpansion(t *testing.T) {
+	// v2:思考+工具合并为单个 panel_process,运行中固定折叠,标题带工具计数。
+	payload := BuildLarkCard(Event{
+		Type:            "stream",
+		Streaming:       true,
+		ProcessExpanded: false,
+		ToolCallCount:   3,
+		Segments: []Segment{
+			{Kind: SegmentText, Text: "answer"},
+			{Kind: SegmentThought, Text: "thinking"},
+			{Kind: SegmentTool, Text: "Bash(ls)"},
+		},
+	})
+	var panels []map[string]any
+	for _, raw := range payload["body"].(map[string]any)["elements"].([]any) {
+		if m, _ := raw.(map[string]any); m["tag"] == "collapsible_panel" {
+			panels = append(panels, m)
+		}
+	}
+	if len(panels) != 1 || panels[0]["element_id"] != "panel_process" {
+		t.Fatalf("panels = %#v, want single panel_process", panels)
+	}
+	if panels[0]["expanded"] != false {
+		t.Fatalf("running process panel must stay folded: %#v", panels[0]["expanded"])
+	}
+	title := panels[0]["header"].(map[string]any)["title"].(map[string]string)["content"]
+	if !strings.Contains(title, "工具调用（3）") {
+		t.Fatalf("panel title = %q, want tool count", title)
+	}
+}
+
 func TestBuildLarkCardStreamingEmptyAnswerReservesSingleNativeTarget(t *testing.T) {
 	payload := BuildLarkCard(Event{Type: "stream", Streaming: true})
 	answers := answerElements(payload)
 	want := []map[string]any{{"tag": "markdown", "element_id": "answer", "content": ""}}
 	if !reflect.DeepEqual(answers, want) {
-		t.Fatalf("answer elements = %#v, want %#v", answers, want)
+		t.Fatalf("REDACTED", answers, want)
 	}
 }
 
@@ -64,7 +105,7 @@ func TestBuildLarkCardUsesValidElementIDs(t *testing.T) {
 			Type:      "config",
 			SessionID: "claude:chat:message:config-1",
 			ConfigForm: &ConfigForm{
-				Model: "default", Effort: "default", ReplyMode: "append",
+				Model: "REDACTED", Effort: "REDACTED", ReplyMode: "REDACTED",
 				Models: []string{"default"}, Efforts: []string{"default"}, ReplyModes: []string{"append"},
 			},
 		}),
@@ -117,7 +158,7 @@ func TestBuildLarkCardIncludesActionsAndMeta(t *testing.T) {
 	}
 	foundButtons := 0
 	foundDivider := false
-	var columnSets []map[string]any
+	metaLines := map[string]string{}
 	for _, el := range elements {
 		m, _ := el.(map[string]any)
 		switch m["tag"] {
@@ -130,8 +171,10 @@ func TestBuildLarkCardIncludesActionsAndMeta(t *testing.T) {
 			}
 		case "hr":
 			foundDivider = true
-		case "column_set":
-			columnSets = append(columnSets, m)
+		case "markdown":
+			if id, _ := m["element_id"].(string); id == "meta_primary" || id == "meta_runtime" {
+				metaLines[id], _ = m["content"].(string)
+			}
 		}
 	}
 	if foundButtons != 2 {
@@ -140,18 +183,20 @@ func TestBuildLarkCardIncludesActionsAndMeta(t *testing.T) {
 	if !foundDivider {
 		t.Fatal("meta divider missing")
 	}
-	if len(columnSets) != 2 {
-		t.Fatalf("column sets = %#v, want primary and runtime rows", columnSets)
+	if metaLines["meta_primary"] == "" || metaLines["meta_runtime"] == "" {
+		t.Fatalf("meta lines = %#v, want primary and runtime rows", metaLines)
 	}
-	metaContent := columnSetText(columnSets[0]) + "\n" + columnSetText(columnSets[1])
+	metaContent := metaLines["meta_primary"] + "\n" + metaLines["meta_runtime"]
 	if containsAny(metaContent, "agent=", "model=", "workdir=", "status=") {
 		t.Fatalf("meta content contains machine prefixes: %q", metaContent)
 	}
 	if !containsAll(metaContent, "REDACTED", "REDACTED", "REDACTED", "REDACTED", "REDACTED", "REDACTED") {
 		t.Fatalf("meta content = %q", metaContent)
 	}
-	assertColumnWeights(t, columnSets[0], []int{10, 14, 18})
-	assertColumnWeights(t, columnSets[1], []int{10, 12, 30})
+	// 紧凑行用间隔点连接同一行的字段。
+	if !strings.Contains(metaLines["meta_primary"], " · ") {
+		t.Fatalf("primary line not compact: %q", metaLines["meta_primary"])
+	}
 }
 
 func TestBuildLarkCardLabelsRequestedAndActualModel(t *testing.T) {
@@ -161,9 +206,9 @@ func TestBuildLarkCardLabelsRequestedAndActualModel(t *testing.T) {
 		want []string
 		not  []string
 	}{
-		{name: "reported actual", info: ModelInfo{Requested: "opus", Actual: "claude-opus-4-1", Effort: "high"}, want: []string{"requested: opus", "actual: claude-opus-4-1", "effort: high"}},
-		{name: "missing actual", info: ModelInfo{Requested: "sonnet", Effort: "medium"}, want: []string{"requested: sonnet", "actual: unknown", "effort: medium"}, not: []string{"actual: sonnet"}},
-		{name: "default requested", info: ModelInfo{Requested: "default", Effort: "low"}, want: []string{"requested: default", "actual: unknown", "effort: low"}},
+		{name: "reported actual", info: ModelInfo{Requested: "opus", Actual: "claude-opus-4-1", Effort: "high"}, want: []string{"claude-opus-4-1", "（high）"}, not: []string{"opus）"}},
+		{name: "missing actual", info: ModelInfo{Requested: "sonnet", Effort: "medium"}, want: []string{"unknown", "（medium）"}, not: []string{"sonnet"}},
+		{name: "default requested", info: ModelInfo{Requested: "default", Effort: "low"}, want: []string{"unknown", "（low）"}, not: []string{"default"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			payload := BuildLarkCard(Event{Type: "result", Meta: Meta{Agent: "claude", Model: "legacy-must-not-win", ModelInfo: tc.info}})
@@ -171,8 +216,8 @@ func TestBuildLarkCardLabelsRequestedAndActualModel(t *testing.T) {
 			var text string
 			for _, raw := range elements {
 				element := raw.(map[string]any)
-				if element["tag"] == "column_set" {
-					text += columnSetText(element)
+				if id, _ := element["element_id"].(string); id == "meta_primary" || id == "meta_runtime" {
+					text += element["content"].(string)
 				}
 			}
 			if !containsAll(text, tc.want...) || containsAny(text, tc.not...) || strings.Contains(text, "legacy-must-not-win") {
@@ -190,7 +235,7 @@ func TestBuildLarkCardRendersRuntimeConfigForm(t *testing.T) {
 			Model:             "opus",
 			Effort:            "high",
 			ReplyMode:         "latest-card",
-			ConversationMode:  "REDACTED",
+			ConversationMode:  "chat",
 			Models:            []string{"default", "sonnet", "opus", "haiku"},
 			Efforts:           []string{"default", "low", "medium", "high"},
 			ReplyModes:        []string{"append", "append-clean-card", "latest-card"},
@@ -554,15 +599,22 @@ func TestBuildLarkCardFormatsRichSegments(t *testing.T) {
 	if len(markdownContents) == 0 || markdownContents[0] != "plain output\n\n**Error**\nfailed" {
 		t.Fatalf("answer markdown = %#v", markdownContents)
 	}
-	if len(panels) != 2 {
-		t.Fatalf("panels = %#v, want thought and tool panels", panels)
+	// v2:思考与工具合并进单个 panel_process,内部仍分 thought / tools 两块。
+	if len(panels) != 1 {
+		t.Fatalf("panels = %#v, want single process panel", panels)
 	}
-	thoughtElements := panels[0]["elements"].([]map[string]any)
-	if thoughtElements[0]["content"] != "inspect plan" {
-		t.Fatalf("thought panel = %#v", thoughtElements)
+	if panels[0]["element_id"] != "panel_process" {
+		t.Fatalf("panel id = %#v, want panel_process", panels[0]["element_id"])
 	}
-	toolElements := panels[1]["elements"].([]map[string]any)
-	if toolElements[0]["content"] != "Bash(ls)" {
-		t.Fatalf("tool panel = %#v", toolElements)
+	if panels[0]["expanded"] != false {
+		t.Fatalf("process panel expanded = %#v, want false", panels[0]["expanded"])
+	}
+	processElements := panels[0]["elements"].([]map[string]any)
+	byID := map[string]string{}
+	for _, el := range processElements {
+		byID[el["element_id"].(string)] = el["content"].(string)
+	}
+	if byID["thought"] != "inspect plan" || byID["tools"] != "Bash(ls)" {
+		t.Fatalf("process panel body = %#v", byID)
 	}
 }

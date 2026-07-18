@@ -22,12 +22,7 @@ func BuildLarkCard(e Event) map[string]any {
 		}
 		if shouldShowAgentPanels(e, thought, tools) {
 			elements = append(elements,
-				collapsiblePanelElement("panel_thought", thoughtPanelTitle(e, thought), e.ThoughtExpanded, []map[string]any{
-					markdownElement("thought", defaultPanelText(thought, "等待模型输出思考或推理内容。")),
-				}),
-				collapsiblePanelElement("panel_tools", toolsPanelTitle(e, tools), e.ToolsExpanded, []map[string]any{
-					markdownElement("tools", defaultPanelText(tools, "暂无工具调用。")),
-				}),
+				collapsiblePanelElement("panel_process", processPanelTitle(e, tools), e.ProcessExpanded, processPanelBody(thought, tools)),
 			)
 		}
 		for _, action := range buildButtonActions(e) {
@@ -161,41 +156,41 @@ func splitCardSections(segments []Segment) (string, string, string) {
 	return answer.String(), thought.String(), tools.String()
 }
 
+// shouldShowAgentPanels 只在思考或工具真正有内容时渲染过程折叠区。
+// 运行中不再为占位而显示空面板(v2:排版简洁 + 骨架稳定)。
 func shouldShowAgentPanels(e Event, thought, tools string) bool {
 	if e.HideAgentPanels {
 		return false
 	}
-	if strings.TrimSpace(thought) != "" || strings.TrimSpace(tools) != "" {
-		return true
-	}
-	return e.Streaming || e.Type == "result" || e.Type == "stopped" || e.Type == "error"
+	return strings.TrimSpace(thought) != "" || strings.TrimSpace(tools) != ""
 }
 
-func defaultPanelText(text, fallback string) string {
-	if strings.TrimSpace(text) == "" {
-		return fallback
+// processPanelTitle 生成合并后的"过程"折叠区标题。
+// 标题里唯一随运行推进变化的部分是工具计数 N;思考/工具的存在与否只影响是否出现该面板,
+// 不再使用"生成中/已完成/暂无"这类每帧可能变化的文案(v2:让骨架尽量稳定,便于 native 流式命中)。
+func processPanelTitle(e Event, tools string) string {
+	if n := e.ToolCallCount; n > 0 {
+		return fmt.Sprintf("过程 · 工具调用（%d）", n)
 	}
-	return text
+	if strings.TrimSpace(tools) != "" {
+		return "过程 · 工具调用"
+	}
+	return "过程"
 }
 
-func thoughtPanelTitle(e Event, content string) string {
-	if e.ThoughtExpanded {
-		return "思考推理（生成中，点击收起）"
+// processPanelBody 把思考与工具收进一个折叠区,内部仍保留 thought / tools 两个 element_id。
+func processPanelBody(thought, tools string) []map[string]any {
+	var body []map[string]any
+	if strings.TrimSpace(thought) != "" {
+		body = append(body, markdownElement("thought", thought))
 	}
-	if strings.TrimSpace(content) != "" {
-		return "思考推理（已完成，点击展开）"
+	if strings.TrimSpace(tools) != "" {
+		body = append(body, markdownElement("tools", tools))
 	}
-	return "思考推理（暂无，点击展开）"
-}
-
-func toolsPanelTitle(e Event, content string) string {
-	if e.ToolsExpanded {
-		return "工具调用（执行中，点击收起）"
+	if len(body) == 0 {
+		body = append(body, markdownElement("thought", ""))
 	}
-	if strings.TrimSpace(content) == "" {
-		return "工具调用（暂无，点击展开）"
-	}
-	return "工具调用（点击展开）"
+	return body
 }
 
 func markdownElement(id, content string) map[string]any {
@@ -313,49 +308,65 @@ func callbackBehavior(sessionID, actionID, value string) []any {
 	}
 }
 
-type weightedMetaCell struct {
-	Weight  int
-	Content string
-	ID      string
-}
-
+// buildMetaElements 以"紧凑行"呈现底部 meta(v2):
+// 第一行 agent · model(effort) · tokens,第二行 user · ip · workdir。
+// 用间隔点连接、图标前缀,避免旧的加权分栏在窄屏错行;空字段跳过,空行不渲染。
 func buildMetaElements(meta Meta) []any {
-	firstRow, secondRow := metaRows(meta)
-	if len(firstRow) == 0 && len(secondRow) == 0 {
+	first, second := metaRows(meta)
+	if first == "" && second == "" {
 		return nil
 	}
 	elements := []any{map[string]any{"tag": "hr"}}
-	if len(firstRow) > 0 {
-		elements = append(elements, columnSetElement("meta_primary", firstRow))
+	if first != "" {
+		elements = append(elements, metaLineElement("meta_primary", first))
 	}
-	if len(secondRow) > 0 {
-		elements = append(elements, columnSetElement("meta_runtime", secondRow))
+	if second != "" {
+		elements = append(elements, metaLineElement("meta_runtime", second))
 	}
 	return elements
 }
 
-func metaRows(meta Meta) ([]weightedMetaCell, []weightedMetaCell) {
-	var first []weightedMetaCell
+func metaRows(meta Meta) (string, string) {
+	var first []string
 	if meta.Agent != "" {
-		first = append(first, weightedMetaCell{Weight: 10, Content: "🤖 " + displayAgent(meta.Agent), ID: "meta_agent"})
+		first = append(first, "🤖 "+displayAgent(meta.Agent))
 	}
+	if model := metaModelText(meta); model != "" {
+		first = append(first, "🧠 "+model)
+	}
+	if tokens := metaTokenText(meta); tokens != "" {
+		first = append(first, tokens)
+	}
+	var second []string
+	if meta.User != "" {
+		second = append(second, "👤 "+meta.User)
+	}
+	if meta.IP != "" {
+		second = append(second, "🖥️ "+meta.IP)
+	}
+	if meta.WorkDir != "" {
+		second = append(second, "📁 `"+meta.WorkDir+"`")
+	}
+	return strings.Join(first, " · "), strings.Join(second, " · ")
+}
+
+// metaModelText 用实际模型值(缺失显 unknown),effort 以括号后缀呈现,
+// 取代旧的 "requested: x · actual: y · effort: z" 冗长三段。
+func metaModelText(meta Meta) string {
 	if meta.ModelInfo != (ModelInfo{}) {
-		requested := meta.ModelInfo.Requested
-		if requested == "" {
-			requested = "unknown"
+		model := meta.ModelInfo.Actual
+		if model == "" {
+			model = "unknown"
 		}
-		actual := meta.ModelInfo.Actual
-		if actual == "" {
-			actual = "unknown"
+		if effort := meta.ModelInfo.Effort; effort != "" && effort != "unknown" {
+			return fmt.Sprintf("%s（%s）", model, effort)
 		}
-		effort := meta.ModelInfo.Effort
-		if effort == "" {
-			effort = "unknown"
-		}
-		first = append(first, weightedMetaCell{Weight: 30, Content: fmt.Sprintf("🧠 requested: %s · actual: %s · effort: %s", requested, actual, effort), ID: "meta_model"})
-	} else if meta.Model != "" {
-		first = append(first, weightedMetaCell{Weight: 14, Content: "🧠 " + meta.Model, ID: "meta_model"})
+		return model
 	}
+	return meta.Model
+}
+
+func metaTokenText(meta Meta) string {
 	runTokens := meta.RunTokens
 	totalTokens := meta.TotalTokens
 	if runTokens == 0 && meta.Tokens > 0 {
@@ -364,46 +375,19 @@ func metaRows(meta Meta) ([]weightedMetaCell, []weightedMetaCell) {
 	if totalTokens == 0 && meta.Tokens > 0 {
 		totalTokens = meta.Tokens
 	}
-	if runTokens > 0 || totalTokens > 0 {
-		if totalTokens > 0 {
-			first = append(first, weightedMetaCell{Weight: 18, Content: fmt.Sprintf("🔢 tokens: ▶ %s / ∑ %s", compactInt(runTokens), compactInt(totalTokens)), ID: "meta_tokens"})
-		} else {
-			first = append(first, weightedMetaCell{Weight: 18, Content: fmt.Sprintf("🔢 tokens: ▶ %s", compactInt(runTokens)), ID: "meta_tokens"})
-		}
+	if runTokens == 0 && totalTokens == 0 {
+		return ""
 	}
-	var second []weightedMetaCell
-	if meta.User != "" {
-		second = append(second, weightedMetaCell{Weight: 10, Content: "👤 " + meta.User, ID: "meta_user"})
+	if totalTokens > 0 {
+		return fmt.Sprintf("🔢 tokens: ▶ %s / ∑ %s", compactInt(runTokens), compactInt(totalTokens))
 	}
-	if meta.IP != "" {
-		second = append(second, weightedMetaCell{Weight: 12, Content: "🖥️ " + meta.IP, ID: "meta_ip"})
-	}
-	if meta.WorkDir != "" {
-		second = append(second, weightedMetaCell{Weight: 30, Content: "📁 `" + meta.WorkDir + "`", ID: "meta_workdir"})
-	}
-	return first, second
+	return fmt.Sprintf("🔢 tokens: ▶ %s", compactInt(runTokens))
 }
 
-func columnSetElement(id string, cells []weightedMetaCell) map[string]any {
-	columns := make([]any, 0, len(cells))
-	for _, cell := range cells {
-		columns = append(columns, map[string]any{
-			"tag":            "column",
-			"width":          "weighted",
-			"weight":         cell.Weight,
-			"vertical_align": "top",
-			"elements": []any{
-				markdownElement(cell.ID, cell.Content),
-			},
-		})
-	}
-	return map[string]any{
-		"tag":                "column_set",
-		"element_id":         id,
-		"flex_mode":          "none",
-		"horizontal_spacing": "8px",
-		"columns":            columns,
-	}
+func metaLineElement(id, content string) map[string]any {
+	el := markdownElement(id, content)
+	el["text_size"] = "notation"
+	return el
 }
 
 func displayAgent(agent string) string {
