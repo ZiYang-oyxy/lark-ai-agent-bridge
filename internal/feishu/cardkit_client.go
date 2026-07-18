@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"lark-agent-bridge/internal/card"
+	"lark-agent-bridge/internal/session"
 )
 
 const (
@@ -68,6 +69,20 @@ type CardKitUpdateElementContentRequest struct {
 	Content   string
 	Sequence  int
 	UUID      string
+}
+
+type NativeSequenceIntent struct {
+	SessionID   string
+	BatchID     string
+	LatestScope string
+	Ref         session.RenderRef
+	Candidate   int
+}
+
+type NativeSequenceJournal interface {
+	PrepareNative(context.Context, NativeSequenceIntent) error
+	ConfirmNative(context.Context, NativeSequenceIntent) error
+	AbortNative(context.Context, NativeSequenceIntent) error
 }
 
 type CardKitClientAPI interface {
