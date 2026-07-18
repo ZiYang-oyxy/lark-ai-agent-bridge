@@ -1542,6 +1542,15 @@ func streamUpdateFromClaudeEvent(event map[string]any) AgentStreamUpdate {
 	if id, ok := event["session_id"].(string); ok {
 		update.ClaudeSessionID = id
 	}
+	if eventType, _ := event["type"].(string); eventType == "stream_event" {
+		if nested, _ := event["event"].(map[string]any); nested != nil {
+			nestedUpdate := streamUpdateFromClaudeEvent(nested)
+			if nestedUpdate.ClaudeSessionID == "" {
+				nestedUpdate.ClaudeSessionID = update.ClaudeSessionID
+			}
+			return nestedUpdate
+		}
+	}
 	if model, ok := event["model"].(string); ok {
 		update.Model = model
 	}

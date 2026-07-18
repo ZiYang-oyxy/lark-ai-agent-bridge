@@ -2787,6 +2787,29 @@ func TestStreamUpdateParsesClaudeDeltaThinking(t *testing.T) {
 	}
 }
 
+func TestStreamUpdateUnwrapsClaudePartialStreamEvents(t *testing.T) {
+	var got []AgentStreamUpdate
+	data := []byte(strings.Join([]string{
+		`{"type":"stream_event","session_id":"sess-partial","event":{"type":"content_block_delta","delta":{"type":"thinking_delta","thinking":"hidden partial"}}}`,
+		`{"type":"stream_event","session_id":"sess-partial","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"visible partial"}}}`,
+	}, "\n"))
+	_, err := parseClaudeStream(bytes.NewReader(data), nil, func(update AgentStreamUpdate) {
+		got = append(got, update)
+	})
+	if err != nil {
+		t.Fatalf("parse stream error: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("updates = %#v, want two unwrapped partial updates", got)
+	}
+	if got[0].ClaudeSessionID != "sess-partial" || got[0].Segments[0].Kind != card.SegmentThought || got[0].Segments[0].Text != "hidden partial" {
+		t.Fatalf("thinking update = %#v", got[0])
+	}
+	if got[1].ClaudeSessionID != "sess-partial" || got[1].Segments[0].Kind != card.SegmentText || got[1].Segments[0].Text != "visible partial" {
+		t.Fatalf("text update = %#v", got[1])
+	}
+}
+
 func testConfig(t *testing.T) config.Config {
 	t.Helper()
 	return config.Config{DefaultAgent: "claude", DefaultWorkDir: t.TempDir(), CardMaxChars: 1000, InteractionTimeout: time.Second}
