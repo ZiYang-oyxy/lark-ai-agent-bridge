@@ -612,7 +612,9 @@ start_server_if_needed() {
       stop_server KILL
       return 1
     fi
-    sleep 1
+    # The bridge is usually ready well under a second, so poll at a sub-second
+    # interval to reclaim most of the startup wait without flooding the probe.
+    sleep 0.3
   done
 }
 
