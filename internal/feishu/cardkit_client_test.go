@@ -121,6 +121,48 @@ type HTTPDoerFunc func(*http.Request) (*http.Response, error)
 
 func (f HTTPDoerFunc) Do(req *http.Request) (*http.Response, error) { return f(req) }
 
+func TestCardKitClientRetriesRateLimitedRequestThenSucceeds(t *testing.T) {
+	var calls int
+	client := NewCardKitClientWithTokenSource(&countingTokenSource{})
+	client.limiter = nil
+	client.http = HTTPDoerFunc(func(*http.Request) (*http.Response, error) {
+		calls++
+		if calls == 1 {
+			// First attempt is throttled; the client must retry.
+			return &http.Response{StatusCode: http.StatusTooManyRequests, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"code":99991400,"msg":"rate limited"}`))}, nil
+		}
+		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"code":0,"data":{"card_id":"card-1"}}`))}, nil
+	})
+	result, err := client.CreateCard(context.Background(), CardKitCreateRequest{Card: map[string]any{"schema": "2.0"}})
+	if err != nil {
+		t.Fatalf("CreateCard() error after retry: %v", err)
+	}
+	if result.CardID != "card-1" {
+		t.Fatalf("card id = %q, want card-1", result.CardID)
+	}
+	if calls != 2 {
+		t.Fatalf("http calls = %d, want 2 (one throttled, one success)", calls)
+	}
+}
+
+func TestCardKitClientDoesNotRetryNonRetryableClientError(t *testing.T) {
+	var calls int
+	client := NewCardKitClientWithTokenSource(&countingTokenSource{})
+	client.limiter = nil
+	client.http = HTTPDoerFunc(func(*http.Request) (*http.Response, error) {
+		calls++
+		// A plain 400 with a non-retryable code must fail fast without retry.
+		return &http.Response{StatusCode: http.StatusBadRequest, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"code":400000,"msg":"bad request"}`))}, nil
+	})
+	_, err := client.CreateCard(context.Background(), CardKitCreateRequest{Card: map[string]any{"schema": "2.0"}})
+	if err == nil {
+		t.Fatal("CreateCard() error = nil, want non-retryable failure")
+	}
+	if calls != 1 {
+		t.Fatalf("http calls = %d, want 1 (no retry on non-retryable error)", calls)
+	}
+}
+
 func TestCardKitClientCapacityRejectsDirectCreateAndUpdateBeforeTokenLookup(t *testing.T) {
 	for _, method := range []struct {
 		name string

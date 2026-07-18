@@ -1751,6 +1751,79 @@ func TestServiceStopCancelsActiveOneShotRun(t *testing.T) {
 	}
 }
 
+func TestServiceStopIsIdempotentForAlreadyStoppedRun(t *testing.T) {
+	cfg := testConfig(t)
+	renderer := card.NewFakeRenderer()
+	runner := newFakeRunner()
+	runner.block = make(chan struct{})
+	svc := NewService(cfg, renderer, runner, audit.NewRecorder())
+	if err := svc.HandleMessage(context.Background(), Message{ID: "msg-1", ChatID: "chat", Sender: "u1", Text: "/new long", Time: time.Now()}); err != nil {
+		t.Fatalf("handle message error: %v", err)
+	}
+	if err := svc.DrainReady(time.Now().Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	<-runner.started
+	req := ActionRequest{SessionID: "claude:chat:message:msg-1", ActionID: "stop", Actor: "u1"}
+	if _, err := svc.HandleActionResult(context.Background(), req); err != nil {
+		t.Fatalf("first stop error: %v", err)
+	}
+	// A second stop against the same already-stopped run must not error and must
+	// still yield a disabled stopped card, so a double click degrades cleanly.
+	result, err := svc.HandleActionResult(context.Background(), req)
+	if err != nil {
+		t.Fatalf("second stop error: %v", err)
+	}
+	if result.Event == nil || result.Event.Type != "stopped" || !result.Event.StopButton.Disabled {
+		t.Fatalf("second stop result = %#v, want disabled stopped", result.Event)
+	}
+}
+
+func TestServiceStopUnknownSessionDegradesToStoppedCard(t *testing.T) {
+	cfg := testConfig(t)
+	renderer := card.NewFakeRenderer()
+	svc := NewService(cfg, renderer, newFakeRunner(), audit.NewRecorder())
+	// No active run exists for this session id (stale/expired action). The stop
+	// must degrade to a disabled stopped card rather than error.
+	result, err := svc.HandleActionResult(context.Background(), ActionRequest{SessionID: "claude:chat:message:missing", ActionID: "stop", Actor: "u1"})
+	if err != nil {
+		t.Fatalf("stale stop error: %v", err)
+	}
+	if result.Event == nil || result.Event.Type != "stopped" || !result.Event.StopButton.Disabled {
+		t.Fatalf("stale stop result = %#v, want disabled stopped", result.Event)
+	}
+}
+
+func TestServiceStopSyncCardDisablesStreamingMode(t *testing.T) {
+	cfg := testConfig(t)
+	renderer := card.NewFakeRenderer()
+	runner := newFakeRunner()
+	runner.block = make(chan struct{})
+	svc := NewService(cfg, renderer, runner, audit.NewRecorder())
+	if err := svc.HandleMessage(context.Background(), Message{ID: "msg-1", ChatID: "chat", Sender: "u1", Text: "/new long", Time: time.Now()}); err != nil {
+		t.Fatalf("handle message error: %v", err)
+	}
+	if err := svc.DrainReady(time.Now().Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	<-runner.started
+	result, err := svc.HandleActionResult(context.Background(), ActionRequest{SessionID: "claude:chat:message:msg-1", ActionID: "stop", Actor: "u1"})
+	if err != nil {
+		t.Fatalf("stop action error: %v", err)
+	}
+	prepared, err := result.PrepareCard(cfg.CardMaxChars)
+	if err != nil {
+		t.Fatalf("PrepareCard() error: %v", err)
+	}
+	config := prepared.PayloadCopy()["config"].(map[string]any)
+	if config["streaming_mode"] != false {
+		t.Fatalf("sync stop card streaming_mode = %#v, want false", config["streaming_mode"])
+	}
+	if _, hasStreamingConfig := config["streaming_config"]; hasStreamingConfig {
+		t.Fatalf("sync stop card carried streaming_config: %#v", config)
+	}
+}
+
 func TestMessageRecallCancelsActiveRun(t *testing.T) {
 	cfg := testConfig(t)
 	renderer := card.NewFakeRenderer()
@@ -2828,6 +2901,73 @@ func TestServiceRunnerErrorSchedulesLaterQueue(t *testing.T) {
 	waitForCalls(t, runner, 2)
 	if got := runner.Calls()[1].Prompt; got != "next" {
 		t.Fatalf("next prompt = %q", got)
+	}
+}
+
+func TestStreamUpdateParsesToolUseBlockIntoToolSegment(t *testing.T) {
+	var got []AgentStreamUpdate
+	data := []byte(`{"type":"content_block_start","content_block":{"type":"tool_use","name":"Bash","id":"tu-1","input":{"command":"ls"}}}`)
+	_, err := parseClaudeStream(bytes.NewReader(data), nil, func(update AgentStreamUpdate) {
+		got = append(got, update)
+	})
+	if err != nil {
+		t.Fatalf("parse stream error: %v", err)
+	}
+	if len(got) != 1 || len(got[0].Segments) != 1 {
+		t.Fatalf("updates = %#v", got)
+	}
+	seg := got[0].Segments[0]
+	if seg.Kind != card.SegmentTool {
+		t.Fatalf("segment kind = %v, want tool", seg.Kind)
+	}
+	// The rendered tool segment must carry the tool name, id, and JSON input.
+	for _, want := range []string{"Bash", "tu-1", `"command":"ls"`} {
+		if !strings.Contains(seg.Text, want) {
+			t.Fatalf("tool_use segment %q missing %q", seg.Text, want)
+		}
+	}
+}
+
+func TestStreamUpdateParsesToolResultBlockIntoToolSegment(t *testing.T) {
+	var got []AgentStreamUpdate
+	data := []byte(`{"type":"content_block_start","content_block":{"type":"tool_result","tool_use_id":"tu-1","content":"exit 0"}}`)
+	_, err := parseClaudeStream(bytes.NewReader(data), nil, func(update AgentStreamUpdate) {
+		got = append(got, update)
+	})
+	if err != nil {
+		t.Fatalf("parse stream error: %v", err)
+	}
+	if len(got) != 1 || len(got[0].Segments) != 1 {
+		t.Fatalf("updates = %#v", got)
+	}
+	seg := got[0].Segments[0]
+	if seg.Kind != card.SegmentTool {
+		t.Fatalf("segment kind = %v, want tool", seg.Kind)
+	}
+	for _, want := range []string{"tool_result", "tu-1", "exit 0"} {
+		if !strings.Contains(seg.Text, want) {
+			t.Fatalf("tool_result segment %q missing %q", seg.Text, want)
+		}
+	}
+}
+
+func TestStreamUpdateParsesContentBlockLevelThinking(t *testing.T) {
+	var got []AgentStreamUpdate
+	// content_block_start with a redacted_thinking block must map to a thought
+	// segment, covering the block-level branch (not just thinking_delta).
+	data := []byte(`{"type":"content_block_start","content_block":{"type":"redacted_thinking","thinking":"internal reasoning"}}`)
+	_, err := parseClaudeStream(bytes.NewReader(data), nil, func(update AgentStreamUpdate) {
+		got = append(got, update)
+	})
+	if err != nil {
+		t.Fatalf("parse stream error: %v", err)
+	}
+	if len(got) != 1 || len(got[0].Segments) != 1 {
+		t.Fatalf("updates = %#v", got)
+	}
+	seg := got[0].Segments[0]
+	if seg.Kind != card.SegmentThought || seg.Text != "internal reasoning" {
+		t.Fatalf("thinking block segment = %#v, want thought internal reasoning", seg)
 	}
 }
 

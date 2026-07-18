@@ -99,3 +99,57 @@ func TestTargetWorkDirUsesRunOption(t *testing.T) {
 		t.Fatalf("workdir = %q, want /tmp/project", got)
 	}
 }
+
+func TestParseNewCwdAliasMatchesWorkdir(t *testing.T) {
+	cmd := ParseCommand(Message{Text: "/new --cwd /tmp/project inspect repo"}, agent.Claude)
+	if cmd.Type != CommandRun || cmd.WorkDir != "/tmp/project" || cmd.Text != "inspect repo" {
+		t.Fatalf("cmd = %#v, want run with workdir /tmp/project", cmd)
+	}
+}
+
+func TestParseNewWorkdirMissingValueIsTreatedAsLiteralText(t *testing.T) {
+	// A trailing --workdir with no following token must not consume anything;
+	// it falls through to the prompt text and leaves WorkDir empty so the
+	// default workdir applies rather than silently dropping the flag.
+	cmd := ParseCommand(Message{Text: "/new inspect --workdir"}, agent.Claude)
+	if cmd.Type != CommandRun || cmd.WorkDir != "" {
+		t.Fatalf("cmd = %#v, want run with empty workdir", cmd)
+	}
+	if cmd.Text != "inspect --workdir" {
+		t.Fatalf("text = %q, want literal trailing flag", cmd.Text)
+	}
+}
+
+func TestParseStatusCommand(t *testing.T) {
+	cmd := ParseCommand(Message{Text: "/status"}, agent.Claude)
+	if cmd.Type != CommandStatus || cmd.Agent != agent.Claude {
+		t.Fatalf("cmd = %#v, want status", cmd)
+	}
+}
+
+func TestParseHelpCommand(t *testing.T) {
+	cmd := ParseCommand(Message{Text: "/help"}, agent.Claude)
+	if cmd.Type != CommandHelp {
+		t.Fatalf("cmd = %#v, want help", cmd)
+	}
+}
+
+func TestParseResumeReturnsNotImplementedDegradation(t *testing.T) {
+	cmd := ParseCommand(Message{Text: "/resume"}, agent.Claude)
+	if cmd.Type != CommandUnknown {
+		t.Fatalf("type = %s, want unknown", cmd.Type)
+	}
+	if !strings.Contains(cmd.Text, "/resume") || !strings.Contains(cmd.Text, "/new") {
+		t.Fatalf("resume degradation text = %q, want mention of /resume and /new", cmd.Text)
+	}
+}
+
+func TestParseUnknownCommandReturnsFormattedMessage(t *testing.T) {
+	cmd := ParseCommand(Message{Text: "/bogus"}, agent.Claude)
+	if cmd.Type != CommandUnknown {
+		t.Fatalf("type = %s, want unknown", cmd.Type)
+	}
+	if cmd.Text != "unknown command /bogus" {
+		t.Fatalf("unknown text = %q, want \"unknown command /bogus\"", cmd.Text)
+	}
+}
