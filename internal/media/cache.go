@@ -42,6 +42,9 @@ type Cache struct {
 
 	mu      sync.Mutex
 	pending map[string]int
+	// ioMu serializes cache mutation and sweeping. It never protects pending
+	// state, so the pending mutex is never held during filesystem IO.
+	ioMu sync.Mutex
 }
 
 // NewCache constructs a media cache. The directory is created lazily.
@@ -74,6 +77,7 @@ func (c *Cache) Resolve(ctx context.Context, downloader Downloader, refs []Ref) 
 			continue
 		}
 		if c.limits.MaxBatchBytes > 0 && batchBytes+attachment.Size > c.limits.MaxBatchBytes {
+			c.releasePending(attachment.Path)
 			result.Failures = append(result.Failures, failure(ref, "batch_too_large", "attachment batch byte limit reached"))
 			batchFull = true
 			continue
@@ -83,24 +87,15 @@ func (c *Cache) Resolve(ctx context.Context, downloader Downloader, refs []Ref) 
 	}
 
 	paths := make([]string, 0, len(result.Attachments))
-	c.mu.Lock()
 	for _, attachment := range result.Attachments {
-		c.pending[attachment.Path]++
 		paths = append(paths, attachment.Path)
 	}
-	c.mu.Unlock()
 
 	var once sync.Once
 	result.Release = func() {
 		once.Do(func() {
-			c.mu.Lock()
-			defer c.mu.Unlock()
 			for _, path := range paths {
-				if c.pending[path] <= 1 {
-					delete(c.pending, path)
-				} else {
-					c.pending[path]--
-				}
+				c.releasePending(path)
 			}
 		})
 	}
@@ -119,6 +114,16 @@ func (c *Cache) PendingPaths() map[string]struct{} {
 }
 
 func (c *Cache) resolveOne(ctx context.Context, downloader Downloader, ref Ref) (Attachment, *Failure) {
+	c.ioMu.Lock()
+	defer c.ioMu.Unlock()
+	if err := c.checkQuotaBeforeDownload(); err != nil {
+		if quota, ok := err.(*QuotaError); ok {
+			failed := failure(ref, string(QuotaExceeded), quota.Error())
+			return Attachment{}, &failed
+		}
+		failed := failure(ref, "cache_write_failed", err.Error())
+		return Attachment{}, &failed
+	}
 	if err := ctx.Err(); err != nil {
 		failed := failure(ref, "download_failed", err.Error())
 		return Attachment{}, &failed
@@ -204,6 +209,14 @@ func (c *Cache) resolveOne(ctx context.Context, downloader Downloader, ref Ref) 
 		failed := failure(ref, "file_too_large", "attachment exceeds per-file byte limit")
 		return Attachment{}, &failed
 	}
+	if err := c.checkQuotaAfterDownload(); err != nil {
+		if quota, ok := err.(*QuotaError); ok {
+			failed := failure(ref, string(QuotaExceeded), quota.Error())
+			return Attachment{}, &failed
+		}
+		failed := failure(ref, "cache_write_failed", err.Error())
+		return Attachment{}, &failed
+	}
 	if err := tmp.Sync(); err != nil {
 		failed := failure(ref, "cache_write_failed", err.Error())
 		return Attachment{}, &failed
@@ -225,7 +238,67 @@ func (c *Cache) resolveOne(ctx context.Context, downloader Downloader, ref Ref) 
 		return Attachment{}, &failed
 	}
 	complete = true
+	c.acquirePending(finalPath)
 	return Attachment{Ref: ref, Path: finalPath, MIME: declared, SHA256: digest, Size: size}, nil
+}
+
+// FailureCode is the stable, machine-readable media failure identifier.
+type FailureCode string
+
+const QuotaExceeded FailureCode = "quota_exceeded"
+
+// QuotaError describes a pre-download cache admission rejection.
+type QuotaError struct {
+	Usage int64
+	Limit int64
+}
+
+func (e *QuotaError) Error() string {
+	return fmt.Sprintf("media cache quota exceeded: usage=%d limit=%d", e.Usage, e.Limit)
+}
+
+func (c *Cache) checkQuotaBeforeDownload() error {
+	if c.limits.CacheQuotaBytes <= 0 {
+		return nil
+	}
+	usage, err := cacheUsage(c.root)
+	if err != nil {
+		return err
+	}
+	if usage >= c.limits.CacheQuotaBytes {
+		return &QuotaError{Usage: usage, Limit: c.limits.CacheQuotaBytes}
+	}
+	return nil
+}
+
+func (c *Cache) checkQuotaAfterDownload() error {
+	if c.limits.CacheQuotaBytes <= 0 {
+		return nil
+	}
+	usage, err := cacheUsage(c.root)
+	if err != nil {
+		return err
+	}
+	if usage > c.limits.CacheQuotaBytes {
+		return &QuotaError{Usage: usage, Limit: c.limits.CacheQuotaBytes}
+	}
+	return nil
+}
+
+func (c *Cache) acquirePending(path string) {
+	c.mu.Lock()
+	c.pending[path]++
+	c.mu.Unlock()
+}
+
+func (c *Cache) releasePending(path string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.pending[path] <= 1 {
+		delete(c.pending, path)
+		return
+	}
+	c.pending[path]--
 }
 
 func validateDeclared(ref Ref, name, contentType string) (string, *Failure) {

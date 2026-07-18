@@ -67,6 +67,41 @@ func TestFreezeReadyBatchWaitsForDebounceThenQueuesDueInput(t *testing.T) {
 	}
 }
 
+func TestLiveAttachmentPathsCopiesQueuedAndActiveAttachments(t *testing.T) {
+	m := NewManager()
+	paths := map[string]string{
+		"debouncing": "/cache/debouncing.png",
+		"queued":     "/cache/queued.png",
+		"starting":   "/cache/starting.png",
+		"running":    "/cache/running.png",
+	}
+	queuedKey := Key{Agent: agent.Claude, ChatID: "media-queued"}
+	startingKey := Key{Agent: agent.Claude, ChatID: "media-starting"}
+	runningKey := Key{Agent: agent.Claude, ChatID: "media-running"}
+	m.GetOrCreate(queuedKey, "/work")
+	m.GetOrCreate(startingKey, "/work")
+	m.GetOrCreate(runningKey, "/work")
+	m.mu.Lock()
+	m.sessions[queuedKey.ID()].Queue = []Input{
+		{State: InputDebouncing, Attachments: []media.Attachment{{Path: paths["debouncing"]}}},
+		{State: InputQueued, Attachments: []media.Attachment{{Path: paths["queued"]}}},
+	}
+	m.sessions[startingKey.ID()].ActiveBatch = &Batch{State: InputStarting, Inputs: []Input{{State: InputStarting, Attachments: []media.Attachment{{Path: paths["starting"]}}}}}
+	m.sessions[runningKey.ID()].ActiveBatch = &Batch{State: InputRunning, Inputs: []Input{{State: InputRunning, Attachments: []media.Attachment{{Path: paths["running"]}}}}}
+	m.mu.Unlock()
+
+	got := m.LiveAttachmentPaths()
+	for _, path := range paths {
+		if _, ok := got[path]; !ok {
+			t.Fatalf("live paths = %v, missing %q", got, path)
+		}
+	}
+	delete(got, paths["running"])
+	if _, ok := m.LiveAttachmentPaths()[paths["running"]]; !ok {
+		t.Fatal("LiveAttachmentPaths returned an aliased set")
+	}
+}
+
 func TestFreezeReadyBatchResetIsExclusive(t *testing.T) {
 	m := NewManager()
 	key := Key{Agent: agent.Claude, ChatID: "chat"}

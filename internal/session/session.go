@@ -638,6 +638,39 @@ func (m *Manager) List() []Session {
 	return out
 }
 
+// LiveAttachmentPaths returns a detached set of every attachment still needed
+// by runnable durable work. The manager lock protects only the in-memory copy;
+// callers must perform any filesystem work after this method returns.
+func (m *Manager) LiveAttachmentPaths() map[string]struct{} {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	paths := make(map[string]struct{})
+	for _, s := range m.sessions {
+		for _, input := range s.Queue {
+			addLiveAttachmentPaths(paths, input)
+		}
+		if s.ActiveBatch == nil {
+			continue
+		}
+		for _, input := range s.ActiveBatch.Inputs {
+			addLiveAttachmentPaths(paths, input)
+		}
+	}
+	return paths
+}
+
+func addLiveAttachmentPaths(paths map[string]struct{}, input Input) {
+	switch input.State {
+	case InputDebouncing, InputQueued, InputStarting, InputRunning:
+		for _, attachment := range input.Attachments {
+			if attachment.Path != "" {
+				paths[attachment.Path] = struct{}{}
+			}
+		}
+	}
+}
+
 func (m *Manager) History(id string) []Prompt {
 	m.mu.Lock()
 	defer m.mu.Unlock()

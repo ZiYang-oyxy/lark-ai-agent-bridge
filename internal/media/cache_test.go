@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 type downloadFixture struct {
@@ -225,6 +226,43 @@ func TestCacheCountsRejectedResourcesTowardFileLimit(t *testing.T) {
 	}
 	if got := downloader.opens; strings.Join(got, ",") != "bad" {
 		t.Fatalf("opened resources = %v", got)
+	}
+}
+
+func TestCacheRejectsBeforeDownloadWhenExistingUsageExceedsQuota(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "media")
+	if err := os.MkdirAll(root, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "live.txt"), []byte("over quota"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	limits := testLimits()
+	limits.CacheQuotaBytes = 1
+	downloader := &fixtureDownloader{fixtures: map[string]downloadFixture{
+		"new": fixture("new.txt", "text/plain", []byte("new")),
+	}}
+	cache := NewCache(root, limits)
+	gc := NewGC(cache, 72*time.Hour)
+	if _, err := gc.Sweep(map[string]struct{}{filepath.Join(root, "live.txt"): {}}); err != nil {
+		t.Fatal(err)
+	}
+
+	resolution := cache.Resolve(context.Background(), downloader, []Ref{
+		{MessageID: "m1", FileKey: "new", Kind: "file", Name: "new.txt"},
+		{MessageID: "m1", FileKey: "another", Kind: "file", Name: "another.txt"},
+	})
+	defer resolution.Release()
+	if len(resolution.Attachments) != 0 || len(resolution.Failures) != 2 {
+		t.Fatalf("resolution = %+v, want typed quota failure", resolution)
+	}
+	for _, failed := range resolution.Failures {
+		if failed.Code != string(QuotaExceeded) {
+			t.Fatalf("failure = %+v, want typed quota failure", failed)
+		}
+	}
+	if len(downloader.opens) != 0 {
+		t.Fatalf("downloader opened %v, want quota rejection before download", downloader.opens)
 	}
 }
 
