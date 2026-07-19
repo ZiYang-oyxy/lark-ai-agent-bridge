@@ -83,7 +83,7 @@ func buildCardActionTriggerResponse(resp *CardActionResponse) *callback.CardActi
 		out.Toast = &callback.Toast{Type: resp.ToastType, Content: resp.ToastContent}
 	}
 	if resp.Card != nil {
-		out.Card = &callback.Card{Type: "card_json", Data: resp.Card}
+		out.Card = &callback.Card{Type: "raw", Data: resp.Card}
 	}
 	return out
 }

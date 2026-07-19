@@ -44,7 +44,7 @@ func TestSDKLongConnDispatchesCardActionTrigger(t *testing.T) {
 	}
 }
 
-func TestSDKLongConnReturnsCardActionResponseCard(t *testing.T) {
+func TestSDKLongConnReturnsRawCardActionResponse(t *testing.T) {
 	client := NewLongConnClient(LongConnConfig{
 		AppID:     "cli_test",
 		AppSecret: "secret",
@@ -84,8 +84,8 @@ func TestSDKLongConnReturnsCardActionResponseCard(t *testing.T) {
 	if !ok {
 		t.Fatalf("response = %T, want *callback.CardActionTriggerResponse", resp)
 	}
-	if got.Card == nil || got.Card.Type != "card_json" {
-		t.Fatalf("response card = %#v, want card_json", got.Card)
+	if got.Card == nil || got.Card.Type != "raw" {
+		t.Fatalf("response card = %#v, want raw", got.Card)
 	}
 	data, ok := got.Card.Data.(map[string]any)
 	if !ok || data["schema"] != "2.0" {
