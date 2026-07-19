@@ -53,7 +53,7 @@ func TestBuildLarkCardStreamingEmptyAnswerReservesSingleNativeTarget(t *testing.
 	answers := answerElements(payload)
 	want := []map[string]any{{"tag": "markdown", "element_id": "answer", "content": ""}}
 	if !reflect.DeepEqual(answers, want) {
-		t.Fatalf("REDACTED", answers, want)
+		t.Fatalf("answer elements = %#v, want %#v", answers, want)
 	}
 }
 
