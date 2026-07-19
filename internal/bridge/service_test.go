@@ -247,6 +247,24 @@ type blockingStreamRenderer struct {
 	once    sync.Once
 }
 
+type terminalBatchOrderRenderer struct {
+	next       *card.FakeRenderer
+	sessions   *session.Manager
+	key        session.Key
+	mu         sync.Mutex
+	activeSeen bool
+}
+
+func (r *terminalBatchOrderRenderer) Render(e card.Event) error {
+	if !e.Streaming {
+		sess, ok := r.sessions.Get(r.key)
+		r.mu.Lock()
+		r.activeSeen = ok && sess.ActiveBatch != nil
+		r.mu.Unlock()
+	}
+	return r.next.Render(e)
+}
+
 func (r *blockingStreamRenderer) Render(e card.Event) error {
 	if e.Type == "stream" {
 		r.once.Do(func() { close(r.entered) })
@@ -2608,6 +2626,31 @@ func TestServiceCompletionPersistFailureStillRendersResultAndAudits(t *testing.T
 		}
 	}
 	t.Fatalf("audit events = %#v, want completion_persist_failed", recorder.Events())
+}
+
+func TestServiceRendersTerminalBeforeReleasingActiveBatch(t *testing.T) {
+	manager := session.NewManagerWithStore(filepath.Join(t.TempDir(), "sessions.json"))
+	key := session.Key{Agent: agent.Claude, ChatID: "chat"}
+	renderer := &terminalBatchOrderRenderer{next: card.NewFakeRenderer(), sessions: manager, key: key}
+	runner := newFakeRunner()
+	runner.block = make(chan struct{})
+	svc := NewServiceWithSessions(testConfig(t), renderer, runner, audit.NewRecorder(), manager, nil)
+	now := time.Now()
+	if err := svc.HandleMessage(context.Background(), Message{ID: "order", ChatID: key.ChatID, Sender: "u", Text: "/new work", Time: now}); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.DrainReady(now.Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	<-runner.started
+	close(runner.block)
+	waitForSessionNoActiveBatch(t, svc, key)
+	renderer.mu.Lock()
+	activeSeen := renderer.activeSeen
+	renderer.mu.Unlock()
+	if !activeSeen {
+		t.Fatal("terminal card rendered after active batch was released")
+	}
 }
 
 func TestServiceRetriesPersistedCompletionBeforeStartingLaterQueue(t *testing.T) {

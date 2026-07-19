@@ -592,10 +592,10 @@ func (s *Service) startBatch(parent context.Context, sess session.Session, batch
 func batchKey(sess session.Session, _ session.Batch) session.Key { return sess.Key }
 
 func (s *Service) finishStartingBatch(sess session.Session, batch session.Batch, id string, status session.InputState, cardStatus string, result AgentRunResult) {
-	updated, _ := s.finishBatchOrRemember(sess, batch.ID, session.BatchCompletion{Status: status, At: time.Now()}, "batch_finish_failed")
 	if run, ok := s.activeRun(id); ok && run.BatchID == batch.ID && run.Stream != nil {
-		s.finishStreamAndAudit(run.Stream, cardStatus, metaFromSession(updated), result, sess.ID)
+		s.finishStreamAndAudit(run.Stream, cardStatus, metaFromSession(sess), result, sess.ID)
 	}
+	_, _ = s.finishBatchOrRemember(sess, batch.ID, session.BatchCompletion{Status: status, At: time.Now()}, "batch_finish_failed")
 	s.clearActiveRun(id)
 	_ = s.DrainReady(time.Now())
 }
@@ -605,10 +605,10 @@ func (s *Service) executeBatch(ctx context.Context, sess session.Session, batch 
 	defer func() { s.clearActiveRun(id); _ = s.DrainReady(time.Now()) }()
 	prompt := BuildBatchPrompt(batch)
 	if batch.Inputs[0].Reset && strings.TrimSpace(prompt) == "" {
-		updated, _ := s.finishBatchOrRemember(sess, batch.ID, session.BatchCompletion{Status: session.InputCompleted, At: time.Now()}, "completion_persist_failed")
 		if run, ok := s.activeRun(id); ok && run.BatchID == batch.ID && run.Stream != nil {
-			s.finishStreamAndAudit(run.Stream, "completed", metaFromSession(updated), AgentRunResult{Segments: []card.Segment{{Kind: card.SegmentText, Text: "Claude session is ready. Send a message in this chat/topic to continue."}}}, sess.ID)
+			s.finishStreamAndAudit(run.Stream, "completed", metaFromSession(sess), AgentRunResult{Segments: []card.Segment{{Kind: card.SegmentText, Text: "Claude session is ready. Send a message in this chat/topic to continue."}}}, sess.ID)
 		}
+		_, _ = s.finishBatchOrRemember(sess, batch.ID, session.BatchCompletion{Status: session.InputCompleted, At: time.Now()}, "completion_persist_failed")
 		return
 	}
 	var actualModelMu sync.Mutex
@@ -644,10 +644,10 @@ func (s *Service) executeBatch(ctx context.Context, sess session.Session, batch 
 	if result.Model != "" && requestedModel != "" && !strings.EqualFold(requestedModel, "default") && result.Model != requestedModel {
 		s.Audit.Record("system", "model_requested_actual_mismatch", sess.ID, fmt.Sprintf("requested=%s actual=%s", requestedModel, result.Model))
 	}
-	updated, _ := s.finishBatchOrRemember(sess, batch.ID, session.BatchCompletion{Status: status, ClaudeSessionID: result.ClaudeSessionID, Model: result.Model, Tokens: result.Tokens, At: time.Now()}, "completion_persist_failed")
 	if run, ok := s.activeRun(id); ok && run.BatchID == batch.ID && run.Stream != nil {
-		s.finishStreamAndAudit(run.Stream, cardStatus, metaFromSession(updated), result, sess.ID)
+		s.finishStreamAndAudit(run.Stream, cardStatus, metaFromSession(sess), result, sess.ID)
 	}
+	_, _ = s.finishBatchOrRemember(sess, batch.ID, session.BatchCompletion{Status: status, ClaudeSessionID: result.ClaudeSessionID, Model: result.Model, Tokens: result.Tokens, At: time.Now()}, "completion_persist_failed")
 }
 
 // finishStreamAndAudit 收敛终态卡片,并在渲染失败时记录 audit,而不是静默吞掉错误

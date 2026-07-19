@@ -389,7 +389,7 @@ func (r *CardKitRenderer) updateElementContent(ctx context.Context, e card.Event
 		return nil
 	}
 	if err := r.journal.ConfirmNative(ctx, intent); err != nil {
-		r.recordRender("cardkit_sequence_unknown", e, fmt.Sprintf("key=%s card_id=%s sequence=%d branch=confirm_failed", r.renderKey(e), r.cardID, candidate))
+		r.recordRender("cardkit_sequence_unknown", e, fmt.Sprintf("key=%s card_id=%s sequence=%d branch=confirm_failed error=%v", r.renderKey(e), r.cardID, candidate, err))
 		return nil
 	}
 	r.sequence = candidate

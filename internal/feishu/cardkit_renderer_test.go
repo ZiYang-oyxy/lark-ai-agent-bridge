@@ -607,7 +607,8 @@ func TestCardKitRendererNativeInteractionAbortKeepsSequenceReusable(t *testing.T
 func TestCardKitRendererNativeConfirmFailureStaysUnknown(t *testing.T) {
 	client := &fakeCardKitClient{}
 	journal := &fakeNativeJournal{confirmErr: errors.New("persist failed")}
-	renderer := NewCardKitRendererWithNative(client, "source", nil, RenderBinding{BaseSessionID: "base", BatchID: "batch", RunCardSessionID: "run"}, journal)
+	observer := &fakeCardKitObserver{}
+	renderer := NewCardKitRendererWithNative(client, "source", observer, RenderBinding{BaseSessionID: "base", BatchID: "batch", RunCardSessionID: "run"}, journal)
 	first := card.Event{Type: "stream", Streaming: true, SessionID: "run", Segments: []card.Segment{{Kind: card.SegmentText, Text: "one"}}}
 	if err := renderer.Render(first); err != nil {
 		t.Fatal(err)
@@ -619,6 +620,9 @@ func TestCardKitRendererNativeConfirmFailureStaysUnknown(t *testing.T) {
 	}
 	if ref := renderer.RenderRef(); ref.Version != 0 || !ref.SequenceUnknown || ref.PendingSequence != 1 {
 		t.Fatalf("ref=%#v", ref)
+	}
+	if len(observer.details) == 0 || !strings.Contains(observer.details[len(observer.details)-1], "error=persist failed") {
+		t.Fatalf("audit details=%#v, want confirm error", observer.details)
 	}
 }
 
