@@ -1116,10 +1116,14 @@ func (s *Service) activeRun(id string) (activeRun, bool) {
 
 func (s *Service) cancelActiveRun(id string) (activeRun, bool) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	run, ok := s.activeRuns[id]
 	if ok {
 		run.Cancel()
+	}
+	s.mu.Unlock()
+	// 在锁外标记停止:阻止排队的 preview 在停止卡发出后再把卡片渲染回"运行中"。
+	if ok && run.Stream != nil {
+		run.Stream.markStopping()
 	}
 	return run, ok
 }
@@ -1129,22 +1133,28 @@ func (s *Service) cancelActiveRunByMessageID(messageID string) (activeRun, bool)
 		return activeRun{}, false
 	}
 	s.mu.Lock()
-	defer s.mu.Unlock()
+	var matched activeRun
+	found := false
 	for _, run := range s.activeRuns {
-		matched := false
 		for _, sourceID := range run.SourceMessageIDs {
 			if sourceID == messageID {
-				matched = true
+				matched, found = run, true
 				break
 			}
 		}
-		if !matched {
-			continue
+		if found {
+			break
 		}
-		run.Cancel()
-		return run, true
 	}
-	return activeRun{}, false
+	if found {
+		matched.Cancel()
+	}
+	s.mu.Unlock()
+	// 锁外标记停止,阻止停止后排队的 preview 把卡片渲染回"运行中"。
+	if found && matched.Stream != nil {
+		matched.Stream.markStopping()
+	}
+	return matched, found
 }
 
 func (s *Service) storePendingRun(sessionID string, pending pendingRun) {

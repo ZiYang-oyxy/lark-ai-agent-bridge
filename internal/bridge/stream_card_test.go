@@ -135,6 +135,35 @@ func TestStreamPreviewCannotRenderAfterFinish(t *testing.T) {
 	}
 }
 
+func TestStreamMarkStoppingBlocksRunningRenders(t *testing.T) {
+	// v2 R5:标记停止后,排队/后续到达的 Handle 不再渲染运行中卡片,
+	// 避免停止卡发出后被覆盖回"运行中"造成闪烁。
+	clock := &fakeStreamClock{now: time.Unix(100, 0)}
+	renderer := card.NewFakeRenderer()
+	stream := newPreviewTestStream(t, renderer, clock, 30, 2000)
+	if err := stream.Start(); err != nil {
+		t.Fatal(err)
+	}
+	before := len(renderer.Events())
+	stream.markStopping()
+	// 停止后到达的流式增量必须被忽略。
+	stream.Handle(AgentStreamUpdate{Segments: []card.Segment{{Kind: card.SegmentText, Text: "late chunk"}}, Activity: streamActivityAnswering})
+	if err := stream.Flush(); err != nil {
+		t.Fatal(err)
+	}
+	if got := len(renderer.Events()); got != before {
+		t.Fatalf("events after markStopping = %d, want %d (no running renders)", got, before)
+	}
+	// 终态仍可正常收敛。
+	if _, err := stream.Finish("stopped", card.Meta{}, AgentRunResult{}); err != nil {
+		t.Fatal(err)
+	}
+	events := renderer.Events()
+	if events[len(events)-1].Type != "stopped" {
+		t.Fatalf("terminal event = %#v, want stopped", events[len(events)-1].Type)
+	}
+}
+
 func TestStreamPreviewUsesDeltaAndDeadlineThresholds(t *testing.T) {
 	clock := &fakeStreamClock{now: time.Unix(100, 0)}
 	renderer := card.NewFakeRenderer()

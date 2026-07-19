@@ -66,6 +66,7 @@ type agentCardStream struct {
 	thought          strings.Builder
 	tools            strings.Builder
 	toolCallCount    int
+	stopping         bool
 }
 
 func newAgentCardStream(service *Service, sessionID string, sess session.Session, input session.Input) *agentCardStream {
@@ -141,7 +142,7 @@ func (s *agentCardStream) Start() error {
 
 func (s *agentCardStream) Handle(update AgentStreamUpdate) {
 	s.mu.Lock()
-	if s.closed {
+	if s.closed || s.stopping {
 		s.mu.Unlock()
 		return
 	}
@@ -227,6 +228,20 @@ func (s *agentCardStream) Finish(status string, meta card.Meta, result AgentRunR
 	return event, s.renderEvent(event)
 }
 
+// markStopping 标记本轮已请求停止:后续运行期 Handle/preview 不再渲染 Streaming=true 的中间帧,
+// 避免停止卡发出后被排队的 preview 覆盖成"运行中"造成闪烁。终态 Finish 仍可正常收敛。
+func (s *agentCardStream) markStopping() {
+	s.mu.Lock()
+	s.stopping = true
+	s.previewGen++
+	if s.previewTimer != nil {
+		s.previewTimer.Stop()
+		s.previewTimer = nil
+	}
+	s.previewPending = false
+	s.mu.Unlock()
+}
+
 func metaForRun(sess session.Session, input session.Input) card.Meta {
 	meta := metaFromSession(sess)
 	meta.Model = ""
@@ -249,7 +264,7 @@ func (s *agentCardStream) Flush() error {
 }
 
 func (s *agentCardStream) requestPreviewLocked(force bool) (bool, uint64) {
-	if s.closed || s.previewDisabled || s.previewPending {
+	if s.closed || s.stopping || s.previewDisabled || s.previewPending {
 		return false, 0
 	}
 	currentRunes := s.previewRuneCountLocked()
