@@ -594,7 +594,7 @@ func batchKey(sess session.Session, _ session.Batch) session.Key { return sess.K
 func (s *Service) finishStartingBatch(sess session.Session, batch session.Batch, id string, status session.InputState, cardStatus string, result AgentRunResult) {
 	updated, _ := s.finishBatchOrRemember(sess, batch.ID, session.BatchCompletion{Status: status, At: time.Now()}, "batch_finish_failed")
 	if run, ok := s.activeRun(id); ok && run.BatchID == batch.ID && run.Stream != nil {
-		_, _ = run.Stream.Finish(cardStatus, metaFromSession(updated), result)
+		s.finishStreamAndAudit(run.Stream, cardStatus, metaFromSession(updated), result, sess.ID)
 	}
 	s.clearActiveRun(id)
 	_ = s.DrainReady(time.Now())
@@ -607,7 +607,7 @@ func (s *Service) executeBatch(ctx context.Context, sess session.Session, batch 
 	if batch.Inputs[0].Reset && strings.TrimSpace(prompt) == "" {
 		updated, _ := s.finishBatchOrRemember(sess, batch.ID, session.BatchCompletion{Status: session.InputCompleted, At: time.Now()}, "completion_persist_failed")
 		if run, ok := s.activeRun(id); ok && run.BatchID == batch.ID && run.Stream != nil {
-			_, _ = run.Stream.Finish("completed", metaFromSession(updated), AgentRunResult{Segments: []card.Segment{{Kind: card.SegmentText, Text: "Claude session is ready. Send a message in this chat/topic to continue."}}})
+			s.finishStreamAndAudit(run.Stream, "completed", metaFromSession(updated), AgentRunResult{Segments: []card.Segment{{Kind: card.SegmentText, Text: "Claude session is ready. Send a message in this chat/topic to continue."}}}, sess.ID)
 		}
 		return
 	}
@@ -646,7 +646,15 @@ func (s *Service) executeBatch(ctx context.Context, sess session.Session, batch 
 	}
 	updated, _ := s.finishBatchOrRemember(sess, batch.ID, session.BatchCompletion{Status: status, ClaudeSessionID: result.ClaudeSessionID, Model: result.Model, Tokens: result.Tokens, At: time.Now()}, "completion_persist_failed")
 	if run, ok := s.activeRun(id); ok && run.BatchID == batch.ID && run.Stream != nil {
-		_, _ = run.Stream.Finish(cardStatus, metaFromSession(updated), result)
+		s.finishStreamAndAudit(run.Stream, cardStatus, metaFromSession(updated), result, sess.ID)
+	}
+}
+
+// finishStreamAndAudit 收敛终态卡片,并在渲染失败时记录 audit,而不是静默吞掉错误
+// (终态渲染失败意味着用户卡片停在旧状态,必须可观测)。
+func (s *Service) finishStreamAndAudit(stream *agentCardStream, cardStatus string, meta card.Meta, result AgentRunResult, sessionID string) {
+	if _, err := stream.Finish(cardStatus, meta, result); err != nil {
+		s.Audit.Record("system", "terminal_card_render_failed", sessionID, fmt.Sprintf("status=%s error=%v", cardStatus, err))
 	}
 }
 

@@ -549,7 +549,9 @@ func TestCardKitRendererNativeAnswerPreservesHeaderPhaseChanges(t *testing.T) {
 	}
 }
 
-func TestCardKitRendererNativeDeliveryUnknownStopsAllLaterWrites(t *testing.T) {
+func TestCardKitRendererNativeDeliveryUnknownStopsRunningWritesButRecoversTerminal(t *testing.T) {
+	// v2 R1:native 丢包进入 sequenceUnknown 后,运行期不再续写旧卡(不产生新的 element/full 更新),
+	// 但终态必须显式补偿——新建一张终态卡(Create+Reply),不静默停在运行态。
 	client := &fakeCardKitClient{elementErr: errors.New("response lost")}
 	journal := &fakeNativeJournal{}
 	renderer := NewCardKitRendererWithNative(client, "source", nil, RenderBinding{BaseSessionID: "base", BatchID: "batch", RunCardSessionID: "run"}, journal)
@@ -557,20 +559,23 @@ func TestCardKitRendererNativeDeliveryUnknownStopsAllLaterWrites(t *testing.T) {
 	if err := renderer.Render(first); err != nil {
 		t.Fatal(err)
 	}
+	createsAfterFirst := client.created
 	second := first
 	second.Segments = []card.Segment{{Kind: card.SegmentText, Text: "two"}}
 	if err := renderer.Render(second); err != nil {
 		t.Fatal(err)
 	}
+	// 运行期第二帧只尝试一次 native(失败),不产生全卡更新,也不新建卡。
+	if len(client.elementReqs) != 1 || len(client.updateReqs) != 0 || client.created != createsAfterFirst {
+		t.Fatalf("running writes leaked: element=%d full=%d creates=%d", len(client.elementReqs), len(client.updateReqs), client.created)
+	}
 	terminal := card.Event{Type: "result", SessionID: "run", Segments: second.Segments}
 	if err := renderer.Render(terminal); err != nil {
 		t.Fatal(err)
 	}
-	if len(client.elementReqs) != 1 || len(client.updateReqs) != 0 {
-		t.Fatalf("element/full=%d/%d", len(client.elementReqs), len(client.updateReqs))
-	}
-	if ref := renderer.RenderRef(); !ref.SequenceUnknown || ref.PendingSequence != 1 || ref.Version != 0 {
-		t.Fatalf("unknown ref=%#v", ref)
+	// 终态补偿:新建了一张卡片(Create+Reply 各多一次),而不是静默返回。
+	if client.created != createsAfterFirst+1 || len(client.replyReqs) != 2 {
+		t.Fatalf("terminal recovery missing: creates=%d replies=%d", client.created, len(client.replyReqs))
 	}
 }
 

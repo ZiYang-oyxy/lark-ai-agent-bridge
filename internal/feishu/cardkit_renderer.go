@@ -267,6 +267,12 @@ func (r *CardKitRenderer) renderContext(ctx context.Context, e card.Event) error
 
 func (r *CardKitRenderer) updatePrepared(ctx context.Context, e card.Event, prepared card.PreparedLarkCard) error {
 	if r.sequenceUnknown {
+		// 运行期(非终态)维持隔离语义:旧卡序号不确定,不再续写。
+		// 但终态必须显式收敛——若在这里静默返回 nil,一次 native 丢包后卡片会永久停在运行态、
+		// 停止按钮不置灰,且上层误判成功。终态改走补偿:新建一张终态卡并记录 audit。
+		if !prepared.EventCopy().Streaming {
+			return r.recoverTerminalCard(ctx, e, prepared)
+		}
 		r.recordRender("cardkit_sequence_unknown", e, fmt.Sprintf("key=%s card_id=%s pending_sequence=%d", r.renderKey(e), r.cardID, r.pendingSequence))
 		return nil
 	}
@@ -282,6 +288,39 @@ func (r *CardKitRenderer) updatePrepared(ctx context.Context, e card.Event, prep
 		r.snapshot = snapshotForPrepared(prepared)
 	}
 	return err
+}
+
+// recoverTerminalCard 在旧卡序号不确定时,为终态新建一张独立卡片(reply 到原消息),
+// 使终态内容与按钮终态一定可见,并记录 audit;旧卡无法收敛的事实通过 audit 暴露,不静默吞掉。
+func (r *CardKitRenderer) recoverTerminalCard(ctx context.Context, e card.Event, prepared card.PreparedLarkCard) error {
+	if r.replyToMessageID == "" {
+		// 无法 reply(缺原消息),只能记录旧卡无法收敛,交由上层观测。
+		r.recordRender("cardkit_terminal_recovery_skipped", e, fmt.Sprintf("key=%s card_id=%s reason=missing_reply_to", r.renderKey(e), r.cardID))
+		return nil
+	}
+	created, err := r.client.CreateCard(ctx, CardKitCreateRequest{Prepared: &prepared})
+	if errors.Is(err, card.ErrCardPayloadOversize) {
+		emergency, emergencyErr := card.PrepareEmergencyLarkCard()
+		if emergencyErr != nil {
+			return emergencyErr
+		}
+		created, err = r.client.CreateCard(ctx, CardKitCreateRequest{Prepared: &emergency})
+	}
+	if err != nil {
+		return err
+	}
+	replied, err := r.client.ReplyCard(ctx, CardKitReplyRequest{
+		ReplyToMessageID: r.replyToMessageID,
+		CardID:           created.CardID,
+		UUID:             stableUUID("card-terminal-recovery", r.replyToMessageID, created.CardID, e.SessionID, e.Type),
+		ReplyInThread:    e.ReplyInThread,
+	})
+	if err != nil {
+		return err
+	}
+	// 旧卡序号不确定的状态保留(pendingSequence),但终态已在新卡上收敛。
+	r.recordRender("cardkit_terminal_recovered_new_card", e, fmt.Sprintf("key=%s stale_card_id=%s new_card_id=%s new_message_id=%s event=%s", r.renderKey(e), r.cardID, created.CardID, replied.MessageID, e.Type))
+	return nil
 }
 
 func (r *CardKitRenderer) nativeFallbackReason(prepared card.PreparedLarkCard) string {
