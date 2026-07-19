@@ -108,6 +108,12 @@ type AgentStreamUpdate struct {
 	Tokens          int
 	ClaudeSessionID string
 	Activity        string
+	// Incremental marks content_block_delta payloads whose text must be
+	// concatenated byte-for-byte with the preceding delta.
+	Incremental bool
+	// AnswerSnapshot marks a complete assistant message. It replaces any
+	// partial answer accumulated for that message instead of duplicating it.
+	AnswerSnapshot bool
 }
 
 type pendingRun struct {
@@ -1655,12 +1661,24 @@ func streamUpdateFromClaudeEvent(event map[string]any) AgentStreamUpdate {
 				}
 			}
 		}
+		role, _ := message["role"].(string)
+		if role == "" || role == "assistant" {
+			for _, segment := range update.Segments {
+				if segment.Kind == card.SegmentText {
+					update.AnswerSnapshot = true
+					break
+				}
+			}
+		}
 		if len(update.Segments) > 0 {
 			update.Activity = activityFromSegments(update.Segments)
 		}
 		return update
 	}
 	update.Segments = append(update.Segments, streamSegmentsFromTopLevelEvent(event)...)
+	if eventType, _ := event["type"].(string); eventType == "content_block_delta" {
+		update.Incremental = true
+	}
 	if len(update.Segments) > 0 {
 		update.Activity = activityFromSegments(update.Segments)
 	}
@@ -1738,7 +1756,6 @@ func streamSegmentsFromDelta(delta map[string]any) []card.Segment {
 }
 
 func segmentFromText(kind card.SegmentKind, text string) []card.Segment {
-	text = strings.TrimSpace(text)
 	if text == "" {
 		return nil
 	}

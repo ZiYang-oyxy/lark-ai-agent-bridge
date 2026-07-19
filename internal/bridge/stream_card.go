@@ -2,6 +2,7 @@ package bridge
 
 import (
 	"fmt"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -52,6 +53,8 @@ type agentCardStream struct {
 	previewDisabled  bool
 	lastFlush        time.Time
 	lastFlushedRunes int
+	contentRevision  uint64
+	lastFlushedRev   uint64
 	sessionID        string
 	replyTo          string
 	replyInThread    bool
@@ -162,8 +165,14 @@ func (s *agentCardStream) Handle(update AgentStreamUpdate) {
 	if update.Activity != "" {
 		s.activity = update.Activity
 	}
+	if update.AnswerSnapshot {
+		s.answer.Reset()
+	}
 	for _, segment := range update.Segments {
-		s.appendSegmentLocked(segment)
+		s.appendSegmentLocked(segment, update.Incremental)
+	}
+	if update.AnswerSnapshot || len(update.Segments) > 0 {
+		s.contentRevision++
 	}
 	immediate, generation := s.requestPreviewLocked(false)
 	s.mu.Unlock()
@@ -267,15 +276,24 @@ func (s *agentCardStream) requestPreviewLocked(force bool) (bool, uint64) {
 	if s.closed || s.stopping || s.previewDisabled || s.previewPending {
 		return false, 0
 	}
+	if s.contentRevision <= s.lastFlushedRev {
+		return false, 0
+	}
 	currentRunes := s.previewRuneCountLocked()
-	if currentRunes <= s.lastFlushedRunes {
+	// Whitespace-only deltas may be significant once visible text follows, but
+	// they must not replace the initial progress card with an empty body.
+	if currentRunes == 0 && s.lastFlushedRunes == 0 {
 		return false, 0
 	}
 	now := s.clock.Now()
 	delta := currentRunes - s.lastFlushedRunes
-	firstVisible := s.lastFlushedRunes == 0
+	if delta < 0 {
+		delta = 0
+	}
+	firstVisible := s.lastFlushedRev == 0
+	contentShrank := currentRunes < s.lastFlushedRunes
 	deadlineReached := s.lastFlush.IsZero() || !now.Before(s.lastFlush.Add(s.previewPolicy.Interval))
-	if force || firstVisible || (delta >= s.previewPolicy.MinDeltaRunes && deadlineReached) || deadlineReached {
+	if force || firstVisible || contentShrank || (delta >= s.previewPolicy.MinDeltaRunes && deadlineReached) || deadlineReached {
 		s.cancelPreviewTimerLocked()
 		s.previewPending = true
 		return true, s.previewGen
@@ -307,7 +325,7 @@ func (s *agentCardStream) onPreviewTimer(generation uint64) {
 		return
 	}
 	s.previewTimer = nil
-	if s.previewRuneCountLocked() <= s.lastFlushedRunes {
+	if s.contentRevision <= s.lastFlushedRev {
 		s.mu.Unlock()
 		return
 	}
@@ -324,6 +342,7 @@ func (s *agentCardStream) flushPreview(generation uint64) error {
 	}
 	event := limitPreviewEvent(s.eventLocked(false), s.previewPolicy.MaxPreviewRunes)
 	flushedRunes := s.previewRuneCountLocked()
+	flushedRevision := s.contentRevision
 	s.mu.Unlock()
 
 	err := s.renderPreview(generation, event)
@@ -341,6 +360,7 @@ func (s *agentCardStream) flushPreview(generation uint64) error {
 	}
 	s.lastFlush = s.clock.Now()
 	s.lastFlushedRunes = flushedRunes
+	s.lastFlushedRev = flushedRevision
 	immediate, nextGeneration := s.requestPreviewLocked(false)
 	s.mu.Unlock()
 	if immediate {
@@ -397,8 +417,8 @@ func limitPreviewEvent(event card.Event, maxRunes int) card.Event {
 	return event
 }
 
-func (s *agentCardStream) appendSegmentLocked(segment card.Segment) {
-	appendSegmentToBuilders(segment, &s.answer, &s.thought, &s.tools)
+func (s *agentCardStream) appendSegmentLocked(segment card.Segment, incremental bool) {
+	appendSegmentToBuilders(segment, incremental, &s.answer, &s.thought, &s.tools)
 }
 
 // mergeFinalSegmentsLocked 用终态结果重建卡片正文。
@@ -428,6 +448,7 @@ func (s *agentCardStream) mergeFinalSegmentsLocked(segments []card.Segment, answ
 		// 没有可靠的分段结果时回退到聚合正文(保持旧行为的超集)。
 		finalAnswer = strings.TrimSpace(aggregateAnswer.String())
 	}
+	finalAnswer = stripTrailingBotSignature(finalAnswer)
 	if errorBlock.Len() > 0 {
 		finalAnswer = strings.TrimSpace(finalAnswer + "\n\n" + errorBlock.String())
 	}
@@ -494,7 +515,7 @@ func (s *agentCardStream) eventLocked(initial bool) card.Event {
 
 func (s *agentCardStream) segmentsLocked() []card.Segment {
 	var segments []card.Segment
-	if text := strings.TrimSpace(s.answer.String()); text != "" {
+	if text := stripTrailingBotSignature(s.answer.String()); strings.TrimSpace(text) != "" {
 		segments = append(segments, card.Segment{Kind: card.SegmentText, Text: text})
 	}
 	if text := strings.TrimSpace(s.thought.String()); text != "" {
@@ -555,25 +576,41 @@ func (s *agentCardStream) headerTitleLocked() string {
 	}
 }
 
-func appendSegmentToBuilders(segment card.Segment, answer, thought, tools *strings.Builder) {
-	text := strings.TrimSpace(segment.Text)
-	if text == "" {
+func appendSegmentToBuilders(segment card.Segment, incremental bool, answer, thought, tools *strings.Builder) {
+	if segment.Text == "" {
 		return
 	}
-	target := answer
 	switch segment.Kind {
 	case card.SegmentThought:
-		target = thought
+		if incremental {
+			thought.WriteString(segment.Text)
+		} else {
+			appendToBuilder(thought, segment.Text)
+		}
 	case card.SegmentTool:
-		target = tools
+		appendToBuilder(tools, segment.Text)
 	case card.SegmentError:
-		target = answer
-		text = "**Error**\n" + text
+		appendToBuilder(answer, "**Error**\n"+strings.TrimSpace(segment.Text))
+	default:
+		if incremental {
+			answer.WriteString(segment.Text)
+		} else {
+			appendToBuilder(answer, segment.Text)
+		}
 	}
-	if target.Len() > 0 {
-		target.WriteString("\n")
+}
+
+var botSignatureLineRE = regexp.MustCompile(`(?i)^(?:—{2,}|-{2,})[\t ]+[^\r\n]+-bot$`)
+
+// stripTrailingBotSignature removes only a complete, standalone signature at
+// the end of the answer. Similar text in the middle of an answer is preserved.
+func stripTrailingBotSignature(text string) string {
+	trimmedEnd := strings.TrimRight(text, " \t\r\n")
+	lineStart := strings.LastIndex(trimmedEnd, "\n") + 1
+	if !botSignatureLineRE.MatchString(strings.TrimSpace(trimmedEnd[lineStart:])) {
+		return text
 	}
-	target.WriteString(text)
+	return strings.TrimRight(trimmedEnd[:lineStart], " \t\r\n")
 }
 
 func maxInt(a, b int) int {

@@ -3191,6 +3191,48 @@ func TestStreamUpdateUnwrapsClaudePartialStreamEvents(t *testing.T) {
 	}
 }
 
+func TestStreamUpdatePreservesDeltaWhitespace(t *testing.T) {
+	data := []byte(strings.Join([]string{
+		`{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"Hello "}}}`,
+		`{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"world"}}}`,
+		"{\"type\":\"stream_event\",\"event\":{\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"\\n\\n```go\\n\"}}}",
+		`{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"fmt.Println(\"ok\")"}}}`,
+		"{\"type\":\"stream_event\",\"event\":{\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"\\n```\"}}}",
+	}, "\n"))
+	var streamed strings.Builder
+	_, err := parseClaudeStream(bytes.NewReader(data), nil, func(update AgentStreamUpdate) {
+		if len(update.Segments) > 0 && !update.Incremental {
+			t.Fatalf("delta update = %#v, want incremental", update)
+		}
+		for _, segment := range update.Segments {
+			if segment.Kind == card.SegmentText {
+				streamed.WriteString(segment.Text)
+			}
+		}
+	})
+	if err != nil {
+		t.Fatalf("parse stream error: %v", err)
+	}
+	want := "Hello world\n\n```go\nfmt.Println(\"ok\")\n```"
+	if got := streamed.String(); got != want {
+		t.Fatalf("streamed text = %q, want %q", got, want)
+	}
+}
+
+func TestStreamUpdateMarksFullAssistantMessageAsAnswerSnapshot(t *testing.T) {
+	data := []byte(`{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Hello world"}]}}`)
+	var got []AgentStreamUpdate
+	_, err := parseClaudeStream(bytes.NewReader(data), nil, func(update AgentStreamUpdate) {
+		got = append(got, update)
+	})
+	if err != nil {
+		t.Fatalf("parse stream error: %v", err)
+	}
+	if len(got) != 1 || !got[0].AnswerSnapshot || got[0].Incremental {
+		t.Fatalf("updates = %#v, want one non-incremental answer snapshot", got)
+	}
+}
+
 func testConfig(t *testing.T) config.Config {
 	t.Helper()
 	return config.Config{DefaultAgent: "claude", DefaultWorkDir: t.TempDir(), CardMaxChars: 1000, InteractionTimeout: time.Second, ConversationMode: config.ConversationModeTopic}

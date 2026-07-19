@@ -245,3 +245,202 @@ func TestStreamPreviewFailureDisablesOnlyIntermediateUpdates(t *testing.T) {
 		t.Fatalf("terminal after preview failure = %#v", events)
 	}
 }
+
+func TestStreamPreviewPreservesChunkBoundaries(t *testing.T) {
+	clock := &fakeStreamClock{now: time.Unix(400, 0)}
+	renderer := card.NewFakeRenderer()
+	stream := newPreviewTestStream(t, renderer, clock, 30, 2000)
+	if err := stream.Start(); err != nil {
+		t.Fatal(err)
+	}
+	for _, chunk := range []string{"清晨的光", "落在", "窗台上", "\n\nHello ", "world", "\n\n**粗", "体**"} {
+		stream.Handle(AgentStreamUpdate{
+			Segments:    []card.Segment{{Kind: card.SegmentText, Text: chunk}},
+			Activity:    streamActivityAnswering,
+			Incremental: true,
+		})
+	}
+	if err := stream.Flush(); err != nil {
+		t.Fatal(err)
+	}
+	events := renderer.Events()
+	preview := events[len(events)-1]
+	want := "清晨的光落在窗台上\n\nHello world\n\n**粗体**"
+	if len(preview.Segments) != 1 || preview.Segments[0].Text != want {
+		t.Fatalf("preview segments = %#v, want %q", preview.Segments, want)
+	}
+}
+
+func TestStripTrailingBotSignature(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{name: "em dash signature", input: "正文\n\n—— 李俊-H-Bot", want: "正文"},
+		{name: "ascii dash signature", input: "正文\n\n-- Demo-Bot", want: "正文"},
+		{name: "case insensitive", input: "正文\n—— Demo-bot  ", want: "正文"},
+		{name: "middle signature-like line", input: "第一段\n\n—— Demo-Bot\n\n结论", want: "第一段\n\n—— Demo-Bot\n\n结论"},
+		{name: "ordinary em dash", input: "正文\n\n—— 这是补充说明", want: "正文\n\n—— 这是补充说明"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := stripTrailingBotSignature(tt.input); got != tt.want {
+				t.Fatalf("stripTrailingBotSignature(%q) = %q, want %q", tt.input, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestStreamOmitsTrailingBotSignature(t *testing.T) {
+	clock := &fakeStreamClock{now: time.Unix(500, 0)}
+	renderer := card.NewFakeRenderer()
+	stream := newPreviewTestStream(t, renderer, clock, 30, 2000)
+	if err := stream.Start(); err != nil {
+		t.Fatal(err)
+	}
+	stream.Handle(AgentStreamUpdate{
+		Segments: []card.Segment{{Kind: card.SegmentText, Text: "正文\n\n—— 李俊-H-Bot"}},
+		Activity: streamActivityAnswering,
+	})
+	preview := renderer.Events()[1]
+	if len(preview.Segments) != 1 || preview.Segments[0].Text != "正文" {
+		t.Fatalf("preview segments = %#v, want signature-free answer", preview.Segments)
+	}
+	initialMeta := renderer.Events()[0].Meta
+	terminal, err := stream.Finish("completed", card.Meta{Agent: "claude"}, AgentRunResult{
+		Segments:       []card.Segment{{Kind: card.SegmentText, Text: "最终正文\n\n—— 李俊-H-Bot"}},
+		AnswerSegments: []string{"最终正文\n\n—— 李俊-H-Bot"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(terminal.Segments) != 1 || terminal.Segments[0].Text != "最终正文" {
+		t.Fatalf("terminal segments = %#v, want signature-free answer", terminal.Segments)
+	}
+	if terminal.Meta.Agent != "claude" || terminal.Meta.User != initialMeta.User || terminal.Meta.IP != initialMeta.IP {
+		t.Fatalf("terminal meta = %#v, want runtime meta preserved", terminal.Meta)
+	}
+}
+
+func TestStreamRemovesSignatureCompletedAcrossChunks(t *testing.T) {
+	clock := &fakeStreamClock{now: time.Unix(600, 0)}
+	renderer := card.NewFakeRenderer()
+	stream := newPreviewTestStream(t, renderer, clock, 30, 2000)
+	if err := stream.Start(); err != nil {
+		t.Fatal(err)
+	}
+	stream.Handle(AgentStreamUpdate{
+		Segments:    []card.Segment{{Kind: card.SegmentText, Text: "正文\n\n-- Demo-"}},
+		Activity:    streamActivityAnswering,
+		Incremental: true,
+	})
+	if got := renderer.Events()[1].Segments[0].Text; got != "正文\n\n-- Demo-" {
+		t.Fatalf("partial signature preview = %q", got)
+	}
+	stream.Handle(AgentStreamUpdate{
+		Segments:    []card.Segment{{Kind: card.SegmentText, Text: "Bot"}},
+		Activity:    streamActivityAnswering,
+		Incremental: true,
+	})
+	if err := stream.Flush(); err != nil {
+		t.Fatal(err)
+	}
+	events := renderer.Events()
+	if got := events[len(events)-1].Segments[0].Text; got != "正文" {
+		t.Fatalf("completed signature preview = %q, want cleaned body", got)
+	}
+}
+
+func TestStreamAnswerSnapshotDoesNotDuplicatePartialDeltas(t *testing.T) {
+	clock := &fakeStreamClock{now: time.Unix(700, 0)}
+	renderer := card.NewFakeRenderer()
+	stream := newPreviewTestStream(t, renderer, clock, 30, 2000)
+	if err := stream.Start(); err != nil {
+		t.Fatal(err)
+	}
+	stream.Handle(AgentStreamUpdate{Segments: []card.Segment{{Kind: card.SegmentText, Text: "Hello "}}, Incremental: true})
+	stream.Handle(AgentStreamUpdate{Segments: []card.Segment{{Kind: card.SegmentText, Text: "world"}}, Incremental: true})
+	stream.Handle(AgentStreamUpdate{Segments: []card.Segment{{Kind: card.SegmentText, Text: "Hello world"}}, AnswerSnapshot: true})
+	if err := stream.Flush(); err != nil {
+		t.Fatal(err)
+	}
+	events := renderer.Events()
+	if got := events[len(events)-1].Segments[0].Text; got != "Hello world" {
+		t.Fatalf("snapshot preview = %q, want no duplicated partial text", got)
+	}
+}
+
+func TestStreamPreservesFullThinkingBoundariesAndThinkingDeltas(t *testing.T) {
+	clock := &fakeStreamClock{now: time.Unix(800, 0)}
+	renderer := card.NewFakeRenderer()
+	stream := newPreviewTestStream(t, renderer, clock, 30, 2000)
+	if err := stream.Start(); err != nil {
+		t.Fatal(err)
+	}
+	stream.Handle(AgentStreamUpdate{Segments: []card.Segment{{Kind: card.SegmentThought, Text: "first"}}})
+	stream.Handle(AgentStreamUpdate{Segments: []card.Segment{{Kind: card.SegmentThought, Text: "second"}}})
+	stream.Handle(AgentStreamUpdate{Segments: []card.Segment{{Kind: card.SegmentThought, Text: " + "}}, Incremental: true})
+	stream.Handle(AgentStreamUpdate{Segments: []card.Segment{{Kind: card.SegmentThought, Text: "delta"}}, Incremental: true})
+	if err := stream.Flush(); err != nil {
+		t.Fatal(err)
+	}
+	events := renderer.Events()
+	segments := events[len(events)-1].Segments
+	if len(segments) != 1 || segments[0].Kind != card.SegmentThought || segments[0].Text != "first\n\nsecond + delta" {
+		t.Fatalf("thought segments = %#v", segments)
+	}
+}
+
+func TestFailedStreamRemovesAnswerSignatureBeforeErrorBlock(t *testing.T) {
+	clock := &fakeStreamClock{now: time.Unix(900, 0)}
+	renderer := card.NewFakeRenderer()
+	stream := newPreviewTestStream(t, renderer, clock, 30, 2000)
+	if err := stream.Start(); err != nil {
+		t.Fatal(err)
+	}
+	terminal, err := stream.Finish("failed", card.Meta{}, AgentRunResult{
+		Segments: []card.Segment{
+			{Kind: card.SegmentText, Text: "正文\n\n—— Demo-Bot"},
+			{Kind: card.SegmentError, Text: "runner failed"},
+		},
+		AnswerSegments: []string{"正文\n\n—— Demo-Bot"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(terminal.Segments) != 1 {
+		t.Fatalf("terminal segments = %#v", terminal.Segments)
+	}
+	got := terminal.Segments[0].Text
+	if strings.Contains(got, "Demo-Bot") || !strings.Contains(got, "正文") || !strings.Contains(got, "runner failed") {
+		t.Fatalf("terminal answer = %q, want body + error without signature", got)
+	}
+}
+
+func TestStreamWhitespaceOnlyDeltaDoesNotRenderEmptyCardOrDelayFirstText(t *testing.T) {
+	clock := &fakeStreamClock{now: time.Unix(1000, 0)}
+	renderer := card.NewFakeRenderer()
+	stream := newPreviewTestStream(t, renderer, clock, 30, 2000)
+	if err := stream.Start(); err != nil {
+		t.Fatal(err)
+	}
+	stream.Handle(AgentStreamUpdate{
+		Segments:    []card.Segment{{Kind: card.SegmentText, Text: "\n"}},
+		Incremental: true,
+	})
+	if got := len(renderer.Events()); got != 1 {
+		t.Fatalf("events after whitespace-only delta = %d, want initial card only", got)
+	}
+	stream.Handle(AgentStreamUpdate{
+		Segments:    []card.Segment{{Kind: card.SegmentText, Text: "首"}},
+		Incremental: true,
+	})
+	events := renderer.Events()
+	if len(events) != 2 {
+		t.Fatalf("events after first visible text = %d, want immediate preview", len(events))
+	}
+	if got := events[1].Segments[0].Text; got != "\n首" {
+		t.Fatalf("first visible preview = %q, want preserved leading delta", got)
+	}
+}
