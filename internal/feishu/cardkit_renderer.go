@@ -414,8 +414,30 @@ func staticFingerprint(prepared card.PreparedLarkCard) [32]byte {
 	payload := prepared.PayloadCopy()
 	blankAnswerContent(payload)
 	normalizeHeaderElapsed(payload)
+	// 运行期允许滞后的字段(meta 底栏的 token/model)不进指纹:它们逐帧变化,
+	// 若参与指纹会让正文流式退回全卡刷新。这些字段在终态全卡更新时统一校正。
+	blankVolatileMeta(payload)
 	encoded, _ := json.Marshal(payload)
 	return sha256.Sum256(encoded)
+}
+
+// blankVolatileMeta 清空 meta 底栏两行的 content,使其运行期变化不影响静态指纹。
+func blankVolatileMeta(value any) {
+	switch node := value.(type) {
+	case map[string]any:
+		if node["tag"] == "markdown" {
+			if id, _ := node["element_id"].(string); id == "meta_primary" || id == "meta_runtime" {
+				node["content"] = ""
+			}
+		}
+		for _, child := range node {
+			blankVolatileMeta(child)
+		}
+	case []any:
+		for _, child := range node {
+			blankVolatileMeta(child)
+		}
+	}
 }
 
 func normalizeHeaderElapsed(payload map[string]any) {

@@ -463,6 +463,36 @@ func TestCardKitRendererNativeAnswerAndFullCardShareSequence(t *testing.T) {
 	}
 }
 
+func TestCardKitRendererNativeAnswerIgnoresVolatileMetaTokens(t *testing.T) {
+	// v2 Step3:运行期 answer 增量伴随 meta token 变化时,仍走 native 局部更新,
+	// 不因 token(允许滞后的字段)变化退回全卡刷新。
+	client := &fakeCardKitClient{}
+	renderer := NewCardKitRendererWithNative(client, "source", nil, RenderBinding{
+		BaseSessionID: "claude:chat", BatchID: "batch", LatestScope: "claude:chat", RunCardSessionID: "run-card",
+	}, &fakeNativeJournal{})
+	first := card.Event{
+		Type: "stream", Streaming: true, SessionID: "run-card", HeaderTitle: "✍️ 正在回复 · ⏱ 1s",
+		Segments: []card.Segment{{Kind: card.SegmentText, Text: "one"}},
+		Meta:     card.Meta{Agent: "claude", RunTokens: 10, TotalTokens: 10},
+	}
+	if err := renderer.Render(first); err != nil {
+		t.Fatal(err)
+	}
+	second := first
+	second.HeaderTitle = "✍️ 正在回复 · ⏱ 2s"
+	second.Segments = []card.Segment{{Kind: card.SegmentText, Text: "one two"}}
+	second.Meta = card.Meta{Agent: "claude", RunTokens: 55, TotalTokens: 55}
+	if err := renderer.Render(second); err != nil {
+		t.Fatal(err)
+	}
+	if len(client.elementReqs) != 1 || len(client.updateReqs) != 0 {
+		t.Fatalf("meta-token change forced full update: element/full=%d/%d", len(client.elementReqs), len(client.updateReqs))
+	}
+	if client.elementReqs[0].Content != "one two" {
+		t.Fatalf("native content = %q, want streamed answer", client.elementReqs[0].Content)
+	}
+}
+
 func TestCardKitRendererNativeAnswerIgnoresElapsedHeaderSuffix(t *testing.T) {
 	client := &fakeCardKitClient{}
 	renderer := NewCardKitRendererWithNative(client, "source", nil, RenderBinding{
