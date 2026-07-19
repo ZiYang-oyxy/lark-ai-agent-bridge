@@ -1783,7 +1783,13 @@ func writeBlockText(b *strings.Builder, block map[string]any) {
 	}
 }
 
+// writeToolUse / writeToolResult 把工具事件渲染成独立的 Markdown 块。
+// 关键排版约束(避免飞书卡片里代码围栏与列表项粘连):
+//   - 每个条目之间留一个空行(用 toolBlockSeparator 保证);
+//   - 代码围栏 ``` 前后各有一个空行,否则围栏不被识别、与上一行粘连;
+//   - result 文本另起一行,不跟在 id 行尾。
 func writeToolUse(b *strings.Builder, block map[string]any) {
+	toolBlockSeparator(b)
 	name, _ := block["name"].(string)
 	if name == "" {
 		name = "tool_use"
@@ -1797,24 +1803,50 @@ func writeToolUse(b *strings.Builder, block map[string]any) {
 	}
 	if input, ok := block["input"]; ok {
 		if payload, err := json.Marshal(input); err == nil && len(payload) > 0 {
-			b.WriteByte('\n')
-			b.WriteString("```json\n")
+			// 代码围栏前需要空行,围栏后另起一行。
+			b.WriteString("\n\n```json\n")
 			b.Write(payload)
 			b.WriteString("\n```")
 		}
 	}
-	b.WriteByte('\n')
 }
 
 func writeToolResult(b *strings.Builder, block map[string]any) {
+	toolBlockSeparator(b)
 	b.WriteString("- tool_result")
 	if id, ok := block["tool_use_id"].(string); ok && id != "" {
 		b.WriteString(" `")
 		b.WriteString(id)
 		b.WriteString("`")
 	}
-	b.WriteByte('\n')
-	writeBlockText(b, block)
+	if text := toolResultText(block); text != "" {
+		// result 文本另起一行,并用代码块包裹,避免多行输出破坏列表结构。
+		b.WriteString("\n\n```\n")
+		b.WriteString(text)
+		b.WriteString("\n```")
+	}
+}
+
+// toolBlockSeparator 在已有内容后插入一个空行,使前后工具条目之间保持段落分隔。
+func toolBlockSeparator(b *strings.Builder) {
+	if b.Len() == 0 {
+		return
+	}
+	existing := b.String()
+	trimmed := strings.TrimRight(existing, "\n")
+	b.Reset()
+	b.WriteString(trimmed)
+	b.WriteString("\n\n")
+}
+
+// toolResultText 提取 tool_result 的文本内容(不追加多余换行)。
+func toolResultText(block map[string]any) string {
+	for _, key := range []string{"text", "thinking", "content"} {
+		if text, ok := block[key].(string); ok && strings.TrimSpace(text) != "" {
+			return strings.TrimSpace(text)
+		}
+	}
+	return ""
 }
 
 func tokensFromValue(value any) int {

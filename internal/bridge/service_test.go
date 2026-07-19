@@ -2953,6 +2953,41 @@ func TestStreamUpdateParsesToolResultBlockIntoToolSegment(t *testing.T) {
 	}
 }
 
+func TestToolSegmentsAvoidMarkdownAdhesion(t *testing.T) {
+	// 回归:工具区 markdown 不能出现代码围栏与列表项粘连
+	// (曾出现 "- Bash `id````json ... ```- tool_result" 这类无空行的粘连)。
+	lines := []string{
+		`{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","name":"Bash","id":"tu-1","input":{"command":"echo hi"}}]}}`,
+		`{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"tu-1","content":"hi"}]}}`,
+	}
+	data := []byte(strings.Join(lines, "\n"))
+	result, err := parseClaudeStream(bytes.NewReader(data), nil, func(AgentStreamUpdate) {})
+	if err != nil {
+		t.Fatalf("parse stream error: %v", err)
+	}
+	var toolText string
+	for _, seg := range result.Segments {
+		if seg.Kind == card.SegmentTool {
+			toolText = seg.Text
+		}
+	}
+	if toolText == "" {
+		t.Fatalf("no tool segment: %#v", result.Segments)
+	}
+	// 代码围栏前必须有空行(即 "```" 不能紧跟在非空行后)。
+	if strings.Contains(toolText, "````") || strings.Contains(toolText, "e```") {
+		t.Fatalf("code fence adheres to preceding text: %q", toolText)
+	}
+	// tool_use 块与 tool_result 块之间必须以空行分隔。
+	if !strings.Contains(toolText, "```\n\n- tool_result") {
+		t.Fatalf("tool_use and tool_result not separated by blank line: %q", toolText)
+	}
+	// 代码围栏起始前应为空行。
+	if !strings.Contains(toolText, "`\n\n```json") {
+		t.Fatalf("json fence not preceded by blank line: %q", toolText)
+	}
+}
+
 func TestParseClaudeStreamSegmentsAssistantAnswersAndCountsUniqueTools(t *testing.T) {
 	// 两个 assistant message:第一段是过程性发言,第二段是最终结论。
 	// 一次工具调用被拆成 tool_use + tool_result 两条,同一 tool_use.id 只应计一次。
