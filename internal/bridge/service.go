@@ -39,6 +39,7 @@ type Service struct {
 	MediaDownloader  media.Downloader
 	MediaGC          mediaSweeper
 	Preferences      *config.PreferenceStore
+	Agents           config.AgentsConfig
 	Replies          *reply.Store
 	CardTarget       reply.CardTarget
 	Reactions        feishu.ReactionSink
@@ -87,7 +88,9 @@ type AgentRunRequest struct {
 	ClaudeSessionID string
 	Model           string
 	Effort          string
-	OnEvent         func(AgentStreamUpdate)
+	// Home is the resolved agent home / config directory. Empty means default.
+	Home    string
+	OnEvent func(AgentStreamUpdate)
 }
 
 type AgentRunResult struct {
@@ -199,6 +202,7 @@ func NewServiceWithSessions(cfg config.Config, renderer card.Renderer, runner Ag
 		Cards:              renderer,
 		Runner:             runner,
 		Audit:              recorder,
+		Agents:             config.DefaultAgentsConfig(),
 		pendingRuns:        map[string]pendingRun{},
 		activeRuns:         map[string]activeRun{},
 		pendingCompletions: map[string]pendingCompletion{},
@@ -345,16 +349,26 @@ func (s *Service) HandleMessage(ctx context.Context, msg Message) error {
 func (s *Service) handleConfigCommand(msg Message, cmd Command, preference config.RuntimePreference) error {
 	switch strings.ToLower(strings.TrimSpace(cmd.Text)) {
 	case "":
+		agentKind := strings.TrimSpace(preference.Agent)
+		if agentKind == "" {
+			agentKind = config.DefaultAgentKind
+		}
 		return s.Cards.Render(card.Event{
 			Type:             "config",
 			SessionID:        runID("config", msg.ID),
 			ReplyToMessageID: msg.ID,
 			ReplyInThread:    preference.ConversationMode == config.ConversationModeTopic,
 			ConfigForm: &card.ConfigForm{
+				Agent:             agentKind,
+				AgentHome:         preference.AgentHome,
+				AgentBin:          preference.AgentBin,
 				Model:             preference.Model,
 				Effort:            preference.Effort,
 				ReplyMode:         string(preference.ReplyMode),
 				ConversationMode:  string(preference.ConversationMode),
+				Agents:            toCardOptions(s.Agents.AgentOptions()),
+				AgentHomes:        toCardOptions(s.Agents.HomeOptions(agentKind)),
+				AgentBins:         toCardOptions(s.Agents.BinOptions(agentKind)),
 				Models:            s.configModelOptions(),
 				Efforts:           []string{"default", "low", "medium", "high"},
 				ReplyModes:        []string{string(config.ReplyModeAppend), string(config.ReplyModeAppendCleanCard), string(config.ReplyModeLatestCard)},
@@ -370,7 +384,7 @@ func (s *Service) handleConfigCommand(msg Message, cmd Command, preference confi
 			return s.renderTextWithMode("config-reset", msg.ID, card.SegmentError, "偏好重置失败，请检查存储状态。", preference.ConversationMode)
 		}
 		s.Audit.Record(msg.Sender, "config_reset", "", "runtime preferences reset")
-		return s.renderTextWithMode("config-reset", msg.ID, card.SegmentText, "已恢复环境默认的 model / effort / reply mode / conversation mode；下一条新消息开始生效。", preference.ConversationMode)
+		return s.renderTextWithMode("config-reset", msg.ID, card.SegmentText, "已恢复环境默认的 agent / home / bin / model / effort / reply mode / conversation mode；下一条新消息开始生效。", preference.ConversationMode)
 	default:
 		return s.renderTextWithMode("config", msg.ID, card.SegmentError, "用法：/config 或 /config reset", preference.ConversationMode)
 	}
@@ -396,7 +410,50 @@ func (s *Service) runtimePreference() config.RuntimePreference {
 	if conversationMode == "" {
 		conversationMode = config.ConversationModeChat
 	}
-	return config.RuntimePreference{Model: model, Effort: effort, ReplyMode: mode, ConversationMode: conversationMode}
+	return config.RuntimePreference{Model: model, Effort: effort, ReplyMode: mode, ConversationMode: conversationMode, Agent: config.DefaultAgentKind}
+}
+
+// resolveAgentBinHome resolves the executable path and home/config directory
+// for a run from the current preference against the agents catalogue.
+//
+//   - bin: the preset's path if set; otherwise falls back to Config.ClaudeBin
+//     (which itself defaults to "claude"), preserving existing behaviour.
+//   - home: the preset's path, or "" for the agent's default home.
+//
+// Unknown/empty labels resolve to the defaults so a stale selection can never
+// wedge execution.
+func (s *Service) resolveAgentBinHome(kind agent.Kind, preference config.RuntimePreference) (bin, home string) {
+	agentKind := strings.TrimSpace(preference.Agent)
+	if agentKind == "" {
+		agentKind = string(kind)
+	}
+	if agentKind == "" {
+		agentKind = config.DefaultAgentKind
+	}
+	if path, ok := s.Agents.BinPath(agentKind, preference.AgentBin); ok && strings.TrimSpace(path) != "" {
+		bin = path
+	} else {
+		bin = s.Config.ClaudeBin
+	}
+	if path, ok := s.Agents.HomePath(agentKind, preference.AgentHome); ok {
+		home = path
+	}
+	return bin, home
+}
+
+func orDefault(value, fallback string) string {
+	if strings.TrimSpace(value) == "" {
+		return fallback
+	}
+	return value
+}
+
+func toCardOptions(options []config.SelectOption) []card.SelectOption {
+	out := make([]card.SelectOption, 0, len(options))
+	for _, opt := range options {
+		out = append(out, card.SelectOption{Value: opt.Value, Label: opt.Label})
+	}
+	return out
 }
 
 func (s *Service) configModelOptions() []string {
@@ -619,7 +676,8 @@ func (s *Service) executeBatch(ctx context.Context, sess session.Session, batch 
 	}
 	var actualModelMu sync.Mutex
 	streamedActualModel := ""
-	result, err := s.Runner.Run(ctx, AgentRunRequest{Kind: sess.Key.Agent, ClaudeBin: s.Config.ClaudeBin, Prompt: prompt, WorkDir: sess.WorkDir, ClaudeSessionID: sess.ClaudeSessionID, Model: batch.Inputs[0].RequestedModel, Effort: batch.Inputs[0].RequestedEffort, OnEvent: func(update AgentStreamUpdate) {
+	bin, home := s.resolveAgentBinHome(sess.Key.Agent, s.runtimePreference())
+	result, err := s.Runner.Run(ctx, AgentRunRequest{Kind: sess.Key.Agent, ClaudeBin: bin, Home: home, Prompt: prompt, WorkDir: sess.WorkDir, ClaudeSessionID: sess.ClaudeSessionID, Model: batch.Inputs[0].RequestedModel, Effort: batch.Inputs[0].RequestedEffort, OnEvent: func(update AgentStreamUpdate) {
 		if model := strings.TrimSpace(update.Model); model != "" {
 			actualModelMu.Lock()
 			streamedActualModel = model
@@ -911,17 +969,17 @@ func (s *Service) HandleActionResult(ctx context.Context, req ActionRequest) (Ac
 			s.Audit.Record(req.Actor, "config_save_failed", req.SessionID, err.Error())
 			return s.renderActionEvent(configSaveErrorEvent(req.SessionID))
 		}
-		preference := config.RuntimePreference{Model: req.FormValues["model"], Effort: req.FormValues["effort"], ReplyMode: config.ReplyMode(req.FormValues["reply_mode"]), ConversationMode: config.ConversationMode(req.FormValues["conversation_mode"])}
+		preference := config.RuntimePreference{Model: req.FormValues["model"], Effort: req.FormValues["effort"], ReplyMode: config.ReplyMode(req.FormValues["reply_mode"]), ConversationMode: config.ConversationMode(req.FormValues["conversation_mode"]), Agent: req.FormValues["agent"], AgentHome: req.FormValues["agent_home"], AgentBin: req.FormValues["agent_bin"]}
 		if err := s.Preferences.Set(preference); err != nil {
 			s.Audit.Record(req.Actor, "config_save_failed", req.SessionID, err.Error())
 			return s.renderActionEvent(configSaveErrorEvent(req.SessionID))
 		}
 		preference = s.Preferences.Get()
-		s.Audit.Record(req.Actor, "config_saved", req.SessionID, fmt.Sprintf("model=%s effort=%s reply_mode=%s conversation_mode=%s", preference.Model, preference.Effort, preference.ReplyMode, preference.ConversationMode))
+		s.Audit.Record(req.Actor, "config_saved", req.SessionID, fmt.Sprintf("agent=%s agent_home=%s agent_bin=%s model=%s effort=%s reply_mode=%s conversation_mode=%s", preference.Agent, preference.AgentHome, preference.AgentBin, preference.Model, preference.Effort, preference.ReplyMode, preference.ConversationMode))
 		return s.renderActionEvent(card.Event{
 			Type:      "config_saved",
 			SessionID: req.SessionID,
-			Segments:  []card.Segment{{Kind: card.SegmentText, Text: fmt.Sprintf("偏好已保存。\n\nmodel=`%s`\neffort=`%s`\nreply mode=`%s`\nconversation mode=`%s`\n\n下一条新消息开始生效。", preference.Model, preference.Effort, preference.ReplyMode, preference.ConversationMode)}},
+			Segments:  []card.Segment{{Kind: card.SegmentText, Text: fmt.Sprintf("偏好已保存。\n\nagent=`%s`\nagent home=`%s`\nagent bin=`%s`\nmodel=`%s`\neffort=`%s`\nreply mode=`%s`\nconversation mode=`%s`\n\n下一条新消息开始生效。", preference.Agent, orDefault(preference.AgentHome, config.DefaultHomeLabel), orDefault(preference.AgentBin, config.DefaultBinLabel), preference.Model, preference.Effort, preference.ReplyMode, preference.ConversationMode)}},
 		})
 	default:
 		return s.renderActionEvent(card.Event{Type: "error", SessionID: req.SessionID, Segments: []card.Segment{{Kind: card.SegmentError, Text: "unknown action: " + req.ActionID}}})
@@ -1421,6 +1479,7 @@ func (CLIExecRunner) Run(ctx context.Context, req AgentRunRequest) (AgentRunResu
 		ClaudeSessionID: req.ClaudeSessionID,
 		Model:           req.Model,
 		Effort:          req.Effort,
+		Home:            req.Home,
 	})
 	if err != nil {
 		return AgentRunResult{}, err
@@ -1431,13 +1490,17 @@ func (CLIExecRunner) Run(ctx context.Context, req AgentRunRequest) (AgentRunResu
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
 	cmd := exec.CommandContext(ctx, command[0], command[1:]...)
+	agentEnv := agent.AgentEnv(req.Kind, req.Home)
 	if req.WorkDir != "" {
 		workDir, err := filepath.Abs(req.WorkDir)
 		if err != nil {
 			return AgentRunResult{}, err
 		}
 		cmd.Dir = workDir
-		cmd.Env = environWithPWD(workDir)
+		cmd.Env = childEnv(workDir, agentEnv)
+	} else if len(agentEnv) > 0 {
+		// No workdir override, but a home/config dir must still be injected.
+		cmd.Env = childEnv("", agentEnv)
 	}
 	cmd.Stderr = &stderr
 	pipe, err := cmd.StdoutPipe()
@@ -1465,15 +1528,44 @@ func (CLIExecRunner) Run(ctx context.Context, req AgentRunRequest) (AgentRunResu
 	return result, nil
 }
 
-func environWithPWD(workDir string) []string {
-	env := make([]string, 0, len(os.Environ())+1)
+// childEnv builds the child process environment from the parent's, optionally
+// overriding PWD (when workDir is non-empty) and applying extra KEY=VALUE
+// overrides (last write wins for a given key). It preserves the prior behaviour
+// of stripping any inherited PWD before appending the run's working directory.
+func childEnv(workDir string, extra []string) []string {
+	overrides := map[string]string{}
+	for _, kv := range extra {
+		if key, _, ok := splitEnv(kv); ok {
+			overrides[key] = kv
+		}
+	}
+	env := make([]string, 0, len(os.Environ())+len(overrides)+1)
 	for _, item := range os.Environ() {
-		if strings.HasPrefix(item, "PWD=") {
+		if workDir != "" && strings.HasPrefix(item, "PWD=") {
 			continue
+		}
+		if key, _, ok := splitEnv(item); ok {
+			if _, replaced := overrides[key]; replaced {
+				continue
+			}
 		}
 		env = append(env, item)
 	}
-	return append(env, "PWD="+workDir)
+	for _, kv := range overrides {
+		env = append(env, kv)
+	}
+	if workDir != "" {
+		env = append(env, "PWD="+workDir)
+	}
+	return env
+}
+
+func splitEnv(kv string) (key, value string, ok bool) {
+	idx := strings.IndexByte(kv, '=')
+	if idx <= 0 {
+		return "", "", false
+	}
+	return kv[:idx], kv[idx+1:], true
 }
 
 func ParseClaudeStreamOutput(data []byte) AgentRunResult {

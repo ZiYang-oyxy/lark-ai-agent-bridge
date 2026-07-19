@@ -59,8 +59,43 @@ func TestBuildOneShotRejectsEmptyPrompt(t *testing.T) {
 }
 
 func TestBuildOneShotRejectsUnsupportedAgent(t *testing.T) {
-	_, err := BuildOneShotCommand(OneShotConfig{Kind: Kind("codex"), Prompt: "hello"})
+	_, err := BuildOneShotCommand(OneShotConfig{Kind: Kind("gemini"), Prompt: "hello"})
 	if err == nil || !strings.Contains(err.Error(), "not supported") {
 		t.Fatalf("unsupported agent error = %v, want unsupported", err)
+	}
+}
+
+func TestBuildOneShotCodexReserved(t *testing.T) {
+	_, err := BuildOneShotCommand(OneShotConfig{Kind: Codex, Prompt: "hello"})
+	if err == nil || !strings.Contains(err.Error(), "reserved") {
+		t.Fatalf("codex error = %v, want reserved", err)
+	}
+}
+
+func TestBuildClaudeOneShotCommandUsesCustomBin(t *testing.T) {
+	cmd, err := BuildOneShotCommand(OneShotConfig{Kind: Claude, Prompt: "hi", Bin: "/opt/wrap/cc"})
+	if err != nil {
+		t.Fatalf("one-shot command error: %v", err)
+	}
+	if cmd[0] != "/opt/wrap/cc" {
+		t.Fatalf("custom bin not used: %#v", cmd)
+	}
+}
+
+func TestAgentEnv(t *testing.T) {
+	if env := AgentEnv(Claude, ""); env != nil {
+		t.Fatalf("empty home must inject no env, got %#v", env)
+	}
+	if env := AgentEnv(Claude, "  "); env != nil {
+		t.Fatalf("blank home must inject no env, got %#v", env)
+	}
+	if env := AgentEnv(Claude, "/data/home-a"); len(env) != 1 || env[0] != "CLAUDE_CONFIG_DIR=/data/home-a" {
+		t.Fatalf("claude env = %#v", env)
+	}
+	if env := AgentEnv(Codex, "/data/codex-a"); len(env) != 1 || env[0] != "CODEX_HOME=/data/codex-a" {
+		t.Fatalf("codex env = %#v", env)
+	}
+	if env := AgentEnv(Kind("gemini"), "/x"); env != nil {
+		t.Fatalf("unknown kind must inject no env, got %#v", env)
 	}
 }

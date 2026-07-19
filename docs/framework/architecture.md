@@ -38,7 +38,7 @@ bridge 当前不再托管交互式终端，也不再通过 tmux/PTY 捕获输出
 
 - `/new [--workdir <path>] [prompt]`：重置当前 chat/topic 的 Claude 会话；有 prompt 时立即执行，没有 prompt 时只创建 ready 状态。
 - `/status`：查看当前 chat/topic 会话状态；群聊中会额外显示当前群内已知会话数量。
-- `/config`：配置 model、effort、Reply mode 和 Conversation mode；`/config reset` 恢复环境默认。
+- `/config`：配置 agent、agent home、agent bin、model、effort、Reply mode 和 Conversation mode；`/config reset` 恢复环境默认。
 - `/help`：显示帮助。
 
 暂不实现 `/resume`。`/sessions`、`/history`、`/topic`、`/attach`、`/interrupt`、`/stop` 文本命令以及 `/claude`、`/codex` 旧入口均不属于当前范围。
@@ -113,10 +113,19 @@ CardKit client 是最后一道本地硬闸：direct `Card` 会重新测量，`Pr
 
 正常 shutdown 仍会取消正在运行的 Claude 子进程，并释放进程内 pending action 和卡片路由状态；持久化 snapshot 负责让下一次启动保留 context，并明确清理未完成工作。
 
+## Agent 选择（agent / home / bin）
+
+`/config` 卡片可选择运行所用的 agent 类型、home（配置目录）和 bin（可执行路径）。
+
+- 可选清单来自工作目录下的 `.lark-agent-bridge/agents.json`（`internal/config/agents.go`）。该文件缺失或非法时回退内置默认（单个 claude、`默认` home、`主机 claude` bin），不阻断启动。**该机制不引入任何新的 `E2E_*` 环境变量**，配置只走 JSON。
+- 用户选择以 label 形式存入 `preferences.json`（`RuntimePreference.Agent/AgentHome/AgentBin`），执行时由 `Service.resolveAgentBinHome` 解析回真实 path。
+- home 通过 per-kind env 注入子进程：Claude → `CLAUDE_CONFIG_DIR`，Codex → `CODEX_HOME`（`agent.AgentEnv`）。空 home 不注入任何 config-dir env，等同本功能之前的行为。bin 为空则回退 `Config.ClaudeBin`（默认 `claude`）。
+- `doctor` 增加 `agents_config` 软检查：agents.json 不可解析时给出 warning，不作为 fatal。
+
 ## 暂缓项
 
 - `/resume` 命令（内部 Claude context 可由 durable snapshot 自动续接，但不开放用户命令）
-- `codex` agent 适配
+- `codex` agent 适配（已预留 `agent.Codex` 常量、`CODEX_HOME` env 映射与 agents.json schema，但 argv 构造与流式解析未实现，UI 暂不暴露）
 - tmux/PTY/WebTTY/共享终端
 - 文件/图片输入
 - 权限与用户映射

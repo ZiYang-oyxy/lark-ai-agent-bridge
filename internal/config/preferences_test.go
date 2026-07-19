@@ -9,7 +9,7 @@ import (
 
 func TestPreferenceStoreUsesDefaultsWhenSnapshotIsMissing(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "preferences.json")
-	defaults := RuntimePreference{Model: "default", Effort: "low", ReplyMode: ReplyModeAppend, ConversationMode: ConversationModeChat}
+	defaults := RuntimePreference{Model: "default", Effort: "low", ReplyMode: ReplyModeAppend, ConversationMode: ConversationModeChat, Agent: DefaultAgentKind}
 	store, err := OpenPreferenceStore(path, defaults, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -24,12 +24,12 @@ func TestPreferenceStoreUsesDefaultsWhenSnapshotIsMissing(t *testing.T) {
 
 func TestPreferenceStorePersistsVersionedOverrideAtomically(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "nested", "preferences.json")
-	defaults := RuntimePreference{Model: "default", Effort: "low", ReplyMode: ReplyModeAppend, ConversationMode: ConversationModeChat}
+	defaults := RuntimePreference{Model: "default", Effort: "low", ReplyMode: ReplyModeAppend, ConversationMode: ConversationModeChat, Agent: DefaultAgentKind}
 	store, err := OpenPreferenceStore(path, defaults, []string{"claude-custom-1"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := RuntimePreference{Model: "claude-custom-1", Effort: "high", ReplyMode: ReplyModeAppend, ConversationMode: ConversationModeChat}
+	want := RuntimePreference{Model: "claude-custom-1", Effort: "high", ReplyMode: ReplyModeAppend, ConversationMode: ConversationModeChat, Agent: DefaultAgentKind}
 	if err := store.Set(want); err != nil {
 		t.Fatal(err)
 	}
@@ -90,6 +90,7 @@ func TestRuntimePreferenceValidationUsesBuiltinsAndAllowedModels(t *testing.T) {
 		{Model: "unknown", Effort: "low", ReplyMode: ReplyModeAppend},
 		{Model: "sonnet", Effort: "extreme", ReplyMode: ReplyModeAppend},
 		{Model: "two models", Effort: "low", ReplyMode: ReplyModeAppend},
+		{Model: "sonnet", Effort: "low", ReplyMode: ReplyModeAppend, Agent: "gemini"},
 	} {
 		if err := ValidateRuntimePreference(preference, "claude-custom-1"); err == nil {
 			t.Fatalf("ValidateRuntimePreference(%#v) error = nil", preference)
@@ -97,15 +98,55 @@ func TestRuntimePreferenceValidationUsesBuiltinsAndAllowedModels(t *testing.T) {
 	}
 }
 
+func TestPreferenceStoreValidatesAgentSelectionAgainstCatalogue(t *testing.T) {
+	agents := DefaultAgentsConfig().Agents
+	path := filepath.Join(t.TempDir(), "preferences.json")
+	defaults := RuntimePreference{Model: "default", Effort: "low", ReplyMode: ReplyModeAppend, ConversationMode: ConversationModeChat, Agent: DefaultAgentKind}
+	store, err := OpenPreferenceStore(path, defaults, nil, agents...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Default (empty) agent selections are accepted.
+	if err := store.Set(RuntimePreference{Model: "default", Effort: "low", ReplyMode: ReplyModeAppend, ConversationMode: ConversationModeChat, Agent: DefaultAgentKind}); err != nil {
+		t.Fatalf("set default agent selection: %v", err)
+	}
+	// An unknown home label is rejected.
+	if err := store.Set(RuntimePreference{Model: "default", Effort: "low", ReplyMode: ReplyModeAppend, ConversationMode: ConversationModeChat, AgentHome: "nope"}); err == nil {
+		t.Fatal("expected unknown agent home to be rejected")
+	}
+}
+
+func TestPreferenceStoreBackwardCompatibleWithLegacySnapshot(t *testing.T) {
+	// A snapshot written before agent fields existed must still load and
+	// normalize to the default agent selection.
+	path := filepath.Join(t.TempDir(), "preferences.json")
+	legacy := `{"schema_version":1,"revision":3,"override":{"model":"sonnet","effort":"high","reply_mode":"append","conversation_mode":"chat"}}`
+	if err := os.WriteFile(path, []byte(legacy), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	defaults := RuntimePreference{Model: "default", Effort: "low", ReplyMode: ReplyModeAppend, ConversationMode: ConversationModeChat, Agent: DefaultAgentKind}
+	store, err := OpenPreferenceStore(path, defaults, nil, DefaultAgentsConfig().Agents...)
+	if err != nil {
+		t.Fatalf("open legacy snapshot: %v", err)
+	}
+	got := store.Get()
+	if got.Agent != DefaultAgentKind || got.AgentHome != "" || got.AgentBin != "" {
+		t.Fatalf("legacy snapshot agent fields = %q/%q/%q", got.Agent, got.AgentHome, got.AgentBin)
+	}
+	if got.Model != "sonnet" || got.Effort != "high" {
+		t.Fatalf("legacy snapshot lost fields: %#v", got)
+	}
+}
+
 func TestRuntimePreferenceValidatesAndPersistsReplyMode(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "preferences.json")
-	defaults := RuntimePreference{Model: "default", Effort: "low", ReplyMode: ReplyModeAppend, ConversationMode: ConversationModeChat}
+	defaults := RuntimePreference{Model: "default", Effort: "low", ReplyMode: ReplyModeAppend, ConversationMode: ConversationModeChat, Agent: DefaultAgentKind}
 	store, err := OpenPreferenceStore(path, defaults, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	for _, mode := range []ReplyMode{ReplyModeAppend, ReplyModeAppendCleanCard, ReplyModeLatestCard} {
-		want := RuntimePreference{Model: "opus", Effort: "high", ReplyMode: mode, ConversationMode: ConversationModeChat}
+		want := RuntimePreference{Model: "opus", Effort: "high", ReplyMode: mode, ConversationMode: ConversationModeChat, Agent: DefaultAgentKind}
 		if err := store.Set(want); err != nil {
 			t.Fatalf("Set(%q): %v", mode, err)
 		}
@@ -128,7 +169,7 @@ func TestRuntimePreferenceValidatesAndPersistsReplyMode(t *testing.T) {
 
 func TestPreferenceStoreResetPersistsRemovalAndRestoresDefaults(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "preferences.json")
-	defaults := RuntimePreference{Model: "default", Effort: "low", ReplyMode: ReplyModeAppend, ConversationMode: ConversationModeChat}
+	defaults := RuntimePreference{Model: "default", Effort: "low", ReplyMode: ReplyModeAppend, ConversationMode: ConversationModeChat, Agent: DefaultAgentKind}
 	store, err := OpenPreferenceStore(path, defaults, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -153,7 +194,7 @@ func TestPreferenceStoreResetPersistsRemovalAndRestoresDefaults(t *testing.T) {
 
 func TestPreferenceStoreFailedReplacementDoesNotPublishCandidate(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "preferences.json")
-	defaults := RuntimePreference{Model: "default", Effort: "low", ReplyMode: ReplyModeAppend, ConversationMode: ConversationModeChat}
+	defaults := RuntimePreference{Model: "default", Effort: "low", ReplyMode: ReplyModeAppend, ConversationMode: ConversationModeChat, Agent: DefaultAgentKind}
 	store, err := OpenPreferenceStore(path, defaults, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -170,7 +211,7 @@ func TestPreferenceStoreFailedReplacementDoesNotPublishCandidate(t *testing.T) {
 	if err := store.Set(RuntimePreference{Model: "opus", Effort: "high", ReplyMode: ReplyModeLatestCard}); err == nil {
 		t.Fatal("Set() error = nil, want replacement failure")
 	}
-	want := RuntimePreference{Model: "sonnet", Effort: "medium", ReplyMode: ReplyModeAppend, ConversationMode: ConversationModeChat}
+	want := RuntimePreference{Model: "sonnet", Effort: "medium", ReplyMode: ReplyModeAppend, ConversationMode: ConversationModeChat, Agent: DefaultAgentKind}
 	if got := store.Get(); got != want {
 		t.Fatalf("preference after failed write = %#v, want unchanged %#v", got, want)
 	}
@@ -181,7 +222,7 @@ func TestPreferenceStoreDefaultsLegacySnapshotToChatConversationMode(t *testing.
 	if err := os.WriteFile(path, []byte(`{"schema_version":1,"revision":2,"override":{"model":"opus","effort":"high","reply_mode":"append"}}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	store, err := OpenPreferenceStore(path, RuntimePreference{Model: "default", Effort: "low", ReplyMode: ReplyModeAppend, ConversationMode: ConversationModeChat}, nil)
+	store, err := OpenPreferenceStore(path, RuntimePreference{Model: "default", Effort: "low", ReplyMode: ReplyModeAppend, ConversationMode: ConversationModeChat, Agent: DefaultAgentKind}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -192,13 +233,13 @@ func TestPreferenceStoreDefaultsLegacySnapshotToChatConversationMode(t *testing.
 
 func TestRuntimePreferenceValidatesAndPersistsConversationMode(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "preferences.json")
-	defaults := RuntimePreference{Model: "default", Effort: "low", ReplyMode: ReplyModeAppend, ConversationMode: ConversationModeChat}
+	defaults := RuntimePreference{Model: "default", Effort: "low", ReplyMode: ReplyModeAppend, ConversationMode: ConversationModeChat, Agent: DefaultAgentKind}
 	store, err := OpenPreferenceStore(path, defaults, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	for _, mode := range []ConversationMode{ConversationModeChat, ConversationModeTopic} {
-		want := RuntimePreference{Model: "opus", Effort: "high", ReplyMode: ReplyModeLatestCard, ConversationMode: mode}
+		want := RuntimePreference{Model: "opus", Effort: "high", ReplyMode: ReplyModeLatestCard, ConversationMode: mode, Agent: DefaultAgentKind}
 		if err := store.Set(want); err != nil {
 			t.Fatalf("Set(%q): %v", mode, err)
 		}

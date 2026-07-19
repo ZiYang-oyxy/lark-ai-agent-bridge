@@ -74,6 +74,7 @@ func runSimulateAction(args []string) error {
 	renderer := card.NewFakeRenderer()
 	recorder := audit.NewRecorder()
 	svc := bridge.NewService(cfg, renderer, simulateRunner{}, recorder)
+	loadAgentsInto(svc, cfg, recorder)
 	if *primeText != "" {
 		msg := bridge.Message{
 			ID:        "local-id",
@@ -176,6 +177,7 @@ func runSimulate(args []string) error {
 		Time:      time.Now(),
 	}
 	svc := bridge.NewService(cfg, renderer, simulateRunner{}, recorder)
+	loadAgentsInto(svc, cfg, recorder)
 	msg := bridge.Message{
 		ID:        fmt.Sprintf("local-%d", time.Now().UnixNano()),
 		ChatID:    *chat,
@@ -267,7 +269,11 @@ func runServe(args []string) error {
 	if err != nil {
 		return fmt.Errorf("restore session store: %w", err)
 	}
-	preferences, err := config.OpenPreferenceStore(cfg.PreferenceStorePath, config.RuntimePreference{Model: cfg.Model, Effort: cfg.Effort, ReplyMode: cfg.ReplyMode, ConversationMode: cfg.ConversationMode}, cfg.AllowedModels)
+	agents, agentsErr := config.LoadAgentsConfig(cfg.AgentsConfigPath)
+	if agentsErr != nil {
+		recorder.Record("system", "agents_config_fallback", "", agentsErr.Error())
+	}
+	preferences, err := config.OpenPreferenceStore(cfg.PreferenceStorePath, config.RuntimePreference{Model: cfg.Model, Effort: cfg.Effort, ReplyMode: cfg.ReplyMode, ConversationMode: cfg.ConversationMode}, cfg.AllowedModels, agents.Agents...)
 	if err != nil {
 		return fmt.Errorf("open runtime preference store: %w", err)
 	}
@@ -282,6 +288,7 @@ func runServe(args []string) error {
 	cardRouter := newServeCardRouter(cardClient, recorder, sequenceJournal)
 	renderer := feishu.NewReactionCardRenderer(sender, cardRouter)
 	svc := bridge.NewServiceWithSessions(cfg, renderer, nil, recorder, sessions, notices)
+	svc.Agents = agents
 	svc.Preferences = preferences
 	svc.Replies = replies
 	svc.SequenceResolver = sequenceJournal
@@ -447,6 +454,7 @@ func applyDefaultWorkDir(cfg *config.Config, workDir string) error {
 	if os.Getenv("E2E_REPLY_STORE") == "" {
 		cfg.ReplyStorePath = filepath.Join(workDir, ".lark-agent-bridge", "replies.json")
 	}
+	cfg.AgentsConfigPath = filepath.Join(workDir, ".lark-agent-bridge", "agents.json")
 	if os.Getenv("E2E_MEDIA_CACHE_DIR") == "" {
 		absoluteWorkDir, err := filepath.Abs(workDir)
 		if err != nil {
@@ -503,6 +511,17 @@ func (l *stringList) Set(v string) error {
 }
 
 type simulateRunner struct{}
+
+// loadAgentsInto attaches the agents catalogue from agents.json to a service,
+// falling back to the built-in default (recorded as a warning) on error. Shared
+// by the local simulate paths so they reflect agents.json like serve does.
+func loadAgentsInto(svc *bridge.Service, cfg config.Config, recorder *audit.Recorder) {
+	agents, err := config.LoadAgentsConfig(cfg.AgentsConfigPath)
+	if err != nil {
+		recorder.Record("system", "agents_config_fallback", "", err.Error())
+	}
+	svc.Agents = agents
+}
 
 func (simulateRunner) Run(_ context.Context, req bridge.AgentRunRequest) (bridge.AgentRunResult, error) {
 	return bridge.AgentRunResult{

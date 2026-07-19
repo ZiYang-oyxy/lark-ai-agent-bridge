@@ -90,6 +90,12 @@ func buildConfigFormElements(sessionID string, form ConfigForm) []any {
 			"tag":  "form",
 			"name": "runtime_config",
 			"elements": []any{
+				markdownElement("cfg_agent", "**Agent**\n目前仅支持 `claude`。"),
+				configSelectOptions("agent", form.Agent, form.Agents),
+				markdownElement("cfg_agent_home", "**Agent home**\n`默认` 表示使用主机默认配置目录，不额外注入 `CLAUDE_CONFIG_DIR`。"),
+				configSelectOptions("agent_home", form.AgentHome, form.AgentHomes),
+				markdownElement("cfg_agent_bin", "**Agent bin**\n每项显示为 `名称 · 作用`；`主机 claude` 为 bridge 默认可执行，其余为 agents.json 预设。"),
+				configSelectOptions("agent_bin", form.AgentBin, form.AgentBins),
 				markdownElement("config_model_label", "**Model**\n`default` 表示由 Claude CLI / wrapper 决定。"),
 				configSelect("model", form.Model, form.Models),
 				markdownElement("config_effort_label", "**Effort**\n`default` 表示不传 `--effort`。"),
@@ -117,6 +123,28 @@ func configSelect(name, initial string, values []string) map[string]any {
 		options = append(options, map[string]any{
 			"text":  map[string]any{"tag": "plain_text", "content": value},
 			"value": value,
+		})
+	}
+	return map[string]any{
+		"tag":            "select_static",
+		"name":           name,
+		"initial_option": initial,
+		"options":        options,
+	}
+}
+
+// configSelectOptions renders a dropdown whose displayed text differs from the
+// submitted value: value is the stored key, Label is the richer display text.
+func configSelectOptions(name, initial string, opts []SelectOption) map[string]any {
+	options := make([]any, 0, len(opts))
+	for _, opt := range opts {
+		display := opt.Label
+		if display == "" {
+			display = opt.Value
+		}
+		options = append(options, map[string]any{
+			"text":  map[string]any{"tag": "plain_text", "content": display},
+			"value": opt.Value,
 		})
 	}
 	return map[string]any{

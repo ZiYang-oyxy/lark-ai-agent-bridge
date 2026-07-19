@@ -42,4 +42,43 @@ GOCACHE=$PWD/.cache/go-build go run ./cmd/lark-agent-bridge serve --default-work
 
 该设置与 Reply mode（`append`、`append-clean-card`、`latest-card`）相互独立。保存成功后只影响新接收的消息；已有 session 不迁移、不删除，已经排队或停在 workdir 确认阶段的输入继续使用接收时的 mode。启动环境可用 `E2E_CONVERSATION_MODE=chat|topic` 设置 `/config reset` 恢复的默认值。
 
+## Agent 选择
+
+`/config` 卡片新增三个下拉，用于选择运行所用的 agent：
+
+- **Agent**：agent 类型。目前仅暴露 `claude`；`codex` 已在内部预留（`agent.Codex`、`CODEX_HOME` env 映射、agents.json schema），但 argv/流式解析尚未实现，暂不进 UI。
+- **Agent home**：agent 的配置目录。选 `默认` 表示不注入 config-dir 环境变量（沿用宿主默认，与本功能之前的行为一致）；选预设则对 Claude 注入 `CLAUDE_CONFIG_DIR=<path>`。
+- **Agent bin**：可执行路径。选 `主机 claude` 回退到 bridge 配置的默认可执行（`E2E_CLAUDE_BIN`，默认 `claude`）；选预设则使用其绝对路径。
+
+可选项来自工作目录下的 `.lark-agent-bridge/agents.json`（**不引入任何新的 `E2E_*` 环境变量**）。该文件缺失或非法时回退到内置默认（单个 claude、只有「默认」home 和「主机 claude」bin），不阻断启动，`doctor` 的 `agents_config` 项会给出软告警。用户选择随其它偏好一起持久化到 `preferences.json`，`/config reset` 一并恢复默认。
+
+每个 `home` / `bin` 支持可选 `desc` 字段（作用描述）。`/config` 卡片的下拉每项显示为 `名称 · 作用`，例如 `ark4 · 方舟 豆包 seed-2-1-pro`；下拉的 `value`（即持久化到 preferences 的 label）仍是纯名称，`desc` 只影响显示。
+
+`agents.json` 示例（列全 workspace 里 claude 系的 wrapper bin）：
+
+```json
+{
+  "schema_version": 1,
+  "agents": [
+    {
+      "kind": "claude",
+      "label": "Claude Code",
+      "homes": [
+        { "label": "demo .claude-home", "path": "/data/.../lark-agent-workspace.demo/.claude-home", "desc": "workspace 隔离配置目录" }
+      ],
+      "bins": [
+        { "label": "ark1", "path": "/data/.../bin/ark1", "desc": "方舟 deepseek-v4-flash[1m]" },
+        { "label": "ark4", "path": "/data/.../bin/ark4", "desc": "方舟 豆包 seed-2-1-pro" },
+        { "label": "cc4", "path": "/data/.../bin/cc4", "desc": "claude-opus-4-8" },
+        { "label": "cc5", "path": "/data/.../bin/cc5", "desc": "claude-fable-5[1m]" }
+      ]
+    }
+  ]
+}
+```
+
+> `codex` agent 类型在 schema、常量与 env 映射（`CODEX_HOME`）层已预留，但 argv/流式解析未实现，UI 暂不暴露；因此 `cx*` 系 wrapper 目前不建议放入 claude agent 的 bins。
+
+> 借此可绕开 workspace 的 `bin/cc` wrapper：把 bin 指向裸 `claude` 并配独立 home，即可让 bridge 直接掌控可执行与配置目录，而不受 wrapper profile 静默影响。
+
 详细架构见 `docs/framework/architecture.md`，测试流程见 `docs/workflow/testing.md`，真实飞书 E2E 工作流见 `docs/workflow/e2e-real.md`，当前交付状态与证据链汇总见 `docs/workflow/delivery-summary.md`。

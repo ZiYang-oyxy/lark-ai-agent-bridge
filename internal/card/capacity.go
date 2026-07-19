@@ -394,9 +394,13 @@ func cloneEvent(event Event) Event {
 	cloned.Actions = append([]Action(nil), event.Actions...)
 	if event.ConfigForm != nil {
 		form := *event.ConfigForm
+		form.Agents = append([]SelectOption(nil), event.ConfigForm.Agents...)
+		form.AgentHomes = append([]SelectOption(nil), event.ConfigForm.AgentHomes...)
+		form.AgentBins = append([]SelectOption(nil), event.ConfigForm.AgentBins...)
 		form.Models = append([]string(nil), event.ConfigForm.Models...)
 		form.Efforts = append([]string(nil), event.ConfigForm.Efforts...)
 		form.ReplyModes = append([]string(nil), event.ConfigForm.ReplyModes...)
+		form.ConversationModes = append([]string(nil), event.ConfigForm.ConversationModes...)
 		cloned.ConfigForm = &form
 	}
 	return cloned

@@ -40,7 +40,18 @@ type RuntimePreference struct {
 	Effort           string           `json:"effort"`
 	ReplyMode        ReplyMode        `json:"reply_mode,omitempty"`
 	ConversationMode ConversationMode `json:"conversation_mode,omitempty"`
+	// Agent is the selected agent kind (empty = "claude").
+	Agent string `json:"agent,omitempty"`
+	// AgentHome / AgentBin store the selected preset labels (not paths); they
+	// are resolved to real paths against the agents catalogue at run time. An
+	// empty label means "use the default", i.e. no config-dir env / default
+	// executable name.
+	AgentHome string `json:"agent_home,omitempty"`
+	AgentBin  string `json:"agent_bin,omitempty"`
 }
+
+// DefaultAgentKind is the agent used when a preference leaves Agent empty.
+const DefaultAgentKind = "claude"
 
 type preferenceSnapshot struct {
 	SchemaVersion int                `json:"schema_version"`
@@ -53,11 +64,16 @@ type PreferenceStore struct {
 	path          string
 	defaults      RuntimePreference
 	allowedModels []string
+	agents        []AgentDef
 	revision      uint64
 	override      *RuntimePreference
 }
 
-func OpenPreferenceStore(path string, defaults RuntimePreference, allowedModels []string) (*PreferenceStore, error) {
+// OpenPreferenceStore opens (or lazily creates on first Set) the preference
+// store. The optional agents argument supplies the agent catalogue used to
+// validate the Agent/AgentHome/AgentBin fields; when omitted, agent-dimension
+// validation is skipped so existing callers keep working unchanged.
+func OpenPreferenceStore(path string, defaults RuntimePreference, allowedModels []string, agents ...AgentDef) (*PreferenceStore, error) {
 	if strings.TrimSpace(path) == "" {
 		return nil, errors.New("config: empty preference store path")
 	}
@@ -66,10 +82,10 @@ func OpenPreferenceStore(path string, defaults RuntimePreference, allowedModels 
 	if err != nil {
 		return nil, err
 	}
-	if err := validateRuntimePreference(defaults, models); err != nil {
+	if err := validateRuntimePreferenceWith(defaults, models, agents); err != nil {
 		return nil, fmt.Errorf("validate runtime preference defaults: %w", err)
 	}
-	store := &PreferenceStore{path: path, defaults: defaults, allowedModels: models}
+	store := &PreferenceStore{path: path, defaults: defaults, allowedModels: models, agents: agents}
 	data, err := os.ReadFile(path)
 	if errors.Is(err, fs.ErrNotExist) {
 		return store, nil
@@ -86,7 +102,7 @@ func OpenPreferenceStore(path string, defaults RuntimePreference, allowedModels 
 	}
 	if snapshot.Override != nil {
 		preference := normalizeRuntimePreference(*snapshot.Override)
-		if err := validateRuntimePreference(preference, models); err != nil {
+		if err := validateRuntimePreferenceWith(preference, models, agents); err != nil {
 			return nil, fmt.Errorf("validate stored runtime preference: %w", err)
 		}
 		store.override = &preference
@@ -108,7 +124,7 @@ func (s *PreferenceStore) Set(preference RuntimePreference) error {
 	preference = normalizeRuntimePreference(preference)
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if err := validateRuntimePreference(preference, s.allowedModels); err != nil {
+	if err := validateRuntimePreferenceWith(preference, s.allowedModels, s.agents); err != nil {
 		return err
 	}
 	revision := s.revision + 1
@@ -141,6 +157,10 @@ func ValidateRuntimePreference(preference RuntimePreference, allowedModels ...st
 }
 
 func validateRuntimePreference(preference RuntimePreference, allowedModels []string) error {
+	return validateRuntimePreferenceWith(preference, allowedModels, nil)
+}
+
+func validateRuntimePreferenceWith(preference RuntimePreference, allowedModels []string, agents []AgentDef) error {
 	allowed := false
 	for _, model := range allowedModels {
 		if preference.Model == model {
@@ -164,6 +184,32 @@ func validateRuntimePreference(preference RuntimePreference, allowedModels []str
 	default:
 		return fmt.Errorf("conversation mode %q is not allowed", preference.ConversationMode)
 	}
+	if err := validateAgentSelection(preference, agents); err != nil {
+		return err
+	}
+	return nil
+}
+
+// validateAgentSelection checks the Agent/AgentHome/AgentBin fields against the
+// supplied catalogue. When agents is empty the agent dimension is not enforced
+// (agent must still be the default kind so an out-of-band value cannot slip in).
+func validateAgentSelection(preference RuntimePreference, agents []AgentDef) error {
+	if len(agents) == 0 {
+		if preference.Agent != DefaultAgentKind {
+			return fmt.Errorf("agent %q is not allowed", preference.Agent)
+		}
+		return nil
+	}
+	catalogue := AgentsConfig{SchemaVersion: AgentsSchemaVersion, Agents: agents}
+	if _, ok := catalogue.Find(preference.Agent); !ok {
+		return fmt.Errorf("agent %q is not allowed", preference.Agent)
+	}
+	if _, ok := catalogue.HomePath(preference.Agent, preference.AgentHome); !ok {
+		return fmt.Errorf("agent home %q is not allowed", preference.AgentHome)
+	}
+	if _, ok := catalogue.BinPath(preference.Agent, preference.AgentBin); !ok {
+		return fmt.Errorf("agent bin %q is not allowed", preference.AgentBin)
+	}
 	return nil
 }
 
@@ -178,6 +224,12 @@ func normalizeRuntimePreference(preference RuntimePreference) RuntimePreference 
 	if preference.ConversationMode == "" {
 		preference.ConversationMode = ConversationModeChat
 	}
+	preference.Agent = strings.ToLower(strings.TrimSpace(preference.Agent))
+	if preference.Agent == "" {
+		preference.Agent = DefaultAgentKind
+	}
+	preference.AgentHome = strings.TrimSpace(preference.AgentHome)
+	preference.AgentBin = strings.TrimSpace(preference.AgentBin)
 	for _, model := range builtinModels {
 		if strings.EqualFold(preference.Model, model) {
 			preference.Model = model

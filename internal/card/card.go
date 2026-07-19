@@ -52,11 +52,25 @@ type Action struct {
 	Disabled bool
 }
 
+// SelectOption is a value/display pair for a card dropdown. Value is what gets
+// submitted/stored; Label is the richer text shown to the user (e.g. with a
+// model description appended).
+type SelectOption struct {
+	Value string
+	Label string
+}
+
 type ConfigForm struct {
+	Agent             string
+	AgentHome         string
+	AgentBin          string
 	Model             string
 	Effort            string
 	ReplyMode         string
 	ConversationMode  string
+	Agents            []SelectOption
+	AgentHomes        []SelectOption
+	AgentBins         []SelectOption
 	Models            []string
 	Efforts           []string
 	ReplyModes        []string

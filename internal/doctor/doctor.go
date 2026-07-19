@@ -74,8 +74,20 @@ func runStatic(cfg config.Config) []Check {
 		intPositive("card_max_chars", cfg.CardMaxChars),
 		intPositive("card_min_delta_chars", cfg.CardMinDeltaChars),
 		intPositive("card_preview_max_chars", cfg.CardPreviewMaxChars),
+		agentsConfigCheck(cfg),
 	}
 	return checks
+}
+
+// agentsConfigCheck verifies agents.json parses. It is a soft check: an
+// unreadable or invalid document is a warning, not a failure, because the
+// service falls back to the built-in default catalogue.
+func agentsConfigCheck(cfg config.Config) Check {
+	agents, err := config.LoadAgentsConfig(cfg.AgentsConfigPath)
+	if err != nil {
+		return Check{Name: "agents_config", OK: true, Warning: true, Detail: "using built-in default: " + err.Error()}
+	}
+	return Check{Name: "agents_config", OK: true, Detail: fmt.Sprintf("%d agent(s)", len(agents.Agents))}
 }
 
 func ClaudeWrapperPreflight(ctx context.Context, cfg config.Config) Check {

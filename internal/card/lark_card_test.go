@@ -232,10 +232,16 @@ func TestBuildLarkCardRendersRuntimeConfigForm(t *testing.T) {
 		Type:      "config",
 		SessionID: "claude:chat:message:config-1",
 		ConfigForm: &ConfigForm{
+			Agent:             "claude",
+			AgentHome:         "默认",
+			AgentBin:          "主机 claude",
 			Model:             "opus",
 			Effort:            "high",
 			ReplyMode:         "latest-card",
 			ConversationMode:  "chat",
+			Agents:            []SelectOption{{Value: "claude", Label: "claude · Claude Code"}},
+			AgentHomes:        []SelectOption{{Value: "默认", Label: "默认 · 宿主默认配置目录"}, {Value: "隔离", Label: "隔离 · demo home"}},
+			AgentBins:         []SelectOption{{Value: "主机 claude", Label: "主机 claude · bridge 默认可执行"}, {Value: "ark4", Label: "ark4 · 豆包 seed-2-1-pro"}},
 			Models:            []string{"default", "sonnet", "opus", "haiku"},
 			Efforts:           []string{"default", "low", "medium", "high"},
 			ReplyModes:        []string{"append", "append-clean-card", "latest-card"},
@@ -271,8 +277,20 @@ func TestBuildLarkCardRendersRuntimeConfigForm(t *testing.T) {
 			submit = control
 		}
 	}
-	if len(selects) != 4 || selects["model"]["initial_option"] != "opus" || selects["effort"]["initial_option"] != "high" || selects["reply_mode"]["initial_option"] != "latest-card" || selects["conversation_mode"]["initial_option"] != "chat" {
+	if len(selects) != 7 || selects["model"]["initial_option"] != "opus" || selects["effort"]["initial_option"] != "high" || selects["reply_mode"]["initial_option"] != "latest-card" || selects["conversation_mode"]["initial_option"] != "chat" {
 		t.Fatalf("select controls = %#v", selects)
+	}
+	if selects["agent"]["initial_option"] != "claude" || selects["agent_home"]["initial_option"] != "默认" || selects["agent_bin"]["initial_option"] != "主机 claude" {
+		t.Fatalf("agent select controls = %#v", selects)
+	}
+	if len(selects["agent"]["options"].([]any)) != 1 || len(selects["agent_home"]["options"].([]any)) != 2 || len(selects["agent_bin"]["options"].([]any)) != 2 {
+		t.Fatalf("agent select options = agent %#v home %#v bin %#v", selects["agent"]["options"], selects["agent_home"]["options"], selects["agent_bin"]["options"])
+	}
+	// The ark4 bin option must submit the bare label but display the description.
+	binOpts := selects["agent_bin"]["options"].([]any)
+	ark4 := binOpts[1].(map[string]any)
+	if ark4["value"] != "ark4" || ark4["text"].(map[string]any)["content"] != "ark4 · 豆包 seed-2-1-pro" {
+		t.Fatalf("ark4 bin option value/display not separated: %#v", ark4)
 	}
 	if len(selects["model"]["options"].([]any)) != 4 || len(selects["effort"]["options"].([]any)) != 4 || len(selects["reply_mode"]["options"].([]any)) != 3 || len(selects["conversation_mode"]["options"].([]any)) != 2 {
 		t.Fatalf("select options = model %#v effort %#v reply %#v", selects["model"]["options"], selects["effort"]["options"], selects["reply_mode"]["options"])
