@@ -54,6 +54,12 @@ GOCACHE=$PWD/.cache/go-build go run ./cmd/lark-agent-bridge serve --default-work
 
 每个 `home` / `bin` 支持可选 `desc` 字段（作用描述）。`/config` 卡片的下拉每项显示为 `名称 · 作用`，例如 `ark4 · 方舟 豆包 seed-2-1-pro`；下拉的 `value`（即持久化到 preferences 的 label）仍是纯名称，`desc` 只影响显示。
 
+**path 支持三种写法，可保持 workspace 可搬**：
+
+- **绝对路径**（`/data/.../bin/ark4`）：直接使用。
+- **`~/...`**：展开为 `$HOME/...`，跨机器只要用户名对上就好。
+- **相对路径**（`bin/ark4`、`./state/claude-home`）：以 agents.json 所在的 workdir（即 `--default-workdir` 或进程 CWD）为基。**推荐用这种**——只要整个 workspace 目录整体搬到别的机器，agents.json 无需改动。
+
 `agents.json` 示例（列全 workspace 里 claude 系的 wrapper bin）：
 
 ```json
@@ -64,13 +70,13 @@ GOCACHE=$PWD/.cache/go-build go run ./cmd/lark-agent-bridge serve --default-work
       "kind": "claude",
       "label": "Claude Code",
       "homes": [
-        { "label": "demo .claude-home", "path": "/data/.../lark-agent-workspace.demo/.claude-home", "desc": "workspace 隔离配置目录" }
+        { "label": "workspace .claude-home", "path": ".claude-home", "desc": "workspace 隔离配置目录" }
       ],
       "bins": [
-        { "label": "ark1", "path": "/data/.../bin/ark1", "desc": "方舟 deepseek-v4-flash[1m]" },
-        { "label": "ark4", "path": "/data/.../bin/ark4", "desc": "方舟 豆包 seed-2-1-pro" },
-        { "label": "cc4", "path": "/data/.../bin/cc4", "desc": "claude-opus-4-8" },
-        { "label": "cc5", "path": "/data/.../bin/cc5", "desc": "claude-fable-5[1m]" }
+        { "label": "ark1", "path": "bin/ark1", "desc": "方舟 deepseek-v4-flash[1m]" },
+        { "label": "ark4", "path": "bin/ark4", "desc": "方舟 豆包 seed-2-1-pro" },
+        { "label": "cc4", "path": "bin/cc4", "desc": "claude-opus-4-8" },
+        { "label": "cc5", "path": "bin/cc5", "desc": "claude-fable-5[1m]" }
       ]
     }
   ]

@@ -146,6 +146,68 @@ func TestLoadAgentsConfigPreservesBinDescAndOptions(t *testing.T) {
 	}
 }
 
+func TestLoadAgentsConfigResolvesRelativeAndTildePaths(t *testing.T) {
+	dir := t.TempDir()
+	agentsPath := filepath.Join(dir, ".lark-agent-bridge", "agents.json")
+	if err := os.MkdirAll(filepath.Dir(agentsPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	doc := `{
+      "schema_version": 1,
+      "agents": [{
+        "kind": "claude",
+        "label": "Claude Code",
+        "homes": [
+          {"label": "workspace",        "path": "state/claude-home"},
+          {"label": "workspace-dot",    "path": "./state/claude-home"},
+          {"label": "abs",              "path": "/abs/home"},
+          {"label": "home-tilde",       "path": "~/preset/home"}
+        ],
+        "bins": [
+          {"label": "workspace-bin",    "path": "bin/ark4"},
+          {"label": "abs-bin",          "path": "/usr/local/bin/claude"}
+        ]
+      }]
+    }`
+	if err := os.WriteFile(agentsPath, []byte(doc), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := LoadAgentsConfig(agentsPath)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if cfg.WorkDir != dir {
+		t.Fatalf("WorkDir = %q, want %q", cfg.WorkDir, dir)
+	}
+	// relative -> joined with workdir
+	if got, ok := cfg.HomePath("claude", "workspace"); !ok || got != filepath.Join(dir, "state/claude-home") {
+		t.Fatalf("relative home = %q ok=%v", got, ok)
+	}
+	if got, ok := cfg.HomePath("claude", "workspace-dot"); !ok || got != filepath.Join(dir, "state/claude-home") {
+		t.Fatalf("./relative home = %q ok=%v", got, ok)
+	}
+	// absolute -> pass-through (cleaned)
+	if got, ok := cfg.HomePath("claude", "abs"); !ok || got != "/abs/home" {
+		t.Fatalf("abs home = %q ok=%v", got, ok)
+	}
+	// ~ -> $HOME expansion
+	home, _ := os.UserHomeDir()
+	if got, ok := cfg.HomePath("claude", "home-tilde"); !ok || got != filepath.Join(home, "preset/home") {
+		t.Fatalf("tilde home = %q ok=%v", got, ok)
+	}
+	// bin relative -> joined
+	if got, ok := cfg.BinPath("claude", "workspace-bin"); !ok || got != filepath.Join(dir, "bin/ark4") {
+		t.Fatalf("relative bin = %q ok=%v", got, ok)
+	}
+	if got, ok := cfg.BinPath("claude", "abs-bin"); !ok || got != "/usr/local/bin/claude" {
+		t.Fatalf("abs bin = %q ok=%v", got, ok)
+	}
+	// Empty label still resolves to "" (means "default").
+	if got, ok := cfg.HomePath("claude", ""); !ok || got != "" {
+		t.Fatalf("empty label = %q ok=%v", got, ok)
+	}
+}
+
 func TestAgentsConfigCodexReserved(t *testing.T) {
 	// Codex is reserved and must be rejected from agents.json for now.
 	path := filepath.Join(t.TempDir(), "agents.json")

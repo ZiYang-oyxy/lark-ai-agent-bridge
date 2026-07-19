@@ -60,6 +60,11 @@ type AgentDef struct {
 type AgentsConfig struct {
 	SchemaVersion int        `json:"schema_version"`
 	Agents        []AgentDef `json:"agents"`
+	// WorkDir is the base used to resolve relative preset paths at lookup time.
+	// It is set by LoadAgentsConfig based on the agents.json location so paths
+	// in the file can be workspace-relative (e.g. "bin/ark4") and stay valid
+	// when the workspace is moved between machines.
+	WorkDir string `json:"-"`
 }
 
 // knownAgentKinds gates which kinds are accepted from agents.json. Codex is
@@ -90,26 +95,48 @@ func DefaultAgentsConfig() AgentsConfig {
 // read error, or an invalid document all fall back to DefaultAgentsConfig; the
 // returned error is non-nil only in the fallback-with-reason cases so callers
 // can log a warning without aborting startup. The AgentsConfig is always usable.
+//
+// The returned WorkDir is derived from path (its grandparent directory) and is
+// used to resolve relative preset paths at lookup time. Callers may override
+// WorkDir afterwards if they resolve it differently.
 func LoadAgentsConfig(path string) (AgentsConfig, error) {
+	workDir := deriveWorkDir(path)
+	fallback := func() AgentsConfig {
+		def := DefaultAgentsConfig()
+		def.WorkDir = workDir
+		return def
+	}
 	if strings.TrimSpace(path) == "" {
-		return DefaultAgentsConfig(), nil
+		return fallback(), nil
 	}
 	data, err := os.ReadFile(path)
 	if errors.Is(err, fs.ErrNotExist) {
-		return DefaultAgentsConfig(), nil
+		return fallback(), nil
 	}
 	if err != nil {
-		return DefaultAgentsConfig(), fmt.Errorf("read agents config: %w", err)
+		return fallback(), fmt.Errorf("read agents config: %w", err)
 	}
 	var cfg AgentsConfig
 	if err := json.Unmarshal(data, &cfg); err != nil {
-		return DefaultAgentsConfig(), fmt.Errorf("decode agents config: %w", err)
+		return fallback(), fmt.Errorf("decode agents config: %w", err)
 	}
 	normalized, err := normalizeAgentsConfig(cfg)
 	if err != nil {
-		return DefaultAgentsConfig(), err
+		return fallback(), err
 	}
+	normalized.WorkDir = workDir
 	return normalized, nil
+}
+
+// deriveWorkDir returns the workspace directory that owns an agents.json at
+// path. agents.json lives at <workdir>/.lark-agent-bridge/agents.json, so the
+// workdir is two levels up. Empty path yields "".
+func deriveWorkDir(path string) string {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return ""
+	}
+	return filepath.Dir(filepath.Dir(path))
 }
 
 func normalizeAgentsConfig(cfg AgentsConfig) (AgentsConfig, error) {
@@ -195,15 +222,42 @@ func normalizeBins(kind string, bins []AgentBin) ([]AgentBin, error) {
 	return out, nil
 }
 
-// cleanPath trims and, when the value is a non-empty relative-looking path,
-// leaves it as-is; absolute cleaning is applied so stored values are canonical.
-// An empty path is preserved (meaning "default").
+// cleanPath trims whitespace but preserves relative form so relative presets
+// stay portable. An empty path is preserved (meaning "default"). Actual
+// absolute-path resolution happens at lookup time via resolvePath.
 func cleanPath(path string) string {
 	path = strings.TrimSpace(path)
 	if path == "" {
 		return ""
 	}
 	return filepath.Clean(path)
+}
+
+// resolvePath turns a stored preset path into an absolute path for use by
+// exec. Empty -> empty (means "default"). Absolute paths pass through. A
+// leading "~/" or bare "~" expands to $HOME. Otherwise the path is treated as
+// relative to workDir; if workDir is empty the value is returned as-is (best
+// effort — exec will surface the failure).
+func resolvePath(workDir, path string) string {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return ""
+	}
+	if path == "~" || strings.HasPrefix(path, "~/") {
+		if home, err := os.UserHomeDir(); err == nil && home != "" {
+			if path == "~" {
+				return home
+			}
+			return filepath.Join(home, path[2:])
+		}
+	}
+	if filepath.IsAbs(path) {
+		return filepath.Clean(path)
+	}
+	if workDir == "" {
+		return path
+	}
+	return filepath.Join(workDir, path)
 }
 
 // Find returns the AgentDef for kind, or false.
@@ -252,9 +306,11 @@ func (c AgentsConfig) BinLabels(kind string) []string {
 	return labels
 }
 
-// HomePath resolves a home label to its path for kind. An empty or unknown
-// label resolves to "" (the default home). ok reports whether the label was a
-// known preset (the empty/default label is always considered known).
+// HomePath resolves a home label to its absolute path for kind. An empty or
+// unknown label resolves to "" (the default home, no env injected). Relative
+// preset paths in agents.json are resolved against c.WorkDir; "~/..." expands
+// to $HOME. ok reports whether the label was a known preset (empty/default is
+// always considered known).
 func (c AgentsConfig) HomePath(kind, label string) (path string, ok bool) {
 	label = strings.TrimSpace(label)
 	def, found := c.Find(kind)
@@ -266,7 +322,7 @@ func (c AgentsConfig) HomePath(kind, label string) (path string, ok bool) {
 	}
 	for _, home := range def.Homes {
 		if home.Label == label {
-			return home.Path, true
+			return resolvePath(c.WorkDir, home.Path), true
 		}
 	}
 	return "", false
@@ -286,7 +342,7 @@ func (c AgentsConfig) BinPath(kind, label string) (path string, ok bool) {
 	}
 	for _, bin := range def.Bins {
 		if bin.Label == label {
-			return bin.Path, true
+			return resolvePath(c.WorkDir, bin.Path), true
 		}
 	}
 	return "", false
