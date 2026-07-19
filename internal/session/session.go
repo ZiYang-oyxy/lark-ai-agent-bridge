@@ -56,11 +56,21 @@ type Input struct {
 	WorkDir          string
 	RequestedModel   string
 	RequestedEffort  string
+	ReplyMode        config.ReplyMode
 	ConversationMode config.ConversationMode
 	Time             time.Time
 	DebounceUntil    time.Time
 	State            InputState
 	Reset            bool
+}
+
+// EffectiveReplyMode keeps durable inputs written before ReplyMode was added
+// compatible with the original default behavior.
+func (in Input) EffectiveReplyMode() config.ReplyMode {
+	if in.ReplyMode == "" {
+		return config.ReplyModeAppend
+	}
+	return in.ReplyMode
 }
 
 type Batch struct {
@@ -894,6 +904,7 @@ func compatibleBatchInput(first, next Input) bool {
 	return first.WorkDir == next.WorkDir &&
 		first.RequestedModel == next.RequestedModel &&
 		first.RequestedEffort == next.RequestedEffort &&
+		first.EffectiveReplyMode() == next.EffectiveReplyMode() &&
 		first.ConversationMode == next.ConversationMode
 }
 

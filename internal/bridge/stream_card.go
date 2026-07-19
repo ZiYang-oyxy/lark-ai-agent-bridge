@@ -58,6 +58,7 @@ type agentCardStream struct {
 	sessionID        string
 	replyTo          string
 	replyInThread    bool
+	replyMode        config.ReplyMode
 	startedAt        time.Time
 	status           string
 	activity         string
@@ -110,6 +111,7 @@ func newAgentCardStreamWithClock(service *Service, sessionID string, sess sessio
 		sessionID:     sessionID,
 		replyTo:       input.ReplyToMessageID,
 		replyInThread: input.ConversationMode == config.ConversationModeTopic,
+		replyMode:     input.EffectiveReplyMode(),
 		startedAt:     startedAt,
 		status:        "running",
 		activity:      streamActivityReasoning,
@@ -421,10 +423,9 @@ func (s *agentCardStream) appendSegmentLocked(segment card.Segment, incremental 
 	appendSegmentToBuilders(segment, incremental, &s.answer, &s.thought, &s.tools)
 }
 
-// mergeFinalSegmentsLocked 用终态结果重建卡片正文。
-// v2:正文只保留本次 run 的最后一段 assistant 回复(answerSegments 末尾),
-// 而非累积的全部中间发言;若 runner 追加了错误段,错误作为独立块附在最后一段之后,
-// 不参与"最后一段"的选取。thought/tools 仍取聚合结果。
+// mergeFinalSegmentsLocked 用终态结果重建卡片正文。append 保留本次 run
+// 的聚合正文；append-clean-card/latest-card 只保留最后一段 assistant
+// 回复。runner 错误作为独立块追加，不参与最后一段选取。
 func (s *agentCardStream) mergeFinalSegmentsLocked(segments []card.Segment, answerSegments []string) {
 	var aggregateAnswer strings.Builder
 	var thought strings.Builder
@@ -443,10 +444,11 @@ func (s *agentCardStream) mergeFinalSegmentsLocked(segments []card.Segment, answ
 		}
 	}
 
-	finalAnswer := lastNonEmpty(answerSegments)
-	if finalAnswer == "" {
-		// 没有可靠的分段结果时回退到聚合正文(保持旧行为的超集)。
-		finalAnswer = strings.TrimSpace(aggregateAnswer.String())
+	finalAnswer := strings.TrimSpace(aggregateAnswer.String())
+	if s.replyMode == config.ReplyModeAppendCleanCard || s.replyMode == config.ReplyModeLatestCard {
+		if last := lastNonEmpty(answerSegments); last != "" {
+			finalAnswer = last
+		}
 	}
 	finalAnswer = stripTrailingBotSignature(finalAnswer)
 	if errorBlock.Len() > 0 {

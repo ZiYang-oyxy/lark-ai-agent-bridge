@@ -697,9 +697,49 @@ func TestServiceFreezesPreferencesAtEnqueueTime(t *testing.T) {
 	if !ok || len(sess.Queue) != 2 {
 		t.Fatalf("session queue = %#v", sess)
 	}
-	if first, second := sess.Queue[0], sess.Queue[1]; first.RequestedModel != "sonnet" || first.RequestedEffort != "low" || second.RequestedModel != "opus" || second.RequestedEffort != "high" {
+	if first, second := sess.Queue[0], sess.Queue[1]; first.RequestedModel != "sonnet" || first.RequestedEffort != "low" || first.ReplyMode != config.ReplyModeAppend || second.RequestedModel != "opus" || second.RequestedEffort != "high" || second.ReplyMode != config.ReplyModeAppend {
 		t.Fatalf("frozen queue preferences = %#v", sess.Queue)
 	}
+}
+
+func TestServiceFreezesReplyModeBeforeQueuedBatchStarts(t *testing.T) {
+	cfg := testConfig(t)
+	cfg.Model, cfg.Effort = "default", "low"
+	cfg.ReplyMode = config.ReplyModeAppend
+	preferences, _ := testPreferenceStore(t, config.RuntimePreference{Model: cfg.Model, Effort: cfg.Effort, ReplyMode: cfg.ReplyMode}, cfg.AllowedModels)
+	replies, err := reply.OpenStore(filepath.Join(t.TempDir(), "replies.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := replies.SetLatest("claude:chat", &session.RenderRef{CardID: "old-card", ReplyMessageID: "old-reply", Version: 2}); err != nil {
+		t.Fatal(err)
+	}
+	runner := newFakeRunner()
+	runner.block = make(chan struct{})
+	target := &bridgeReplyTarget{}
+	svc := NewService(cfg, card.NewFakeRenderer(), runner, audit.NewRecorder())
+	svc.Preferences = preferences
+	svc.Replies = replies
+	svc.CardTarget = target
+	now := time.Now()
+	if err := svc.HandleMessage(context.Background(), Message{ID: "frozen-append", ChatID: "chat", Sender: "user", Text: "hello", Time: now}); err != nil {
+		t.Fatal(err)
+	}
+	if err := preferences.Set(config.RuntimePreference{Model: cfg.Model, Effort: cfg.Effort, ReplyMode: config.ReplyModeLatestCard}); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.DrainReady(now.Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	<-runner.started
+	target.mu.Lock()
+	newCalls, rehydrateCalls := target.newCalls, target.rehydrateCalls
+	target.mu.Unlock()
+	if newCalls != 1 || rehydrateCalls != 0 {
+		t.Fatalf("new/rehydrate calls = %d/%d, want frozen append mode", newCalls, rehydrateCalls)
+	}
+	close(runner.block)
+	waitForSessionNoActiveBatch(t, svc, session.Key{Agent: agent.Claude, ChatID: "chat"})
 }
 
 func TestServiceRoutesBatchThroughReplyPolicyAndPersistsActiveRenderRef(t *testing.T) {
@@ -3056,29 +3096,36 @@ func TestParseClaudeStreamSegmentsAssistantAnswersAndCountsUniqueTools(t *testin
 	}
 }
 
-func TestFinishKeepsOnlyLastAssistantAnswer(t *testing.T) {
-	// 终态裁剪:正文只保留最后一段 assistant 回复,丢弃中间发言。
-	renderer := card.NewFakeRenderer()
-	svc := NewService(testConfig(t), card.NewFakeRenderer(), newFakeRunner(), audit.NewRecorder())
-	stream := newAgentCardStreamWithRenderer(svc, "s1", session.Session{ID: "s1"}, session.Input{ReplyToMessageID: "src", Time: time.Now()}, renderer, nil)
-	if err := stream.Start(); err != nil {
-		t.Fatalf("start: %v", err)
-	}
-	_, err := stream.Finish("completed", card.Meta{}, AgentRunResult{
-		Segments:       []card.Segment{{Kind: card.SegmentText, Text: "让我先看看\n\n最终结论:只有一个文件。"}},
-		AnswerSegments: []string{"让我先看看", "最终结论:只有一个文件。"},
-	})
-	if err != nil {
-		t.Fatalf("finish: %v", err)
-	}
-	events := renderer.Events()
-	terminal := events[len(events)-1]
-	if len(terminal.Segments) == 0 || terminal.Segments[0].Kind != card.SegmentText {
-		t.Fatalf("terminal segments = %#v", terminal.Segments)
-	}
-	body := terminal.Segments[0].Text
-	if strings.Contains(body, "让我先看看") || !strings.Contains(body, "最终结论") {
-		t.Fatalf("terminal answer = %q, want only last assistant segment", body)
+func TestTerminalAnswerFollowsReplyMode(t *testing.T) {
+	for _, tc := range []struct {
+		mode config.ReplyMode
+		want string
+	}{
+		{mode: config.ReplyModeAppend, want: "让我先看看\n\n最终结论:只有一个文件。"},
+		{mode: config.ReplyModeAppendCleanCard, want: "最终结论:只有一个文件。"},
+		{mode: config.ReplyModeLatestCard, want: "最终结论:只有一个文件。"},
+	} {
+		t.Run(string(tc.mode), func(t *testing.T) {
+			renderer := card.NewFakeRenderer()
+			svc := NewService(testConfig(t), card.NewFakeRenderer(), newFakeRunner(), audit.NewRecorder())
+			input := session.Input{ReplyToMessageID: "src", ReplyMode: tc.mode, Time: time.Now()}
+			stream := newAgentCardStreamWithRenderer(svc, "s1", session.Session{ID: "s1"}, input, renderer, nil)
+			if err := stream.Start(); err != nil {
+				t.Fatalf("start: %v", err)
+			}
+			_, err := stream.Finish("completed", card.Meta{}, AgentRunResult{
+				Segments:       []card.Segment{{Kind: card.SegmentText, Text: "让我先看看\n\n最终结论:只有一个文件。"}},
+				AnswerSegments: []string{"让我先看看", "最终结论:只有一个文件。"},
+			})
+			if err != nil {
+				t.Fatalf("finish: %v", err)
+			}
+			events := renderer.Events()
+			terminal := events[len(events)-1]
+			if len(terminal.Segments) == 0 || terminal.Segments[0].Kind != card.SegmentText || terminal.Segments[0].Text != tc.want {
+				t.Fatalf("terminal segments = %#v, want %q", terminal.Segments, tc.want)
+			}
+		})
 	}
 }
 

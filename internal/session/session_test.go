@@ -165,13 +165,14 @@ func TestFreezeReadyBatchStopsAtRuntimePreferenceBoundaries(t *testing.T) {
 		{name: "model", second: Input{ID: "model", Text: "two", RequestedModel: "opus"}},
 		{name: "effort", second: Input{ID: "effort", Text: "two", RequestedEffort: "high"}},
 		{name: "conversation_mode", second: Input{ID: "conversation", Text: "two", RequestedModel: "sonnet", RequestedEffort: "low", ConversationMode: config.ConversationModeTopic}},
+		{name: "reply_mode", second: Input{ID: "reply", Text: "two", RequestedModel: "sonnet", RequestedEffort: "low", ConversationMode: config.ConversationModeChat, ReplyMode: config.ReplyModeAppendCleanCard}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			m := NewManager()
 			key := Key{Agent: agent.Claude, ChatID: "chat"}
 			now := time.Unix(10, 0)
 			limits := BatchLimits{MaxInputs: 10, MaxTextRunes: 64 << 10}
-			first := Input{ID: "first", Text: "one", RequestedModel: "sonnet", RequestedEffort: "low", ConversationMode: config.ConversationModeChat, State: InputQueued, Time: now}
+			first := Input{ID: "first", Text: "one", RequestedModel: "sonnet", RequestedEffort: "low", ConversationMode: config.ConversationModeChat, ReplyMode: config.ReplyModeAppend, State: InputQueued, Time: now}
 			second := tc.second
 			second.State, second.Time = InputQueued, now
 			for _, input := range []Input{first, second} {

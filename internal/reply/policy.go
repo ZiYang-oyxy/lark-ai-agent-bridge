@@ -112,8 +112,11 @@ func (p *Policy) discardLatestRef(ref session.RenderRef) bool {
 func (r *Run) Render(event card.Event) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if r.mode == config.ReplyModeAppendCleanCard && terminalEvent(event) {
+	cleanTerminal := terminalEvent(event) && (r.mode == config.ReplyModeAppendCleanCard || r.mode == config.ReplyModeLatestCard)
+	if cleanTerminal {
 		event = cleanTerminalEvent(event)
+	}
+	if r.mode == config.ReplyModeAppendCleanCard && cleanTerminal {
 		if err := r.renderer.Render(event); err != nil {
 			return r.target.AppendTerminal(r.ctx, r.replyTo, event)
 		}
@@ -187,6 +190,7 @@ func cleanTerminalEvent(event card.Event) card.Event {
 	event.Activity = ""
 	event.ThoughtExpanded = false
 	event.ToolsExpanded = false
+	event.ProcessExpanded = false
 	event.HideAgentPanels = true
 	return event
 }

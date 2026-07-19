@@ -280,9 +280,9 @@ P3 安全收口的验收条件：
 
 已完成能力：
 
-- `append`：每轮新卡片。
-- `latest-card`：每个 scope 复用最新结果卡。
-- `append-clean-card`：运行中展示过程，完成后只保留最终答案。
+- `append`：每轮新卡片，终态保留本轮全部 assistant 回复与 thought/tools。
+- `append-clean-card`：每轮新卡片；运行中展示过程，终态只保留最后一段 assistant 回复并移除 thought/tools。
+- `latest-card`：复用每个 scope 的最新结果卡，其他终态语义与 `append-clean-card` 相同。
 
 暂缓到 P3 的能力：
 

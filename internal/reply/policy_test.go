@@ -144,6 +144,50 @@ func TestPolicyLatestCardRehydratesAndPersistsAdvancedRef(t *testing.T) {
 	}
 }
 
+func TestPolicyLatestCardCleansTerminalAndPersistsAdvancedRef(t *testing.T) {
+	store, err := OpenStore(filepath.Join(t.TempDir(), "replies.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	old := &session.RenderRef{CardID: "old-card", ReplyMessageID: "old-reply", Version: 4}
+	if err := store.SetLatest("scope", old); err != nil {
+		t.Fatal(err)
+	}
+	target := &fakeTarget{}
+	run, err := NewPolicy(target, store).Begin(context.Background(), config.ReplyModeLatestCard, "scope", "run", "source")
+	if err != nil {
+		t.Fatal(err)
+	}
+	terminal := card.Event{
+		Type: "result",
+		Segments: []card.Segment{
+			{Kind: card.SegmentText, Text: "answer"},
+			{Kind: card.SegmentThought, Text: "private thought"},
+			{Kind: card.SegmentTool, Text: "tool process"},
+		},
+		Streaming:       true,
+		Activity:        "tool",
+		ProcessExpanded: true,
+	}
+	if err := run.Render(terminal); err != nil {
+		t.Fatal(err)
+	}
+	if len(target.rehydrated.events) != 1 {
+		t.Fatalf("terminal events = %#v", target.rehydrated.events)
+	}
+	clean := target.rehydrated.events[0]
+	if len(clean.Segments) != 1 || clean.Segments[0].Kind != card.SegmentText || clean.Segments[0].Text != "answer" {
+		t.Fatalf("clean terminal segments = %#v", clean.Segments)
+	}
+	if clean.Streaming || clean.Activity != "" || clean.ProcessExpanded || !clean.HideAgentPanels {
+		t.Fatalf("clean terminal state = %#v", clean)
+	}
+	got := store.GetLatest("scope")
+	if got == nil || got.CardID != old.CardID || got.Version != old.Version+1 {
+		t.Fatalf("latest ref = %#v, want advanced %#v", got, old)
+	}
+}
+
 func TestPolicyLatestCardDiscardsResolverUnknownRef(t *testing.T) {
 	store, err := OpenStore(filepath.Join(t.TempDir(), "replies.json"))
 	if err != nil {

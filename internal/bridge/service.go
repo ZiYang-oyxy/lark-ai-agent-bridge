@@ -527,7 +527,7 @@ func (s *Service) runWithPreference(ctx context.Context, cmd Command, msg Messag
 		return summaryErr
 	}
 	receivedAt := time.Now()
-	input := session.Input{ID: msg.ID, Sender: msg.Sender, Text: text, Attachments: attachments, ReplyToMessageID: msg.ID, CardSessionID: cardSessionID, WorkDir: workDir, RequestedModel: preference.Model, RequestedEffort: preference.Effort, ConversationMode: preference.ConversationMode, Time: effectiveMessageTime(msg), DebounceUntil: receivedAt.Add(DebounceFor(msg)), State: session.InputDebouncing, Reset: cmd.Reset}
+	input := session.Input{ID: msg.ID, Sender: msg.Sender, Text: text, Attachments: attachments, ReplyToMessageID: msg.ID, CardSessionID: cardSessionID, WorkDir: workDir, RequestedModel: preference.Model, RequestedEffort: preference.Effort, ReplyMode: preference.ReplyMode, ConversationMode: preference.ConversationMode, Time: effectiveMessageTime(msg), DebounceUntil: receivedAt.Add(DebounceFor(msg)), State: session.InputDebouncing, Reset: cmd.Reset}
 	accepted, queued, err := s.Sessions.AcceptAndEnqueue(key, input, receivedAt, s.dedupTTL(), s.dedupMaxEntries(), s.batchLimits())
 	if err != nil {
 		action := "queue_rejected"
@@ -603,7 +603,7 @@ func (s *Service) startBatch(parent context.Context, sess session.Session, batch
 	}
 	stream := newAgentCardStream(s, id, sess, anchor)
 	if s.CardTarget != nil {
-		mode := s.runtimePreference().ReplyMode
+		mode := anchor.EffectiveReplyMode()
 		latestScope := ""
 		if mode == config.ReplyModeLatestCard {
 			latestScope = sess.ID

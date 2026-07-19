@@ -511,6 +511,13 @@ case "$args" in
     printf '{"type":"result","result":"PREVIEW_FINAL_COMPLETE_%s","model":"fake-claude-e2e","usage":{"output_tokens":1},"session_id":"fake-e2e-session"}\n' "$long"
     exit 0
     ;;
+  *E2E_REPLY_MODE_SEMANTICS*)
+    printf '%s\n' '{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"E2E_INTERMEDIATE_ANSWER"}]}}'
+    printf '%s\n' '{"type":"assistant","message":{"role":"assistant","content":[{"type":"thinking","thinking":"E2E_PRIVATE_THOUGHT"},{"type":"tool_use","name":"Read","id":"e2e-tool-1","input":{"path":"E2E_TOOL_CALL"}}]}}'
+    printf '%s\n' '{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"E2E_FINAL_ANSWER"}]}}'
+    printf '%s\n' '{"type":"result","result":"E2E_FINAL_ANSWER","model":"fake-claude-e2e","usage":{"output_tokens":2},"session_id":"fake-e2e-session"}'
+    exit 0
+    ;;
   *E2E_PROCESS_PANELS*)
     printf '%s\n' '{"type":"content_block_delta","delta":{"type":"thinking_delta","thinking":"E2E_PRIVATE_THOUGHT"}}'
     printf '%s\n' '{"type":"content_block_delta","delta":{"type":"input_json_delta","partial_json":"E2E_TOOL_CALL"}}'
@@ -2130,7 +2137,7 @@ case_requested_actual_model() {
 
 case_reply_append() {
   require_fake_claude
-  local config_msg session_id first second first_mark second_mark first_card second_card
+  local config_msg session_id first second first_mark second_mark first_card second_card first_file
   local topic_root topic_first topic_second topic_first_mark topic_second_mark topic_first_card topic_second_card
   config_msg="$(open_config reply_append)"
   session_id="config:message:${config_msg}"
@@ -2138,9 +2145,14 @@ case_reply_append() {
   assert_persisted_config default low append
 
   first_mark="$(audit_mark)"
-  first="$(send_dm "/new E2E_${RUN_ID}_APPEND_DM_ONE")"
+  first="$(send_dm "/new E2E_${RUN_ID}_APPEND_DM_ONE E2E_REPLY_MODE_SEMANTICS")"
   wait_audit_since "$first_mark" "$first.*event=result" 60
   first_card="$(audit_card_id_since "$first_mark" "$first")"
+  first_file="$(mget reply_append_dm_first "$first")"
+  assert_file_contains "$first_file" "E2E_INTERMEDIATE_ANSWER"
+  assert_file_contains "$first_file" "E2E_FINAL_ANSWER"
+  assert_file_contains "$first_file" "E2E_PRIVATE_THOUGHT"
+  assert_file_contains "$first_file" "E2E_TOOL_CALL"
   second_mark="$(audit_mark)"
   second="$(send_dm "/new E2E_${RUN_ID}_APPEND_DM_TWO")"
   wait_audit_since "$second_mark" "$second.*event=result" 60
@@ -2179,10 +2191,11 @@ case_reply_clean() {
   submit_config reply_clean "$session_id" default low append-clean-card
   assert_persisted_config default low append-clean-card
 
-  dm="$(send_dm "/new E2E_${RUN_ID}_DM_E2E_PROCESS_PANELS")"
+  dm="$(send_dm "/new E2E_${RUN_ID}_DM_E2E_REPLY_MODE_SEMANTICS")"
   wait_audit "$dm.*event=result" 60
   file="$(mget reply_clean_dm "$dm")"
-  assert_file_contains "$file" "E2E_CLEAN_ANSWER"
+  assert_file_contains "$file" "E2E_FINAL_ANSWER"
+  assert_file_not_contains "$file" "E2E_INTERMEDIATE_ANSWER"
   assert_file_not_contains "$file" "E2E_PRIVATE_THOUGHT"
   assert_file_not_contains "$file" "E2E_TOOL_CALL"
   assert_file_not_contains "$file" "思考推理"
@@ -2203,7 +2216,7 @@ case_reply_clean() {
 
 case_reply_latest() {
   require_fake_claude
-  local config_msg session_id first second first_mark second_mark first_card second_card
+  local config_msg session_id first second first_mark second_mark first_card second_card first_file
   local topic_root topic_first topic_second topic_first_mark topic_second_mark topic_first_card topic_second_card
   config_msg="$(open_config reply_latest)"
   session_id="config:message:${config_msg}"
@@ -2211,9 +2224,14 @@ case_reply_latest() {
   assert_persisted_config default low latest-card
 
   first_mark="$(audit_mark)"
-  first="$(send_dm "/new E2E_${RUN_ID}_LATEST_DM_ONE")"
+  first="$(send_dm "/new E2E_${RUN_ID}_LATEST_DM_ONE E2E_REPLY_MODE_SEMANTICS")"
   wait_audit_since "$first_mark" "$first.*event=result" 60
   first_card="$(audit_card_id_since "$first_mark" "$first")"
+  first_file="$(mget reply_latest_dm_first "$first")"
+  assert_file_contains "$first_file" "E2E_FINAL_ANSWER"
+  assert_file_not_contains "$first_file" "E2E_INTERMEDIATE_ANSWER"
+  assert_file_not_contains "$first_file" "E2E_PRIVATE_THOUGHT"
+  assert_file_not_contains "$first_file" "E2E_TOOL_CALL"
   second_mark="$(audit_mark)"
   second="$(send_dm "/new E2E_${RUN_ID}_LATEST_DM_TWO")"
   wait_audit_since "$second_mark" "$second.*event=result" 60
