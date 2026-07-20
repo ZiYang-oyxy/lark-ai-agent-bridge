@@ -94,6 +94,53 @@ func TestBuildLarkCardMarkdownLayoutIsHeaderlessAndPanelFree(t *testing.T) {
 	}
 }
 
+func TestBuildLarkCardInlineTimelineKeepsFullShellAndPlainTools(t *testing.T) {
+	payload := BuildLarkCard(Event{
+		Type:                 "stream",
+		Streaming:            true,
+		InlineTimelineLayout: true,
+		Markdown:             "回复\n\n> ⏳ **Bash** · git status",
+		Segments: []Segment{
+			{Kind: SegmentThought, Text: "reasoning"},
+			{Kind: SegmentTool, Text: "must not render as panel"},
+		},
+		HeaderTitle:    "正在执行工具 · ⏱ 8s",
+		HeaderTemplate: "blue",
+		StopButton:     StopButton{Visible: true},
+		Meta: Meta{
+			Agent: "claude", Model: "model", RunTokens: 10, TotalTokens: 20,
+			User: "user", IP: "host", WorkDir: "/work",
+		},
+	})
+	if _, ok := payload["header"]; !ok {
+		t.Fatalf("inline timeline missing header: %#v", payload)
+	}
+	elements := payload["body"].(map[string]any)["elements"].([]any)
+	answers := answerElements(payload)
+	if len(answers) != 1 || answers[0]["content"] != "回复\n\n> ⏳ **Bash** · git status" {
+		t.Fatalf("answer elements = %#v", answers)
+	}
+	var panels []map[string]any
+	for _, raw := range elements {
+		element, _ := raw.(map[string]any)
+		if element["tag"] == "collapsible_panel" {
+			panels = append(panels, element)
+		}
+	}
+	if len(panels) != 1 || panels[0]["element_id"] != "panel_thought" || panels[0]["expanded"] != false {
+		t.Fatalf("panels = %#v, want one folded thought panel", panels)
+	}
+	serialized := fmt.Sprint(payload)
+	for _, want := range []string{"停止", "Claude", "model", "tokens:", "user", "host", "/work"} {
+		if !strings.Contains(serialized, want) {
+			t.Fatalf("full shell missing %q: %s", want, serialized)
+		}
+	}
+	if strings.Contains(serialized, "must not render as panel") {
+		t.Fatalf("tool body rendered outside inline Markdown: %s", serialized)
+	}
+}
+
 func TestBuildLarkCardTerminalEmptyAnswerDoesNotCreateNativeTarget(t *testing.T) {
 	for _, eventType := range []string{"result", "error", "stopped"} {
 		t.Run(eventType, func(t *testing.T) {

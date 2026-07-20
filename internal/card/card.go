@@ -104,29 +104,30 @@ type AccessChat struct {
 }
 
 type Event struct {
-	Type             string
-	SessionID        string
-	ReplyToMessageID string
-	ReplyInThread    bool
-	Segments         []Segment
-	Meta             Meta
-	StopButton       StopButton
-	Actions          []Action
-	Message          string
-	HeaderTitle      string
-	HeaderTemplate   string
-	Streaming        bool
-	Activity         string
-	ThoughtExpanded  bool
-	ToolsExpanded    bool
-	ProcessExpanded  bool
-	ToolCallCount    int
-	HideAgentPanels  bool
-	OrderedLayout    bool
-	MarkdownLayout   bool
-	Markdown         string
-	ConfigForm       *ConfigForm
-	AgentModeForm    *AgentModeForm
+	Type                 string
+	SessionID            string
+	ReplyToMessageID     string
+	ReplyInThread        bool
+	Segments             []Segment
+	Meta                 Meta
+	StopButton           StopButton
+	Actions              []Action
+	Message              string
+	HeaderTitle          string
+	HeaderTemplate       string
+	Streaming            bool
+	Activity             string
+	ThoughtExpanded      bool
+	ToolsExpanded        bool
+	ProcessExpanded      bool
+	ToolCallCount        int
+	HideAgentPanels      bool
+	OrderedLayout        bool
+	InlineTimelineLayout bool
+	MarkdownLayout       bool
+	Markdown             string
+	ConfigForm           *ConfigForm
+	AgentModeForm        *AgentModeForm
 }
 
 func WorkDirCreateActions(path string) []Action {

@@ -211,6 +211,25 @@ func TestPrepareLarkCardMarkdownLayoutUsesMarkdownAsNativeAnswer(t *testing.T) {
 	}
 }
 
+func TestPrepareLarkCardInlineTimelineIsNativeReady(t *testing.T) {
+	prepared, err := PrepareLarkCard(Event{
+		Type:                 "stream",
+		Streaming:            true,
+		InlineTimelineLayout: true,
+		Markdown:             "answer\n\n> ⏳ **Bash** · git status",
+		Segments:             []Segment{{Kind: SegmentThought, Text: "reasoning"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !prepared.NativeReady() {
+		t.Fatal("inline timeline is not native-ready")
+	}
+	if got := prepared.Answer(); got != "answer\n\n> ⏳ **Bash** · git status" {
+		t.Fatalf("answer = %q", got)
+	}
+}
+
 func TestNativeReadyRequiresExactlyOneMarkdownAnswerTarget(t *testing.T) {
 	for _, tc := range []struct {
 		name    string

@@ -89,7 +89,7 @@ func prepareLarkCard(event Event, nativeReady bool) (PreparedLarkCard, error) {
 		return PreparedLarkCard{}, err
 	}
 	answer, _, _ := splitCardSections(event.Segments)
-	if event.MarkdownLayout {
+	if event.MarkdownLayout || event.InlineTimelineLayout {
 		answer = event.Markdown
 	}
 	prepared := PreparedLarkCard{

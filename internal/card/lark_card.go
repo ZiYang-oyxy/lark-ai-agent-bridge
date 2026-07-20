@@ -18,7 +18,18 @@ func BuildLarkCard(e Event) map[string]any {
 		elements = []any{markdownElement("answer", e.Markdown)}
 	} else {
 		elements = make([]any, 0, len(e.Segments)+5)
-		if e.OrderedLayout {
+		if e.InlineTimelineLayout {
+			elements = append(elements, markdownElement("answer", e.Markdown))
+			_, thought, _ := splitCardSections(e.Segments)
+			if !e.HideAgentPanels && strings.TrimSpace(thought) != "" {
+				elements = append(elements, collapsiblePanelElement(
+					"panel_thought",
+					"思考过程",
+					false,
+					[]map[string]any{markdownElement("timeline_thought", thought)},
+				))
+			}
+		} else if e.OrderedLayout {
 			elements = append(elements, buildOrderedTimelineElements(e)...)
 		} else {
 			answer, thought, tools := splitCardSections(e.Segments)
