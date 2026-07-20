@@ -53,6 +53,7 @@ flowchart TD
 | `/new --cwd` 别名 | L1 | ✅ | `TestParseNewCwdAliasMatchesWorkdir`(新增) |
 | `--workdir` 缺参降级 | L1 | ✅ | `TestParseNewWorkdirMissingValueIsTreatedAsLiteralText`(新增) |
 | `/status` 解析 | L1 | ✅ | `TestParseStatusCommand`(新增) |
+| `/stop` 解析与 help | L1 | ✅ | `TestParseStopCommand` / `TestHelpTextIncludesStopQueueSemantics` |
 | `/help` 解析 | L1 | ✅ | `TestParseHelpCommand`(新增) |
 | `/resume` 降级文案 | L1 | ✅ | `TestParseResumeReturnsNotImplementedDegradation`(新增) |
 | 未知命令文案 | L1 | ✅ | `TestParseUnknownCommandReturnsFormattedMessage`(新增) |
@@ -74,6 +75,8 @@ flowchart TD
 |---|:---:|:---:|---|
 | stop 终止当前 batch | L1 | ✅ | `TestServiceStopCancelsActiveOneShotRun` |
 | stop 保留后续 queue | L1 | ✅ | `TestServiceStopKeepsLaterQueue` |
+| 文本 `/stop` scope/agent 隔离 | L1 | ✅ | `TestServiceTextStopIsolatesTopics` / `TestServiceTextStopUsesSelectedAgent` |
+| 文本 `/stop` 参数、空闲与 queue | L1 | ✅ | `TestServiceTextStopCancelsCurrentScopeAndRejectsArguments` / `TestServiceTextStopIdleRendersExactResponseWithoutRunningAgent` / `TestServiceTextStopKeepsLaterQueue` |
 | 重复 stop 幂等 | L1 | ✅ | `TestServiceStopIsIdempotentForAlreadyStoppedRun`(新增) |
 | stop 未知/过期 batch 降级 | L1 | ✅ | `TestServiceStopUnknownSessionDegradesToStoppedCard`(新增) |
 | action 同步卡关闭 streaming_mode | L1 | ✅ | `TestServiceStopSyncCardDisablesStreamingMode`(新增) |

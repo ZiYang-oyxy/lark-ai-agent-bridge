@@ -18,14 +18,14 @@ GOCACHE=$PWD/.cache/go-build go test ./...
 
 - `go test ./...`
 - `doctor`
-- `/help`、`/new`、`/status` 命令面
+- `/help`、`/new`、`/status`、`/stop` 命令面
 - `/resume`、`/codex` 等撤回命令不再开放
 - 群聊未 @ 过滤
 - durable snapshot restore：只恢复 context，清理 pending；`debouncing`/`queued`/`starting` 变为 `cancelled`，`running` 变为 `interrupted`
 - duplicate delivery skip，且重复输入不推进 snapshot revision
 - 单 scope queue full 拒绝且不记录 receipt
 - 同 chat/topic 串行、不同 topic 并行；busy scope 的兼容输入合并为下一批，而不是每条排队输入各跑一次
-- stop 和 recall 保留/移除队列输入的对应生命周期
+- 卡片 stop 与文本 `/stop` 的 scope/agent 隔离，以及 stop 和 recall 保留/移除队列输入的对应生命周期
 - 普通文本在根 chat 和 topic 中都续接当前 scope，并可在 DM `250ms` / group `600ms` cohort 内合并
 - 只有 `/new` 重置当前会话并形成独占 batch boundary
 - Claude one-shot 命令构造和 stream-json 解析
@@ -97,6 +97,14 @@ GOCACHE=$PWD/.cache/go-build go run ./cmd/lark-agent-bridge simulate \
 ```
 
 期望第二条消息进入同一个 `claude:chat-demo:thread:topic-a` 会话。
+
+模拟空闲会话的文本停止命令：
+
+```bash
+GOCACHE=$PWD/.cache/go-build go run ./cmd/lark-agent-bridge simulate -text "/stop"
+```
+
+期望返回 `当前会话没有正在运行的任务。`，且不启动 Agent。active batch 的取消、topic/agent 隔离和 queued 输入保留由 `TestServiceTextStop*` 覆盖。
 
 模拟同一会话排队：
 

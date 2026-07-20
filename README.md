@@ -11,6 +11,7 @@
 - 默认使用普通聊天模式：回复进入聊天主消息流，同一 chat 按 Agent 共用 session 并串行执行。
 - `/config` 可切换为话题模式：回复进入话题，有 `ThreadID` 时每个 topic 独立 session，不同 topic 可并行执行。
 - `/new` 重置当前 conversation scope；普通文本继续该 scope 已保存的 Agent session。
+- `/stop` 只停止当前 agent/chat/topic scope 的 active batch；后续 queued 输入保留并继续调度，空闲时安全提示无运行任务。
 - `append` 每轮新建无标题、单 Markdown 元素的轻量 CardKit 流式回复：隐藏 thinking，工具调用只显示一行安全摘要，终态保留 agent/token footer。
 - `append-clean-card` 与 `latest-card` 使用 CardKit：运行中可展示折叠过程，并支持一次性停止按钮；clean/latest 终态只保留最终答案。
 - 执行中标题使用蓝色 `正在推理/正在执行工具/正在回复 · ⏱ Ns`，完成绿色，停止灰色，失败红色。
@@ -27,6 +28,7 @@ GOCACHE=$PWD/.cache/go-build go test ./...
 LARK_APP_ID=... LARK_APP_SECRET=... ./scripts/e2e-preflight.sh
 GOCACHE=$PWD/.cache/go-build go run ./cmd/lark-agent-bridge doctor
 GOCACHE=$PWD/.cache/go-build go run ./cmd/lark-agent-bridge simulate -text "/new hello"
+GOCACHE=$PWD/.cache/go-build go run ./cmd/lark-agent-bridge simulate -text "/stop"
 GOCACHE=$PWD/.cache/go-build go run ./cmd/lark-agent-bridge simulate -thread topic-a -text "/new hello" -next-text "continue"
 GOCACHE=$PWD/.cache/go-build go run ./cmd/lark-agent-bridge simulate -text "/new --workdir /tmp/missing-for-test hello" -timeout-now
 GOCACHE=$PWD/.cache/go-build go run ./cmd/lark-agent-bridge simulate-action -action stop -session claude:chat-demo:message:local-id

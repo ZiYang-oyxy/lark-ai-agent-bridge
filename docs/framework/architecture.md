@@ -40,10 +40,11 @@ bridge 不托管交互式终端，也不通过 tmux/PTY 捕获输出。每个已
 
 - `/new [--workdir <path>] [prompt]`：重置当前 chat/topic 的 Agent 会话；有 prompt 时立即执行，没有 prompt 时只创建 ready 状态。
 - `/status`：查看当前 chat/topic 会话状态；群聊中会额外显示当前群内已知会话数量。
+- `/stop`：停止当前所选 Agent 在当前 chat/topic scope 的 active batch；保留后续 queued 输入，空闲时返回安全提示。
 - `/config`：配置 agent、agent home、agent bin、model、effort、Reply mode 和 Conversation mode；`/config reset` 恢复环境默认。
 - `/help`：显示帮助。
 
-暂不实现 `/resume`。`/sessions`、`/history`、`/topic`、`/attach`、`/interrupt`、`/stop` 文本命令以及 `/claude`、`/codex` 旧入口均不属于当前范围。
+暂不实现 `/resume`。`/sessions`、`/history`、`/topic`、`/attach`、`/interrupt` 文本命令以及 `/claude`、`/codex` 旧入口均不属于当前范围。
 
 群聊默认只处理 @ 机器人的消息；单聊默认处理全部文本。
 
@@ -63,6 +64,7 @@ Conversation mode 决定会话 key 和飞书回复位置：
 - `topic` 模式下不同 topic 使用不同 key，可以并行运行各自的 Agent 子进程；`chat` 模式下同一 chat 只有一个串行 scope。
 - 普通文本续接当前 mode 解析出的 scope；它不会隐式创建 session boundary，因此同一 debounce cohort 可以合并。
 - 只有显式 `/new` 会重置当前 scope 的 agent session，并作为独占 batch boundary。
+- `/stop` 只取消与完整 `{Agent, ChatID, ThreadID?}` key 匹配的 active batch；不清空 queue，当前 batch 收敛为 stopped 后继续调度后续输入。
 - 队列上限按单一 scope 的 pending input 计算，满时拒绝新输入且不写入去重 receipt。
 - 个人版不设置全局 semaphore、跨 scope FIFO 或公平性调度；唯一的顺序保证是同一 scope 串行，不同 scope 可并行。
 
