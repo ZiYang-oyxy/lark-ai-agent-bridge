@@ -99,6 +99,8 @@ GOCACHE=$PWD/.cache/go-build go run ./cmd/lark-agent-bridge serve --default-work
 
 > Codex 的 model、reasoning effort、sandbox、approval、profile、plugins、MCP 和 rules 均由所选 `codex` / `cx*` executable 及其环境决定。Bridge 只传 JSONL、resume、image 和 stdin 协议所需参数。Claude 仍保持现有 Bridge 参数策略。
 
+> 当前 Codex 自动验收使用无网络 fake executable；真实飞书 + 真实 `codex`/`cx*` E2E 需在具备凭据和部署授权的环境另行执行。
+
 > 借此可绕开 workspace 的 `bin/cc` wrapper：把 bin 指向裸 `claude` 并配独立 home，即可让 bridge 直接掌控可执行与配置目录，而不受 wrapper profile 静默影响。
 
 详细架构见 `docs/framework/architecture.md`，测试流程见 `docs/workflow/testing.md`，真实飞书 E2E 工作流见 `docs/workflow/e2e-real.md`，当前交付状态与证据链汇总见 `docs/workflow/delivery-summary.md`。

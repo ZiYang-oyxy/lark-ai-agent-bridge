@@ -36,6 +36,7 @@
 
 ## 真实环境验证状态
 
+- Codex backend 已通过无网络 fake executable 黑盒验证；本轮未部署，也未执行真实飞书 + 真实 `codex`/`cx*` E2E。
 - 已验证真实 Feishu 群聊 @bot 后，bridge 通过长连接接收消息并回复执行中/结果卡片。
 - 已验证真实卡片流式更新：audit 中出现 `cardkit_update event=stream`，最终同一卡片更新为 `event=result`。
 - 已验证真实点击“停止”按钮后，长连接收到 `card.action.trigger`，Claude 子进程被取消，卡片更新为灰色终态且按钮 disabled。
