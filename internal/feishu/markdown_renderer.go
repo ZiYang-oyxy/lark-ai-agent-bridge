@@ -18,15 +18,18 @@ type MarkdownMessageAPI interface {
 }
 
 type MarkdownTarget struct {
-	api    MarkdownMessageAPI
-	render func(card.Event) string
+	api      MarkdownMessageAPI
+	render   func(card.Event) string
+	observer CardKitRenderObserver
 }
 
-func NewMarkdownTarget(sender *SDKSender, render func(card.Event) string) *MarkdownTarget {
+func NewMarkdownTarget(sender *SDKSender, render func(card.Event) string, observer CardKitRenderObserver) *MarkdownTarget {
 	if sender == nil {
-		return &MarkdownTarget{render: render}
+		return &MarkdownTarget{render: render, observer: observer}
 	}
-	return newMarkdownTarget(sender.markdownAPI, render)
+	target := newMarkdownTarget(sender.markdownAPI, render)
+	target.observer = observer
+	return target
 }
 
 func newMarkdownTarget(api MarkdownMessageAPI, render func(card.Event) string) *MarkdownTarget {
@@ -43,7 +46,7 @@ func (t *MarkdownTarget) Begin(ctx context.Context, replyTo string, replyInThrea
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	return &markdownRenderer{ctx: ctx, api: t.api, render: t.render, replyTo: replyTo, replyInThread: replyInThread}, nil
+	return &markdownRenderer{ctx: ctx, api: t.api, render: t.render, observer: t.observer, replyTo: replyTo, replyInThread: replyInThread}, nil
 }
 
 type markdownRenderer struct {
@@ -51,6 +54,7 @@ type markdownRenderer struct {
 	ctx             context.Context
 	api             MarkdownMessageAPI
 	render          func(card.Event) string
+	observer        CardKitRenderObserver
 	replyTo         string
 	replyInThread   bool
 	messageID       string
@@ -69,26 +73,26 @@ func (r *markdownRenderer) Render(event card.Event) error {
 		return err
 	}
 	if r.messageID == "" {
-		err = r.reply(content, event.SessionID)
+		err = r.reply(content, event)
 		if err != nil && !terminal {
 			r.previewDisabled = true
 			return nil
 		}
 		return err
 	}
-	err = r.patch(content)
+	err = r.patch(content, event)
 	if err != nil && !terminal {
 		r.previewDisabled = true
 	}
 	return err
 }
 
-func (r *markdownRenderer) reply(content, sessionID string) error {
+func (r *markdownRenderer) reply(content string, event card.Event) error {
 	body := larkim.NewReplyMessageReqBodyBuilder().
 		MsgType("post").
 		Content(content).
 		ReplyInThread(r.replyInThread).
-		Uuid(stableUUID("markdown-reply", r.replyTo, sessionID)).
+		Uuid(stableUUID("markdown-reply", r.replyTo, event.SessionID)).
 		Build()
 	req := larkim.NewReplyMessageReqBuilder().MessageId(r.replyTo).Body(body).Build()
 	req.Body = body
@@ -107,10 +111,11 @@ func (r *markdownRenderer) reply(content, sessionID string) error {
 	}
 	r.messageID = *resp.Data.MessageId
 	r.previewDisabled = false
+	r.record("markdown_reply", event, fmt.Sprintf("reply_to=%s message_id=%s event=%s", r.replyTo, r.messageID, event.Type))
 	return nil
 }
 
-func (r *markdownRenderer) patch(content string) error {
+func (r *markdownRenderer) patch(content string, event card.Event) error {
 	body := larkim.NewPatchMessageReqBodyBuilder().Content(content).Build()
 	req := larkim.NewPatchMessageReqBuilder().MessageId(r.messageID).Body(body).Build()
 	req.Body = body
@@ -124,7 +129,14 @@ func (r *markdownRenderer) patch(content string) error {
 	if !resp.Success() {
 		return fmt.Errorf("patch feishu markdown failed: code=%d msg=%s", resp.Code, resp.Msg)
 	}
+	r.record("markdown_patch", event, fmt.Sprintf("reply_to=%s message_id=%s event=%s", r.replyTo, r.messageID, event.Type))
 	return nil
+}
+
+func (r *markdownRenderer) record(action string, event card.Event, detail string) {
+	if r.observer != nil {
+		r.observer.Record("system", action, event.SessionID, detail)
+	}
 }
 
 func buildMarkdownPostContent(markdown string) (string, error) {

@@ -3,6 +3,7 @@ package feishu
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	larkcore "github.com/larksuite/oapi-sdk-go/v3/core"
@@ -51,7 +52,9 @@ func (f *fakeMarkdownMessageAPI) Patch(_ context.Context, req *larkim.PatchMessa
 
 func TestMarkdownRendererRepliesWithPostThenPatches(t *testing.T) {
 	api := &fakeMarkdownMessageAPI{messageID: "om_reply"}
+	observer := &fakeCardKitObserver{}
 	target := newMarkdownTarget(api, renderMarkdownTransportTest)
+	target.observer = observer
 	renderer, err := target.Begin(context.Background(), "om_source", true)
 	if err != nil {
 		t.Fatal(err)
@@ -77,6 +80,12 @@ func TestMarkdownRendererRepliesWithPostThenPatches(t *testing.T) {
 	}
 	if want := `{"zh_cn":{"content":[[{"tag":"md","text":"final"}]]}}`; *api.patches[0].Body.Content != want {
 		t.Fatalf("patch content = %s, want %s", *api.patches[0].Body.Content, want)
+	}
+	if len(observer.actions) != 2 || observer.actions[0] != "markdown_reply" || observer.actions[1] != "markdown_patch" {
+		t.Fatalf("audit actions = %#v", observer.actions)
+	}
+	if !strings.Contains(observer.details[0], "reply_to=om_source") || !strings.Contains(observer.details[0], "message_id=om_reply") || !strings.Contains(observer.details[1], "event=result") {
+		t.Fatalf("audit details = %#v", observer.details)
 	}
 }
 

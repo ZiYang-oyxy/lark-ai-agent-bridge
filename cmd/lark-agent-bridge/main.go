@@ -306,7 +306,7 @@ func runServe(args []string) error {
 	svc.Replies = replies
 	svc.SequenceResolver = sequenceJournal
 	svc.CardTarget = cardRouter
-	svc.MarkdownTarget = feishu.NewMarkdownTarget(sender, reply.RenderMarkdown)
+	svc.MarkdownTarget = feishu.NewMarkdownTarget(sender, reply.RenderMarkdown, recorder)
 	svc.Reactions = sender
 	actionGateway := bridge.ActionGateway{Service: svc, Fencer: cardRouter}
 	actionHandler, callbackHandler := newServeActionTransports(actionGateway, cfg.CardMaxChars)
