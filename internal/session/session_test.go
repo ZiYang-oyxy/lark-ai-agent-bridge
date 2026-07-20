@@ -1147,3 +1147,13 @@ func TestUpdateRunResultAccumulatesTokens(t *testing.T) {
 		t.Fatalf("tokens first=%d second=%d, want 12 then 20", first.Tokens, second.Tokens)
 	}
 }
+
+func TestScheduleInputsNeverBatchWithOtherInputs(t *testing.T) {
+	ordinary := Input{WorkDir: "/tmp/work", RequestedModel: "sonnet", RequestedEffort: "low", AgentBin: "claude", ReplyMode: config.ReplyModeAppend, ConversationMode: config.ConversationModeTopic, BridgeInstructionsVersion: "v1"}
+	scheduled := ordinary
+	scheduled.ScheduleRunID = "cron:task:2026-07-21T09:00:00Z"
+	scheduled.ScheduleTaskID = "task"
+	if compatibleBatchInput(ordinary, scheduled) || compatibleBatchInput(scheduled, ordinary) || !compatibleBatchInput(scheduled, scheduled) {
+		t.Fatal("scheduled input must match only its own run")
+	}
+}

@@ -208,6 +208,17 @@ func (s *Store) Draft(id string) (Draft, bool) {
 	return cloneDraft(s.snapshot.Drafts[idx]), true
 }
 
+func (s *Store) DraftByOrigin(originRunID string) (Draft, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, draft := range s.snapshot.Drafts {
+		if draft.OriginRunID == originRunID {
+			return cloneDraft(draft), true
+		}
+	}
+	return Draft{}, false
+}
+
 func (s *Store) Task(id string) (Task, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

@@ -27,6 +27,7 @@ import (
 	"lark-agent-bridge/internal/feishu"
 	"lark-agent-bridge/internal/media"
 	"lark-agent-bridge/internal/reply"
+	"lark-agent-bridge/internal/schedule"
 	"lark-agent-bridge/internal/session"
 )
 
@@ -61,6 +62,10 @@ type Service struct {
 	TopicParticipation TopicParticipation
 	ScopeInspector     ScopeInspector
 	ScopeGrants        feishu.ScopeGrantProvider
+	Schedules          *schedule.Store
+	Scheduler          *schedule.Engine
+	ScheduleContexts   *schedule.ContextRegistry
+	ScheduleSocket     string
 	accessMu           sync.RWMutex
 	knownChats         []feishu.KnownChat
 
@@ -127,8 +132,10 @@ type AgentRunRequest struct {
 	Images                    []string
 	BridgeInstructionsVersion string
 	// Home is the resolved agent home / config directory. Empty means default.
-	Home    string
-	OnEvent func(AgentStreamUpdate)
+	Home           string
+	ScheduleSocket string
+	ScheduleToken  string
+	OnEvent        func(AgentStreamUpdate)
 }
 
 type AgentRunResult struct {
@@ -407,11 +414,14 @@ func (s *Service) HandleMessage(ctx context.Context, msg Message) error {
 	if !ok {
 		defaultKind = agent.Claude
 	}
+	if handled, err := s.handlePendingScheduleReply(msg, preference); handled {
+		return err
+	}
 	cmd := ParseCommand(msg, defaultKind)
 	if cmd.Type == CommandIgnored {
 		return nil
 	}
-	if selected, ok := agent.ParseKind(preference.Agent); ok && (cmd.Type == CommandRun || cmd.Type == CommandStatus || cmd.Type == CommandStop || cmd.Type == CommandResume) {
+	if selected, ok := agent.ParseKind(preference.Agent); ok && (cmd.Type == CommandRun || cmd.Type == CommandStatus || cmd.Type == CommandStop || cmd.Type == CommandResume || cmd.Type == CommandCron || cmd.Type == CommandTimer) {
 		cmd.Agent = selected
 	}
 	if s.adminCommand(cmd.Type) && !s.canRunAdminCommand(msg.Sender) {
@@ -445,6 +455,8 @@ func (s *Service) HandleMessage(ctx context.Context, msg Message) error {
 		return s.handleLocalConfigCommand(ctx, msg, cmd, preference)
 	case CommandAgentMode:
 		return s.handleAgentModeCommand(ctx, msg, cmd, preference)
+	case CommandCron, CommandTimer:
+		return s.handleScheduleCommand(ctx, msg, cmd, preference)
 	case CommandInvite:
 		return s.handleInviteCommand(ctx, msg, cmd, preference)
 	case CommandRemove:
@@ -783,7 +795,7 @@ func (s *Service) runWithPreference(ctx context.Context, cmd Command, msg Messag
 	bin, home := s.resolveAgentBinHome(cmd.Agent, preference)
 	receivedAt := time.Now()
 	debounceWindow := DebounceFor(msg)
-	input := session.Input{ID: msg.ID, Sender: msg.Sender, Text: text, Attachments: attachments, ReplyToMessageID: msg.ID, CardSessionID: cardSessionID, WorkDir: workDir, RequestedModel: preference.Model, RequestedEffort: preference.Effort, AgentBin: bin, AgentHome: home, ReplyMode: preference.ReplyMode, ConversationMode: preference.ConversationMode, BridgeInstructionsVersion: bridgeinstructions.CurrentVersion, Time: effectiveMessageTime(msg), DebounceUntil: receivedAt.Add(debounceWindow), DebounceWindow: debounceWindow, State: session.InputDebouncing, Reset: cmd.Reset}
+	input := session.Input{ID: msg.ID, Sender: msg.Sender, Text: text, Attachments: attachments, ReplyToMessageID: msg.ID, CardSessionID: cardSessionID, WorkDir: workDir, RequestedModel: preference.Model, RequestedEffort: preference.Effort, AgentBin: bin, AgentHome: home, ReplyMode: preference.ReplyMode, ConversationMode: preference.ConversationMode, BridgeInstructionsVersion: bridgeinstructions.CurrentVersion, ScheduleKind: cmd.ScheduleKind, IsGroup: msg.IsGroup, Time: effectiveMessageTime(msg), DebounceUntil: receivedAt.Add(debounceWindow), DebounceWindow: debounceWindow, State: session.InputDebouncing, Reset: cmd.Reset}
 	accepted, queued, err := s.Sessions.AcceptAndEnqueue(key, input, receivedAt, s.dedupTTL(), s.dedupMaxEntries(), s.batchLimits())
 	if err != nil {
 		action := "queue_rejected"
@@ -908,6 +920,7 @@ func (s *Service) startBatch(parent context.Context, sess session.Session, batch
 		s.finishStartingBatch(marked, batch, id, session.InputCancelled, "stopped", AgentRunResult{})
 		return
 	}
+	s.markScheduleBatchRunning(batch, time.Now())
 	s.runWG.Add(1)
 	go s.executeBatch(runCtx, marked, batch, id)
 }
@@ -918,7 +931,8 @@ func (s *Service) finishStartingBatch(sess session.Session, batch session.Batch,
 	if run, ok := s.activeRun(id); ok && run.BatchID == batch.ID && run.Stream != nil {
 		s.finishStreamAndAudit(run.Stream, cardStatus, metaFromSession(sess), result, sess.ID)
 	}
-	_, _ = s.finishBatchOrRemember(sess, batch.ID, session.BatchCompletion{Status: status, At: time.Now()}, "batch_finish_failed")
+	_, finishErr := s.finishBatchOrRemember(sess, batch.ID, session.BatchCompletion{Status: status, At: time.Now()}, "batch_finish_failed")
+	s.completeScheduleBatch(batch, status, finishErr, time.Now())
 	s.clearActiveRun(id)
 	_ = s.DrainReady(time.Now())
 }
@@ -941,7 +955,11 @@ func (s *Service) executeBatch(ctx context.Context, sess session.Session, batch 
 		bin, home = s.resolveAgentBinHome(sess.Key.Agent, s.runtimePreference())
 	}
 	s.Audit.Record("system", "bridge_instructions_selected", sess.ID, "version="+sess.BridgeInstructionsVersion+" agent="+string(sess.Key.Agent))
-	result, err := s.Runner.Run(ctx, AgentRunRequest{Kind: sess.Key.Agent, Bin: bin, Home: home, Prompt: prompt, WorkDir: sess.WorkDir, Images: codexImagePaths(batch), AgentSessionID: sess.AgentSessionID, Model: batch.Inputs[0].RequestedModel, Effort: batch.Inputs[0].RequestedEffort, BridgeInstructionsVersion: sess.BridgeInstructionsVersion, OnEvent: func(update AgentStreamUpdate) {
+	scheduleSocket, scheduleToken := s.issueScheduleProposalContext(sess, batch, id)
+	if scheduleToken != "" {
+		defer s.ScheduleContexts.Revoke(scheduleToken)
+	}
+	result, err := s.Runner.Run(ctx, AgentRunRequest{Kind: sess.Key.Agent, Bin: bin, Home: home, Prompt: prompt, WorkDir: sess.WorkDir, Images: codexImagePaths(batch), AgentSessionID: sess.AgentSessionID, Model: batch.Inputs[0].RequestedModel, Effort: batch.Inputs[0].RequestedEffort, BridgeInstructionsVersion: sess.BridgeInstructionsVersion, ScheduleSocket: scheduleSocket, ScheduleToken: scheduleToken, OnEvent: func(update AgentStreamUpdate) {
 		if model := strings.TrimSpace(update.Model); model != "" {
 			actualModelMu.Lock()
 			streamedActualModel = model
@@ -976,13 +994,19 @@ func (s *Service) executeBatch(ctx context.Context, sess session.Session, batch 
 		s.Audit.Record("system", "codex_protocol_drift", sess.ID, fmt.Sprintf("unknown=%d anomalies=%d", result.ProtocolUnknown, result.ProtocolAnomalies))
 	}
 	if run, ok := s.activeRun(id); ok && run.BatchID == batch.ID && run.Stream != nil {
-		if status == session.InputCompleted {
+		if draft, hasDraft := s.scheduleDraftForOrigin(id); status == session.InputCompleted && hasDraft {
+			s.finishScheduleConfirmation(run.Stream, cardStatus, metaFromSession(sess), result, draft, sess.ID)
+		} else if status == session.InputCompleted {
 			s.finishStreamWithOutputImages(ctx, run.Stream, cardStatus, metaFromSession(sess), result, sess, batch)
 		} else {
 			s.finishStreamAndAudit(run.Stream, cardStatus, metaFromSession(sess), result, sess.ID)
 		}
 	}
-	_, _ = s.finishBatchOrRemember(sess, batch.ID, session.BatchCompletion{Status: status, AgentSessionID: result.AgentSessionID, Model: result.Model, Tokens: result.Tokens, At: time.Now()}, "completion_persist_failed")
+	_, finishErr := s.finishBatchOrRemember(sess, batch.ID, session.BatchCompletion{Status: status, AgentSessionID: result.AgentSessionID, Model: result.Model, Tokens: result.Tokens, At: time.Now()}, "completion_persist_failed")
+	if err == nil {
+		err = finishErr
+	}
+	s.completeScheduleBatch(batch, status, err, time.Now())
 }
 
 func codexImagePaths(batch session.Batch) []string {
@@ -1266,6 +1290,24 @@ func (s *Service) HandleActionResult(ctx context.Context, req ActionRequest) (Ac
 		return s.renderActionEvent(card.Event{Type: "error", SessionID: req.SessionID, Segments: []card.Segment{{Kind: card.SegmentError, Text: "❌ 此操作仅管理员可用。"}}})
 	}
 	switch req.ActionID {
+	case "schedule.confirm":
+		if s.Schedules == nil {
+			return ActionResult{}, errors.New("schedule store is not configured")
+		}
+		task, err := s.confirmScheduleDraft(strings.TrimSpace(req.Value), req.Actor, time.Now())
+		if err != nil {
+			return ActionResult{}, err
+		}
+		return s.renderActionEvent(card.Event{Type: "schedule_confirmed", SessionID: req.SessionID, HeaderTitle: "✅ 定时任务已创建", HeaderTemplate: "green", Segments: []card.Segment{{Kind: card.SegmentText, Text: confirmedScheduleText(task)}}, Actions: []card.Action{{ID: "schedule.confirm", Label: "已确认", Value: task.ID, Disabled: true}, {ID: "schedule.cancel", Label: "取消", Value: task.ID, Disabled: true}}})
+	case "schedule.cancel":
+		if s.Schedules == nil {
+			return ActionResult{}, errors.New("schedule store is not configured")
+		}
+		if err := s.Schedules.CancelDraft(strings.TrimSpace(req.Value), req.Actor); err != nil {
+			return ActionResult{}, err
+		}
+		s.Audit.Record(req.Actor, "schedule_draft_cancelled", req.Value, "card action")
+		return s.renderActionEvent(card.Event{Type: "schedule_cancelled", SessionID: req.SessionID, HeaderTitle: "已取消", HeaderTemplate: "grey", Segments: []card.Segment{{Kind: card.SegmentText, Text: "已取消，不会创建定时任务。"}}})
 	case "stop":
 		if run, ok := s.cancelActiveRun(req.SessionID); ok {
 			s.Audit.Record(req.Actor, "batch_stop_requested", run.BaseSessionID, run.BatchID)
@@ -2126,6 +2168,9 @@ func (r CLIExecRunner) Run(ctx context.Context, req AgentRunRequest) (AgentRunRe
 	var stderr bytes.Buffer
 	cmd := exec.CommandContext(ctx, command[0], command[1:]...)
 	agentEnv := agent.AgentEnv(req.Kind, req.Home)
+	if req.ScheduleSocket != "" && req.ScheduleToken != "" {
+		agentEnv = append(agentEnv, "LAB_SCHEDULE_SOCKET="+req.ScheduleSocket, "LAB_SCHEDULE_TOKEN="+req.ScheduleToken)
+	}
 	if req.WorkDir != "" {
 		workDir, err := filepath.Abs(req.WorkDir)
 		if err != nil {
@@ -2185,6 +2230,9 @@ func childEnv(workDir string, extra []string) []string {
 	}
 	env := make([]string, 0, len(os.Environ())+len(overrides)+1)
 	for _, item := range os.Environ() {
+		if strings.HasPrefix(item, "LAB_SCHEDULE_SOCKET=") || strings.HasPrefix(item, "LAB_SCHEDULE_TOKEN=") {
+			continue
+		}
 		if workDir != "" && strings.HasPrefix(item, "PWD=") {
 			continue
 		}

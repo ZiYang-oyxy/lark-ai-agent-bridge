@@ -62,6 +62,10 @@ type Input struct {
 	ReplyMode                 config.ReplyMode
 	ConversationMode          config.ConversationMode
 	BridgeInstructionsVersion string `json:",omitempty"`
+	ScheduleRunID             string `json:",omitempty"`
+	ScheduleTaskID            string `json:",omitempty"`
+	ScheduleKind              string `json:",omitempty"`
+	IsGroup                   bool   `json:",omitempty"`
 	Time                      time.Time
 	DebounceUntil             time.Time
 	DebounceWindow            time.Duration `json:",omitempty"`
@@ -1041,6 +1045,9 @@ func snapshotReceipts(receipts []Receipt) []Receipt {
 }
 
 func compatibleBatchInput(first, next Input) bool {
+	if first.ScheduleRunID != "" || next.ScheduleRunID != "" {
+		return first.ScheduleRunID != "" && first.ScheduleRunID == next.ScheduleRunID
+	}
 	return first.WorkDir == next.WorkDir &&
 		first.RequestedModel == next.RequestedModel &&
 		first.RequestedEffort == next.RequestedEffort &&
