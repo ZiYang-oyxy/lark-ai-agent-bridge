@@ -280,6 +280,10 @@ func runServe(args []string) error {
 	if err != nil {
 		return fmt.Errorf("open runtime preference store: %w", err)
 	}
+	topicStore, err := openParticipationStore(cfg)
+	if err != nil {
+		return err
+	}
 	accessStore, err := access.OpenStore(cfg.AccessStorePath)
 	if err != nil {
 		return fmt.Errorf("open access store: %w", err)
@@ -297,6 +301,7 @@ func runServe(args []string) error {
 	svc := bridge.NewServiceWithSessions(cfg, renderer, nil, recorder, sessions, notices)
 	svc.Agents = agents
 	svc.Preferences = preferences
+	svc.TopicParticipation = topicStore
 	svc.Access = accessStore
 	svc.AccessControls = access.NewRuntimeControls()
 	svc.AccessAppID = appID

@@ -32,9 +32,6 @@ type Command struct {
 
 func ParseCommand(msg Message, defaultAgent agent.Kind) Command {
 	raw := strings.TrimSpace(msg.Text)
-	if !msg.ShouldHandle() {
-		return Command{Type: CommandIgnored, Raw: raw}
-	}
 	if raw == "" && len(msg.Attachments) == 0 {
 		return Command{Type: CommandIgnored, Raw: raw}
 	}

@@ -55,10 +55,10 @@ func TestParsePlainTextInTopicContinuesTopicSession(t *testing.T) {
 	}
 }
 
-func TestParseCommandIgnoresGroupWithoutMention(t *testing.T) {
+func TestParseCommandOnlyParsesSyntaxAfterIntake(t *testing.T) {
 	cmd := ParseCommand(Message{Text: "/new hello", IsGroup: true, Mentioned: false}, agent.Claude)
-	if cmd.Type != CommandIgnored {
-		t.Fatalf("type = %s, want ignored", cmd.Type)
+	if cmd.Type != CommandRun {
+		t.Fatalf("type = %s, want run", cmd.Type)
 	}
 }
 

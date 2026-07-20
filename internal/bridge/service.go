@@ -53,9 +53,11 @@ type Service struct {
 		GetOwner(context.Context, string) (string, error)
 		ListChats(context.Context) ([]feishu.KnownChat, error)
 	}
-	AccessAppID string
-	accessMu    sync.RWMutex
-	knownChats  []feishu.KnownChat
+	AccessAppID        string
+	BotOpenID          string
+	TopicParticipation TopicParticipation
+	accessMu           sync.RWMutex
+	knownChats         []feishu.KnownChat
 
 	mu                 sync.Mutex
 	pendingRuns        map[string]pendingRun
@@ -80,6 +82,12 @@ type Service struct {
 // service to a concrete cache implementation.
 type mediaResolver interface {
 	Resolve(context.Context, media.Downloader, []media.Ref) media.Resolution
+}
+
+type TopicParticipation interface {
+	Has(string, string) bool
+	Mark(string, string, time.Time) error
+	Touch(string, string, time.Time) error
 }
 
 type mediaSweeper interface {
@@ -337,12 +345,44 @@ func (s *Service) HandleMessage(ctx context.Context, msg Message) error {
 		return nil
 	}
 	preference := s.runtimePreference()
+	if reason := senderRejectionReason(msg, preference.RespondToBots, s.BotOpenID); reason != "" {
+		action := "group_message_skipped"
+		if reason == IntakeReasonBotDisabled {
+			action = "bot_message_skipped"
+		}
+		s.Audit.Record(msg.Sender, action, msg.ChatID, reason+" message="+msg.ID)
+		return nil
+	}
 	if decision, enforced := s.messageAccessDecision(msg); enforced && !decision.OK {
 		s.Audit.Record(msg.Sender, "access_denied", msg.ChatID, string(decision.Reason))
 		if msg.IsGroup && msg.Mentioned && decision.Reason == access.ReasonDeniedChat {
 			return s.renderTextWithMode("access-denied", msg.ID, card.SegmentError, "当前群尚未加入响应列表，所以 bot 不会处理消息。\nBot owner/管理员可在本群发 /invite group 加入白名单。", preference.ConversationMode)
 		}
 		return nil
+	}
+	participated := false
+	if s.TopicParticipation != nil && msg.IsGroup && msg.ThreadID != "" {
+		participated = s.TopicParticipation.Has(msg.ChatID, msg.ThreadID)
+	}
+	intake := DecideIntake(msg, preference, s.BotOpenID, participated)
+	if !intake.Accept {
+		s.Audit.Record(msg.Sender, "group_message_skipped", msg.ChatID, intake.Reason+" message="+msg.ID+" thread="+msg.ThreadID)
+		return nil
+	}
+	if intake.Mark && s.TopicParticipation != nil {
+		if err := s.TopicParticipation.Mark(msg.ChatID, msg.ThreadID, effectiveMessageTime(msg)); err != nil {
+			s.Audit.Record(msg.Sender, "topic_participation_save_failed", msg.ChatID, "message="+msg.ID+" thread="+msg.ThreadID+" error="+err.Error())
+			if renderErr := s.renderTextWithMode("topic-participation", msg.ID, card.SegmentError, "话题参与状态持久化失败；本条消息仍会处理，但后续非 @ 消息将继续忽略。", preference.ConversationMode); renderErr != nil {
+				s.Audit.Record(msg.Sender, "topic_participation_error_render_failed", msg.ChatID, renderErr.Error())
+			}
+		} else {
+			s.Audit.Record(msg.Sender, "topic_participation_saved", msg.ChatID, "message="+msg.ID+" thread="+msg.ThreadID)
+		}
+	}
+	if intake.Touch && s.TopicParticipation != nil {
+		if err := s.TopicParticipation.Touch(msg.ChatID, msg.ThreadID, effectiveMessageTime(msg)); err != nil {
+			s.Audit.Record(msg.Sender, "topic_participation_save_failed", msg.ChatID, "touch message="+msg.ID+" thread="+msg.ThreadID+" error="+err.Error())
+		}
 	}
 	defaultKind, ok := agent.ParseKind(s.Config.DefaultAgent)
 	if !ok {
@@ -453,7 +493,11 @@ func (s *Service) runtimePreference() config.RuntimePreference {
 	if conversationMode == "" {
 		conversationMode = config.ConversationModeChat
 	}
-	return config.RuntimePreference{Model: model, Effort: effort, ReplyMode: mode, ConversationMode: conversationMode, Agent: config.DefaultAgentKind}
+	groupMessageMode := s.Config.GroupMessageMode
+	if groupMessageMode == "" {
+		groupMessageMode = config.GroupMessageModeMentionOnly
+	}
+	return config.RuntimePreference{Model: model, Effort: effort, ReplyMode: mode, ConversationMode: conversationMode, GroupMessageMode: groupMessageMode, RespondToBots: s.Config.RespondToBots, Agent: config.DefaultAgentKind}
 }
 
 // resolveAgentBinHome resolves the executable path and home/config directory
