@@ -810,6 +810,74 @@ func TestServiceRoutesBatchThroughReplyPolicyAndPersistsActiveRenderRef(t *testi
 	}
 }
 
+func TestServiceRoutesAppendToMarkdownCard(t *testing.T) {
+	cfg := testConfig(t)
+	cfg.ReplyMode = config.ReplyModeAppend
+	runner := newFakeRunner()
+	runner.block = make(chan struct{})
+	cards := &bridgeReplyTarget{}
+	svc := NewService(cfg, card.NewFakeRenderer(), runner, audit.NewRecorder())
+	svc.CardTarget = cards
+	now := time.Now()
+	if err := svc.HandleMessage(context.Background(), Message{ID: "append-source", ChatID: "chat", Sender: "user", Text: "hello", Time: now}); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.DrainReady(now.Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	<-runner.started
+	cards.mu.Lock()
+	cardCalls := cards.newCalls
+	events := append([]card.Event(nil), cards.events...)
+	cards.mu.Unlock()
+	if cardCalls != 1 {
+		t.Fatalf("card calls = %d, want 1", cardCalls)
+	}
+	if len(events) == 0 || !events[len(events)-1].MarkdownLayout || len(events[len(events)-1].Segments) != 0 || events[len(events)-1].StopButton.Visible {
+		t.Fatalf("append card event = %#v, want minimal markdown layout", events)
+	}
+	sess, ok := svc.Sessions.Get(session.Key{Agent: agent.Claude, ChatID: "chat"})
+	if !ok || sess.ActiveBatch == nil || sess.ActiveBatch.RenderRef == nil || sess.ActiveBatch.RenderRef.CardID != "new-card" {
+		t.Fatalf("append active session = %#v, want CardKit render ref", sess)
+	}
+	close(runner.block)
+	waitForSessionNoActiveBatch(t, svc, session.Key{Agent: agent.Claude, ChatID: "chat"})
+}
+
+func TestServiceKeepsCardModesOnCardKit(t *testing.T) {
+	for _, mode := range []config.ReplyMode{config.ReplyModeAppendCleanCard, config.ReplyModeLatestCard} {
+		t.Run(string(mode), func(t *testing.T) {
+			cfg := testConfig(t)
+			cfg.ReplyMode = mode
+			runner := newFakeRunner()
+			runner.block = make(chan struct{})
+			cards := &bridgeReplyTarget{}
+			svc := NewService(cfg, card.NewFakeRenderer(), runner, audit.NewRecorder())
+			svc.CardTarget = cards
+			now := time.Now()
+			if err := svc.HandleMessage(context.Background(), Message{ID: "card-source", ChatID: "chat", Sender: "user", Text: "hello", Time: now}); err != nil {
+				t.Fatal(err)
+			}
+			if err := svc.DrainReady(now.Add(time.Second)); err != nil {
+				t.Fatal(err)
+			}
+			<-runner.started
+			cards.mu.Lock()
+			cardCalls := cards.newCalls + cards.rehydrateCalls
+			events := append([]card.Event(nil), cards.events...)
+			cards.mu.Unlock()
+			if cardCalls != 1 {
+				t.Fatalf("card calls = %d, want 1", cardCalls)
+			}
+			if len(events) == 0 || events[len(events)-1].MarkdownLayout {
+				t.Fatalf("card mode event = %#v, want standard CardKit layout", events)
+			}
+			close(runner.block)
+			waitForSessionNoActiveBatch(t, svc, session.Key{Agent: agent.Claude, ChatID: "chat"})
+		})
+	}
+}
+
 func TestReplyPolicyStartFailureKeepsFrozenTopicReplyMode(t *testing.T) {
 	cfg := testConfig(t)
 	fallback := card.NewFakeRenderer()
@@ -3339,6 +3407,12 @@ func TestParseClaudeStreamPreservesOrderedTimeline(t *testing.T) {
 	}
 	if !strings.Contains(result.OrderedSegments[1].Text, "Bash") || !strings.Contains(result.OrderedSegments[2].Text, "tool_result") {
 		t.Fatalf("ordered tool segments = %#v", result.OrderedSegments[1:3])
+	}
+	if got := result.OrderedSegments[1].Tool; got == nil || got.ID != "tu-1" || got.Name != "Bash" || got.Phase != "use" || got.Summary != "ls" {
+		t.Fatalf("tool use metadata = %#v", got)
+	}
+	if got := result.OrderedSegments[2].Tool; got == nil || got.ID != "tu-1" || got.Phase != "result" || got.Summary != "" || got.IsError {
+		t.Fatalf("tool result metadata = %#v", got)
 	}
 }
 

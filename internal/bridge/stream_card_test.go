@@ -156,7 +156,6 @@ func TestAppendStreamPreservesTimeline(t *testing.T) {
 	if !preview.OrderedLayout {
 		t.Fatal("append preview did not request ordered layout")
 	}
-
 	terminal, err := stream.Finish("completed", card.Meta{}, AgentRunResult{OrderedSegments: []card.Segment{
 		{Kind: card.SegmentText, Text: "先检查"},
 		{Kind: card.SegmentTool, Text: "Bash(ls)"},

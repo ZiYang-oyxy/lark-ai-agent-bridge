@@ -648,8 +648,8 @@ func (s *Service) startBatch(parent context.Context, sess session.Session, batch
 		sources = append(sources, in.ID, in.ReplyToMessageID)
 	}
 	stream := newAgentCardStream(s, id, sess, anchor)
+	mode := anchor.EffectiveReplyMode()
 	if s.CardTarget != nil {
-		mode := anchor.EffectiveReplyMode()
 		latestScope := ""
 		if mode == config.ReplyModeLatestCard {
 			latestScope = sess.ID
@@ -667,7 +667,11 @@ func (s *Service) startBatch(parent context.Context, sess session.Session, batch
 			_ = s.Cards.Render(card.Event{Type: "error", SessionID: id, ReplyToMessageID: anchor.ReplyToMessageID, ReplyInThread: anchor.ConversationMode == config.ConversationModeTopic, Segments: []card.Segment{{Kind: card.SegmentError, Text: "回复卡片初始化失败，请重试。"}}})
 			return
 		}
-		stream = newAgentCardStreamWithRenderer(s, id, sess, anchor, card.NewLimitRenderer(policyRun, s.Config.CardMaxChars), policyRun)
+		var renderer card.Renderer = policyRun
+		if mode == config.ReplyModeAppend {
+			renderer = reply.NewMarkdownCardRenderer(policyRun)
+		}
+		stream = newAgentCardStreamWithRenderer(s, id, sess, anchor, card.NewLimitRenderer(renderer, s.Config.CardMaxChars), policyRun)
 	}
 	s.storeActiveRun(id, activeRun{BaseSessionID: sess.ID, BatchID: batch.ID, SourceMessageIDs: sources, Key: sess.Key, WorkDir: sess.WorkDir, Cancel: cancel, Stream: stream, Typing: typing})
 	if s.afterStoreActiveRunHook != nil {
@@ -782,7 +786,7 @@ func codexImagePaths(batch session.Batch) []string {
 // (终态渲染失败意味着用户卡片停在旧状态,必须可观测)。
 func (s *Service) finishStreamAndAudit(stream *agentCardStream, cardStatus string, meta card.Meta, result AgentRunResult, sessionID string) {
 	if _, err := stream.Finish(cardStatus, meta, result); err != nil {
-		s.Audit.Record("system", "terminal_card_render_failed", sessionID, fmt.Sprintf("status=%s error=%v", cardStatus, err))
+		s.Audit.Record("system", "terminal_reply_render_failed", sessionID, fmt.Sprintf("status=%s error=%v", cardStatus, err))
 	}
 }
 
@@ -1745,14 +1749,19 @@ func (s *claudeParseState) addAnswerSegment(text string) {
 }
 
 func (s *claudeParseState) appendOrdered(kind card.SegmentKind, text string) {
-	if s == nil || kind == card.SegmentThought {
+	s.appendOrderedSegment(card.Segment{Kind: kind, Text: text})
+}
+
+func (s *claudeParseState) appendOrderedSegment(segment card.Segment) {
+	if s == nil || segment.Kind == card.SegmentThought {
 		return
 	}
-	text = strings.TrimSpace(text)
+	text := strings.TrimSpace(segment.Text)
 	if text == "" {
 		return
 	}
-	s.orderedSegments = append(s.orderedSegments, card.Segment{Kind: kind, Text: text})
+	segment.Text = text
+	s.orderedSegments = append(s.orderedSegments, segment)
 }
 
 func consumeClaudeEvent(event map[string]any, answer, thought, tool *strings.Builder, result *AgentRunResult, state *claudeParseState) {
@@ -1809,7 +1818,7 @@ func consumeClaudeEvent(event map[string]any, answer, thought, tool *strings.Bui
 			writeToolUse(tool, block)
 			var ordered strings.Builder
 			writeToolUse(&ordered, block)
-			state.appendOrdered(card.SegmentTool, ordered.String())
+			state.appendOrderedSegment(card.Segment{Kind: card.SegmentTool, Text: ordered.String(), Tool: claudeToolUseMeta(block)})
 			if id, ok := block["id"].(string); ok && id != "" {
 				state.seenToolUse[id] = struct{}{}
 			}
@@ -1817,7 +1826,7 @@ func consumeClaudeEvent(event map[string]any, answer, thought, tool *strings.Bui
 			writeToolResult(tool, block)
 			var ordered strings.Builder
 			writeToolResult(&ordered, block)
-			state.appendOrdered(card.SegmentTool, ordered.String())
+			state.appendOrderedSegment(card.Segment{Kind: card.SegmentTool, Text: ordered.String(), Tool: claudeToolResultMeta(block)})
 		}
 	}
 	// 同一个 assistant message 内的多个 text block 合并为一段回复(而非逐 block / 逐 delta 拆分)。
@@ -1904,6 +1913,16 @@ func streamUpdateFromClaudeEvent(event map[string]any) AgentStreamUpdate {
 
 func streamSegmentsFromBlock(block map[string]any) []card.Segment {
 	blockType, _ := block["type"].(string)
+	if blockType == "tool_use" {
+		var text strings.Builder
+		writeToolUse(&text, block)
+		return []card.Segment{{Kind: card.SegmentTool, Text: text.String(), Tool: claudeToolUseMeta(block)}}
+	}
+	if blockType == "tool_result" {
+		var text strings.Builder
+		writeToolResult(&text, block)
+		return []card.Segment{{Kind: card.SegmentTool, Text: text.String(), Tool: claudeToolResultMeta(block)}}
+	}
 	switch blockType {
 	case "text":
 		return segmentFromText(card.SegmentText, firstString(block, "text", "content"))
@@ -1919,6 +1938,31 @@ func streamSegmentsFromBlock(block map[string]any) []card.Segment {
 		return segmentFromText(card.SegmentTool, b.String())
 	}
 	return nil
+}
+
+func claudeToolUseMeta(block map[string]any) *card.ToolMeta {
+	name, _ := block["name"].(string)
+	return &card.ToolMeta{
+		ID:      firstString(block, "id"),
+		Name:    strings.TrimSpace(name),
+		Summary: toolInputSummary(block["input"]),
+		Phase:   "use",
+	}
+}
+
+func claudeToolResultMeta(block map[string]any) *card.ToolMeta {
+	isError, _ := block["is_error"].(bool)
+	return &card.ToolMeta{ID: firstString(block, "tool_use_id"), Phase: "result", IsError: isError}
+}
+
+func toolInputSummary(value any) string {
+	record, _ := value.(map[string]any)
+	for _, key := range []string{"command", "file_path", "path", "query", "url"} {
+		if text := firstString(record, key); text != "" {
+			return text
+		}
+	}
+	return ""
 }
 
 func streamSegmentsFromTopLevelEvent(event map[string]any) []card.Segment {

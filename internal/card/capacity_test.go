@@ -193,6 +193,24 @@ func TestPrepareLarkCardNativeReadyRequiresStreamingAnswerTarget(t *testing.T) {
 	}
 }
 
+func TestPrepareLarkCardMarkdownLayoutUsesMarkdownAsNativeAnswer(t *testing.T) {
+	prepared, err := PrepareLarkCard(Event{
+		Type:           "stream",
+		Streaming:      true,
+		MarkdownLayout: true,
+		Markdown:       "answer\n\n> ✅ **Bash** · pwd",
+	})
+	if err != nil {
+		t.Fatalf("PrepareLarkCard() error: %v", err)
+	}
+	if !prepared.NativeReady() {
+		t.Fatal("markdown layout is not native-ready")
+	}
+	if got, want := prepared.Answer(), "answer\n\n> ✅ **Bash** · pwd"; got != want {
+		t.Fatalf("Answer() = %q, want %q", got, want)
+	}
+}
+
 func TestNativeReadyRequiresExactlyOneMarkdownAnswerTarget(t *testing.T) {
 	for _, tc := range []struct {
 		name    string

@@ -93,8 +93,9 @@ func consumeCodexEvent(event map[string]any, result *AgentRunResult, state *code
 		}
 		state.startedItems[id] = struct{}{}
 		command := codexString(item["command"])
-		appendCodexSegment(result, card.SegmentTool, command)
-		emitCodexSegment(onEvent, card.SegmentTool, command, streamActivityTool, false)
+		segment := card.Segment{Kind: card.SegmentTool, Text: command, Tool: &card.ToolMeta{ID: id, Name: "Bash", Summary: command, Phase: "use"}}
+		appendCodexSegment(result, segment)
+		emitCodexSegment(onEvent, segment, streamActivityTool, false)
 	case "item.completed":
 		return consumeCodexCompletedItem(codexRecord(event["item"]), result, state, onEvent)
 	case "agent_message":
@@ -103,7 +104,7 @@ func consumeCodexEvent(event map[string]any, result *AgentRunResult, state *code
 			text = codexString(event["text"])
 		}
 		appendCodexAnswer(result, state, text)
-		emitCodexSegment(onEvent, card.SegmentText, text, streamActivityAnswering, true)
+		emitCodexSegment(onEvent, card.Segment{Kind: card.SegmentText, Text: text}, streamActivityAnswering, true)
 	case "turn.completed":
 		state.terminal = true
 		usage := codexRecord(event["usage"])
@@ -133,14 +134,14 @@ func consumeCodexCompletedItem(item map[string]any, result *AgentRunResult, stat
 			text = codexString(item["message"])
 		}
 		appendCodexAnswer(result, state, text)
-		emitCodexSegment(onEvent, card.SegmentText, text, streamActivityAnswering, true)
+		emitCodexSegment(onEvent, card.Segment{Kind: card.SegmentText, Text: text}, streamActivityAnswering, true)
 	case "reasoning", "reasoning_message":
 		text := codexString(item["text"])
 		if text == "" {
 			text = codexString(item["message"])
 		}
-		appendCodexSegment(result, card.SegmentThought, text)
-		emitCodexSegment(onEvent, card.SegmentThought, text, streamActivityReasoning, false)
+		appendCodexSegment(result, card.Segment{Kind: card.SegmentThought, Text: text})
+		emitCodexSegment(onEvent, card.Segment{Kind: card.SegmentThought, Text: text}, streamActivityReasoning, false)
 	case "command_execution":
 		id := codexString(item["id"])
 		if id == "" {
@@ -158,8 +159,10 @@ func consumeCodexCompletedItem(item map[string]any, result *AgentRunResult, stat
 		if output == "" {
 			output = codexString(item["stdout"])
 		}
-		appendCodexSegment(result, card.SegmentTool, output)
-		emitCodexSegment(onEvent, card.SegmentTool, output, streamActivityTool, false)
+		isError := codexInt(item["exit_code"]) != 0
+		segment := card.Segment{Kind: card.SegmentTool, Text: output, Tool: &card.ToolMeta{ID: id, Name: "Bash", Phase: "result", IsError: isError}}
+		appendCodexSegment(result, segment)
+		emitCodexSegment(onEvent, segment, streamActivityTool, false)
 	}
 	return nil
 }
@@ -170,22 +173,26 @@ func appendCodexAnswer(result *AgentRunResult, state *codexParseState, text stri
 		return
 	}
 	result.Segments = append(result.Segments, card.Segment{Kind: card.SegmentText, Text: text})
+	result.OrderedSegments = append(result.OrderedSegments, card.Segment{Kind: card.SegmentText, Text: text})
 	state.answerSegments = append(state.answerSegments, text)
 }
 
-func appendCodexSegment(result *AgentRunResult, kind card.SegmentKind, text string) {
-	text = strings.TrimSpace(text)
+func appendCodexSegment(result *AgentRunResult, segment card.Segment) {
+	text := strings.TrimSpace(segment.Text)
 	if text != "" {
-		result.Segments = append(result.Segments, card.Segment{Kind: kind, Text: text})
+		segment.Text = text
+		result.Segments = append(result.Segments, segment)
+		result.OrderedSegments = append(result.OrderedSegments, segment)
 	}
 }
 
-func emitCodexSegment(onEvent func(AgentStreamUpdate), kind card.SegmentKind, text, activity string, answerSnapshot bool) {
-	text = strings.TrimSpace(text)
+func emitCodexSegment(onEvent func(AgentStreamUpdate), segment card.Segment, activity string, answerSnapshot bool) {
+	text := strings.TrimSpace(segment.Text)
 	if text == "" {
 		return
 	}
-	emitStreamUpdate(onEvent, AgentStreamUpdate{Segments: []card.Segment{{Kind: kind, Text: text}}, Activity: activity, AnswerSnapshot: answerSnapshot})
+	segment.Text = text
+	emitStreamUpdate(onEvent, AgentStreamUpdate{Segments: []card.Segment{segment}, Activity: activity, AnswerSnapshot: answerSnapshot})
 }
 
 func codexRecord(value any) map[string]any {
