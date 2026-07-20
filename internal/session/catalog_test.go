@@ -139,6 +139,33 @@ func TestOpenCatalogMissingAndStrictDecode(t *testing.T) {
 	}
 }
 
+func TestOpenCatalogKeepsHistoricalEntryWhenWorkDirWasDeleted(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "catalog.json")
+	workDir := filepath.Join(root, "project")
+	if err := os.Mkdir(workDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	canonical := mustCanonicalWorkDir(t, workDir)
+	catalog, err := OpenCatalog(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := catalog.Upsert(CatalogEntry{SessionID: "historical", Agent: agent.Claude, WorkDir: canonical, UpdatedAt: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(workDir); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := OpenCatalog(path)
+	if err != nil {
+		t.Fatalf("deleted historical workdir blocked catalog load: %v", err)
+	}
+	if got := reopened.Recent(CatalogIdentity{Agent: agent.Claude, WorkDir: canonical}, 10); len(got) != 1 || got[0].SessionID != "historical" {
+		t.Fatalf("historical entries = %#v", got)
+	}
+}
+
 func mustCanonicalWorkDir(t *testing.T, path string) string {
 	t.Helper()
 	got, err := CanonicalWorkDir(path)

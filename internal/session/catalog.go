@@ -97,7 +97,7 @@ func OpenCatalog(path string) (*Catalog, error) {
 		return nil, fmt.Errorf("unsupported session catalog schema %d", snapshot.SchemaVersion)
 	}
 	for _, entry := range snapshot.Entries {
-		if err := validateCatalogEntry(entry); err != nil {
+		if err := validateStoredCatalogEntry(entry); err != nil {
 			return nil, fmt.Errorf("invalid session catalog entry: %w", err)
 		}
 		key := catalogKey(entry.Agent, entry.WorkDir, entry.SessionID)
@@ -228,11 +228,8 @@ func (c *Catalog) saveLocked(entries map[string]CatalogEntry) error {
 }
 
 func validateCatalogEntry(entry CatalogEntry) error {
-	if entry.Agent != agent.Claude && entry.Agent != agent.Codex {
-		return fmt.Errorf("session catalog: invalid agent %q", entry.Agent)
-	}
-	if strings.TrimSpace(entry.SessionID) == "" || entry.SessionID != strings.TrimSpace(entry.SessionID) {
-		return errors.New("session catalog: invalid session id")
+	if err := validateCatalogEntryFields(entry); err != nil {
+		return err
 	}
 	canonical, err := CanonicalWorkDir(entry.WorkDir)
 	if err != nil {
@@ -240,6 +237,26 @@ func validateCatalogEntry(entry CatalogEntry) error {
 	}
 	if canonical != entry.WorkDir {
 		return fmt.Errorf("session catalog: non-canonical workdir %q", entry.WorkDir)
+	}
+	return nil
+}
+
+func validateStoredCatalogEntry(entry CatalogEntry) error {
+	if err := validateCatalogEntryFields(entry); err != nil {
+		return err
+	}
+	if !filepath.IsAbs(entry.WorkDir) || filepath.Clean(entry.WorkDir) != entry.WorkDir {
+		return fmt.Errorf("session catalog: non-canonical stored workdir %q", entry.WorkDir)
+	}
+	return nil
+}
+
+func validateCatalogEntryFields(entry CatalogEntry) error {
+	if entry.Agent != agent.Claude && entry.Agent != agent.Codex {
+		return fmt.Errorf("session catalog: invalid agent %q", entry.Agent)
+	}
+	if strings.TrimSpace(entry.SessionID) == "" || entry.SessionID != strings.TrimSpace(entry.SessionID) {
+		return errors.New("session catalog: invalid session id")
 	}
 	if entry.UpdatedAt.IsZero() {
 		return errors.New("session catalog: zero updated_at")
