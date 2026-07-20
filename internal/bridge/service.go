@@ -405,7 +405,7 @@ func (s *Service) HandleMessage(ctx context.Context, msg Message) error {
 	if cmd.Type == CommandIgnored {
 		return nil
 	}
-	if selected, ok := agent.ParseKind(preference.Agent); ok && (cmd.Type == CommandRun || cmd.Type == CommandStatus || cmd.Type == CommandStop) {
+	if selected, ok := agent.ParseKind(preference.Agent); ok && (cmd.Type == CommandRun || cmd.Type == CommandStatus || cmd.Type == CommandStop || cmd.Type == CommandResume) {
 		cmd.Agent = selected
 	}
 	if s.adminCommand(cmd.Type) && !s.canRunAdminCommand(msg.Sender) {
@@ -431,6 +431,8 @@ func (s *Service) HandleMessage(ctx context.Context, msg Message) error {
 		return s.renderTextWithMode("status", msg.ID, card.SegmentText, s.statusTextWithPreference(cmd.Agent, msg, preference), preference.ConversationMode)
 	case CommandStop:
 		return s.handleStopCommand(msg, cmd, preference)
+	case CommandResume:
+		return s.handleResumeCommand(msg, cmd, preference)
 	case CommandConfig:
 		return s.handleConfigCommand(ctx, msg, cmd, preference)
 	case CommandAgentMode:
@@ -458,6 +460,64 @@ func (s *Service) handleStopCommand(msg Message, cmd Command, preference config.
 	}
 	s.Audit.Record(msg.Sender, "batch_stop_requested", run.BaseSessionID, run.BatchID)
 	return s.renderTextWithMode("stop-requested", msg.ID, card.SegmentText, "已请求停止当前任务；排队输入将继续执行。", preference.ConversationMode)
+}
+
+func (s *Service) handleResumeCommand(msg Message, cmd Command, preference config.RuntimePreference) error {
+	key := sessionKeyForMode(cmd.Agent, msg, preference.ConversationMode)
+	workDir, err := session.CanonicalWorkDir(s.effectiveWorkDir(key, Command{}))
+	if err != nil {
+		s.Audit.Record(msg.Sender, "session_resume_failed", key.ID(), err.Error())
+		return s.renderTextWithMode("resume", msg.ID, card.SegmentError, "当前工作目录不可用，无法查看或恢复 Session。", preference.ConversationMode)
+	}
+	identity := session.CatalogIdentity{Agent: cmd.Agent, WorkDir: workDir}
+	target := strings.TrimSpace(cmd.Text)
+	if target == "" {
+		entries, err := s.Sessions.RecentSessions(identity, 10)
+		if err != nil {
+			s.Audit.Record(msg.Sender, "session_resume_failed", key.ID(), err.Error())
+			return s.renderTextWithMode("resume", msg.ID, card.SegmentError, "Session 历史存储不可用，请检查服务状态。", preference.ConversationMode)
+		}
+		return s.renderTextWithMode("resume", msg.ID, card.SegmentText, formatResumeList(identity, entries, currentAgentSessionID(s.Sessions, key)), preference.ConversationMode)
+	}
+	resumed, err := s.Sessions.Resume(key, identity, target, effectiveMessageTime(msg))
+	if err != nil {
+		switch {
+		case errors.Is(err, session.ErrSessionBusy):
+			return s.renderTextWithMode("resume", msg.ID, card.SegmentError, "当前会话仍有正在执行或排队的任务；请等待完成或停止任务后再恢复 Session。", preference.ConversationMode)
+		case errors.Is(err, session.ErrSessionNotFound):
+			return s.renderTextWithMode("resume", msg.ID, card.SegmentError, "当前 Agent 与工作目录下找不到该 Session；请使用 /resume 查看可恢复列表。", preference.ConversationMode)
+		default:
+			s.Audit.Record(msg.Sender, "session_resume_failed", key.ID(), err.Error())
+			return s.renderTextWithMode("resume", msg.ID, card.SegmentError, "Session 恢复持久化失败，当前会话未切换。", preference.ConversationMode)
+		}
+	}
+	s.Audit.Record(msg.Sender, "session_resumed", key.ID(), "agent_session="+resumed.AgentSessionID+" workdir="+resumed.WorkDir)
+	return s.renderTextWithMode("resume", msg.ID, card.SegmentText, fmt.Sprintf("已恢复 Session `%s`。下一条普通消息将继续该会话。", resumed.AgentSessionID), preference.ConversationMode)
+}
+
+func currentAgentSessionID(manager *session.Manager, key session.Key) string {
+	if current, ok := manager.Get(key); ok {
+		return current.AgentSessionID
+	}
+	return ""
+}
+
+func formatResumeList(identity session.CatalogIdentity, entries []session.CatalogEntry, currentID string) string {
+	if len(entries) == 0 {
+		return fmt.Sprintf("当前没有可恢复的 Session（agent=%s, workdir=%s）。", identity.Agent, identity.WorkDir)
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "最近 10 个 Session（agent=%s, workdir=%s）：", identity.Agent, identity.WorkDir)
+	for i, entry := range entries {
+		fmt.Fprintf(&b, "\n%d. %s  %s", i+1, entry.SessionID, entry.UpdatedAt.Local().Format("2006-01-02 15:04:05"))
+		if entry.SessionID == currentID {
+			b.WriteString("  [当前]")
+		}
+		if summary := strings.TrimSpace(entry.Summary); summary != "" {
+			fmt.Fprintf(&b, "\n   %s", summary)
+		}
+	}
+	return b.String()
 }
 
 func (s *Service) handleConfigCommand(ctx context.Context, msg Message, cmd Command, preference config.RuntimePreference) error {

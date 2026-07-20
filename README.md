@@ -12,6 +12,7 @@
 - `/config` 可切换为话题模式：回复进入话题，有 `ThreadID` 时每个 topic 独立 session，不同 topic 可并行执行。
 - `/new` 重置当前 conversation scope；普通文本继续该 scope 已保存的 Agent session。
 - `/stop` 只停止当前 agent/chat/topic scope 的 active batch；后续 queued 输入保留并继续调度，空闲时安全提示无运行任务。
+- `/resume` 列出当前 Agent 与 workdir 最近使用的 10 个 Bridge Session；`/resume <session-id>` 切换后由下一条普通消息继续目标 Session。
 - `append` 每轮新建完整 CardKit 状态卡：thinking 位于独立折叠区，assistant 回复与工具安全摘要按事件顺序显示在同一个 Markdown 正文中；工具始终是普通文字，不使用下拉框。
 - `append-clean-card` 与 `latest-card` 使用 CardKit：运行中可展示折叠过程，并支持一次性停止按钮；clean/latest 终态只保留最终答案。
 - 执行中标题使用蓝色 `正在推理/正在执行工具/正在回复 · ⏱ Ns`，完成绿色，停止灰色，失败红色。
@@ -58,6 +59,13 @@ owner 或管理员可在飞书中管理名单：
 - `topic`：回复使用 `reply_in_thread=true`，非空 `ThreadID` 会进入 session key。
 
 该设置与 Reply mode（`append`、`append-clean-card`、`latest-card`）相互独立。保存成功后只影响新接收的消息；已有 session 不迁移、不删除，已经排队或停在 workdir 确认阶段的输入继续使用接收时的 mode。启动环境可用 `E2E_CONVERSATION_MODE=chat|topic` 设置 `/config reset` 恢复的默认值。
+
+## Session 恢复
+
+- `/resume`：按最近使用时间倒序列出当前 Agent、当前 workdir 下最多 10 个 Bridge 管理的 Session，并标记当前 Session。
+- `/resume <session-id>`：精确恢复列表中的完整 Session ID；命令本身不会发送给 Agent，下一条普通消息才执行 Claude `--resume` 或 Codex `exec resume`。
+
+恢复不会扫描 Claude/Codex 在终端或其他客户端创建的历史。当前 conversation scope 有 active batch 或 queued input 时会拒绝切换，避免中断任务或把旧队列发送到另一个 Session。历史目录保存在 Session store 同目录的 `session-catalog.json`；文件损坏或 schema 不兼容会阻止 `serve` 启动。
 
 ## 群消息接收
 

@@ -13,6 +13,7 @@ const (
 	CommandHelp      CommandType = "help"
 	CommandRun       CommandType = "run"
 	CommandStatus    CommandType = "status"
+	CommandResume    CommandType = "resume"
 	CommandStop      CommandType = "stop"
 	CommandConfig    CommandType = "config"
 	CommandAgentMode CommandType = "agent-mode"
@@ -61,7 +62,11 @@ func ParseCommand(msg Message, defaultAgent agent.Kind) Command {
 		parseRunOptions(&cmd)
 		return cmd
 	case "resume":
-		return Command{Type: CommandUnknown, Raw: raw, Text: "/resume 暂未实现。请使用 /new 开始新会话。"}
+		target := strings.TrimSpace(rest)
+		if len(strings.Fields(target)) > 1 {
+			return Command{Type: CommandUnknown, Raw: raw, Text: "用法：/resume 或 /resume <session-id>"}
+		}
+		return Command{Type: CommandResume, Agent: defaultAgent, Raw: raw, Text: target}
 	default:
 		return Command{Type: CommandUnknown, Raw: raw, Text: fmt.Sprintf("unknown command /%s", name)}
 	}
@@ -115,6 +120,8 @@ func HelpText() string {
 		"Feishu AI Agent Bridge commands:",
 		"/new [--workdir <path>] [prompt] - start a new configured agent session in this chat/topic",
 		"/status - show the current chat/topic session status",
+		"/resume - list the 10 most recent sessions for the current agent and workdir",
+		"/resume <session-id> - resume that session on the next message",
 		"/stop - stop the active task in this chat/topic; queued inputs are preserved",
 		"/agent-mode - choose claude or codex for subsequent messages",
 		"/config - configure the current agent home, executable, Claude model/effort, reply mode, and chat/topic mode",

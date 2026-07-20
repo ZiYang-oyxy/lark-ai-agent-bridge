@@ -96,7 +96,7 @@ func TestHelpTextIncludesConfigCommand(t *testing.T) {
 }
 
 func TestRemovedCommandsAreUnknown(t *testing.T) {
-	for _, text := range []string{"/codex inspect repo", "/claude inspect repo", "/resume", "/sessions", "/history", "/topic off", "/attach"} {
+	for _, text := range []string{"/codex inspect repo", "/claude inspect repo", "/sessions", "/history", "/topic off", "/attach"} {
 		cmd := ParseCommand(Message{Text: text}, agent.Claude)
 		if cmd.Type != CommandUnknown {
 			t.Fatalf("%s type = %s, want unknown", text, cmd.Type)
@@ -164,13 +164,32 @@ func TestParseHelpCommand(t *testing.T) {
 	}
 }
 
-func TestParseResumeReturnsNotImplementedDegradation(t *testing.T) {
-	cmd := ParseCommand(Message{Text: "/resume"}, agent.Claude)
-	if cmd.Type != CommandUnknown {
-		t.Fatalf("type = %s, want unknown", cmd.Type)
+func TestParseResumeCommand(t *testing.T) {
+	for _, tc := range []struct {
+		text   string
+		target string
+	}{
+		{text: "/resume"},
+		{text: "/resume abc-123", target: "abc-123"},
+	} {
+		cmd := ParseCommand(Message{Text: tc.text}, agent.Claude)
+		if cmd.Type != CommandResume || cmd.Agent != agent.Claude || cmd.Text != tc.target {
+			t.Fatalf("ParseCommand(%q) = %#v", tc.text, cmd)
+		}
 	}
-	if !strings.Contains(cmd.Text, "/resume") || !strings.Contains(cmd.Text, "/new") {
-		t.Fatalf("resume degradation text = %q, want mention of /resume and /new", cmd.Text)
+}
+
+func TestParseResumeRejectsMultipleArguments(t *testing.T) {
+	cmd := ParseCommand(Message{Text: "/resume one two"}, agent.Claude)
+	if cmd.Type != CommandUnknown || cmd.Text != "用法：/resume 或 /resume <session-id>" {
+		t.Fatalf("resume arguments = %#v", cmd)
+	}
+}
+
+func TestHelpTextIncludesResumeForms(t *testing.T) {
+	text := HelpText()
+	if !strings.Contains(text, "/resume") || !strings.Contains(text, "/resume <session-id>") {
+		t.Fatalf("help text = %q", text)
 	}
 }
 

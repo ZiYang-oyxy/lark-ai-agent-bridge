@@ -4055,7 +4055,7 @@ func TestServiceRecordsCompletedSessionInCatalog(t *testing.T) {
 	manager := session.NewManager()
 	manager.AttachCatalog(catalog)
 	svc := NewServiceWithSessions(config.Config{}, card.NewFakeRenderer(), &fakeRunner{}, audit.NewRecorder(), manager, nil)
-	now := time.Date(2026, 7, 20, 12, 0, 0, 0, time.UTC)
+	now := time.Now()
 	updated := session.Session{
 		Key: session.Key{Agent: agent.Claude, ChatID: "chat"}, AgentSessionID: "agent-session",
 		WorkDir: workDir, BridgeInstructionsVersion: "v1", LastActive: now,
@@ -4101,6 +4101,122 @@ func TestServiceCatalogFailureIsAuditedWithoutChangingCompletedSession(t *testin
 	if updated.AgentSessionID != "thread" || updated.State != "" {
 		t.Fatalf("recording mutated completed session = %#v", updated)
 	}
+}
+
+func TestServiceResumeListsTenRecentSessionsForCurrentIdentity(t *testing.T) {
+	svc, renderer, _, manager, identity := newResumeTestService(t)
+	now := time.Now()
+	for i := 0; i < 12; i++ {
+		if err := manager.RecordSession(session.CatalogEntry{
+			SessionID: fmt.Sprintf("s-%02d", i), Agent: identity.Agent, WorkDir: identity.WorkDir,
+			UpdatedAt: now.Add(time.Duration(i) * time.Minute), BridgeInstructionsVersion: "v1", Summary: fmt.Sprintf("prompt %d", i),
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	key := session.Key{Agent: agent.Claude, ChatID: "chat"}
+	if _, err := manager.Resume(key, identity, "s-11", now.Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := svc.HandleMessage(context.Background(), Message{ID: "resume-list", ChatID: "chat", Sender: "user", Text: "/resume", Time: now.Add(2 * time.Hour)}); err != nil {
+		t.Fatal(err)
+	}
+	events := renderer.Events()
+	if !eventsContainText(events, "最近 10 个 Session") || !eventsContainText(events, "s-11") || !eventsContainText(events, "[当前]") || !eventsContainText(events, "s-02") || eventsContainText(events, "s-01") {
+		t.Fatalf("resume list events = %#v", events)
+	}
+}
+
+func TestServiceResumeSwitchesBindingAndNextMessageUsesTarget(t *testing.T) {
+	svc, renderer, runner, manager, identity := newResumeTestService(t)
+	now := time.Now()
+	for _, id := range []string{"current", "target"} {
+		if err := manager.RecordSession(session.CatalogEntry{SessionID: id, Agent: identity.Agent, WorkDir: identity.WorkDir, UpdatedAt: now, BridgeInstructionsVersion: "v1"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	key := session.Key{Agent: agent.Claude, ChatID: "chat"}
+	if _, err := manager.Resume(key, identity, "current", now); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := svc.HandleMessage(context.Background(), Message{ID: "resume-target", ChatID: "chat", Sender: "user", Text: "/resume target", Time: now.Add(time.Second)}); err != nil {
+		t.Fatal(err)
+	}
+	if len(runner.Calls()) != 0 || !eventsContainText(renderer.Events(), "已恢复 Session `target`") {
+		t.Fatalf("resume result calls/events = %#v / %#v", runner.Calls(), renderer.Events())
+	}
+	bound, _ := manager.Get(key)
+	if bound.AgentSessionID != "target" {
+		t.Fatalf("binding = %#v", bound)
+	}
+
+	messageAt := now.Add(2 * time.Second)
+	if err := svc.HandleMessage(context.Background(), Message{ID: "continue", ChatID: "chat", Sender: "user", Text: "continue", Time: messageAt}); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.DrainReady(messageAt.Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	waitForCalls(t, runner, 1)
+	if got := runner.Calls()[0].AgentSessionID; got != "target" {
+		t.Fatalf("runner resume id = %q", got)
+	}
+}
+
+func TestServiceResumeRejectsUnknownAndBusyWithoutChangingBinding(t *testing.T) {
+	svc, renderer, _, manager, identity := newResumeTestService(t)
+	now := time.Now()
+	for _, id := range []string{"current", "target"} {
+		if err := manager.RecordSession(session.CatalogEntry{SessionID: id, Agent: identity.Agent, WorkDir: identity.WorkDir, UpdatedAt: now, BridgeInstructionsVersion: "v1"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	key := session.Key{Agent: agent.Claude, ChatID: "chat"}
+	if _, err := manager.Resume(key, identity, "current", now); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.HandleMessage(context.Background(), Message{ID: "unknown", ChatID: "chat", Sender: "user", Text: "/resume missing", Time: now.Add(time.Second)}); err != nil {
+		t.Fatal(err)
+	}
+	if !eventsContainText(renderer.Events(), "当前 Agent 与工作目录下找不到该 Session") {
+		t.Fatalf("unknown resume events = %#v", renderer.Events())
+	}
+	if _, _, err := manager.EnqueueDurable(key, session.Input{ID: "queued", WorkDir: identity.WorkDir, State: session.InputQueued}, identity.WorkDir, session.BatchLimits{MaxPending: 10}); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.HandleMessage(context.Background(), Message{ID: "busy", ChatID: "chat", Sender: "user", Text: "/resume target", Time: now.Add(2 * time.Second)}); err != nil {
+		t.Fatal(err)
+	}
+	if !eventsContainText(renderer.Events(), "当前会话仍有正在执行或排队的任务") {
+		t.Fatalf("busy resume events = %#v", renderer.Events())
+	}
+	bound, _ := manager.Get(key)
+	if bound.AgentSessionID != "current" || len(bound.Queue) != 1 {
+		t.Fatalf("busy resume changed binding = %#v", bound)
+	}
+}
+
+func newResumeTestService(t *testing.T) (*Service, *card.FakeRenderer, *fakeRunner, *session.Manager, session.CatalogIdentity) {
+	t.Helper()
+	cfg := testConfig(t)
+	cfg.ConversationMode = config.ConversationModeChat
+	workDir, err := session.CanonicalWorkDir(cfg.DefaultWorkDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.DefaultWorkDir = workDir
+	catalog, err := session.OpenCatalog(filepath.Join(t.TempDir(), "catalog.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager := session.NewManagerWithStore(filepath.Join(t.TempDir(), "sessions.json"))
+	manager.AttachCatalog(catalog)
+	renderer := card.NewFakeRenderer()
+	runner := newFakeRunner()
+	svc := NewServiceWithSessions(cfg, renderer, runner, audit.NewRecorder(), manager, nil)
+	return svc, renderer, runner, manager, session.CatalogIdentity{Agent: agent.Claude, WorkDir: workDir}
 }
 
 func waitForSessionNoActiveBatch(t *testing.T, svc *Service, key session.Key) {
