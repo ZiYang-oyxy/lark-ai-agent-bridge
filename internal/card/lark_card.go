@@ -156,6 +156,17 @@ func buildConfigFormElements(sessionID string, form ConfigForm) []any {
 				configSelect("reply_mode", form.ReplyMode, form.ReplyModes),
 				markdownElement("config_scope_label", "**Conversation mode**\n`chat` 回复到普通聊天并按 chat 共用会话；`topic` 回复到话题并按 thread 隔离会话。"),
 				configSelect("conversation_mode", form.ConversationMode, form.ConversationModes),
+				markdownElement("cfg_group_msg", "**群消息接收**\n`mention_only` 仅响应结构化 @bot；`participated_topics` 接收 Bridge 已参与话题的后续消息；`all_group_messages` 接收所有已授权群消息。后两档需要 `im:message.group_msg`。"),
+				configSelectOptions("group_message_mode", form.GroupMessageMode, []SelectOption{
+					{Value: "mention_only", Label: "仅响应 @bot（默认）"},
+					{Value: "participated_topics", Label: "接收已参与话题的所有消息"},
+					{Value: "all_group_messages", Label: "接收所有群消息"},
+				}),
+				markdownElement("cfg_bot_sender", "**响应其他 bot/app 消息**\n默认忽略；开启后仍按上面的群消息模式判断。Bridge 自身消息始终忽略。"),
+				configSelectOptions("respond_to_bots", form.RespondToBots, []SelectOption{
+					{Value: "false", Label: "忽略（默认）"},
+					{Value: "true", Label: "响应"},
+				}),
 				accessPanelElement(form),
 				map[string]any{
 					"tag":              "button",

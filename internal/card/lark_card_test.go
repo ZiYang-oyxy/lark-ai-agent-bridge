@@ -276,6 +276,8 @@ func TestBuildLarkCardRendersRuntimeConfigForm(t *testing.T) {
 			Effort:            "high",
 			ReplyMode:         "latest-card",
 			ConversationMode:  "chat",
+			GroupMessageMode:  "mention_only",
+			RespondToBots:     "false",
 			Agents:            []SelectOption{{Value: "claude", Label: "claude · Claude Code"}},
 			AgentHomes:        []SelectOption{{Value: "默认", Label: "默认 · 宿主默认配置目录"}, {Value: "隔离", Label: "隔离 · demo home"}},
 			AgentBins:         []SelectOption{{Value: "主机 claude", Label: "主机 claude · bridge 默认可执行"}, {Value: "ark4", Label: "ark4 · 豆包 seed-2-1-pro"}},
@@ -319,7 +321,7 @@ func TestBuildLarkCardRendersRuntimeConfigForm(t *testing.T) {
 			submit = control
 		}
 	}
-	if len(selects) != 7 || selects["model"]["initial_option"] != "opus" || selects["effort"]["initial_option"] != "high" || selects["reply_mode"]["initial_option"] != "latest-card" || selects["conversation_mode"]["initial_option"] != "chat" {
+	if len(selects) != 9 || selects["model"]["initial_option"] != "opus" || selects["effort"]["initial_option"] != "high" || selects["reply_mode"]["initial_option"] != "latest-card" || selects["conversation_mode"]["initial_option"] != "chat" || selects["group_message_mode"]["initial_option"] != "mention_only" || selects["respond_to_bots"]["initial_option"] != "false" {
 		t.Fatalf("select controls = %#v", selects)
 	}
 	if selects["agent"]["initial_option"] != "claude" || selects["agent_home"]["initial_option"] != "默认" || selects["agent_bin"]["initial_option"] != "主机 claude" {

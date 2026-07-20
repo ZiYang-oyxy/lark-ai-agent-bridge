@@ -77,6 +77,8 @@ type ConfigForm struct {
 	Effort            string
 	ReplyMode         string
 	ConversationMode  string
+	GroupMessageMode  string
+	RespondToBots     string
 	Agents            []SelectOption
 	AgentHomes        []SelectOption
 	AgentBins         []SelectOption

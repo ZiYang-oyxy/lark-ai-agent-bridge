@@ -13,6 +13,7 @@ import (
 	"os/exec"
 	osuser "os/user"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -445,6 +446,7 @@ func (s *Service) handleConfigCommand(ctx context.Context, msg Message, cmd Comm
 		form := &card.ConfigForm{
 			Agent: agentKind, AgentHome: preference.AgentHome, AgentBin: preference.AgentBin,
 			Model: preference.Model, Effort: preference.Effort, ReplyMode: string(preference.ReplyMode), ConversationMode: string(preference.ConversationMode),
+			GroupMessageMode: string(preference.GroupMessageMode), RespondToBots: strconv.FormatBool(preference.RespondToBots),
 			Agents: toCardOptions(s.Agents.AgentOptions()), AgentHomes: toCardOptions(s.Agents.HomeOptions(agentKind)), AgentBins: toCardOptions(s.Agents.BinOptions(agentKind)),
 			Models: s.configModelOptions(), Efforts: []string{"default", "low", "medium", "high"},
 			ReplyModes:        []string{string(config.ReplyModeAppend), string(config.ReplyModeAppendCleanCard), string(config.ReplyModeLatestCard)},
@@ -1090,8 +1092,21 @@ func (s *Service) HandleActionResult(ctx context.Context, req ActionRequest) (Ac
 			s.Audit.Record(req.Actor, "config_save_failed", req.SessionID, err.Error())
 			return s.renderActionEvent(configSaveErrorEvent(req.SessionID))
 		}
-		preference := config.RuntimePreference{Model: req.FormValues["model"], Effort: req.FormValues["effort"], ReplyMode: config.ReplyMode(req.FormValues["reply_mode"]), ConversationMode: config.ConversationMode(req.FormValues["conversation_mode"]), Agent: req.FormValues["agent"], AgentHome: req.FormValues["agent_home"], AgentBin: req.FormValues["agent_bin"]}
 		current := s.Preferences.Get()
+		groupMessageMode := current.GroupMessageMode
+		if raw, ok := req.FormValues["group_message_mode"]; ok && strings.TrimSpace(raw) != "" {
+			groupMessageMode = config.GroupMessageMode(raw)
+		}
+		respondToBots := current.RespondToBots
+		if raw, ok := req.FormValues["respond_to_bots"]; ok {
+			parsed, err := strconv.ParseBool(strings.TrimSpace(raw))
+			if err != nil {
+				s.Audit.Record(req.Actor, "config_save_failed", req.SessionID, "invalid respond_to_bots")
+				return s.renderActionEvent(configSaveErrorEvent(req.SessionID))
+			}
+			respondToBots = parsed
+		}
+		preference := config.RuntimePreference{Model: req.FormValues["model"], Effort: req.FormValues["effort"], ReplyMode: config.ReplyMode(req.FormValues["reply_mode"]), ConversationMode: config.ConversationMode(req.FormValues["conversation_mode"]), GroupMessageMode: groupMessageMode, RespondToBots: respondToBots, Agent: req.FormValues["agent"], AgentHome: req.FormValues["agent_home"], AgentBin: req.FormValues["agent_bin"]}
 		if !strings.EqualFold(strings.TrimSpace(current.Agent), strings.TrimSpace(preference.Agent)) {
 			if _, ok := s.Agents.HomePath(preference.Agent, preference.AgentHome); !ok {
 				preference.AgentHome = ""
@@ -1105,11 +1120,12 @@ func (s *Service) HandleActionResult(ctx context.Context, req ActionRequest) (Ac
 			return s.renderActionEvent(configSaveErrorEvent(req.SessionID))
 		}
 		preference = s.Preferences.Get()
-		s.Audit.Record(req.Actor, "config_saved", req.SessionID, fmt.Sprintf("agent=%s agent_home=%s agent_bin=%s model=%s effort=%s reply_mode=%s conversation_mode=%s", preference.Agent, preference.AgentHome, preference.AgentBin, preference.Model, preference.Effort, preference.ReplyMode, preference.ConversationMode))
+		s.Audit.Record(req.Actor, "config_saved", req.SessionID, fmt.Sprintf("agent=%s agent_home=%s agent_bin=%s model=%s effort=%s reply_mode=%s conversation_mode=%s group_message_mode=%s respond_to_bots=%t", preference.Agent, preference.AgentHome, preference.AgentBin, preference.Model, preference.Effort, preference.ReplyMode, preference.ConversationMode, preference.GroupMessageMode, preference.RespondToBots))
+		s.Audit.Record(req.Actor, "group_message_mode_saved", req.SessionID, fmt.Sprintf("mode=%s respond_to_bots=%t", preference.GroupMessageMode, preference.RespondToBots))
 		return s.renderActionEvent(card.Event{
 			Type:      "config_saved",
 			SessionID: req.SessionID,
-			Segments:  []card.Segment{{Kind: card.SegmentText, Text: fmt.Sprintf("偏好已保存。\n\nagent=`%s`\nagent home=`%s`\nagent bin=`%s`\nmodel=`%s`\neffort=`%s`\nreply mode=`%s`\nconversation mode=`%s`\n\n下一条新消息开始生效。", preference.Agent, orDefault(preference.AgentHome, config.DefaultHomeLabel), orDefault(preference.AgentBin, config.DefaultBinLabelFor(preference.Agent)), preference.Model, preference.Effort, preference.ReplyMode, preference.ConversationMode)}},
+			Segments:  []card.Segment{{Kind: card.SegmentText, Text: fmt.Sprintf("偏好已保存。\n\nagent=`%s`\nagent home=`%s`\nagent bin=`%s`\nmodel=`%s`\neffort=`%s`\nreply mode=`%s`\nconversation mode=`%s`\ngroup message mode=`%s`\nrespond to bots=`%t`\n\n下一条新消息开始生效。", preference.Agent, orDefault(preference.AgentHome, config.DefaultHomeLabel), orDefault(preference.AgentBin, config.DefaultBinLabelFor(preference.Agent)), preference.Model, preference.Effort, preference.ReplyMode, preference.ConversationMode, preference.GroupMessageMode, preference.RespondToBots)}},
 		})
 	default:
 		return s.renderActionEvent(card.Event{Type: "error", SessionID: req.SessionID, Segments: []card.Segment{{Kind: card.SegmentError, Text: "unknown action: " + req.ActionID}}})
