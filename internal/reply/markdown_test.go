@@ -136,21 +136,23 @@ func TestRenderInlineTimelineDeduplicatesResultsAndUsesSafeFallbacks(t *testing.
 	}
 }
 
-func TestMarkdownCardRendererConvertsRunToMinimalLayout(t *testing.T) {
+func TestMarkdownCardRendererKeepsFullCardStateAndUsesInlineTimeline(t *testing.T) {
 	inner := &fakeMarkdownCardRenderer{ref: session.RenderRef{CardID: "card-1", ReplyMessageID: "reply-1"}}
 	renderer := NewMarkdownCardRenderer(inner)
-	err := renderer.Render(card.Event{
-		Type:      "result",
-		Streaming: false,
+	input := card.Event{
+		Type:           "stream",
+		Streaming:      true,
+		HeaderTitle:    "正在执行工具 · ⏱ 8s",
+		HeaderTemplate: "blue",
 		Segments: []card.Segment{
-			{Kind: card.SegmentThought, Text: "private"},
+			{Kind: card.SegmentThought, Text: "reasoning"},
 			{Kind: card.SegmentTool, Text: "secret", Tool: &card.ToolMeta{ID: "t1", Name: "Bash", Summary: "pwd", Phase: "use"}},
-			{Kind: card.SegmentTool, Text: "/private/output", Tool: &card.ToolMeta{ID: "t1", Phase: "result"}},
 			{Kind: card.SegmentText, Text: "done"},
 		},
-		Meta:       card.Meta{Agent: "codex", RunTokens: 10, TotalTokens: 20},
+		Meta:       card.Meta{Agent: "codex", RunTokens: 10, TotalTokens: 20, User: "user", WorkDir: "/work"},
 		StopButton: card.StopButton{Visible: true},
-	})
+	}
+	err := renderer.Render(input)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -158,11 +160,15 @@ func TestMarkdownCardRendererConvertsRunToMinimalLayout(t *testing.T) {
 		t.Fatalf("events = %#v", inner.events)
 	}
 	got := inner.events[0]
-	if !got.MarkdownLayout || got.Markdown != "> ✅ **Bash** · pwd\n\ndone\n\n🤖 codex · 🔢 tokens: ▶ 10 / ∑ 20" {
+	if !got.InlineTimelineLayout || got.MarkdownLayout || got.OrderedLayout || got.Markdown != "> ⏳ **Bash** · pwd\n\ndone" {
 		t.Fatalf("markdown event = %#v", got)
 	}
-	if len(got.Segments) != 0 || got.StopButton.Visible || got.Meta != (card.Meta{}) || strings.Contains(got.Markdown, "private") {
-		t.Fatalf("markdown event leaked card state: %#v", got)
+	if len(got.Segments) != len(input.Segments) || got.StopButton != input.StopButton || got.Meta != input.Meta ||
+		got.HeaderTitle != input.HeaderTitle || got.HeaderTemplate != input.HeaderTemplate || got.Streaming != input.Streaming {
+		t.Fatalf("markdown event cleared full card state: %#v", got)
+	}
+	if strings.Contains(got.Markdown, "reasoning") || strings.Contains(got.Markdown, "secret") || strings.Contains(got.Markdown, "tokens:") {
+		t.Fatalf("inline timeline leaked shell/private state: %#v", got)
 	}
 	if ref := renderer.RenderRef(); ref.CardID != "card-1" || ref.ReplyMessageID != "reply-1" {
 		t.Fatalf("render ref = %#v", ref)

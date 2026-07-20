@@ -844,7 +844,7 @@ func TestServiceRoutesBatchThroughReplyPolicyAndPersistsActiveRenderRef(t *testi
 	}
 }
 
-func TestServiceRoutesAppendToMarkdownCard(t *testing.T) {
+func TestServiceRoutesAppendToFullInlineTimelineCard(t *testing.T) {
 	cfg := testConfig(t)
 	cfg.ReplyMode = config.ReplyModeAppend
 	runner := newFakeRunner()
@@ -867,8 +867,12 @@ func TestServiceRoutesAppendToMarkdownCard(t *testing.T) {
 	if cardCalls != 1 {
 		t.Fatalf("card calls = %d, want 1", cardCalls)
 	}
-	if len(events) == 0 || !events[len(events)-1].MarkdownLayout || len(events[len(events)-1].Segments) != 0 || events[len(events)-1].StopButton.Visible {
-		t.Fatalf("append card event = %#v, want minimal markdown layout", events)
+	if len(events) == 0 {
+		t.Fatalf("append card events = %#v", events)
+	}
+	last := events[len(events)-1]
+	if !last.InlineTimelineLayout || last.MarkdownLayout || last.OrderedLayout || !last.StopButton.Visible || !last.Streaming || last.HeaderTitle == "" || last.Meta.Agent == "" {
+		t.Fatalf("append card event = %#v, want full inline timeline layout", last)
 	}
 	sess, ok := svc.Sessions.Get(session.Key{Agent: agent.Claude, ChatID: "chat"})
 	if !ok || sess.ActiveBatch == nil || sess.ActiveBatch.RenderRef == nil || sess.ActiveBatch.RenderRef.CardID != "new-card" {
@@ -903,7 +907,7 @@ func TestServiceKeepsCardModesOnCardKit(t *testing.T) {
 			if cardCalls != 1 {
 				t.Fatalf("card calls = %d, want 1", cardCalls)
 			}
-			if len(events) == 0 || events[len(events)-1].MarkdownLayout {
+			if len(events) == 0 || events[len(events)-1].MarkdownLayout || events[len(events)-1].InlineTimelineLayout {
 				t.Fatalf("card mode event = %#v, want standard CardKit layout", events)
 			}
 			close(runner.block)

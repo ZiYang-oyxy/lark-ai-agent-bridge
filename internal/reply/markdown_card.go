@@ -15,17 +15,9 @@ func NewMarkdownCardRenderer(next feishu.ResumableRenderer) feishu.ResumableRend
 }
 
 func (r *markdownCardRenderer) Render(event card.Event) error {
-	markdown := RenderMarkdown(event)
-	event.MarkdownLayout = true
-	event.Markdown = markdown
-	event.Segments = nil
-	event.Meta = card.Meta{}
-	event.StopButton = card.StopButton{}
-	event.Actions = nil
-	event.Message = ""
-	event.HeaderTitle = ""
-	event.HeaderTemplate = ""
-	event.HideAgentPanels = true
+	event.Markdown = RenderInlineTimeline(event)
+	event.InlineTimelineLayout = true
+	event.MarkdownLayout = false
 	event.OrderedLayout = false
 	return r.next.Render(event)
 }
