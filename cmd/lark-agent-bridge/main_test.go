@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"lark-agent-bridge/internal/agent"
+	"lark-agent-bridge/internal/audit"
 	"lark-agent-bridge/internal/bridge"
 	"lark-agent-bridge/internal/card"
 	"lark-agent-bridge/internal/config"
@@ -153,6 +154,39 @@ type recordingInteractionFencer struct {
 	mu       sync.Mutex
 	sessions []string
 	releases int
+}
+
+type transportMessageDeleter struct {
+	err error
+}
+
+func (d transportMessageDeleter) DeleteMessage(context.Context, string) error {
+	return d.err
+}
+
+func TestConfigCloseActionTransportReturnsNoReplacementCard(t *testing.T) {
+	svc := bridge.NewService(config.Config{}, card.NewFakeRenderer(), simulateRunner{}, audit.NewRecorder())
+	svc.MessageDeleter = transportMessageDeleter{}
+	handler, _ := newServeActionTransports(bridge.ActionGateway{Service: svc}, 1000)
+
+	response, err := handler(t.Context(), feishu.CardAction{SessionID: "config-card", ActionID: "config.close", Actor: "admin", OpenMessageID: "om_config"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if response == nil || response.Card != nil || response.ToastContent != "" {
+		t.Fatalf("response = %#v, want success without replacement card or toast", response)
+	}
+}
+
+func TestConfigCloseActionTransportReturnsDeleteFailure(t *testing.T) {
+	svc := bridge.NewService(config.Config{}, card.NewFakeRenderer(), simulateRunner{}, audit.NewRecorder())
+	svc.MessageDeleter = transportMessageDeleter{err: errors.New("delete denied")}
+	handler, _ := newServeActionTransports(bridge.ActionGateway{Service: svc}, 1000)
+
+	response, err := handler(t.Context(), feishu.CardAction{SessionID: "config-card", ActionID: "config.close", Actor: "admin", OpenMessageID: "om_config"})
+	if err == nil || response != nil {
+		t.Fatalf("response/error = %#v / %v, want nil response and error", response, err)
+	}
 }
 
 func (f *recordingInteractionFencer) BeginCardInteraction(sessionID string) func() {
