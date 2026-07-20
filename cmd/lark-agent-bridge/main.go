@@ -336,6 +336,7 @@ func runServe(args []string) error {
 	svc.CardTarget = cardRouter
 	svc.Reactions = sender
 	svc.OutputImages = sender
+	svc.MessageDeleter = sender
 	actionGateway := bridge.ActionGateway{Service: svc, Fencer: cardRouter}
 	actionHandler, callbackHandler := newServeActionTransports(actionGateway, cfg.CardMaxChars)
 	svc.ProcessRecoveryNotices(ctx)
@@ -451,11 +452,12 @@ func actionRequestFromFeishu(action feishu.CardAction) bridge.ActionRequest {
 		formValues = nil
 	}
 	return bridge.ActionRequest{
-		SessionID:  action.SessionID,
-		ActionID:   action.ActionID,
-		Value:      action.Value,
-		Actor:      action.Actor,
-		FormValues: formValues,
+		SessionID:     action.SessionID,
+		ActionID:      action.ActionID,
+		Value:         action.Value,
+		Actor:         action.Actor,
+		OpenMessageID: action.OpenMessageID,
+		FormValues:    formValues,
 	}
 }
 

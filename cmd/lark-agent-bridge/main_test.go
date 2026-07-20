@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"lark-agent-bridge/internal/agent"
+	"lark-agent-bridge/internal/audit"
 	"lark-agent-bridge/internal/bridge"
 	"lark-agent-bridge/internal/card"
 	"lark-agent-bridge/internal/config"
@@ -178,6 +179,39 @@ type recordingInteractionFencer struct {
 	releases int
 }
 
+type transportMessageDeleter struct {
+	err error
+}
+
+func (d transportMessageDeleter) DeleteMessage(context.Context, string) error {
+	return d.err
+}
+
+func TestConfigCloseActionTransportReturnsNoReplacementCard(t *testing.T) {
+	svc := bridge.NewService(config.Config{}, card.NewFakeRenderer(), simulateRunner{}, audit.NewRecorder())
+	svc.MessageDeleter = transportMessageDeleter{}
+	handler, _ := newServeActionTransports(bridge.ActionGateway{Service: svc}, 1000)
+
+	response, err := handler(t.Context(), feishu.CardAction{SessionID: "config-card", ActionID: "config.close", Actor: "admin", OpenMessageID: "om_config"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if response == nil || response.Card != nil || response.ToastContent != "" {
+		t.Fatalf("response = %#v, want success without replacement card or toast", response)
+	}
+}
+
+func TestConfigCloseActionTransportReturnsDeleteFailure(t *testing.T) {
+	svc := bridge.NewService(config.Config{}, card.NewFakeRenderer(), simulateRunner{}, audit.NewRecorder())
+	svc.MessageDeleter = transportMessageDeleter{err: errors.New("delete denied")}
+	handler, _ := newServeActionTransports(bridge.ActionGateway{Service: svc}, 1000)
+
+	response, err := handler(t.Context(), feishu.CardAction{SessionID: "config-card", ActionID: "config.close", Actor: "admin", OpenMessageID: "om_config"})
+	if err == nil || response != nil {
+		t.Fatalf("response/error = %#v / %v, want nil response and error", response, err)
+	}
+}
+
 func (f *recordingInteractionFencer) BeginCardInteraction(sessionID string) func() {
 	f.mu.Lock()
 	f.sessions = append(f.sessions, sessionID)
@@ -234,14 +268,15 @@ func TestNewServeAuditRecorderWritesFile(t *testing.T) {
 
 func TestActionRequestFromFeishuClonesFormValues(t *testing.T) {
 	action := feishu.CardAction{
-		SessionID:  "claude:chat",
-		ActionID:   "config.save",
-		Actor:      "user",
-		FormValues: map[string]string{"model": "opus", "effort": "high"},
+		SessionID:     "claude:chat",
+		ActionID:      "config.save",
+		Actor:         "user",
+		OpenMessageID: "om_config",
+		FormValues:    map[string]string{"model": "opus", "effort": "high"},
 	}
 	req := actionRequestFromFeishu(action)
 	action.FormValues["model"] = "haiku"
-	if req.SessionID != "claude:chat" || req.ActionID != "config.save" || req.Actor != "user" || req.FormValues["model"] != "opus" || req.FormValues["effort"] != "high" {
+	if req.SessionID != "claude:chat" || req.ActionID != "config.save" || req.Actor != "user" || req.OpenMessageID != "om_config" || req.FormValues["model"] != "opus" || req.FormValues["effort"] != "high" {
 		t.Fatalf("action request form values = %#v", req.FormValues)
 	}
 }

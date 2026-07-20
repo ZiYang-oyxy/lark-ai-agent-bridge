@@ -710,6 +710,67 @@ func TestServiceConfigSavePersistsValidValuesAndRejectsInvalidValues(t *testing.
 	}
 }
 
+type recordingMessageDeleter struct {
+	messageIDs []string
+	err        error
+}
+
+func (d *recordingMessageDeleter) DeleteMessage(_ context.Context, messageID string) error {
+	d.messageIDs = append(d.messageIDs, messageID)
+	return d.err
+}
+
+func TestServiceConfigCloseDeletesCardWithoutChangingPreferences(t *testing.T) {
+	cfg := testConfig(t)
+	defaults := config.RuntimePreference{Model: "opus", Effort: "high"}
+	store, _ := testPreferenceStore(t, defaults, cfg.AllowedModels)
+	recorder := audit.NewRecorder()
+	deleter := &recordingMessageDeleter{}
+	svc := NewService(cfg, card.NewFakeRenderer(), newFakeRunner(), recorder)
+	svc.Preferences = store
+	svc.MessageDeleter = deleter
+	before := store.Get()
+
+	result, err := svc.HandleActionResult(t.Context(), ActionRequest{SessionID: "config-card", ActionID: "config.close", Actor: "admin", OpenMessageID: "om_config", FormValues: map[string]string{"model": "haiku"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result != (ActionResult{}) || len(deleter.messageIDs) != 1 || deleter.messageIDs[0] != "om_config" {
+		t.Fatalf("result/deletes = %#v / %#v", result, deleter.messageIDs)
+	}
+	if got := store.Get(); got != before {
+		t.Fatalf("preferences changed on close: %#v", got)
+	}
+	if !auditContainsAction(recorder.Events(), "config_closed") {
+		t.Fatalf("audit events = %#v", recorder.Events())
+	}
+}
+
+func TestServiceConfigCloseRejectsInvalidOrFailedDeletion(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		messageID string
+		deleter   MessageDeleter
+	}{
+		{name: "missing message id", deleter: &recordingMessageDeleter{}},
+		{name: "missing deleter", messageID: "om_config"},
+		{name: "delete failed", messageID: "om_config", deleter: &recordingMessageDeleter{err: errors.New("delete denied")}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			recorder := audit.NewRecorder()
+			svc := NewService(testConfig(t), card.NewFakeRenderer(), newFakeRunner(), recorder)
+			svc.MessageDeleter = tc.deleter
+			result, err := svc.HandleActionResult(t.Context(), ActionRequest{SessionID: "config-card", ActionID: "config.close", Actor: "admin", OpenMessageID: tc.messageID})
+			if err == nil || result != (ActionResult{}) {
+				t.Fatalf("result/error = %#v / %v, want empty result and error", result, err)
+			}
+			if !auditContainsAction(recorder.Events(), "config_close_failed") {
+				t.Fatalf("audit events = %#v", recorder.Events())
+			}
+		})
+	}
+}
+
 func TestServiceFreezesPreferencesAtEnqueueTime(t *testing.T) {
 	cfg := testConfig(t)
 	cfg.Model, cfg.Effort = "sonnet", "low"

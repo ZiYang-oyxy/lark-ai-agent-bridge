@@ -80,6 +80,31 @@ func TestInviteAllGroupsConfigPanelAndCallbackGate(t *testing.T) {
 	}
 }
 
+func TestServiceRejectsNonAdminConfigClose(t *testing.T) {
+	store, err := access.OpenStore(filepath.Join(t.TempDir(), "access.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Update(func(p *access.Policy) { p.AllowedUsers = append(p.AllowedUsers, "ou_user") }); err != nil {
+		t.Fatal(err)
+	}
+	controls := access.NewRuntimeControls()
+	controls.OwnerRefreshSucceeded("ou_owner")
+	deleter := &recordingMessageDeleter{}
+	svc := NewService(testConfig(t), card.NewFakeRenderer(), newFakeRunner(), audit.NewRecorder())
+	svc.Access = store
+	svc.AccessControls = controls
+	svc.MessageDeleter = deleter
+
+	result, err := svc.HandleActionResult(t.Context(), ActionRequest{SessionID: "config", ActionID: "config.close", Actor: "ou_user", OpenMessageID: "om_config"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Event == nil || !strings.Contains(result.Event.Segments[0].Text, "仅管理员") || len(deleter.messageIDs) != 0 {
+		t.Fatalf("result/deletes = %#v / %#v", result, deleter.messageIDs)
+	}
+}
+
 type fakeBridgeAccessInfo struct{ chats []feishu.KnownChat }
 
 func (f fakeBridgeAccessInfo) GetOwner(context.Context, string) (string, error) {

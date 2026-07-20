@@ -353,7 +353,7 @@ func TestBuildLarkCardRendersRuntimeConfigForm(t *testing.T) {
 	}
 	controls := form["elements"].([]any)
 	selects := map[string]map[string]any{}
-	var submit map[string]any
+	buttons := map[string]map[string]any{}
 	var copy strings.Builder
 	for _, raw := range controls {
 		control := raw.(map[string]any)
@@ -365,9 +365,11 @@ func TestBuildLarkCardRendersRuntimeConfigForm(t *testing.T) {
 			selects[control["name"].(string)] = control
 		}
 		if control["tag"] == "button" {
-			submit = control
+			buttons[control["name"].(string)] = control
 		}
 	}
+	submit := buttons["submit_runtime_config"]
+	closeButton := buttons["close_runtime_config"]
 	if len(selects) != 8 || selects["model"]["initial_option"] != "opus" || selects["effort"]["initial_option"] != "high" || selects["reply_mode"]["initial_option"] != "latest-card" || selects["conversation_mode"]["initial_option"] != "chat" || selects["group_message_mode"]["initial_option"] != "mention_only" || selects["respond_to_bots"]["initial_option"] != "false" {
 		t.Fatalf("select controls = %#v", selects)
 	}
@@ -389,6 +391,12 @@ func TestBuildLarkCardRendersRuntimeConfigForm(t *testing.T) {
 	if submit == nil || submit["form_action_type"] != "submit" {
 		t.Fatalf("submit button = %#v", submit)
 	}
+	if closeButton == nil || closeButton["type"] != "default" || closeButton["form_action_type"] != nil {
+		t.Fatalf("close button = %#v", closeButton)
+	}
+	if text := closeButton["text"].(map[string]any)["content"]; text != "关闭" {
+		t.Fatalf("close button text = %#v, want 关闭", text)
+	}
 	if !containsAll(copy.String(), "`claude`", "/agent-mode", "Codex", "executable") {
 		t.Fatalf("config guidance = %q", copy.String())
 	}
@@ -396,6 +404,11 @@ func TestBuildLarkCardRendersRuntimeConfigForm(t *testing.T) {
 	value := behaviors[0].(map[string]any)["value"].(map[string]any)
 	if value["action_id"] != "config.save" || value["session"] != "claude:chat:message:config-1" {
 		t.Fatalf("submit callback = %#v", value)
+	}
+	closeBehaviors := closeButton["behaviors"].([]any)
+	closeValue := closeBehaviors[0].(map[string]any)["value"].(map[string]any)
+	if closeValue["action_id"] != "config.close" || closeValue["session"] != "claude:chat:message:config-1" {
+		t.Fatalf("close callback = %#v", closeValue)
 	}
 	if payload["config"].(map[string]any)["streaming_mode"] != false {
 		t.Fatalf("config form must disable streaming: %#v", payload["config"])

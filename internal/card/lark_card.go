@@ -197,6 +197,13 @@ func buildConfigFormElements(sessionID string, form ConfigForm) []any {
 					"form_action_type": "submit",
 					"behaviors":        callbackBehavior(sessionID, saveAction, saveValue),
 				},
+				map[string]any{
+					"tag":       "button",
+					"name":      "close_runtime_config",
+					"text":      map[string]any{"tag": "plain_text", "content": "关闭"},
+					"type":      "default",
+					"behaviors": callbackBehavior(sessionID, "config.close", ""),
+				},
 			},
 		},
 	}

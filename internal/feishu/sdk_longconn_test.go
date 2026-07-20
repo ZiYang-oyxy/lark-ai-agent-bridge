@@ -2,6 +2,7 @@ package feishu
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/larksuite/oapi-sdk-go/v3/event/dispatcher/callback"
@@ -90,6 +91,37 @@ func TestSDKLongConnReturnsRawCardActionResponse(t *testing.T) {
 	data, ok := got.Card.Data.(map[string]any)
 	if !ok || data["schema"] != "2.0" {
 		t.Fatalf("response card data = %#v", got.Card.Data)
+	}
+}
+
+func TestBuildCardActionTriggerResponseOmitsEmptyCardAndToast(t *testing.T) {
+	got := buildCardActionTriggerResponse(&CardActionResponse{})
+	if got.Card != nil || got.Toast != nil {
+		t.Fatalf("response = %#v, want empty success", got)
+	}
+}
+
+func TestSDKLongConnReturnsErrorToastWithoutCard(t *testing.T) {
+	client := NewLongConnClient(LongConnConfig{
+		AppID:     "cli_test",
+		AppSecret: "secret",
+		ActionHandler: func(context.Context, CardAction) (*CardActionResponse, error) {
+			return nil, errors.New("delete failed")
+		},
+	})
+	sdk := client.(*SDKLongConnClient)
+	payload := []byte(`{
+		"schema":"2.0",
+		"header":{"event_type":"card.action.trigger"},
+		"event":{"operator":{"open_id":"ou_user"},"context":{"open_message_id":"om_config"},"action":{"tag":"button","value":{"session":"config-card","action_id":"config.close"}}}
+	}`)
+	resp, err := sdk.dispatcher.Do(t.Context(), payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := resp.(*callback.CardActionTriggerResponse)
+	if got.Card != nil || got.Toast == nil || got.Toast.Type != "error" {
+		t.Fatalf("response = %#v, want error toast without card", got)
 	}
 }
 

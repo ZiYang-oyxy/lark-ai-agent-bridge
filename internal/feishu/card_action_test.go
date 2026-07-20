@@ -10,6 +10,7 @@ import (
 func TestBuildCardActionFromLarkValueObject(t *testing.T) {
 	event := &callback.CardActionTriggerEvent{Event: &callback.CardActionTriggerRequest{
 		Operator: &callback.Operator{OpenID: "ou_user"},
+		Context:  &callback.Context{OpenMessageID: "om_config"},
 		Action: &callback.CallBackAction{Tag: "button", Value: map[string]any{
 			"session":   "claude:chat",
 			"action_id": "stop",
@@ -21,7 +22,7 @@ func TestBuildCardActionFromLarkValueObject(t *testing.T) {
 	if err != nil {
 		t.Fatalf("BuildCardActionFromLark error: %v", err)
 	}
-	if got.SessionID != "claude:chat" || got.ActionID != "stop" || got.Value != "ignored" || got.Actor != "ou_user" || got.Tag != "button" {
+	if got.SessionID != "claude:chat" || got.ActionID != "stop" || got.Value != "ignored" || got.Actor != "ou_user" || got.Tag != "button" || got.OpenMessageID != "om_config" {
 		t.Fatalf("action = %#v", got)
 	}
 }
