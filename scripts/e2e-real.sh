@@ -489,14 +489,50 @@ prepare_fake_claude_if_needed() {
 set -eu
 args="$(printf '%s' "$*" | tr '\n' ' ')"
 printf 'pid=%s args=%s\n' "$$" "$args" >>"${FAKE_CLAUDE_LOG:?FAKE_CLAUDE_LOG is required}"
+previous=
+instruction_file=
+prompt=
+for arg in "$@"; do
+  if [ "$previous" = "--append-system-prompt-file" ]; then
+    instruction_file="$arg"
+  fi
+  previous="$arg"
+  prompt="$arg"
+done
+case "$prompt" in
+  *'Reply with exactly OK. Do not use tools.'*) ;;
+  *)
+    test -n "$instruction_file" && test -r "$instruction_file"
+    grep -q 'Feishu Bridge Runtime Instructions' "$instruction_file"
+    case "$prompt" in *'Feishu Bridge Runtime Instructions'*) exit 92 ;; esac
+    ;;
+esac
 marker="$(printf '%s\n' "$args" | grep -Eo 'E2E_[A-Za-z0-9_-]+' | tail -n 1 || true)"
+write_test_image() {
+  image_name="e2e-output-${marker}.png"
+  image_base64='iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII='
+  if ! printf '%s' "$image_base64" | base64 --decode >"$image_name" 2>/dev/null; then
+    printf '%s' "$image_base64" | base64 -D >"$image_name"
+  fi
+  }
 case "$args" in
+  *E2E_BRIDGE_IMAGE_NO_INTENT*)
+    write_test_image
+    jq -nc --arg result "已按要求生成，但不发送图片 ${marker}" '{type:"result",result:$result,model:"fake-claude-e2e",usage:{output_tokens:1},session_id:"fake-e2e-session"}'
+    exit 0
+    ;;
+  *E2E_BRIDGE_IMAGE_AMBIGUOUS*)
+    jq -nc --arg result "存在多个合理候选，请确认要发送哪一张。 ${marker}" '{type:"result",result:$result,model:"fake-claude-e2e",usage:{output_tokens:1},session_id:"fake-e2e-session"}'
+    exit 0
+    ;;
+  *E2E_BRIDGE_IMAGE_INTENT*)
+    write_test_image
+    result="![${marker}](./${image_name})"
+    jq -nc --arg result "$result" '{type:"result",result:$result,model:"fake-claude-e2e",usage:{output_tokens:1},session_id:"fake-e2e-session"}'
+    exit 0
+    ;;
   *E2E_*_OUTPUT_IMAGE*)
-    image_name="e2e-output-${marker}.png"
-    image_base64='iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII='
-    if ! printf '%s' "$image_base64" | base64 --decode >"$image_name" 2>/dev/null; then
-      printf '%s' "$image_base64" | base64 -D >"$image_name"
-    fi
+    write_test_image
     result="![${marker}](./${image_name})"
     jq -nc --arg result "$result" '{type:"result",result:$result,model:"fake-claude-e2e",usage:{output_tokens:1},session_id:"fake-e2e-session"}'
     exit 0

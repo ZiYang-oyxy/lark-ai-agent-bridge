@@ -351,26 +351,50 @@ mkdir -p "$FAKE_CONTRACT_DIR"
 eval "$fake_claude_source"
 prepare_fake_claude_if_needed
 
-"$FAKE_BIN_DIR/claude" 'E2E_20260719-123456_NATIVE_TEXT_STREAM_NORMAL' >"$FAKE_CONTRACT_DIR/native-normal.jsonl"
+FAKE_INSTRUCTIONS_FILE="$FAKE_CONTRACT_DIR/feishu-runtime-v1.md"
+printf '%s\n' '# Feishu Bridge Runtime Instructions' >"$FAKE_INSTRUCTIONS_FILE"
+run_fake_claude() {
+  "$FAKE_BIN_DIR/claude" --append-system-prompt-file "$FAKE_INSTRUCTIONS_FILE" "$@"
+}
+
+run_fake_claude 'E2E_20260719-123456_NATIVE_TEXT_STREAM_NORMAL' >"$FAKE_CONTRACT_DIR/native-normal.jsonl"
 rg -q 'native-normal-one' "$FAKE_CONTRACT_DIR/native-normal.jsonl"
 rg -q 'native-normal-final' "$FAKE_CONTRACT_DIR/native-normal.jsonl"
 
-"$FAKE_BIN_DIR/claude" 'E2E_20260719-123456_STREAM' >"$FAKE_CONTRACT_DIR/stream.jsonl"
+run_fake_claude 'E2E_20260719-123456_STREAM' >"$FAKE_CONTRACT_DIR/stream.jsonl"
 rg -q 'content_block_delta' "$FAKE_CONTRACT_DIR/stream.jsonl"
 rg -q 'E2E_20260719-123456_STREAM' "$FAKE_CONTRACT_DIR/stream.jsonl"
 
-"$FAKE_BIN_DIR/claude" 'E2E_20260719-123456_DEFAULT' >"$FAKE_CONTRACT_DIR/default.jsonl"
+run_fake_claude 'E2E_20260719-123456_DEFAULT' >"$FAKE_CONTRACT_DIR/default.jsonl"
 rg -q 'FAKE_E2E_STARTED E2E_20260719-123456_DEFAULT' "$FAKE_CONTRACT_DIR/default.jsonl"
 
 (
   cd "$FAKE_CONTRACT_DIR"
-  "$FAKE_BIN_DIR/claude" 'E2E_20260719-123456_OUTPUT_IMAGE' >"$FAKE_CONTRACT_DIR/output-image.jsonl"
+  run_fake_claude 'E2E_20260719-123456_OUTPUT_IMAGE' >"$FAKE_CONTRACT_DIR/output-image.jsonl"
 )
 test -s "$FAKE_CONTRACT_DIR/e2e-output-E2E_20260719-123456_OUTPUT_IMAGE.png"
 rg -Fq '![E2E_20260719-123456_OUTPUT_IMAGE](./e2e-output-E2E_20260719-123456_OUTPUT_IMAGE.png)' "$FAKE_CONTRACT_DIR/output-image.jsonl"
 
+(
+  cd "$FAKE_CONTRACT_DIR"
+  run_fake_claude 'E2E_BRIDGE_IMAGE_INTENT' >"$FAKE_CONTRACT_DIR/image-intent.jsonl"
+  run_fake_claude 'E2E_BRIDGE_IMAGE_NO_INTENT' >"$FAKE_CONTRACT_DIR/image-no-intent.jsonl"
+  run_fake_claude 'E2E_BRIDGE_IMAGE_AMBIGUOUS' >"$FAKE_CONTRACT_DIR/image-ambiguous.jsonl"
+)
+test -s "$FAKE_CONTRACT_DIR/e2e-output-E2E_BRIDGE_IMAGE_INTENT.png"
+rg -Fq '![E2E_BRIDGE_IMAGE_INTENT](./e2e-output-E2E_BRIDGE_IMAGE_INTENT.png)' "$FAKE_CONTRACT_DIR/image-intent.jsonl"
+test -s "$FAKE_CONTRACT_DIR/e2e-output-E2E_BRIDGE_IMAGE_NO_INTENT.png"
+if rg -Fq '![' "$FAKE_CONTRACT_DIR/image-no-intent.jsonl"; then
+  fail "no-intent fake response unexpectedly requested image delivery"
+fi
+rg -Fq '不发送图片' "$FAKE_CONTRACT_DIR/image-no-intent.jsonl"
+if rg -Fq '![' "$FAKE_CONTRACT_DIR/image-ambiguous.jsonl"; then
+  fail "ambiguous fake response unexpectedly requested image delivery"
+fi
+rg -Fq '请确认' "$FAKE_CONTRACT_DIR/image-ambiguous.jsonl"
+
 : >"$FAKE_CONTRACT_DIR/native-stop.jsonl"
-"$FAKE_BIN_DIR/claude" 'E2E_20260719-123456_NATIVE_TEXT_STREAM_STOP_E2E_BLOCK' >"$FAKE_CONTRACT_DIR/native-stop.jsonl" &
+run_fake_claude 'E2E_20260719-123456_NATIVE_TEXT_STREAM_STOP_E2E_BLOCK' >"$FAKE_CONTRACT_DIR/native-stop.jsonl" &
 native_stop_pid=$!
 for _ in 1 2 3 4 5 6 7; do
   [[ "$(wc -l <"$FAKE_CONTRACT_DIR/native-stop.jsonl")" -ge 3 ]] && break
@@ -484,6 +508,7 @@ media_images
 media_text_files
 native_text_stream
 latest_restart_fallback
+group_message_intake
 EOF
 )"
 assert_eq "$expected_l2_cases" "$native_cases" "real E2E must contain only the L2 platform subset"

@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -86,6 +87,66 @@ func TestAgentsConfigCheckReportsCodexConfigurationOwnership(t *testing.T) {
 		t.Fatalf("check = %#v", check)
 	}
 }
+
+func TestCodexDeveloperInstructionsCheckRejectsTopLevelConflictsWithoutLeakingValues(t *testing.T) {
+	for name, content := range map[string]string{
+		"basic":     `developer_instructions = "PRIVATE_PERSONA"`,
+		"literal":   `developer_instructions = '''PRIVATE_PERSONA'''`,
+		"multiline": "developer_instructions = \"\"\"\nPRIVATE_PERSONA\n\"\"\"",
+	} {
+		t.Run(name, func(t *testing.T) {
+			home := t.TempDir()
+			if err := os.WriteFile(filepath.Join(home, "config.toml"), []byte(content), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			cfg := config.Config{AgentsConfigPath: writeCodexAgentsConfig(t, home)}
+			check := codexDeveloperInstructionsCheck(cfg)
+			if check.OK || check.Warning || !strings.Contains(check.Detail, "conflict") {
+				t.Fatalf("check = %#v", check)
+			}
+			if strings.Contains(check.Detail, "PRIVATE_PERSONA") || strings.Contains(Summary([]Check{check}), "PRIVATE_PERSONA") {
+				t.Fatalf("check leaked configured instructions: %#v", check)
+			}
+		})
+	}
+}
+
+func TestCodexDeveloperInstructionsCheckAllowsMissingNestedAndUnrelatedConfig(t *testing.T) {
+	for name, content := range map[string]*string{
+		"missing":   nil,
+		"unrelated": stringPointer("model = \"gpt-5\"\n"),
+		"nested":    stringPointer("[agents.reviewer]\ndeveloper_instructions = \"subagent only\"\n"),
+	} {
+		t.Run(name, func(t *testing.T) {
+			home := t.TempDir()
+			if content != nil {
+				if err := os.WriteFile(filepath.Join(home, "config.toml"), []byte(*content), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			check := codexDeveloperInstructionsCheck(config.Config{AgentsConfigPath: writeCodexAgentsConfig(t, home)})
+			if !check.OK || check.Warning {
+				t.Fatalf("check = %#v", check)
+			}
+		})
+	}
+}
+
+func writeCodexAgentsConfig(t *testing.T, home string) string {
+	t.Helper()
+	dir := t.TempDir()
+	path := filepath.Join(dir, ".lark-agent-bridge", "agents.json")
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	doc := `{"schema_version":1,"agents":[{"kind":"codex","homes":[{"label":"explicit","path":` + strconv.Quote(home) + `}]}]}`
+	if err := os.WriteFile(path, []byte(doc), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+func stringPointer(value string) *string { return &value }
 
 func TestReplyStoreWritableRejectsMalformedMappingWithoutLeakingContents(t *testing.T) {
 	workDir := canonicalTempDir(t)

@@ -71,7 +71,18 @@ owner 或管理员可在飞书中管理名单：
 
 ## 图片输出
 
-Agent 可在最终回复中显式引用当前 workdir 内的本地图片：
+用户直接用自然语言表达明确的图片意图即可，例如：
+
+```text
+画一张当前系统架构图发给我
+把刚才生成的趋势图发出来
+```
+
+Claude 和 Codex 会收到同一份由 Bridge 管理的图片能力说明，并在最终回复中生成内部图片引用；用户不需要输入 Markdown，也不需要了解上传协议。普通任务即使 workdir 中存在图片也不会自动发送；“刚才那张图”存在多个合理候选时，Agent 应先询问用户。
+
+能力说明使用 Agent 原生 instruction channel 注入：Claude 使用 `--append-system-prompt-file`，Codex 使用 `developer_instructions`。Bridge 在 session 首次运行时固定 instruction version，普通 resume 保持不变，`/new` 才切换到当前版本；内容不会逐轮拼入 user prompt 或重复写入会话历史。
+
+以下 Markdown 是 Agent → Bridge 的内部交接协议，也可用于排障：
 
 ```markdown
 ![趋势图](./output/chart.png)
@@ -96,6 +107,8 @@ Bridge 会按引用顺序把图片作为独立的飞书图片消息发送，并�
 - **Agent bin**：Claude 的主机默认为 `E2E_CLAUDE_BIN`（默认 `claude`），Codex 的主机默认为 `codex`；其他选项直接使用预设路径。
 
 可选项来自工作目录下的 `.lark-agent-bridge/agents.json`（**不引入任何新的 `E2E_*` 环境变量**）。该文件缺失或非法时回退到内置默认（单个 claude、只有「默认」home 和「主机 claude」bin），不阻断启动，`doctor` 的 `agents_config` 项会给出软告警。Agent mode、home、bin 与其它偏好一起持久化到 `preferences.json`，`/config reset` 一并恢复默认。
+
+Bridge 拥有主 Codex invocation 的顶层 `developer_instructions`。显式 Codex home 的 `config.toml` 不应再定义同名顶层键；`doctor` 会把这种冲突报告为失败，避免静默覆盖 persona 或业务规则。subagent 配置中的同名字段不受影响。
 
 每个 `home` / `bin` 支持可选 `desc` 字段（作用描述）。`/config` 卡片的下拉每项显示为 `名称 · 作用`，例如 `ark4 · 方舟 豆包 seed-2-1-pro`；下拉的 `value`（即持久化到 preferences 的 label）仍是纯名称，`desc` 只影响显示。
 

@@ -1,6 +1,7 @@
 package doctor
 
 import (
+	"bufio"
 	"context"
 	"errors"
 	"fmt"
@@ -75,8 +76,91 @@ func runStatic(cfg config.Config) []Check {
 		intPositive("card_min_delta_chars", cfg.CardMinDeltaChars),
 		intPositive("card_preview_max_chars", cfg.CardPreviewMaxChars),
 		agentsConfigCheck(cfg),
+		codexDeveloperInstructionsCheck(cfg),
 	}
 	return checks
+}
+
+func codexDeveloperInstructionsCheck(cfg config.Config) Check {
+	const name = "codex_developer_instructions"
+	agents, err := config.LoadAgentsConfig(cfg.AgentsConfigPath)
+	if err != nil {
+		return Check{Name: name, OK: true, Detail: "not applicable: agents config unavailable"}
+	}
+	def, ok := agents.Find("codex")
+	if !ok {
+		return Check{Name: name, OK: true, Detail: "no explicit Codex homes"}
+	}
+	checked := 0
+	seen := map[string]struct{}{}
+	for _, preset := range def.Homes {
+		home, ok := agents.HomePath("codex", preset.Label)
+		home = filepath.Clean(strings.TrimSpace(home))
+		if !ok || home == "." {
+			continue
+		}
+		configPath := filepath.Join(home, "config.toml")
+		if _, duplicate := seen[configPath]; duplicate {
+			continue
+		}
+		seen[configPath] = struct{}{}
+		checked++
+		conflict, err := hasTopLevelDeveloperInstructions(configPath)
+		if err != nil {
+			return Check{Name: name, OK: false, Detail: "unable to inspect explicit Codex config: " + configPath}
+		}
+		if conflict {
+			return Check{Name: name, OK: false, Detail: "conflict: top-level developer_instructions in " + configPath}
+		}
+	}
+	return Check{Name: name, OK: true, Detail: fmt.Sprintf("checked %d explicit Codex home(s)", checked)}
+}
+
+func hasTopLevelDeveloperInstructions(path string) (bool, error) {
+	f, err := os.Open(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	defer f.Close()
+	info, err := f.Stat()
+	if err != nil {
+		return false, err
+	}
+	if !info.Mode().IsRegular() || info.Size() > 1<<20 {
+		return false, fmt.Errorf("unsupported config shape")
+	}
+
+	scanner := bufio.NewScanner(f)
+	scanner.Buffer(make([]byte, 4096), 64<<10)
+	inTable := false
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		if strings.HasPrefix(line, "[") {
+			inTable = true
+			continue
+		}
+		if inTable {
+			continue
+		}
+		key, _, found := strings.Cut(line, "=")
+		if !found {
+			continue
+		}
+		key = strings.Trim(strings.TrimSpace(key), "'\"")
+		if key == "developer_instructions" {
+			return true, nil
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		return false, err
+	}
+	return false, nil
 }
 
 // agentsConfigCheck verifies agents.json parses. It is a soft check: an
