@@ -25,6 +25,28 @@ func TestCatalogV1ContainsExplicitImageIntentContract(t *testing.T) {
 	}
 }
 
+func TestCurrentCatalogContainsScheduleProposalContract(t *testing.T) {
+	if CurrentVersion != "v2" {
+		t.Fatalf("CurrentVersion = %q, want v2", CurrentVersion)
+	}
+	text, ok := Content(CurrentVersion)
+	if !ok {
+		t.Fatal("current version missing")
+	}
+	for _, want := range []string{
+		"自然语言定时意图",
+		"lark-agent-bridge schedule propose",
+		"--kind cron",
+		"--kind timer",
+		"不要声称任务已经创建",
+		"用户确认",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("v2 missing %q", want)
+		}
+	}
+}
+
 func TestRuntimeMaterializesOnePrivateReusableClaudeFile(t *testing.T) {
 	rt, err := NewRuntime()
 	if err != nil {

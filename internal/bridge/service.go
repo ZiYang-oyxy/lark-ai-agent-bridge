@@ -863,7 +863,13 @@ func (s *Service) startBatch(parent context.Context, sess session.Session, batch
 	}
 	anchor := batch.Inputs[len(batch.Inputs)-1]
 	id := runCardSessionID(sess.ID, anchor)
-	runCtx, cancel := context.WithCancel(parent)
+	var runCtx context.Context
+	var cancel context.CancelFunc
+	if anchor.ScheduleRunID != "" && s.Scheduler != nil {
+		runCtx, cancel = context.WithTimeout(parent, s.Scheduler.ExecutionTimeout())
+	} else {
+		runCtx, cancel = context.WithCancel(parent)
+	}
 	typing := s.startTypingReaction(anchor.ReplyToMessageID)
 	sources := make([]string, 0, len(batch.Inputs)*2)
 	for _, in := range batch.Inputs {

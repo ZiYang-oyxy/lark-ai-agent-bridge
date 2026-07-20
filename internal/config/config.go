@@ -1,6 +1,7 @@
 package config
 
 import (
+	"crypto/sha256"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -25,6 +26,12 @@ type Config struct {
 	AgentsConfigPath            string
 	AccessStorePath             string
 	ParticipatedTopicsStorePath string
+	ScheduleStorePath           string
+	ScheduleSocketPath          string
+	ScheduleDraftTTL            time.Duration
+	ScheduleCatchUp             time.Duration
+	ScheduleTimeout             time.Duration
+	ScheduleRetention           time.Duration
 	Model                       string
 	Effort                      string
 	ReplyMode                   ReplyMode
@@ -63,6 +70,12 @@ func LoadFromEnv() Config {
 		AgentsConfigPath:            filepath.Join(workDir, ".lark-agent-bridge", "agents.json"),
 		AccessStorePath:             filepath.Join(workDir, ".lark-agent-bridge", "access.json"),
 		ParticipatedTopicsStorePath: filepath.Join(workDir, ".lark-agent-bridge", "participated-topics.json"),
+		ScheduleStorePath:           filepath.Join(workDir, ".lark-agent-bridge", "schedules.json"),
+		ScheduleSocketPath:          DefaultScheduleSocketPath(workDir),
+		ScheduleDraftTTL:            10 * time.Minute,
+		ScheduleCatchUp:             5 * time.Minute,
+		ScheduleTimeout:             30 * time.Minute,
+		ScheduleRetention:           30 * 24 * time.Hour,
 		Model:                       "default",
 		Effort:                      "low",
 		ReplyMode:                   ReplyModeAppend,
@@ -96,6 +109,8 @@ func LoadFromEnv() Config {
 		cfg.AgentsConfigPath = filepath.Join(v, ".lark-agent-bridge", "agents.json")
 		cfg.AccessStorePath = filepath.Join(v, ".lark-agent-bridge", "access.json")
 		cfg.ParticipatedTopicsStorePath = filepath.Join(v, ".lark-agent-bridge", "participated-topics.json")
+		cfg.ScheduleStorePath = filepath.Join(v, ".lark-agent-bridge", "schedules.json")
+		cfg.ScheduleSocketPath = DefaultScheduleSocketPath(v)
 		cfg.MediaCacheDir = defaultMediaCacheDir(v)
 	}
 	if v := os.Getenv("E2E_CARD_MAX_CHARS"); v != "" {
@@ -140,6 +155,12 @@ func LoadFromEnv() Config {
 	}
 	if v := os.Getenv("E2E_PARTICIPATED_TOPICS_STORE"); v != "" {
 		cfg.ParticipatedTopicsStorePath = v
+	}
+	if v := os.Getenv("E2E_SCHEDULE_STORE"); v != "" {
+		cfg.ScheduleStorePath = v
+	}
+	if v := os.Getenv("E2E_SCHEDULE_SOCKET"); v != "" {
+		cfg.ScheduleSocketPath = v
 	}
 	if v := os.Getenv("E2E_MODEL"); v != "" {
 		cfg.Model = strings.TrimSpace(v)
@@ -195,6 +216,18 @@ func LoadFromEnv() Config {
 			cfg.ShutdownGrace = time.Duration(n) * time.Second
 		}
 	}
+	if n, err := strconv.Atoi(strings.TrimSpace(os.Getenv("E2E_SCHEDULE_DRAFT_TTL_MIN"))); err == nil && n > 0 {
+		cfg.ScheduleDraftTTL = time.Duration(n) * time.Minute
+	}
+	if n, err := strconv.Atoi(strings.TrimSpace(os.Getenv("E2E_SCHEDULE_CATCHUP_MIN"))); err == nil && n > 0 {
+		cfg.ScheduleCatchUp = time.Duration(n) * time.Minute
+	}
+	if n, err := strconv.Atoi(strings.TrimSpace(os.Getenv("E2E_SCHEDULE_TIMEOUT_MIN"))); err == nil && n > 0 {
+		cfg.ScheduleTimeout = time.Duration(n) * time.Minute
+	}
+	if n, err := strconv.Atoi(strings.TrimSpace(os.Getenv("E2E_SCHEDULE_RETENTION_DAYS"))); err == nil && n > 0 {
+		cfg.ScheduleRetention = time.Duration(n) * 24 * time.Hour
+	}
 	return cfg
 }
 
@@ -247,7 +280,41 @@ func LoadFromEnvStrict() (Config, error) {
 	if cfg.MediaRetention, err = explicitMediaHours("E2E_MEDIA_RETENTION_HOURS", cfg.MediaRetention); err != nil {
 		return Config{}, err
 	}
+	if cfg.ScheduleDraftTTL, err = explicitPositiveDuration("E2E_SCHEDULE_DRAFT_TTL_MIN", time.Minute, cfg.ScheduleDraftTTL); err != nil {
+		return Config{}, err
+	}
+	if cfg.ScheduleCatchUp, err = explicitPositiveDuration("E2E_SCHEDULE_CATCHUP_MIN", time.Minute, cfg.ScheduleCatchUp); err != nil {
+		return Config{}, err
+	}
+	if cfg.ScheduleTimeout, err = explicitPositiveDuration("E2E_SCHEDULE_TIMEOUT_MIN", time.Minute, cfg.ScheduleTimeout); err != nil {
+		return Config{}, err
+	}
+	if cfg.ScheduleRetention, err = explicitPositiveDuration("E2E_SCHEDULE_RETENTION_DAYS", 24*time.Hour, cfg.ScheduleRetention); err != nil {
+		return Config{}, err
+	}
 	return cfg, nil
+}
+
+func explicitPositiveDuration(name string, unit, fallback time.Duration) (time.Duration, error) {
+	value, ok := os.LookupEnv(name)
+	if !ok {
+		return fallback, nil
+	}
+	n, err := strconv.Atoi(strings.TrimSpace(value))
+	if err != nil || n <= 0 {
+		return 0, fmt.Errorf("%s must be a positive integer", name)
+	}
+	return time.Duration(n) * unit, nil
+}
+
+// DefaultScheduleSocketPath returns a short, per-workspace Unix socket path.
+func DefaultScheduleSocketPath(workDir string) string {
+	canonical, err := filepath.Abs(workDir)
+	if err != nil {
+		canonical = filepath.Clean(workDir)
+	}
+	sum := sha256.Sum256([]byte(canonical))
+	return filepath.Join("/tmp", fmt.Sprintf("lark-agent-%d-%x", os.Getuid(), sum[:6]), "schedule.sock")
 }
 
 func explicitPositiveInt(name string, fallback int) (int, error) {

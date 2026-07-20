@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -25,6 +26,7 @@ import (
 	"lark-agent-bridge/internal/media"
 	"lark-agent-bridge/internal/participation"
 	"lark-agent-bridge/internal/reply"
+	"lark-agent-bridge/internal/schedule"
 	"lark-agent-bridge/internal/session"
 )
 
@@ -49,12 +51,62 @@ func run(args []string) error {
 		return runSimulateAction(args[1:])
 	case "serve":
 		return runServe(args[1:])
+	case "schedule":
+		if len(args) < 2 || args[1] != "propose" {
+			return errors.New("usage: lark-agent-bridge schedule propose [flags]")
+		}
+		return runSchedulePropose(args[2:])
 	case "help", "-h", "--help":
 		printUsage()
 		return nil
 	default:
 		return fmt.Errorf("unknown command %q", args[0])
 	}
+}
+
+func runSchedulePropose(args []string) error {
+	fs := flag.NewFlagSet("schedule propose", flag.ContinueOnError)
+	kindValue := fs.String("kind", "", "cron or timer")
+	cronExpr := fs.String("cron", "", "standard five-field cron expression")
+	atValue := fs.String("at", "", "one-shot RFC3339 timestamp")
+	timezone := fs.String("timezone", "Asia/Shanghai", "IANA timezone")
+	description := fs.String("description", "", "short human-readable label")
+	prompt := fs.String("prompt", "", "Agent task prompt")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	socketPath := strings.TrimSpace(os.Getenv("LAB_SCHEDULE_SOCKET"))
+	token := strings.TrimSpace(os.Getenv("LAB_SCHEDULE_TOKEN"))
+	if socketPath == "" || token == "" {
+		return errors.New("LAB_SCHEDULE_SOCKET and LAB_SCHEDULE_TOKEN are required")
+	}
+	kind := schedule.Kind(strings.ToLower(strings.TrimSpace(*kindValue)))
+	proposal := schedule.Proposal{
+		Kind: kind, CronExpr: strings.TrimSpace(*cronExpr), Timezone: strings.TrimSpace(*timezone),
+		Description: strings.TrimSpace(*description), Prompt: strings.TrimSpace(*prompt),
+	}
+	if *atValue != "" {
+		at, err := time.Parse(time.RFC3339, strings.TrimSpace(*atValue))
+		if err != nil {
+			return fmt.Errorf("parse --at as RFC3339: %w", err)
+		}
+		proposal.ScheduledAt = at
+	}
+	if kind == schedule.KindCron && (proposal.CronExpr == "" || !proposal.ScheduledAt.IsZero()) {
+		return errors.New("cron proposal requires --cron and forbids --at")
+	}
+	if kind == schedule.KindTimer && (proposal.CronExpr != "" || proposal.ScheduledAt.IsZero()) {
+		return errors.New("timer proposal requires --at and forbids --cron")
+	}
+	if kind != schedule.KindCron && kind != schedule.KindTimer {
+		return errors.New("--kind must be cron or timer")
+	}
+	response, err := (schedule.ProposeClient{SocketPath: socketPath, Timeout: 5 * time.Second}).Propose(context.Background(), schedule.ProposeRequest{Token: token, Proposal: proposal})
+	if err != nil {
+		return err
+	}
+	fmt.Printf("Draft %s proposed: %s. Waiting for user confirmation.\n", response.DraftID, response.Description)
+	return nil
 }
 
 func runSimulateAction(args []string) error {
@@ -345,6 +397,26 @@ func runServe(args []string) error {
 	svc.MediaDownloader = mediaWiring.downloader
 	svc.MediaGC = mediaWiring.gc
 	svc.SweepMediaCacheStartup()
+	scheduleStore, err := schedule.NewStore(cfg.ScheduleStorePath)
+	if err != nil {
+		return fmt.Errorf("open schedule store: %w", err)
+	}
+	scheduleContexts := schedule.NewContextRegistry(cfg.ScheduleTimeout)
+	scheduleControl := schedule.NewControlServer(cfg.ScheduleSocketPath, scheduleStore, scheduleContexts, schedule.ControlConfig{DraftTTL: cfg.ScheduleDraftTTL})
+	scheduleEngine := schedule.NewEngine(scheduleStore, svc, svc, schedule.EngineConfig{
+		CatchUpWindow: cfg.ScheduleCatchUp, ExecutionTimeout: cfg.ScheduleTimeout, HistoryRetention: cfg.ScheduleRetention,
+	})
+	svc.Schedules = scheduleStore
+	svc.Scheduler = scheduleEngine
+	svc.ScheduleContexts = scheduleContexts
+	svc.ScheduleSocket = cfg.ScheduleSocketPath
+	if err := scheduleControl.Start(ctx); err != nil {
+		return fmt.Errorf("start schedule control: %w", err)
+	}
+	if err := scheduleEngine.Start(ctx); err != nil {
+		_ = scheduleControl.Close()
+		return fmt.Errorf("start schedule engine: %w", err)
+	}
 	go svc.RunAccessRefresh(ctx)
 	client := feishu.NewLongConnClient(feishu.LongConnConfig{
 		AppID:         appID,
@@ -379,16 +451,12 @@ func runServe(args []string) error {
 		msg := bridge.MessageFromFeishu(in)
 		return svc.HandleMessage(ctx, msg)
 	})
+	controlErr := scheduleControl.Close()
+	scheduleEngine.Stop()
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), cfg.ShutdownGrace)
 	defer cancel()
 	shutdownErr := svc.Shutdown(shutdownCtx)
-	if longConnErr != nil && shutdownErr != nil {
-		return errors.Join(longConnErr, shutdownErr)
-	}
-	if longConnErr != nil {
-		return longConnErr
-	}
-	return shutdownErr
+	return errors.Join(longConnErr, controlErr, shutdownErr)
 }
 
 func openSessionState(cfg config.Config) (*session.Manager, []session.RecoveryNotice, error) {
@@ -494,6 +562,7 @@ Usage:
   lark-agent-bridge simulate -text "/new --workdir /tmp/missing hello" -timeout-now
   lark-agent-bridge simulate-action -action stop -session claude:chat-demo:message:local-id
   lark-agent-bridge serve [--default-workdir /path]
+  lark-agent-bridge schedule propose --kind cron|timer ...   # Agent-facing only
 
 Environment:
   E2E_DEFAULT_AGENT      defaults to claude
@@ -508,6 +577,12 @@ Environment:
   E2E_REPLY_MODE         append, append-clean-card, or latest-card
   E2E_REPLY_STORE        defaults to <workdir>/.lark-agent-bridge/replies.json
   E2E_ACCESS_STORE       defaults to <workdir>/.lark-agent-bridge/access.json
+  E2E_SCHEDULE_STORE     defaults to <workdir>/.lark-agent-bridge/schedules.json
+  E2E_SCHEDULE_SOCKET    defaults to a private per-workspace Unix socket
+  E2E_SCHEDULE_DRAFT_TTL_MIN defaults to 10
+  E2E_SCHEDULE_CATCHUP_MIN defaults to 5
+  E2E_SCHEDULE_TIMEOUT_MIN defaults to 30
+  E2E_SCHEDULE_RETENTION_DAYS defaults to 30
   E2E_INTERACTION_TIMEOUT_SEC defaults to 120
   E2E_AUDIT_LOG          defaults to <workdir>/.lark-agent-bridge/audit.jsonl
   E2E_CALLBACK_ADDR      optional legacy HTTP callback listen address, e.g. :8080
@@ -526,6 +601,12 @@ func applyDefaultWorkDir(cfg *config.Config, workDir string) error {
 	}
 	if os.Getenv("E2E_SESSION_STORE") == "" {
 		cfg.SessionStorePath = filepath.Join(workDir, ".lark-agent-bridge", "sessions.json")
+	}
+	if os.Getenv("E2E_SCHEDULE_STORE") == "" {
+		cfg.ScheduleStorePath = filepath.Join(workDir, ".lark-agent-bridge", "schedules.json")
+	}
+	if os.Getenv("E2E_SCHEDULE_SOCKET") == "" {
+		cfg.ScheduleSocketPath = config.DefaultScheduleSocketPath(workDir)
 	}
 	if os.Getenv("E2E_PREFERENCE_STORE") == "" {
 		cfg.PreferenceStorePath = filepath.Join(workDir, ".lark-agent-bridge", "preferences.json")

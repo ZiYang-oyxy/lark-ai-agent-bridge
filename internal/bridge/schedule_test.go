@@ -143,6 +143,16 @@ type proposingRunner struct {
 	done     chan struct{}
 }
 
+type deadlineRunner struct {
+	started chan struct{}
+}
+
+func (r *deadlineRunner) Run(ctx context.Context, _ AgentRunRequest) (AgentRunResult, error) {
+	close(r.started)
+	<-ctx.Done()
+	return AgentRunResult{}, ctx.Err()
+}
+
 func (r *proposingRunner) Run(ctx context.Context, request AgentRunRequest) (AgentRunResult, error) {
 	r.mu.Lock()
 	r.request = request
@@ -262,6 +272,58 @@ func TestScheduledBatchUpdatesRunLifecycle(t *testing.T) {
 	runs := store.Runs()
 	if len(runs) != 1 || !runs[0].Manual || runs[0].State != schedule.RunDelivered || runs[0].StartedAt.IsZero() || runs[0].CompletedAt.IsZero() {
 		t.Fatalf("run lifecycle = %#v", runs)
+	}
+}
+
+func TestScheduledBatchHonorsExecutionTimeout(t *testing.T) {
+	workDir := t.TempDir()
+	cfg := testConfig(t)
+	cfg.DefaultWorkDir = workDir
+	runner := &deadlineRunner{started: make(chan struct{})}
+	service := NewService(cfg, card.NewFakeRenderer(), runner, audit.NewRecorder())
+	store, err := schedule.NewStore(filepath.Join(t.TempDir(), "schedules.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	draft := bridgeFixtureDraft(now)
+	draft.Execution.WorkDir = workDir
+	if err := store.CreateDraft(draft); err != nil {
+		t.Fatal(err)
+	}
+	task, err := store.ConfirmDraft(draft.ID, draft.Creator, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	engine := schedule.NewEngine(store, service, service, schedule.EngineConfig{ExecutionTimeout: 30 * time.Millisecond})
+	service.Schedules = store
+	service.Scheduler = engine
+	if err := engine.RunNow(context.Background(), task.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.DrainReady(time.Now().Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-runner.started:
+	case <-time.After(time.Second):
+		t.Fatal("scheduled runner did not start")
+	}
+	deadline := time.Now().Add(time.Second)
+	for {
+		runs := store.Runs()
+		if len(runs) == 1 && runs[0].State == schedule.RunFailed {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("run did not time out: %#v", runs)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := service.Shutdown(shutdownCtx); err != nil {
+		t.Fatal(err)
 	}
 }
 
