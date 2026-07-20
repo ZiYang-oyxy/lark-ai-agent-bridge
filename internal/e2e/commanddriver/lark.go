@@ -25,7 +25,7 @@ func New(executor Executor, config e2e.Config, deployment e2e.Deployment) *Drive
 
 func NewDrivers(config e2e.Config, deployment e2e.Deployment) e2e.Drivers {
 	driver := New(OSExecutor{}, config, deployment)
-	return e2e.Drivers{Messenger: driver, Replies: driver, Audit: driver, Fixture: driver}
+	return e2e.Drivers{Messenger: driver, Replies: driver, Audit: driver, Fixture: driver, AgentFixture: driver, Lifecycle: driver}
 }
 
 func (d *Driver) SendText(ctx context.Context, body string) (string, *e2e.Failure) {

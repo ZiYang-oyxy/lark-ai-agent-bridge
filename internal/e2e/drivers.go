@@ -42,9 +42,22 @@ type StopFixture interface {
 	Disarm(context.Context) *Failure
 }
 
+type AgentFixture interface {
+	ArmAgent(context.Context, AgentFixturePlan) *Failure
+	WaitAgentInvocation(context.Context, string, string) (AgentInvocation, *Failure)
+	HasAgentInvocation(context.Context, string) (bool, *Failure)
+	DisarmAgent(context.Context) *Failure
+}
+
+type CandidateLifecycle interface {
+	RestartCandidate(context.Context) (int, *Failure)
+}
+
 type Drivers struct {
-	Messenger Messenger
-	Replies   Replies
-	Audit     AuditObserver
-	Fixture   StopFixture
+	Messenger    Messenger
+	Replies      Replies
+	Audit        AuditObserver
+	Fixture      StopFixture
+	AgentFixture AgentFixture
+	Lifecycle    CandidateLifecycle
 }

@@ -47,7 +47,7 @@ func TestLoadConfigAcceptsSchemaOne(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.Profile != "profile" || got.RemoteHost != "user@example.test" || got.StepTimeoutMS != 12000 {
+	if got.Profile != "profile" || got.RemoteHost != "user@example.test" || got.StepTimeoutMS != 12000 || got.ControllerPath != "/controller/test-instance.sh" {
 		t.Fatalf("config = %#v", got)
 	}
 }
@@ -55,16 +55,17 @@ func TestLoadConfigAcceptsSchemaOne(t *testing.T) {
 func TestLoadConfigRejectsCredentialAndUnsafeFields(t *testing.T) {
 	valid := validConfigJSON()
 	tests := map[string]string{
-		"credential":      strings.TrimSuffix(valid, "}") + `,"token":"private"}`,
-		"unknown schema":  strings.Replace(valid, `"schema_version":1`, `"schema_version":2`, 1),
-		"unsafe host":     strings.Replace(valid, `"remote_host":"user@example.test"`, `"remote_host":"user@example.test;id"`, 1),
-		"relative audit":  strings.Replace(valid, `"audit_path":"/audit/audit.jsonl"`, `"audit_path":"audit.jsonl"`, 1),
-		"zero poll":       strings.Replace(valid, `"poll_interval_ms":200`, `"poll_interval_ms":0`, 1),
-		"huge poll":       strings.Replace(valid, `"poll_interval_ms":200`, `"poll_interval_ms":60000`, 1),
-		"zero timeout":    strings.Replace(valid, `"step_timeout_ms":12000`, `"step_timeout_ms":0`, 1),
-		"short timeout":   strings.Replace(valid, `"step_timeout_ms":12000`, `"step_timeout_ms":100`, 1),
-		"missing app id":  strings.Replace(valid, `"app_id":"app"`, `"app_id":""`, 1),
-		"trailing config": valid + `[]`,
+		"credential":          strings.TrimSuffix(valid, "}") + `,"token":"private"}`,
+		"unknown schema":      strings.Replace(valid, `"schema_version":1`, `"schema_version":2`, 1),
+		"unsafe host":         strings.Replace(valid, `"remote_host":"user@example.test"`, `"remote_host":"user@example.test;id"`, 1),
+		"relative audit":      strings.Replace(valid, `"audit_path":"/audit/audit.jsonl"`, `"audit_path":"audit.jsonl"`, 1),
+		"relative controller": strings.Replace(valid, `"controller_path":"/controller/test-instance.sh"`, `"controller_path":"controller.sh"`, 1),
+		"zero poll":           strings.Replace(valid, `"poll_interval_ms":200`, `"poll_interval_ms":0`, 1),
+		"huge poll":           strings.Replace(valid, `"poll_interval_ms":200`, `"poll_interval_ms":60000`, 1),
+		"zero timeout":        strings.Replace(valid, `"step_timeout_ms":12000`, `"step_timeout_ms":0`, 1),
+		"short timeout":       strings.Replace(valid, `"step_timeout_ms":12000`, `"step_timeout_ms":100`, 1),
+		"missing app id":      strings.Replace(valid, `"app_id":"app"`, `"app_id":""`, 1),
+		"trailing config":     valid + `[]`,
 	}
 	for name, raw := range tests {
 		t.Run(name, func(t *testing.T) {
@@ -81,7 +82,7 @@ func validDeploymentJSON() string {
 }
 
 func validConfigJSON() string {
-	return `{"schema_version":1,"profile":"profile","expected_bot_name":"bot","app_id":"app","chat_id":"chat","remote_host":"user@example.test","audit_path":"/audit/audit.jsonl","poll_interval_ms":200,"step_timeout_ms":12000}`
+	return `{"schema_version":1,"profile":"profile","expected_bot_name":"bot","app_id":"app","chat_id":"chat","remote_host":"user@example.test","audit_path":"/audit/audit.jsonl","poll_interval_ms":200,"step_timeout_ms":12000,"controller_path":"/controller/test-instance.sh"}`
 }
 
 func writeInput(t *testing.T, raw string) string {

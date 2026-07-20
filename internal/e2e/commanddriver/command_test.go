@@ -66,6 +66,7 @@ func validConfig() e2e.Config {
 		AuditPath:       "/workspace/.bridge/audit.jsonl",
 		PollIntervalMS:  20,
 		StepTimeoutMS:   1000,
+		ControllerPath:  "/controller/test-instance.sh",
 	}
 }
 

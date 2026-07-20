@@ -72,7 +72,10 @@ flowchart TD
 | stop 保留后续 queue | L1 | ✅ | `TestServiceStopKeepsLaterQueue` |
 | 文本 `/stop` scope/agent 隔离 | L1 | ✅ | `TestServiceTextStopIsolatesTopics` / `TestServiceTextStopUsesSelectedAgent` |
 | 文本 `/stop` 参数、空闲与 queue | L1 | ✅ | `TestServiceTextStopCancelsCurrentScopeAndRejectsArguments` / `TestServiceTextStopIdleRendersExactResponseWithoutRunningAgent` / `TestServiceTextStopKeepsLaterQueue` |
-| 真实飞书 deterministic `/stop` | **L2** | ⚠️ | Go runner 已实现;等待同一 pending candidate 上与旧 `verify-stop.sh` 完成一次等价验收后切换 merge gate |
+| 真实飞书 deterministic `/stop` | **L2** | ✅ | Go runner 已通过 legacy shadow 等价验收并成为默认 gate |
+| 真实飞书 `/resume` 最近 10 条/指定恢复 | **L2** | ✅ | deterministic Agent fixture + `ResumeScenario` |
+| candidate 重启后恢复 + 下一条 `--resume` | **L2** | ✅ | controller-owned restart + invocation transcript |
+| 无效 ID / busy 恢复不调用 backend | **L2** | ✅ | one-shot negative fixture assertion |
 | 重复 stop 幂等 | L1 | ✅ | `TestServiceStopIsIdempotentForAlreadyStoppedRun`(新增) |
 | stop 未知/过期 batch 降级 | L1 | ✅ | `TestServiceStopUnknownSessionDegradesToStoppedCard`(新增) |
 | action 同步卡关闭 streaming_mode | L1 | ✅ | `TestServiceStopSyncCardDisablesStreamingMode`(新增) |

@@ -16,7 +16,7 @@ func TestRunRejectsUnknownScenarioBeforeDriverActions(t *testing.T) {
 	var stdout bytes.Buffer
 	err := run([]string{
 		"run",
-		"--scenario", "resume",
+		"--scenario", "unknown",
 		"--deployment", deploymentFile(t),
 		"--config", configFile(t),
 		"--evidence-dir", t.TempDir(),
@@ -27,7 +27,7 @@ func TestRunRejectsUnknownScenarioBeforeDriverActions(t *testing.T) {
 	if err == nil {
 		t.Fatal("run succeeded")
 	}
-	if !strings.Contains(stdout.String(), "FAIL class=harness scenario=resume step=load_scenario evidence=") {
+	if !strings.Contains(stdout.String(), "FAIL class=harness scenario=unknown step=load_scenario evidence=") {
 		t.Fatalf("stdout = %q", stdout.String())
 	}
 }
