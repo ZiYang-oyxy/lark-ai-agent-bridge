@@ -572,7 +572,8 @@ func (s *Service) runWithPreference(ctx context.Context, cmd Command, msg Messag
 	}
 	bin, home := s.resolveAgentBinHome(cmd.Agent, preference)
 	receivedAt := time.Now()
-	input := session.Input{ID: msg.ID, Sender: msg.Sender, Text: text, Attachments: attachments, ReplyToMessageID: msg.ID, CardSessionID: cardSessionID, WorkDir: workDir, RequestedModel: preference.Model, RequestedEffort: preference.Effort, AgentBin: bin, AgentHome: home, ReplyMode: preference.ReplyMode, ConversationMode: preference.ConversationMode, Time: effectiveMessageTime(msg), DebounceUntil: receivedAt.Add(DebounceFor(msg)), State: session.InputDebouncing, Reset: cmd.Reset}
+	debounceWindow := DebounceFor(msg)
+	input := session.Input{ID: msg.ID, Sender: msg.Sender, Text: text, Attachments: attachments, ReplyToMessageID: msg.ID, CardSessionID: cardSessionID, WorkDir: workDir, RequestedModel: preference.Model, RequestedEffort: preference.Effort, AgentBin: bin, AgentHome: home, ReplyMode: preference.ReplyMode, ConversationMode: preference.ConversationMode, Time: effectiveMessageTime(msg), DebounceUntil: receivedAt.Add(debounceWindow), DebounceWindow: debounceWindow, State: session.InputDebouncing, Reset: cmd.Reset}
 	accepted, queued, err := s.Sessions.AcceptAndEnqueue(key, input, receivedAt, s.dedupTTL(), s.dedupMaxEntries(), s.batchLimits())
 	if err != nil {
 		action := "queue_rejected"

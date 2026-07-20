@@ -60,6 +60,41 @@ func TestSnapshotRoundTrip(t *testing.T) {
 	}
 }
 
+func TestSnapshotRoundTripPreservesDebounceWindow(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "sessions.json")
+	want := 875 * time.Millisecond
+	snapshot := Snapshot{Sessions: []Session{{
+		Key:   Key{Agent: agent.Claude, ChatID: "debounce-window"},
+		ID:    "claude:debounce-window",
+		Queue: []Input{{ID: "rich", State: InputDebouncing, DebounceWindow: want}},
+	}}}
+	if err := SaveSnapshot(path, snapshot); err != nil {
+		t.Fatal(err)
+	}
+	got, err := LoadSnapshot(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Sessions) != 1 || len(got.Sessions[0].Queue) != 1 || got.Sessions[0].Queue[0].DebounceWindow != want {
+		t.Fatalf("snapshot = %#v, want debounce window %s", got, want)
+	}
+}
+
+func TestLoadSnapshotV2WithoutDebounceWindowKeepsZeroValue(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "sessions.json")
+	data := []byte(`{"schema_version":2,"sessions":[{"Key":{"Agent":"claude","ChatID":"legacy"},"ID":"claude:legacy","Queue":[{"ID":"legacy","State":"debouncing"}]}]}`)
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	got, err := LoadSnapshot(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Sessions) != 1 || len(got.Sessions[0].Queue) != 1 || got.Sessions[0].Queue[0].DebounceWindow != 0 {
+		t.Fatalf("legacy snapshot = %#v", got)
+	}
+}
+
 func TestSaveSnapshotRestrictsExistingParentDirectory(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "snapshots")
 	if err := os.Mkdir(dir, 0o755); err != nil {

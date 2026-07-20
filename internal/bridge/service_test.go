@@ -1257,6 +1257,24 @@ func TestServiceBatchesPlainDMInputsWithinDebounceCohort(t *testing.T) {
 	}
 }
 
+func TestServiceFreezesInteractiveDebounceWindowAtIntake(t *testing.T) {
+	cfg := testConfig(t)
+	svc := NewService(cfg, card.NewFakeRenderer(), newFakeRunner(), audit.NewRecorder())
+	now := time.Now()
+	if err := svc.HandleMessage(context.Background(), Message{
+		ID: "interactive-window", ChatID: "chat", Sender: "u", Text: "card payload", MessageType: "interactive", Time: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	sess, ok := svc.Sessions.Get(session.Key{Agent: agent.Claude, ChatID: "chat"})
+	if !ok || len(sess.Queue) != 1 {
+		t.Fatalf("session = %#v, want one queued input", sess)
+	}
+	if got := sess.Queue[0].DebounceWindow; got != time.Second {
+		t.Fatalf("debounce window = %s, want 1s", got)
+	}
+}
+
 func TestServiceStartsDMDebounceFromLocalReceiptTime(t *testing.T) {
 	cfg := testConfig(t)
 	svc := NewService(cfg, card.NewFakeRenderer(), newFakeRunner(), audit.NewRecorder())

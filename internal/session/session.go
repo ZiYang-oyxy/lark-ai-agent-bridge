@@ -62,6 +62,7 @@ type Input struct {
 	ConversationMode config.ConversationMode
 	Time             time.Time
 	DebounceUntil    time.Time
+	DebounceWindow   time.Duration `json:",omitempty"`
 	State            InputState
 	Reset            bool
 }
