@@ -102,6 +102,28 @@ func (r *bridgeReplyRenderer) Render(event card.Event) error {
 
 func (r *bridgeReplyRenderer) RenderRef() session.RenderRef { return r.ref }
 
+type bridgeMarkdownTarget struct {
+	mu         sync.Mutex
+	beginCalls int
+	events     []card.Event
+}
+
+func (t *bridgeMarkdownTarget) Begin(context.Context, string, bool) (card.Renderer, error) {
+	t.mu.Lock()
+	t.beginCalls++
+	t.mu.Unlock()
+	return &bridgeMarkdownRenderer{target: t}, nil
+}
+
+type bridgeMarkdownRenderer struct{ target *bridgeMarkdownTarget }
+
+func (r *bridgeMarkdownRenderer) Render(event card.Event) error {
+	r.target.mu.Lock()
+	r.target.events = append(r.target.events, event)
+	r.target.mu.Unlock()
+	return nil
+}
+
 type contextBlockingRecoveryTarget struct {
 	renderer *contextBlockingRecoveryRenderer
 }
@@ -807,6 +829,76 @@ func TestServiceRoutesBatchThroughReplyPolicyAndPersistsActiveRenderRef(t *testi
 	defer cancel()
 	if err := svc.Shutdown(shutdownCtx); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestServiceRoutesAppendToMarkdown(t *testing.T) {
+	cfg := testConfig(t)
+	cfg.ReplyMode = config.ReplyModeAppend
+	runner := newFakeRunner()
+	runner.block = make(chan struct{})
+	markdown := &bridgeMarkdownTarget{}
+	cards := &bridgeReplyTarget{}
+	svc := NewService(cfg, card.NewFakeRenderer(), runner, audit.NewRecorder())
+	svc.MarkdownTarget = markdown
+	svc.CardTarget = cards
+	now := time.Now()
+	if err := svc.HandleMessage(context.Background(), Message{ID: "append-source", ChatID: "chat", Sender: "user", Text: "hello", Time: now}); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.DrainReady(now.Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	<-runner.started
+	markdown.mu.Lock()
+	beginCalls := markdown.beginCalls
+	markdown.mu.Unlock()
+	cards.mu.Lock()
+	cardCalls := cards.newCalls
+	cards.mu.Unlock()
+	if beginCalls != 1 || cardCalls != 0 {
+		t.Fatalf("markdown/card calls = %d/%d, want 1/0", beginCalls, cardCalls)
+	}
+	sess, ok := svc.Sessions.Get(session.Key{Agent: agent.Claude, ChatID: "chat"})
+	if !ok || sess.ActiveBatch == nil || sess.ActiveBatch.RenderRef != nil {
+		t.Fatalf("append active session = %#v, want no CardKit render ref", sess)
+	}
+	close(runner.block)
+	waitForSessionNoActiveBatch(t, svc, session.Key{Agent: agent.Claude, ChatID: "chat"})
+}
+
+func TestServiceKeepsCardModesOnCardKit(t *testing.T) {
+	for _, mode := range []config.ReplyMode{config.ReplyModeAppendCleanCard, config.ReplyModeLatestCard} {
+		t.Run(string(mode), func(t *testing.T) {
+			cfg := testConfig(t)
+			cfg.ReplyMode = mode
+			runner := newFakeRunner()
+			runner.block = make(chan struct{})
+			markdown := &bridgeMarkdownTarget{}
+			cards := &bridgeReplyTarget{}
+			svc := NewService(cfg, card.NewFakeRenderer(), runner, audit.NewRecorder())
+			svc.MarkdownTarget = markdown
+			svc.CardTarget = cards
+			now := time.Now()
+			if err := svc.HandleMessage(context.Background(), Message{ID: "card-source", ChatID: "chat", Sender: "user", Text: "hello", Time: now}); err != nil {
+				t.Fatal(err)
+			}
+			if err := svc.DrainReady(now.Add(time.Second)); err != nil {
+				t.Fatal(err)
+			}
+			<-runner.started
+			markdown.mu.Lock()
+			beginCalls := markdown.beginCalls
+			markdown.mu.Unlock()
+			cards.mu.Lock()
+			cardCalls := cards.newCalls + cards.rehydrateCalls
+			cards.mu.Unlock()
+			if beginCalls != 0 || cardCalls != 1 {
+				t.Fatalf("markdown/card calls = %d/%d, want 0/1", beginCalls, cardCalls)
+			}
+			close(runner.block)
+			waitForSessionNoActiveBatch(t, svc, session.Key{Agent: agent.Claude, ChatID: "chat"})
+		})
 	}
 }
 

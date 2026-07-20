@@ -30,6 +30,10 @@ import (
 
 const recoveryNoticesTimeout = 5 * time.Second
 
+type MarkdownTarget interface {
+	Begin(context.Context, string, bool) (card.Renderer, error)
+}
+
 type Service struct {
 	Config           config.Config
 	Sessions         *session.Manager
@@ -43,6 +47,7 @@ type Service struct {
 	Agents           config.AgentsConfig
 	Replies          *reply.Store
 	CardTarget       reply.CardTarget
+	MarkdownTarget   MarkdownTarget
 	Reactions        feishu.ReactionSink
 	SequenceResolver session.RenderRefSequenceResolver
 	RestoreNotices   []session.RecoveryNotice
@@ -647,8 +652,20 @@ func (s *Service) startBatch(parent context.Context, sess session.Session, batch
 		sources = append(sources, in.ID, in.ReplyToMessageID)
 	}
 	stream := newAgentCardStream(s, id, sess, anchor)
-	if s.CardTarget != nil {
-		mode := anchor.EffectiveReplyMode()
+	mode := anchor.EffectiveReplyMode()
+	if mode == config.ReplyModeAppend && s.MarkdownTarget != nil {
+		renderer, err := s.MarkdownTarget.Begin(runCtx, anchor.ReplyToMessageID, anchor.ConversationMode == config.ConversationModeTopic)
+		if err != nil {
+			cancel()
+			typing.Close()
+			_, _ = s.finishBatchOrRemember(sess, batch.ID, session.BatchCompletion{Status: session.InputFailed, At: time.Now()}, "batch_finish_failed")
+			s.Audit.Record("system", "reply_start_failed", sess.ID, err.Error())
+			_ = s.Cards.Render(card.Event{Type: "error", SessionID: id, ReplyToMessageID: anchor.ReplyToMessageID, ReplyInThread: anchor.ConversationMode == config.ConversationModeTopic, Segments: []card.Segment{{Kind: card.SegmentError, Text: "回复初始化失败，请重试。"}}})
+			return
+		}
+		stream = newAgentCardStreamWithRenderer(s, id, sess, anchor, card.NewLimitRenderer(renderer, s.Config.CardMaxChars), nil)
+		stream.markdownReply = true
+	} else if s.CardTarget != nil {
 		latestScope := ""
 		if mode == config.ReplyModeLatestCard {
 			latestScope = sess.ID
@@ -781,7 +798,7 @@ func codexImagePaths(batch session.Batch) []string {
 // (终态渲染失败意味着用户卡片停在旧状态,必须可观测)。
 func (s *Service) finishStreamAndAudit(stream *agentCardStream, cardStatus string, meta card.Meta, result AgentRunResult, sessionID string) {
 	if _, err := stream.Finish(cardStatus, meta, result); err != nil {
-		s.Audit.Record("system", "terminal_card_render_failed", sessionID, fmt.Sprintf("status=%s error=%v", cardStatus, err))
+		s.Audit.Record("system", "terminal_reply_render_failed", sessionID, fmt.Sprintf("status=%s error=%v", cardStatus, err))
 	}
 }
 
