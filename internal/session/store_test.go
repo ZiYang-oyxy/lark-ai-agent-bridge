@@ -60,6 +60,43 @@ func TestSnapshotRoundTrip(t *testing.T) {
 	}
 }
 
+func TestOldSnapshotBackfillsBridgeInstructionsVersionOnNextBatch(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "sessions.json")
+	key := Key{Agent: agent.Claude, ChatID: "old-snapshot"}
+	seed := Session{Key: key, ID: key.ID(), AgentSessionID: "existing", State: StateIdle}
+	if err := SaveSnapshot(path, Snapshot{Sessions: []Session{seed}}); err != nil {
+		t.Fatal(err)
+	}
+
+	m := NewManagerWithStoreVersion(path, "v1")
+	if _, err := m.Restore(); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Unix(300, 0)
+	if _, _, err := m.EnqueueDurable(key, Input{ID: "next", Text: "hello", State: InputQueued, Time: now}, "/w", BatchLimits{}); err != nil {
+		t.Fatal(err)
+	}
+	_, frozen, err := m.FreezeReadyBatch(key, now, BatchLimits{})
+	if err != nil || frozen == nil {
+		t.Fatalf("freeze batch=%#v err=%v", frozen, err)
+	}
+	got, batch, err := m.MarkBatchRunning(key, frozen.ID, nil, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.BridgeInstructionsVersion != "v1" || batch.Inputs[0].BridgeInstructionsVersion != "v1" {
+		t.Fatalf("backfilled session=%q input=%q", got.BridgeInstructionsVersion, batch.Inputs[0].BridgeInstructionsVersion)
+	}
+
+	snapshot, err := LoadSnapshot(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(snapshot.Sessions) != 1 || snapshot.Sessions[0].BridgeInstructionsVersion != "v1" || snapshot.Sessions[0].ActiveBatch == nil || snapshot.Sessions[0].ActiveBatch.Inputs[0].BridgeInstructionsVersion != "v1" {
+		t.Fatalf("saved snapshot = %#v", snapshot)
+	}
+}
+
 func TestSnapshotRoundTripPreservesDebounceWindow(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "sessions.json")
 	want := 875 * time.Millisecond

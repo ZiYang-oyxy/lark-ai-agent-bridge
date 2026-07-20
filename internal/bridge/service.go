@@ -21,6 +21,7 @@ import (
 	"lark-agent-bridge/internal/access"
 	"lark-agent-bridge/internal/agent"
 	"lark-agent-bridge/internal/audit"
+	"lark-agent-bridge/internal/bridgeinstructions"
 	"lark-agent-bridge/internal/card"
 	"lark-agent-bridge/internal/config"
 	"lark-agent-bridge/internal/feishu"
@@ -112,13 +113,14 @@ type AgentRunRequest struct {
 	Bin  string
 	// ClaudeBin is retained for source compatibility with existing runners and
 	// tests. New callers populate Bin; CLIExecRunner falls back to ClaudeBin.
-	ClaudeBin      string
-	Prompt         string
-	WorkDir        string
-	AgentSessionID string
-	Model          string
-	Effort         string
-	Images         []string
+	ClaudeBin                 string
+	Prompt                    string
+	WorkDir                   string
+	AgentSessionID            string
+	Model                     string
+	Effort                    string
+	Images                    []string
+	BridgeInstructionsVersion string
 	// Home is the resolved agent home / config directory. Empty means default.
 	Home    string
 	OnEvent func(AgentStreamUpdate)
@@ -644,7 +646,7 @@ func (s *Service) runWithPreference(ctx context.Context, cmd Command, msg Messag
 	bin, home := s.resolveAgentBinHome(cmd.Agent, preference)
 	receivedAt := time.Now()
 	debounceWindow := DebounceFor(msg)
-	input := session.Input{ID: msg.ID, Sender: msg.Sender, Text: text, Attachments: attachments, ReplyToMessageID: msg.ID, CardSessionID: cardSessionID, WorkDir: workDir, RequestedModel: preference.Model, RequestedEffort: preference.Effort, AgentBin: bin, AgentHome: home, ReplyMode: preference.ReplyMode, ConversationMode: preference.ConversationMode, Time: effectiveMessageTime(msg), DebounceUntil: receivedAt.Add(debounceWindow), DebounceWindow: debounceWindow, State: session.InputDebouncing, Reset: cmd.Reset}
+	input := session.Input{ID: msg.ID, Sender: msg.Sender, Text: text, Attachments: attachments, ReplyToMessageID: msg.ID, CardSessionID: cardSessionID, WorkDir: workDir, RequestedModel: preference.Model, RequestedEffort: preference.Effort, AgentBin: bin, AgentHome: home, ReplyMode: preference.ReplyMode, ConversationMode: preference.ConversationMode, BridgeInstructionsVersion: bridgeinstructions.CurrentVersion, Time: effectiveMessageTime(msg), DebounceUntil: receivedAt.Add(debounceWindow), DebounceWindow: debounceWindow, State: session.InputDebouncing, Reset: cmd.Reset}
 	accepted, queued, err := s.Sessions.AcceptAndEnqueue(key, input, receivedAt, s.dedupTTL(), s.dedupMaxEntries(), s.batchLimits())
 	if err != nil {
 		action := "queue_rejected"
@@ -801,7 +803,8 @@ func (s *Service) executeBatch(ctx context.Context, sess session.Session, batch 
 	if strings.TrimSpace(bin) == "" {
 		bin, home = s.resolveAgentBinHome(sess.Key.Agent, s.runtimePreference())
 	}
-	result, err := s.Runner.Run(ctx, AgentRunRequest{Kind: sess.Key.Agent, Bin: bin, Home: home, Prompt: prompt, WorkDir: sess.WorkDir, Images: codexImagePaths(batch), AgentSessionID: sess.AgentSessionID, Model: batch.Inputs[0].RequestedModel, Effort: batch.Inputs[0].RequestedEffort, OnEvent: func(update AgentStreamUpdate) {
+	s.Audit.Record("system", "bridge_instructions_selected", sess.ID, "version="+sess.BridgeInstructionsVersion+" agent="+string(sess.Key.Agent))
+	result, err := s.Runner.Run(ctx, AgentRunRequest{Kind: sess.Key.Agent, Bin: bin, Home: home, Prompt: prompt, WorkDir: sess.WorkDir, Images: codexImagePaths(batch), AgentSessionID: sess.AgentSessionID, Model: batch.Inputs[0].RequestedModel, Effort: batch.Inputs[0].RequestedEffort, BridgeInstructionsVersion: sess.BridgeInstructionsVersion, OnEvent: func(update AgentStreamUpdate) {
 		if model := strings.TrimSpace(update.Model); model != "" {
 			actualModelMu.Lock()
 			streamedActualModel = model

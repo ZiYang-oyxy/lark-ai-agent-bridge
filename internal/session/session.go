@@ -47,24 +47,25 @@ const (
 )
 
 type Input struct {
-	ID               string
-	Sender           string
-	Text             string
-	Attachments      []media.Attachment
-	ReplyToMessageID string
-	CardSessionID    string
-	WorkDir          string
-	RequestedModel   string
-	RequestedEffort  string
-	AgentBin         string
-	AgentHome        string
-	ReplyMode        config.ReplyMode
-	ConversationMode config.ConversationMode
-	Time             time.Time
-	DebounceUntil    time.Time
-	DebounceWindow   time.Duration `json:",omitempty"`
-	State            InputState
-	Reset            bool
+	ID                        string
+	Sender                    string
+	Text                      string
+	Attachments               []media.Attachment
+	ReplyToMessageID          string
+	CardSessionID             string
+	WorkDir                   string
+	RequestedModel            string
+	RequestedEffort           string
+	AgentBin                  string
+	AgentHome                 string
+	ReplyMode                 config.ReplyMode
+	ConversationMode          config.ConversationMode
+	BridgeInstructionsVersion string `json:",omitempty"`
+	Time                      time.Time
+	DebounceUntil             time.Time
+	DebounceWindow            time.Duration `json:",omitempty"`
+	State                     InputState
+	Reset                     bool
 }
 
 // EffectiveReplyMode keeps durable inputs written before ReplyMode was added
@@ -130,38 +131,50 @@ const (
 )
 
 type Session struct {
-	Key            Key
-	ID             string
-	WorkDir        string
-	AgentSessionID string
-	Model          string
-	Tokens         int
-	State          State
-	History        []Prompt
-	Queue          []Input
-	ActiveBatch    *Batch
-	CreatedAt      time.Time
-	LastActive     time.Time
+	Key                       Key
+	ID                        string
+	WorkDir                   string
+	AgentSessionID            string
+	Model                     string
+	Tokens                    int
+	State                     State
+	History                   []Prompt
+	Queue                     []Input
+	ActiveBatch               *Batch
+	BridgeInstructionsVersion string `json:",omitempty"`
+	CreatedAt                 time.Time
+	LastActive                time.Time
 }
 
 type Manager struct {
-	mu             sync.Mutex
-	sessions       map[string]*Session
-	storePath      string
-	revision       uint64
-	batchSeq       uint64
-	lastPersistErr error
-	receipts       []Receipt
+	mu                               sync.Mutex
+	sessions                         map[string]*Session
+	storePath                        string
+	revision                         uint64
+	batchSeq                         uint64
+	lastPersistErr                   error
+	receipts                         []Receipt
+	currentBridgeInstructionsVersion string
 }
 
 func NewManager() *Manager {
-	return &Manager{sessions: map[string]*Session{}}
+	return NewManagerWithStoreVersion("", "")
 }
 
 // NewManagerWithStore creates a manager whose durable queue and batch
 // transitions are atomically persisted to path before becoming observable.
 func NewManagerWithStore(path string) *Manager {
-	return &Manager{sessions: map[string]*Session{}, storePath: path}
+	return NewManagerWithStoreVersion(path, "")
+}
+
+// NewManagerWithStoreVersion creates a durable manager that uses
+// currentVersion only to backfill inputs and sessions that predate versioning.
+func NewManagerWithStoreVersion(path, currentVersion string) *Manager {
+	return &Manager{
+		sessions:                         map[string]*Session{},
+		storePath:                        path,
+		currentBridgeInstructionsVersion: strings.TrimSpace(currentVersion),
+	}
 }
 
 // RecoveryNotice is the terminal handoff for a pending input that was cleared
@@ -445,6 +458,18 @@ func (m *Manager) MarkBatchRunning(key Key, batchID string, renderRef *RenderRef
 	}
 	if len(batch.Inputs) > 0 {
 		first := batch.Inputs[0]
+		version := strings.TrimSpace(first.BridgeInstructionsVersion)
+		if version == "" {
+			version = m.currentBridgeInstructionsVersion
+		}
+		if first.Reset || s.BridgeInstructionsVersion == "" {
+			s.BridgeInstructionsVersion = version
+		}
+		for i := range batch.Inputs {
+			if strings.TrimSpace(batch.Inputs[i].BridgeInstructionsVersion) == "" {
+				batch.Inputs[i].BridgeInstructionsVersion = version
+			}
+		}
 		if first.Reset {
 			s.AgentSessionID = ""
 			s.Model = ""
@@ -936,6 +961,7 @@ func compatibleBatchInput(first, next Input) bool {
 		first.RequestedEffort == next.RequestedEffort &&
 		first.AgentBin == next.AgentBin &&
 		first.AgentHome == next.AgentHome &&
+		first.BridgeInstructionsVersion == next.BridgeInstructionsVersion &&
 		first.EffectiveReplyMode() == next.EffectiveReplyMode() &&
 		first.ConversationMode == next.ConversationMode
 }

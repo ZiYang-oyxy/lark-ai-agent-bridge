@@ -14,6 +14,7 @@ import (
 
 	"lark-agent-bridge/internal/agent"
 	"lark-agent-bridge/internal/audit"
+	"lark-agent-bridge/internal/bridgeinstructions"
 	"lark-agent-bridge/internal/card"
 	"lark-agent-bridge/internal/config"
 	"lark-agent-bridge/internal/feishu"
@@ -495,6 +496,35 @@ func TestServicePassesFrozenModelAndEffortToRunner(t *testing.T) {
 	call := runner.Calls()[0]
 	if call.Model != "opus" || call.Effort != "high" {
 		t.Fatalf("runner preferences = model %q effort %q, want opus/high", call.Model, call.Effort)
+	}
+}
+
+func TestServiceSnapshotsBridgeInstructionsVersionWithoutChangingUserPrompt(t *testing.T) {
+	now := time.Now()
+	runner := newFakeRunner()
+	svc := NewService(testConfig(t), card.NewFakeRenderer(), runner, audit.NewRecorder())
+	message := Message{ID: "bridge-version", ChatID: "chat", Sender: "alice", Text: "把刚才那张图发出来", Time: now}
+	if err := svc.HandleMessage(context.Background(), message); err != nil {
+		t.Fatal(err)
+	}
+	key := session.Key{Agent: agent.Claude, ChatID: "chat"}
+	queued, ok := svc.Sessions.Get(key)
+	if !ok || len(queued.Queue) != 1 {
+		t.Fatalf("queued session = %#v", queued)
+	}
+	if got := queued.Queue[0].BridgeInstructionsVersion; got != bridgeinstructions.CurrentVersion {
+		t.Fatalf("queued version = %q, want %q", got, bridgeinstructions.CurrentVersion)
+	}
+	if err := svc.DrainReady(queued.Queue[0].DebounceUntil); err != nil {
+		t.Fatal(err)
+	}
+	waitForCalls(t, runner, 1)
+	call := runner.Calls()[0]
+	if call.BridgeInstructionsVersion != bridgeinstructions.CurrentVersion {
+		t.Fatalf("request version = %q, want %q", call.BridgeInstructionsVersion, bridgeinstructions.CurrentVersion)
+	}
+	if call.Prompt != message.Text || strings.Contains(call.Prompt, "Feishu Bridge Runtime Instructions") {
+		t.Fatalf("user prompt was changed: %q", call.Prompt)
 	}
 }
 

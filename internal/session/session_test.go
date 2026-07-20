@@ -166,6 +166,7 @@ func TestFreezeReadyBatchStopsAtRuntimePreferenceBoundaries(t *testing.T) {
 		{name: "effort", second: Input{ID: "effort", Text: "two", RequestedEffort: "high"}},
 		{name: "agent_bin", second: Input{ID: "bin", Text: "two", RequestedModel: "sonnet", RequestedEffort: "low", AgentBin: "/w/bin/cx3"}},
 		{name: "agent_home", second: Input{ID: "home", Text: "two", RequestedModel: "sonnet", RequestedEffort: "low", AgentHome: "/w/.codex-home"}},
+		{name: "bridge_instructions", second: Input{ID: "instructions", Text: "two", RequestedModel: "sonnet", RequestedEffort: "low", BridgeInstructionsVersion: "v2"}},
 		{name: "conversation_mode", second: Input{ID: "conversation", Text: "two", RequestedModel: "sonnet", RequestedEffort: "low", ConversationMode: config.ConversationModeTopic}},
 		{name: "reply_mode", second: Input{ID: "reply", Text: "two", RequestedModel: "sonnet", RequestedEffort: "low", ConversationMode: config.ConversationModeChat, ReplyMode: config.ReplyModeAppendCleanCard}},
 	} {
@@ -744,6 +745,58 @@ func TestMarkBatchRunningResetClearsContextAndPreservesLaterQueue(t *testing.T) 
 	}
 	if sess.ActiveBatch == nil || len(sess.ActiveBatch.Inputs) != 1 || len(sess.Queue) != 1 || sess.Queue[0].ID != "later" {
 		t.Fatalf("reset scheduling state = %#v", sess)
+	}
+}
+
+func TestMarkBatchRunningPinsAndResetsBridgeInstructionsVersion(t *testing.T) {
+	m := NewManagerWithStoreVersion("", "v2")
+	key := Key{Agent: agent.Claude, ChatID: "bridge-version"}
+	now := time.Unix(200, 0)
+	start := func(input Input, at time.Time) (Session, *Batch) {
+		t.Helper()
+		input.State = InputQueued
+		input.Time = at
+		if _, _, err := m.EnqueueDurable(key, input, "/w", BatchLimits{}); err != nil {
+			t.Fatal(err)
+		}
+		_, frozen, err := m.FreezeReadyBatch(key, at, BatchLimits{})
+		if err != nil || frozen == nil {
+			t.Fatalf("freeze batch=%#v err=%v", frozen, err)
+		}
+		sess, batch, err := m.MarkBatchRunning(key, frozen.ID, nil, at)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return sess, batch
+	}
+	finish := func(batch *Batch, at time.Time) {
+		t.Helper()
+		if _, err := m.FinishBatch(key, batch.ID, BatchCompletion{Status: InputCompleted, AgentSessionID: "agent-session", At: at}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	first, batch := start(Input{ID: "first", Text: "one", BridgeInstructionsVersion: "v1"}, now)
+	if first.BridgeInstructionsVersion != "v1" || batch.Inputs[0].BridgeInstructionsVersion != "v1" {
+		t.Fatalf("first version session=%q input=%q", first.BridgeInstructionsVersion, batch.Inputs[0].BridgeInstructionsVersion)
+	}
+	finish(batch, now.Add(time.Second))
+
+	resumed, batch := start(Input{ID: "resume", Text: "two", BridgeInstructionsVersion: "v2"}, now.Add(2*time.Second))
+	if resumed.BridgeInstructionsVersion != "v1" {
+		t.Fatalf("resume changed version to %q", resumed.BridgeInstructionsVersion)
+	}
+	if batch.Inputs[0].BridgeInstructionsVersion != "v2" {
+		t.Fatalf("queued input snapshot changed to %q", batch.Inputs[0].BridgeInstructionsVersion)
+	}
+	finish(batch, now.Add(3*time.Second))
+
+	reset, batch := start(Input{ID: "reset", Text: "three", Reset: true, BridgeInstructionsVersion: "v2"}, now.Add(4*time.Second))
+	if reset.BridgeInstructionsVersion != "v2" || reset.AgentSessionID != "" {
+		t.Fatalf("reset session = %#v", reset)
+	}
+	if batch.Inputs[0].BridgeInstructionsVersion != "v2" {
+		t.Fatalf("reset input version = %q", batch.Inputs[0].BridgeInstructionsVersion)
 	}
 }
 
