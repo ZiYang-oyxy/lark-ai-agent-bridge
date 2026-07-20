@@ -230,6 +230,34 @@ func TestPrepareLarkCardInlineTimelineIsNativeReady(t *testing.T) {
 	}
 }
 
+func TestPrepareLarkCardFitsOversizedInlineTimelineWithoutEmergency(t *testing.T) {
+	prepared, err := PrepareLarkCard(Event{
+		Type:                 "stream",
+		Streaming:            true,
+		InlineTimelineLayout: true,
+		Markdown:             strings.Repeat("旧过程\n\n", 5000) + "FINAL_REPLY",
+		Segments:             []Segment{{Kind: SegmentThought, Text: strings.Repeat("思考", 2000)}},
+		Meta:                 Meta{Agent: "claude", Model: "model", User: "user", IP: "host", WorkDir: "/work"},
+		StopButton:           StopButton{Visible: true},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if prepared.Capacity().JSONBytes > LarkCardSoftMaxJSONBytes {
+		t.Fatalf("capacity = %#v", prepared.Capacity())
+	}
+	if !strings.Contains(prepared.Answer(), "FINAL_REPLY") {
+		t.Fatalf("fitted answer lost final reply: %q", prepared.Answer())
+	}
+	if strings.Contains(string(prepared.CardJSON()), "内容过长，已省略") {
+		t.Fatalf("inline timeline fell back to emergency: %s", prepared.CardJSON())
+	}
+	answers := answerElements(prepared.PayloadCopy())
+	if len(answers) != 1 || prepared.Answer() != answers[0]["content"] {
+		t.Fatalf("answer mismatch: prepared=%q payload=%#v", prepared.Answer(), answers)
+	}
+}
+
 func TestNativeReadyRequiresExactlyOneMarkdownAnswerTarget(t *testing.T) {
 	for _, tc := range []struct {
 		name    string

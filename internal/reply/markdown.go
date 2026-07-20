@@ -5,6 +5,13 @@ import (
 	"strings"
 
 	"lark-agent-bridge/internal/card"
+	"lark-agent-bridge/internal/security"
+)
+
+const (
+	toolHeaderSummaryMaxRunes = 80
+	inlineThinkingMaxRunes    = 3000
+	inlineTimelineMaxRunes    = 9000
 )
 
 func RenderMarkdown(event card.Event) string {
@@ -122,7 +129,7 @@ func RenderInlineTimeline(event card.Event) string {
 	if len(parts) == 0 {
 		return "_（未返回内容）_"
 	}
-	return strings.Join(parts, "\n\n")
+	return fitTimelineParts(parts, inlineTimelineMaxRunes)
 }
 
 func renderToolUse(meta *card.ToolMeta) string {
@@ -131,7 +138,7 @@ func renderToolUse(meta *card.ToolMeta) string {
 		name = "Tool"
 	}
 	line := "> ⏳ **" + name + "**"
-	if summary := safeInline(meta.Summary); summary != "" {
+	if summary := safeInlineSummary(meta.Summary, toolHeaderSummaryMaxRunes); summary != "" {
 		line += " · " + summary
 	}
 	return line
@@ -147,8 +154,70 @@ func renderToolLine(existing string, result *card.ToolMeta) string {
 
 func safeInline(value string) string {
 	value = strings.Join(strings.Fields(value), " ")
+	return escapeMarkdownInline(value)
+}
+
+func safeInlineSummary(value string, maxRunes int) string {
+	value = security.Redact(value)
+	value = strings.Join(strings.Fields(value), " ")
+	runes := []rune(value)
+	if maxRunes > 0 && len(runes) > maxRunes {
+		value = string(runes[:maxRunes]) + "…"
+	}
+	return escapeMarkdownInline(value)
+}
+
+func escapeMarkdownInline(value string) string {
 	replacer := strings.NewReplacer("\\", "\\\\", "*", "\\*", "_", "\\_", "`", "\\`", "[", "\\[", "]", "\\]")
 	return replacer.Replace(value)
+}
+
+func fitTimelineParts(parts []string, maxRunes int) string {
+	if len(parts) == 0 {
+		return ""
+	}
+	joined := strings.Join(parts, "\n\n")
+	if maxRunes <= 0 || len([]rune(joined)) <= maxRunes {
+		return joined
+	}
+	const notice = "_较早过程已省略_"
+	for len(parts) > 1 {
+		parts = parts[1:]
+		candidate := notice + "\n\n" + strings.Join(parts, "\n\n")
+		if len([]rune(candidate)) <= maxRunes {
+			return candidate
+		}
+	}
+	return notice + "\n\n" + limitHeadWithSuffix(parts[0], maxRunes-len([]rune(notice))-2)
+}
+
+func limitHeadWithSuffix(value string, maxRunes int) string {
+	const suffix = "\n\n[truncated]"
+	if maxRunes <= 0 {
+		return ""
+	}
+	runes := []rune(value)
+	if len(runes) <= maxRunes {
+		return value
+	}
+	suffixRunes := []rune(suffix)
+	if maxRunes <= len(suffixRunes) {
+		return string(suffixRunes[:maxRunes])
+	}
+	return string(runes[:maxRunes-len(suffixRunes)]) + suffix
+}
+
+func limitThinkingProjection(value string, maxRunes int) string {
+	runes := []rune(value)
+	if maxRunes <= 0 || len(runes) <= maxRunes {
+		return value
+	}
+	const notice = "_较早思考已省略_\n\n"
+	noticeRunes := []rune(notice)
+	if maxRunes <= len(noticeRunes) {
+		return string(noticeRunes[:maxRunes])
+	}
+	return notice + string(runes[len(runes)-(maxRunes-len(noticeRunes)):])
 }
 
 func runningStatusLine(activity string) string {

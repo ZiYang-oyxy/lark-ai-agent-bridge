@@ -134,6 +134,12 @@ func fitLarkCard(event Event) (PreparedLarkCard, bool) {
 	if prepared, err := prepareLarkCard(event, true); err == nil {
 		return prepared, true
 	}
+	if event.InlineTimelineLayout {
+		if prepared, ok := fitInlineTimelineCard(event); ok {
+			return prepared, true
+		}
+		return PreparedLarkCard{}, false
+	}
 
 	for countSegments(event.Segments, SegmentTool) > 1 {
 		event.Segments = dropOldestSegment(event.Segments, SegmentTool)
@@ -163,6 +169,77 @@ func fitLarkCard(event Event) (PreparedLarkCard, bool) {
 		}
 	}
 	return PreparedLarkCard{}, false
+}
+
+func fitInlineTimelineCard(event Event) (PreparedLarkCard, bool) {
+	candidate := cloneEvent(event)
+	latestThought := -1
+	for index := range candidate.Segments {
+		if candidate.Segments[index].Kind == SegmentThought && strings.TrimSpace(candidate.Segments[index].Text) != "" {
+			candidate.Segments[index].Text = ""
+			latestThought = index
+		}
+	}
+	if latestThought >= 0 {
+		candidate.Segments[latestThought].Text = "…"
+	}
+
+	fittedEvent, prepared, ok := shrinkInlineMarkdown(candidate)
+	if !ok {
+		return PreparedLarkCard{}, false
+	}
+	if latestThought >= 0 {
+		_, prepared = maximizeSegment(fittedEvent, latestThought, []rune(event.Segments[latestThought].Text), true, prepared)
+	}
+	return prepared, true
+}
+
+func shrinkInlineMarkdown(event Event) (Event, PreparedLarkCard, bool) {
+	if prepared, err := prepareLarkCard(event, true); err == nil {
+		return event, prepared, true
+	}
+	parts := strings.Split(event.Markdown, "\n\n")
+	if len(parts) == 0 {
+		return event, PreparedLarkCard{}, false
+	}
+	const notice = "_较早过程已省略_"
+	var bestEvent Event
+	var best PreparedLarkCard
+	low, high := 1, len(parts)-1
+	for low <= high {
+		mid := (low + high) / 2
+		candidate := cloneEvent(event)
+		candidate.Markdown = notice + "\n\n" + strings.Join(parts[mid:], "\n\n")
+		prepared, err := prepareLarkCard(candidate, true)
+		if err == nil {
+			bestEvent, best = candidate, prepared
+			high = mid - 1
+			continue
+		}
+		low = mid + 1
+	}
+	if len(best.json) != 0 {
+		return bestEvent, best, true
+	}
+
+	finalPart := []rune(parts[len(parts)-1])
+	low, high = 0, len(finalPart)
+	for low <= high {
+		mid := (low + high) / 2
+		candidate := cloneEvent(event)
+		candidate.Markdown = notice + "\n\n" + truncatedRunes(finalPart, mid, false)
+		prepared, err := prepareLarkCard(candidate, true)
+		if err == nil {
+			bestEvent, best = candidate, prepared
+			low = mid + 1
+			continue
+		}
+		high = mid - 1
+	}
+	if len(best.json) == 0 {
+		return event, PreparedLarkCard{}, false
+	}
+	return bestEvent, best, true
 }
 
 func countSegments(segments []Segment, kind SegmentKind) int {

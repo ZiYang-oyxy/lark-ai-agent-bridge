@@ -3,6 +3,7 @@ package reply
 import (
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"lark-agent-bridge/internal/card"
 	"lark-agent-bridge/internal/session"
@@ -133,6 +134,66 @@ func TestRenderInlineTimelineDeduplicatesResultsAndUsesSafeFallbacks(t *testing.
 		if strings.Contains(got, forbidden) {
 			t.Fatalf("timeline leaked %q: %q", forbidden, got)
 		}
+	}
+}
+
+func TestRenderInlineTimelineBoundsAndRedactsToolSummary(t *testing.T) {
+	summary := "Authorization: Bearer abc.def " + strings.Repeat("界", 100)
+	got := RenderInlineTimeline(card.Event{Type: "stream", Segments: []card.Segment{{
+		Kind: card.SegmentTool,
+		Tool: &card.ToolMeta{ID: "t1", Name: "Bash", Summary: summary, Phase: "use"},
+	}}})
+	const prefix = "> ⏳ **Bash** · "
+	if !strings.HasPrefix(got, prefix) {
+		t.Fatalf("tool line = %q", got)
+	}
+	visibleSummary := strings.TrimPrefix(got, prefix)
+	if utf8.RuneCountInString(visibleSummary) > toolHeaderSummaryMaxRunes+3 {
+		t.Fatalf("summary not bounded: runes=%d value=%q", utf8.RuneCountInString(visibleSummary), visibleSummary)
+	}
+	if strings.Contains(got, "abc.def") || !strings.Contains(got, "REDACTED") || !strings.HasSuffix(got, "…") {
+		t.Fatalf("summary not redacted/truncated: %q", got)
+	}
+}
+
+func TestRenderInlineTimelineDropsOldEntriesAndKeepsFinalReply(t *testing.T) {
+	final := "FINAL_REPLY"
+	got := RenderInlineTimeline(card.Event{Type: "result", Segments: []card.Segment{
+		{Kind: card.SegmentText, Text: strings.Repeat("旧", inlineTimelineMaxRunes)},
+		{Kind: card.SegmentTool, Tool: &card.ToolMeta{ID: "t1", Name: "Bash", Summary: "status", Phase: "use"}},
+		{Kind: card.SegmentText, Text: final},
+	}})
+	if utf8.RuneCountInString(got) > inlineTimelineMaxRunes {
+		t.Fatalf("timeline exceeds budget: runes=%d", utf8.RuneCountInString(got))
+	}
+	if !strings.Contains(got, "较早过程已省略") || !strings.HasSuffix(got, final) {
+		t.Fatalf("timeline did not preserve final reply: %q", got)
+	}
+	if strings.Contains(got, strings.Repeat("旧", 100)) {
+		t.Fatalf("old entry survived: %q", got)
+	}
+	if !strings.Contains(got, "> ⏳ **Bash** · status") {
+		t.Fatalf("complete tool line was not preserved: %q", got)
+	}
+}
+
+func TestMarkdownCardRendererBoundsThinkingProjectionWithoutMutatingCaller(t *testing.T) {
+	inner := &fakeMarkdownCardRenderer{}
+	renderer := NewMarkdownCardRenderer(inner)
+	original := strings.Repeat("旧", 100) + strings.Repeat("新", inlineThinkingMaxRunes)
+	event := card.Event{Type: "stream", Streaming: true, Segments: []card.Segment{{Kind: card.SegmentThought, Text: original}}}
+	if err := renderer.Render(event); err != nil {
+		t.Fatal(err)
+	}
+	got := inner.events[0].Segments[0].Text
+	if utf8.RuneCountInString(got) > inlineThinkingMaxRunes {
+		t.Fatalf("thinking exceeds budget: runes=%d", utf8.RuneCountInString(got))
+	}
+	if !strings.Contains(got, "较早思考已省略") || !strings.HasSuffix(got, strings.Repeat("新", 100)) {
+		t.Fatalf("thinking projection = %q", got)
+	}
+	if event.Segments[0].Text != original {
+		t.Fatal("adapter mutated caller segments")
 	}
 }
 
