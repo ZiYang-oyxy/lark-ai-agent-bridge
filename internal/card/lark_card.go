@@ -8,7 +8,10 @@ import (
 func BuildLarkCard(e Event) map[string]any {
 	e = normalizeTerminalEvent(e)
 	var elements []any
-	if e.ConfigForm != nil {
+	if e.AgentModeForm != nil {
+		e.Streaming = false
+		elements = buildAgentModeFormElements(e.SessionID, *e.AgentModeForm)
+	} else if e.ConfigForm != nil {
 		e.Streaming = false
 		elements = buildConfigFormElements(e.SessionID, *e.ConfigForm)
 	} else if e.MarkdownLayout {
@@ -142,8 +145,7 @@ func buildConfigFormElements(sessionID string, form ConfigForm) []any {
 			"tag":  "form",
 			"name": "runtime_config",
 			"elements": []any{
-				markdownElement("cfg_agent", "**Agent**\n支持 `claude` 和 `codex`，选项来自 `agents.json`。"),
-				configSelectOptions("agent", form.Agent, form.Agents),
+				markdownElement("cfg_agent_mode", fmt.Sprintf("**Agent mode**\n当前使用 `%s`；如需切换请使用 `/agent-mode`。", form.Agent)),
 				markdownElement("cfg_agent_home", "**Agent home**\n`默认` 继承 executable 的环境配置；显式选择时分别注入 `CLAUDE_CONFIG_DIR` 或 `CODEX_HOME`。"),
 				configSelectOptions("agent_home", form.AgentHome, form.AgentHomes),
 				markdownElement("cfg_agent_bin", "**Agent bin**\n每项显示为 `名称 · 作用`；主机项使用当前 Agent 的默认 executable，其余为 `agents.json` 预设。"),
@@ -175,6 +177,28 @@ func buildConfigFormElements(sessionID string, form ConfigForm) []any {
 					"type":             "primary",
 					"form_action_type": "submit",
 					"behaviors":        callbackBehavior(sessionID, "config.save", ""),
+				},
+			},
+		},
+	}
+}
+
+func buildAgentModeFormElements(sessionID string, form AgentModeForm) []any {
+	return []any{
+		markdownElement("agent_mode_intro", "⚙️ **Agent mode**\n\n选择后影响后续新进入队列的消息。"),
+		map[string]any{
+			"tag":  "form",
+			"name": "agent_mode_form",
+			"elements": []any{
+				markdownElement("agent_mode_select_label", "**使用 Agent**\n选择 `claude` 或 `codex`。"),
+				configSelectOptions("agent", form.Agent, form.Agents),
+				map[string]any{
+					"tag":              "button",
+					"name":             "submit_agent_mode",
+					"text":             map[string]any{"tag": "plain_text", "content": "保存"},
+					"type":             "primary",
+					"form_action_type": "submit",
+					"behaviors":        callbackBehavior(sessionID, "agent_mode.save", ""),
 				},
 			},
 		},

@@ -78,6 +78,17 @@ func TestParseConfigCommandInDirectAndMentionedGroupMessages(t *testing.T) {
 	}
 }
 
+func TestParseAgentModeCommand(t *testing.T) {
+	cmd := ParseCommand(Message{Text: "/agent-mode"}, agent.Claude)
+	if cmd.Type != CommandAgentMode || cmd.Text != "" {
+		t.Fatalf("agent mode = %#v", cmd)
+	}
+	cmd = ParseCommand(Message{Text: "/agent-mode codex"}, agent.Claude)
+	if cmd.Type != CommandAgentMode || cmd.Text != "codex" {
+		t.Fatalf("agent mode codex = %#v", cmd)
+	}
+}
+
 func TestHelpTextIncludesConfigCommand(t *testing.T) {
 	if text := HelpText(); !strings.Contains(text, "/config") {
 		t.Fatalf("help text = %q, want /config", text)

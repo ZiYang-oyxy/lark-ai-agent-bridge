@@ -429,6 +429,8 @@ func (s *Service) HandleMessage(ctx context.Context, msg Message) error {
 		return s.renderTextWithMode("status", msg.ID, card.SegmentText, s.statusTextWithPreference(cmd.Agent, msg, preference), preference.ConversationMode)
 	case CommandConfig:
 		return s.handleConfigCommand(ctx, msg, cmd, preference)
+	case CommandAgentMode:
+		return s.handleAgentModeCommand(ctx, msg, cmd, preference)
 	case CommandInvite:
 		return s.handleInviteCommand(ctx, msg, cmd, preference)
 	case CommandRemove:
@@ -449,26 +451,12 @@ func (s *Service) handleConfigCommand(ctx context.Context, msg Message, cmd Comm
 			}
 			_ = s.refreshKnownChats(ctx)
 		}
-		agentKind := strings.TrimSpace(preference.Agent)
-		if agentKind == "" {
-			agentKind = config.DefaultAgentKind
-		}
-		form := &card.ConfigForm{
-			Agent: agentKind, AgentHome: preference.AgentHome, AgentBin: preference.AgentBin,
-			Model: preference.Model, Effort: preference.Effort, ReplyMode: string(preference.ReplyMode), ConversationMode: string(preference.ConversationMode),
-			GroupMessageMode: string(preference.GroupMessageMode), RespondToBots: strconv.FormatBool(preference.RespondToBots),
-			Agents: toCardOptions(s.Agents.AgentOptions()), AgentHomes: toCardOptions(s.Agents.HomeOptions(agentKind)), AgentBins: toCardOptions(s.Agents.BinOptions(agentKind)),
-			Models: s.configModelOptions(), Efforts: []string{"default", "low", "medium", "high"},
-			ReplyModes:        []string{string(config.ReplyModeAppend), string(config.ReplyModeAppendCleanCard), string(config.ReplyModeLatestCard)},
-			ConversationModes: []string{string(config.ConversationModeChat), string(config.ConversationModeTopic)},
-		}
-		s.populateAccessConfigForm(form)
 		return s.Cards.Render(card.Event{
 			Type:             "config",
 			SessionID:        runID("config", msg.ID),
 			ReplyToMessageID: msg.ID,
 			ReplyInThread:    preference.ConversationMode == config.ConversationModeTopic,
-			ConfigForm:       form,
+			ConfigForm:       s.configForm(preference),
 		})
 	case "reset":
 		if s.Preferences == nil {
@@ -483,6 +471,32 @@ func (s *Service) handleConfigCommand(ctx context.Context, msg Message, cmd Comm
 	default:
 		return s.renderTextWithMode("config", msg.ID, card.SegmentError, "用法：/config 或 /config reset", preference.ConversationMode)
 	}
+}
+
+func (s *Service) handleAgentModeCommand(_ context.Context, msg Message, cmd Command, preference config.RuntimePreference) error {
+	mode := strings.ToLower(strings.TrimSpace(cmd.Text))
+	if mode == "" {
+		return s.Cards.Render(card.Event{
+			Type:             "agent_mode",
+			SessionID:        runID("agent-mode", msg.ID),
+			ReplyToMessageID: msg.ID,
+			ReplyInThread:    preference.ConversationMode == config.ConversationModeTopic,
+			AgentModeForm:    &card.AgentModeForm{Agent: orDefault(preference.Agent, config.DefaultAgentKind), Agents: toCardOptions(s.Agents.AgentOptions())},
+		})
+	}
+	if _, ok := agent.ParseKind(mode); !ok {
+		return s.renderTextWithMode("agent-mode", msg.ID, card.SegmentError, "用法：/agent-mode 或 /agent-mode claude|codex", preference.ConversationMode)
+	}
+	if s.Preferences == nil {
+		return s.renderTextWithMode("agent-mode", msg.ID, card.SegmentError, "偏好存储尚未配置。", preference.ConversationMode)
+	}
+	preference.Agent = mode
+	preference.AgentHome = ""
+	preference.AgentBin = ""
+	if err := s.Preferences.Set(preference); err != nil {
+		return s.renderTextWithMode("agent-mode", msg.ID, card.SegmentError, "Agent mode 保存失败，请检查配置。", preference.ConversationMode)
+	}
+	return s.renderTextWithMode("agent-mode", msg.ID, card.SegmentText, fmt.Sprintf("已切换到 `%s`。`/config` 现在只显示该 Agent 可用的 home/bin。", mode), preference.ConversationMode)
 }
 
 func (s *Service) runtimePreference() config.RuntimePreference {
@@ -1058,7 +1072,7 @@ func (s *Service) HandleAction(ctx context.Context, req ActionRequest) error {
 
 func (s *Service) HandleActionResult(ctx context.Context, req ActionRequest) (ActionResult, error) {
 	s.Audit.Record(req.Actor, "card_action", req.SessionID, req.ActionID+" "+req.Value)
-	if req.ActionID == "config.save" && !s.canRunAdminCommand(req.Actor) {
+	if (req.ActionID == "config.save" || req.ActionID == "agent_mode.save") && !s.canRunAdminCommand(req.Actor) {
 		s.Audit.Record(req.Actor, "admin_denied", req.SessionID, req.ActionID)
 		return s.renderActionEvent(card.Event{Type: "error", SessionID: req.SessionID, Segments: []card.Segment{{Kind: card.SegmentError, Text: "❌ 此操作仅管理员可用。"}}})
 	}
@@ -1103,6 +1117,10 @@ func (s *Service) HandleActionResult(ctx context.Context, req ActionRequest) (Ac
 			return s.renderActionEvent(configSaveErrorEvent(req.SessionID))
 		}
 		current := s.Preferences.Get()
+		selectedAgent := strings.TrimSpace(req.FormValues["agent"])
+		if selectedAgent == "" {
+			selectedAgent = current.Agent
+		}
 		groupMessageMode := current.GroupMessageMode
 		if raw, ok := req.FormValues["group_message_mode"]; ok && strings.TrimSpace(raw) != "" {
 			groupMessageMode = config.GroupMessageMode(raw)
@@ -1116,7 +1134,7 @@ func (s *Service) HandleActionResult(ctx context.Context, req ActionRequest) (Ac
 			}
 			respondToBots = parsed
 		}
-		preference := config.RuntimePreference{Model: req.FormValues["model"], Effort: req.FormValues["effort"], ReplyMode: config.ReplyMode(req.FormValues["reply_mode"]), ConversationMode: config.ConversationMode(req.FormValues["conversation_mode"]), GroupMessageMode: groupMessageMode, RespondToBots: respondToBots, Agent: req.FormValues["agent"], AgentHome: req.FormValues["agent_home"], AgentBin: req.FormValues["agent_bin"]}
+		preference := config.RuntimePreference{Model: req.FormValues["model"], Effort: req.FormValues["effort"], ReplyMode: config.ReplyMode(req.FormValues["reply_mode"]), ConversationMode: config.ConversationMode(req.FormValues["conversation_mode"]), GroupMessageMode: groupMessageMode, RespondToBots: respondToBots, Agent: selectedAgent, AgentHome: req.FormValues["agent_home"], AgentBin: req.FormValues["agent_bin"]}
 		if !strings.EqualFold(strings.TrimSpace(current.Agent), strings.TrimSpace(preference.Agent)) {
 			if _, ok := s.Agents.HomePath(preference.Agent, preference.AgentHome); !ok {
 				preference.AgentHome = ""
@@ -1133,17 +1151,64 @@ func (s *Service) HandleActionResult(ctx context.Context, req ActionRequest) (Ac
 		s.Audit.Record(req.Actor, "config_saved", req.SessionID, fmt.Sprintf("agent=%s agent_home=%s agent_bin=%s model=%s effort=%s reply_mode=%s conversation_mode=%s group_message_mode=%s respond_to_bots=%t", preference.Agent, preference.AgentHome, preference.AgentBin, preference.Model, preference.Effort, preference.ReplyMode, preference.ConversationMode, preference.GroupMessageMode, preference.RespondToBots))
 		s.Audit.Record(req.Actor, "group_message_mode_saved", req.SessionID, fmt.Sprintf("mode=%s respond_to_bots=%t", preference.GroupMessageMode, preference.RespondToBots))
 		result, err := s.renderActionEvent(card.Event{
-			Type:      "config_saved",
-			SessionID: req.SessionID,
-			Segments:  []card.Segment{{Kind: card.SegmentText, Text: fmt.Sprintf("偏好已保存。\n\nagent=`%s`\nagent home=`%s`\nagent bin=`%s`\nmodel=`%s`\neffort=`%s`\nreply mode=`%s`\nconversation mode=`%s`\ngroup message mode=`%s`\nrespond to bots=`%t`\n\n下一条新消息开始生效。", preference.Agent, orDefault(preference.AgentHome, config.DefaultHomeLabel), orDefault(preference.AgentBin, config.DefaultBinLabelFor(preference.Agent)), preference.Model, preference.Effort, preference.ReplyMode, preference.ConversationMode, preference.GroupMessageMode, preference.RespondToBots)}},
+			Type:       "config_saved",
+			SessionID:  req.SessionID,
+			ConfigForm: s.configForm(preference),
+			Segments:   []card.Segment{{Kind: card.SegmentText, Text: fmt.Sprintf("偏好已保存。\n\nagent=`%s`\nagent home=`%s`\nagent bin=`%s`\nmodel=`%s`\neffort=`%s`\nreply mode=`%s`\nconversation mode=`%s`\ngroup message mode=`%s`\nrespond to bots=`%t`\n\n下一条新消息开始生效。", preference.Agent, orDefault(preference.AgentHome, config.DefaultHomeLabel), orDefault(preference.AgentBin, config.DefaultBinLabelFor(preference.Agent)), preference.Model, preference.Effort, preference.ReplyMode, preference.ConversationMode, preference.GroupMessageMode, preference.RespondToBots)}},
 		})
 		if err == nil {
 			s.ensureGroupMessageScope(req.SessionID, preference.GroupMessageMode)
 		}
 		return result, err
+	case "agent_mode.save":
+		if s.Preferences == nil {
+			err := errors.New("preference store is not configured")
+			s.Audit.Record(req.Actor, "agent_mode_save_failed", req.SessionID, err.Error())
+			return s.renderActionEvent(card.Event{Type: "error", SessionID: req.SessionID, Segments: []card.Segment{{Kind: card.SegmentError, Text: "Agent mode 保存失败。"}}})
+		}
+		kind := strings.ToLower(strings.TrimSpace(req.FormValues["agent"]))
+		if _, ok := agent.ParseKind(kind); !ok || !s.agentKindConfigured(kind) {
+			err := fmt.Errorf("agent mode %q is not configured", kind)
+			s.Audit.Record(req.Actor, "agent_mode_save_failed", req.SessionID, err.Error())
+			return s.renderActionEvent(card.Event{Type: "error", SessionID: req.SessionID, Segments: []card.Segment{{Kind: card.SegmentError, Text: "Agent mode 选项无效。"}}})
+		}
+		preference := s.Preferences.Get()
+		preference.Agent = kind
+		preference.AgentHome = ""
+		preference.AgentBin = ""
+		if err := s.Preferences.Set(preference); err != nil {
+			s.Audit.Record(req.Actor, "agent_mode_save_failed", req.SessionID, err.Error())
+			return s.renderActionEvent(card.Event{Type: "error", SessionID: req.SessionID, Segments: []card.Segment{{Kind: card.SegmentError, Text: "Agent mode 保存失败。"}}})
+		}
+		preference = s.Preferences.Get()
+		s.Audit.Record(req.Actor, "agent_mode_saved", req.SessionID, fmt.Sprintf("agent=%s", preference.Agent))
+		return s.renderActionEvent(card.Event{Type: "agent_mode_saved", SessionID: req.SessionID, AgentModeForm: &card.AgentModeForm{Agent: preference.Agent, Agents: toCardOptions(s.Agents.AgentOptions())}})
 	default:
 		return s.renderActionEvent(card.Event{Type: "error", SessionID: req.SessionID, Segments: []card.Segment{{Kind: card.SegmentError, Text: "unknown action: " + req.ActionID}}})
 	}
+}
+
+func (s *Service) agentKindConfigured(kind string) bool {
+	_, ok := s.Agents.Find(kind)
+	return ok
+}
+
+func (s *Service) configForm(preference config.RuntimePreference) *card.ConfigForm {
+	agentKind := strings.TrimSpace(preference.Agent)
+	if agentKind == "" {
+		agentKind = config.DefaultAgentKind
+	}
+	form := &card.ConfigForm{
+		Agent: agentKind, AgentHome: preference.AgentHome, AgentBin: preference.AgentBin,
+		Model: preference.Model, Effort: preference.Effort, ReplyMode: string(preference.ReplyMode), ConversationMode: string(preference.ConversationMode),
+		GroupMessageMode: string(preference.GroupMessageMode), RespondToBots: strconv.FormatBool(preference.RespondToBots),
+		Agents: toCardOptions(s.Agents.AgentOptions()), AgentHomes: toCardOptions(s.Agents.HomeOptions(agentKind)), AgentBins: toCardOptions(s.Agents.BinOptions(agentKind)),
+		Models: s.configModelOptions(), Efforts: []string{"default", "low", "medium", "high"},
+		ReplyModes:        []string{string(config.ReplyModeAppend), string(config.ReplyModeAppendCleanCard), string(config.ReplyModeLatestCard)},
+		ConversationModes: []string{string(config.ConversationModeChat), string(config.ConversationModeTopic)},
+	}
+	s.populateAccessConfigForm(form)
+	return form
 }
 
 func configSaveErrorEvent(sessionID string) card.Event {

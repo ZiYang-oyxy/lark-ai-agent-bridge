@@ -93,6 +93,11 @@ type ConfigForm struct {
 	OwnerState        string
 }
 
+type AgentModeForm struct {
+	Agent  string
+	Agents []SelectOption
+}
+
 type AccessChat struct {
 	ID   string
 	Name string
@@ -121,6 +126,7 @@ type Event struct {
 	MarkdownLayout   bool
 	Markdown         string
 	ConfigForm       *ConfigForm
+	AgentModeForm    *AgentModeForm
 }
 
 func WorkDirCreateActions(path string) []Action {

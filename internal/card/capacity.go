@@ -395,6 +395,11 @@ func cloneEvent(event Event) Event {
 	cloned := event
 	cloned.Segments = append([]Segment(nil), event.Segments...)
 	cloned.Actions = append([]Action(nil), event.Actions...)
+	if event.AgentModeForm != nil {
+		form := *event.AgentModeForm
+		form.Agents = append([]SelectOption(nil), event.AgentModeForm.Agents...)
+		cloned.AgentModeForm = &form
+	}
 	if event.ConfigForm != nil {
 		form := *event.ConfigForm
 		form.Agents = append([]SelectOption(nil), event.ConfigForm.Agents...)

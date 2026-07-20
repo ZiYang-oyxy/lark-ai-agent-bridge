@@ -321,14 +321,14 @@ func TestBuildLarkCardRendersRuntimeConfigForm(t *testing.T) {
 			submit = control
 		}
 	}
-	if len(selects) != 9 || selects["model"]["initial_option"] != "opus" || selects["effort"]["initial_option"] != "high" || selects["reply_mode"]["initial_option"] != "latest-card" || selects["conversation_mode"]["initial_option"] != "chat" || selects["group_message_mode"]["initial_option"] != "mention_only" || selects["respond_to_bots"]["initial_option"] != "false" {
+	if len(selects) != 8 || selects["model"]["initial_option"] != "opus" || selects["effort"]["initial_option"] != "high" || selects["reply_mode"]["initial_option"] != "latest-card" || selects["conversation_mode"]["initial_option"] != "chat" || selects["group_message_mode"]["initial_option"] != "mention_only" || selects["respond_to_bots"]["initial_option"] != "false" {
 		t.Fatalf("select controls = %#v", selects)
 	}
-	if selects["agent"]["initial_option"] != "claude" || selects["agent_home"]["initial_option"] != "默认" || selects["agent_bin"]["initial_option"] != "主机 claude" {
+	if selects["agent_home"]["initial_option"] != "默认" || selects["agent_bin"]["initial_option"] != "主机 claude" {
 		t.Fatalf("agent select controls = %#v", selects)
 	}
-	if len(selects["agent"]["options"].([]any)) != 1 || len(selects["agent_home"]["options"].([]any)) != 2 || len(selects["agent_bin"]["options"].([]any)) != 2 {
-		t.Fatalf("agent select options = agent %#v home %#v bin %#v", selects["agent"]["options"], selects["agent_home"]["options"], selects["agent_bin"]["options"])
+	if len(selects["agent_home"]["options"].([]any)) != 2 || len(selects["agent_bin"]["options"].([]any)) != 2 {
+		t.Fatalf("agent select options = home %#v bin %#v", selects["agent_home"]["options"], selects["agent_bin"]["options"])
 	}
 	// The ark4 bin option must submit the bare label but display the description.
 	binOpts := selects["agent_bin"]["options"].([]any)
@@ -342,7 +342,7 @@ func TestBuildLarkCardRendersRuntimeConfigForm(t *testing.T) {
 	if submit == nil || submit["form_action_type"] != "submit" {
 		t.Fatalf("submit button = %#v", submit)
 	}
-	if !containsAll(copy.String(), "`claude`", "`codex`", "Codex", "executable") {
+	if !containsAll(copy.String(), "`claude`", "/agent-mode", "Codex", "executable") {
 		t.Fatalf("config guidance = %q", copy.String())
 	}
 	behaviors := submit["behaviors"].([]any)

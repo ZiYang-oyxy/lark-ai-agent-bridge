@@ -95,6 +95,69 @@ func TestConfigSaveChangingAgentClearsForeignBinAndHome(t *testing.T) {
 	if result.Event == nil || result.Event.Type != "config_saved" || got.Agent != "codex" || got.AgentHome != "" || got.AgentBin != "" {
 		t.Fatalf("result/store = %#v / %#v", result, got)
 	}
+	if result.Event.ConfigForm == nil || result.Event.ConfigForm.Agent != "codex" || result.Event.ConfigForm.AgentHome != "" || result.Event.ConfigForm.AgentBin != "" {
+		t.Fatalf("refreshed config form = %#v", result.Event.ConfigForm)
+	}
+	if got := result.Event.ConfigForm.AgentBins; len(got) != 2 || got[0].Value != config.DefaultBinLabelFor("codex") || got[1].Value != "cx3" {
+		t.Fatalf("refreshed codex bins = %#v", got)
+	}
+	if got := result.Event.ConfigForm.AgentHomes; len(got) != 2 || got[0].Value != config.DefaultHomeLabel || got[1].Value != "codex-home" {
+		t.Fatalf("refreshed codex homes = %#v", got)
+	}
+}
+
+func TestAgentModeSaveSwitchesAgentAndClearsPresets(t *testing.T) {
+	agents := config.AgentsConfig{
+		SchemaVersion: config.AgentsSchemaVersion,
+		Agents: []config.AgentDef{
+			{Kind: "claude", Homes: []config.AgentHome{{Label: "claude-home", Path: "/h/claude"}}, Bins: []config.AgentBin{{Label: config.DefaultBinLabel}, {Label: "cc4", Path: "/b/cc4"}}},
+			{Kind: "codex", Bins: []config.AgentBin{{Label: config.DefaultBinLabelFor("codex")}, {Label: "cx3", Path: "/b/cx3"}}},
+		},
+	}
+	defaults := config.RuntimePreference{Model: "default", Effort: "low", ReplyMode: config.ReplyModeAppend, ConversationMode: config.ConversationModeChat, Agent: "claude", AgentHome: "claude-home", AgentBin: "cc4"}
+	store, err := config.OpenPreferenceStore(filepath.Join(t.TempDir(), "preferences.json"), defaults, nil, agents.Agents...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	renderer := card.NewFakeRenderer()
+	svc := NewService(config.Config{}, renderer, newFakeRunner(), audit.NewRecorder())
+	svc.Agents = agents
+	svc.Preferences = store
+	result, err := svc.HandleActionResult(context.Background(), ActionRequest{SessionID: "agent-mode-card", ActionID: "agent_mode.save", Actor: "user", FormValues: map[string]string{"agent": "codex"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := store.Get()
+	if got.Agent != "codex" || got.AgentHome != "" || got.AgentBin != "" {
+		t.Fatalf("preference = %#v", got)
+	}
+	if result.Event == nil || result.Event.AgentModeForm == nil || result.Event.AgentModeForm.Agent != "codex" {
+		t.Fatalf("agent mode result = %#v", result.Event)
+	}
+}
+
+func TestConfigSaveWithoutAgentKeepsCurrentAgentMode(t *testing.T) {
+	agents := config.AgentsConfig{SchemaVersion: config.AgentsSchemaVersion, Agents: []config.AgentDef{
+		{Kind: "codex", Bins: []config.AgentBin{{Label: config.DefaultBinLabelFor("codex")}, {Label: "cx3", Path: "/b/cx3"}}},
+	}}
+	defaults := config.RuntimePreference{Model: "default", Effort: "low", ReplyMode: config.ReplyModeAppend, ConversationMode: config.ConversationModeChat, Agent: "codex", AgentBin: "cx3"}
+	store, err := config.OpenPreferenceStore(filepath.Join(t.TempDir(), "preferences.json"), defaults, nil, agents.Agents...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc := NewService(config.Config{}, card.NewFakeRenderer(), newFakeRunner(), audit.NewRecorder())
+	svc.Agents = agents
+	svc.Preferences = store
+	_, err = svc.HandleActionResult(context.Background(), ActionRequest{SessionID: "config-card", ActionID: "config.save", Actor: "user", FormValues: map[string]string{
+		"model": "default", "effort": "high", "reply_mode": "append", "conversation_mode": "chat", "agent_bin": "cx3",
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := store.Get()
+	if got.Agent != "codex" || got.AgentBin != "cx3" || got.Effort != "high" {
+		t.Fatalf("preference = %#v", got)
+	}
 }
 
 func TestResolveAgentBinHomeUsesCataloguePresets(t *testing.T) {

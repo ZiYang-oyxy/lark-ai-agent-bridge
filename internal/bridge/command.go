@@ -10,14 +10,15 @@ import (
 type CommandType string
 
 const (
-	CommandHelp    CommandType = "help"
-	CommandRun     CommandType = "run"
-	CommandStatus  CommandType = "status"
-	CommandConfig  CommandType = "config"
-	CommandInvite  CommandType = "invite"
-	CommandRemove  CommandType = "remove"
-	CommandUnknown CommandType = "unknown"
-	CommandIgnored CommandType = "ignored"
+	CommandHelp      CommandType = "help"
+	CommandRun       CommandType = "run"
+	CommandStatus    CommandType = "status"
+	CommandConfig    CommandType = "config"
+	CommandAgentMode CommandType = "agent-mode"
+	CommandInvite    CommandType = "invite"
+	CommandRemove    CommandType = "remove"
+	CommandUnknown   CommandType = "unknown"
+	CommandIgnored   CommandType = "ignored"
 )
 
 type Command struct {
@@ -46,6 +47,8 @@ func ParseCommand(msg Message, defaultAgent agent.Kind) Command {
 		return Command{Type: CommandStatus, Agent: defaultAgent, Raw: raw}
 	case "config":
 		return Command{Type: CommandConfig, Text: strings.TrimSpace(rest), Raw: raw}
+	case "agent-mode":
+		return Command{Type: CommandAgentMode, Text: strings.TrimSpace(rest), Raw: raw}
 	case "invite":
 		return Command{Type: CommandInvite, Text: strings.TrimSpace(rest), Raw: raw}
 	case "remove":
@@ -109,7 +112,8 @@ func HelpText() string {
 		"Feishu AI Agent Bridge commands:",
 		"/new [--workdir <path>] [prompt] - start a new configured agent session in this chat/topic",
 		"/status - show the current chat/topic session status",
-		"/config - configure agent, home, executable, Claude model/effort, reply mode, and chat/topic mode",
+		"/agent-mode - choose claude or codex for subsequent messages",
+		"/config - configure the current agent home, executable, Claude model/effort, reply mode, and chat/topic mode",
 		"/invite user|admin @user, /invite group, /invite all group - grant access",
 		"/remove user|admin @user, /remove group - revoke access",
 		"/help - show this help",
