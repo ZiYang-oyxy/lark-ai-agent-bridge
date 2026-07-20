@@ -105,7 +105,7 @@ CardKit 卡片负责展示一次 Claude 请求的状态：
 - 底部第二行：user、ip、workdir 三列，权重比例 `10:12:30`，emoji 分别为 `👤`、`🖥️`、`📁`。
 - 底部不展示 status，也不使用 `agent=`、`model=`、`workdir=` 这类机器前缀。
 
-长输出先由 `E2E_CARD_MAX_CHARS` 按 rune 截断，再经过 `internal/card.PrepareLarkCard` 的容量管线。该管线以最终 JSON 字节数为准，固定限制为 **28 KiB** 和 **200 个带 `tag` 的组件**；`PreparedLarkCard` 是不透明值，renderer、同步 callback 和 CardKit HTTP client 只能消费其已验证 JSON，不能重新组装后绕过容量闸门。超限时按“最旧工具输出 → 最旧思考 → 最近工具/思考摘要 → 正文末尾”压缩，仍无法放入时发送不含调用方内容、动作、会话或工作目录的静态 emergency 卡片。`E2E_CARD_MAX_CHARS` 保持原有可配置性，但平台容量限制不可配置。
+长输出先由 `E2E_CARD_MAX_CHARS` 按 rune 截断，再经过 `internal/card.PrepareLarkCard` 的容量管线。`append` 在此之前还会把单条工具摘要限制为 **80 rune**、thinking 卡片投影限制为最近 **3000 rune**、Inline timeline 限制为 **9000 rune**；timeline 超限时按 entry 删除最旧过程并保留最终回复。容量管线以最终 JSON 字节数为准，固定限制为 **28 KiB** 和 **200 个带 `tag` 的组件**；`PreparedLarkCard` 是不透明值，renderer、同步 callback 和 CardKit HTTP client 只能消费其已验证 JSON，不能重新组装后绕过容量闸门。普通布局超限时按“最旧工具输出 → 最旧思考 → 最近工具/思考摘要 → 正文末尾”压缩；Inline 布局额外按 Markdown 段落保留最近内容并保证 fitted `Answer()` 与 payload 一致。仍无法放入时发送不含调用方内容、动作、会话或工作目录的静态 emergency 卡片。`E2E_CARD_MAX_CHARS` 保持原有可配置性，但平台容量限制不可配置。
 
 按钮处理生产路径只使用飞书长连接 `card.action.trigger`。stop/create/cancel action 会同步返回终态卡片，让飞书客户端立即置灰按钮；同时 bridge 仍通过 CardKit update 写入同一终态作为兜底和审计证据。设置 `E2E_CALLBACK_ADDR` 后，`serve` 会额外启动 `/card/callback` HTTP 兼容入口；该入口仅用于本地调试、迁移期验证和 real-Lark E2E 中对 service stop 生命周期的确定性触发，不替代生产长连接回调。
 
