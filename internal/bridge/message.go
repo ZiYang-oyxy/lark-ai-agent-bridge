@@ -12,6 +12,7 @@ type Message struct {
 	ThreadID       string
 	Sender         string
 	Text           string
+	MessageType    string
 	Attachments    []media.Ref
 	IsGroup        bool
 	HasAttachments bool

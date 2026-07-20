@@ -22,6 +22,7 @@ func MessageFromFeishu(in feishu.InboundMessage) Message {
 		ThreadID:       in.TopicID,
 		Sender:         in.SenderID,
 		Text:           text,
+		MessageType:    in.MessageType,
 		Attachments:    append([]media.Ref(nil), in.Attachments...),
 		IsGroup:        strings.EqualFold(in.ChatType, "group"),
 		HasAttachments: len(in.Attachments) > 0,

@@ -49,6 +49,13 @@ func TestMessageFromFeishuCopiesAttachments(t *testing.T) {
 	}
 }
 
+func TestMessageFromFeishuCopiesMessageType(t *testing.T) {
+	got := MessageFromFeishu(feishu.InboundMessage{MessageType: "interactive"})
+	if got.MessageType != "interactive" {
+		t.Fatalf("message type = %q, want interactive", got.MessageType)
+	}
+}
+
 func TestMessageFromFeishuDropsDirectAttachmentResourceJSONFromText(t *testing.T) {
 	for _, in := range []feishu.InboundMessage{
 		{MessageType: "image", Text: `{"image_key":"img_123"}`, Attachments: []media.Ref{{MessageID: "m-image", FileKey: "img_123", Kind: "image"}}},

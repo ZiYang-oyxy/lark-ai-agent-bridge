@@ -8,16 +8,25 @@ import (
 )
 
 func TestDebounceForMessage(t *testing.T) {
-	if got := DebounceFor(Message{}); got != 250*time.Millisecond {
+	if got := DebounceFor(Message{MessageType: "text"}); got != 250*time.Millisecond {
 		t.Fatalf("dm = %s", got)
 	}
-	if got := DebounceFor(Message{IsGroup: true}); got != 600*time.Millisecond {
+	if got := DebounceFor(Message{MessageType: "text", IsGroup: true}); got != 600*time.Millisecond {
 		t.Fatalf("group = %s", got)
 	}
-	if got := DebounceFor(Message{HasAttachments: true}); got != 600*time.Millisecond {
+	if got := DebounceFor(Message{MessageType: "interactive"}); got != time.Second {
+		t.Fatalf("interactive = %s", got)
+	}
+	if got := DebounceFor(Message{MessageType: "image"}); got != time.Second {
+		t.Fatalf("image = %s", got)
+	}
+	if got := DebounceFor(Message{MessageType: "text", HasAttachments: true}); got != time.Second {
 		t.Fatalf("attachment = %s", got)
 	}
-	if got := DebounceFor(Message{Attachments: []media.Ref{{FileKey: "image", Kind: "image"}}}); got != 600*time.Millisecond {
+	if got := DebounceFor(Message{MessageType: "text", Attachments: []media.Ref{{FileKey: "image", Kind: "image"}}}); got != time.Second {
 		t.Fatalf("attachment refs = %s", got)
+	}
+	if got := DebounceFor(Message{MessageType: "unknown"}); got != time.Second {
+		t.Fatalf("unknown = %s", got)
 	}
 }
