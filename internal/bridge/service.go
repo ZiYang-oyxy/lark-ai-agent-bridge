@@ -47,6 +47,7 @@ type Service struct {
 	CardTarget       reply.CardTarget
 	Reactions        feishu.ReactionSink
 	OutputImages     feishu.ImageSender
+	MessageDeleter   MessageDeleter
 	SequenceResolver session.RenderRefSequenceResolver
 	RestoreNotices   []session.RecoveryNotice
 	Access           *access.Store
@@ -106,6 +107,10 @@ type mediaSweeper interface {
 
 type AgentRunner interface {
 	Run(context.Context, AgentRunRequest) (AgentRunResult, error)
+}
+
+type MessageDeleter interface {
+	DeleteMessage(context.Context, string) error
 }
 
 type AgentRunRequest struct {
@@ -1092,7 +1097,7 @@ func (s *Service) HandleAction(ctx context.Context, req ActionRequest) error {
 
 func (s *Service) HandleActionResult(ctx context.Context, req ActionRequest) (ActionResult, error) {
 	s.Audit.Record(req.Actor, "card_action", req.SessionID, req.ActionID+" "+req.Value)
-	if (req.ActionID == "config.save" || req.ActionID == "agent_mode.save") && !s.canRunAdminCommand(req.Actor) {
+	if (req.ActionID == "config.save" || req.ActionID == "config.close" || req.ActionID == "agent_mode.save") && !s.canRunAdminCommand(req.Actor) {
 		s.Audit.Record(req.Actor, "admin_denied", req.SessionID, req.ActionID)
 		return s.renderActionEvent(card.Event{Type: "error", SessionID: req.SessionID, Segments: []card.Segment{{Kind: card.SegmentError, Text: "❌ 此操作仅管理员可用。"}}})
 	}
@@ -1130,6 +1135,23 @@ func (s *Service) HandleActionResult(ctx context.Context, req ActionRequest) (Ac
 			workDir = pending.WorkDir
 		}
 		return s.renderActionEvent(workDirActionEvent("workdir_cancelled", req.SessionID, workDir))
+	case "config.close":
+		if req.OpenMessageID == "" {
+			err := errors.New("missing config card message id")
+			s.Audit.Record(req.Actor, "config_close_failed", req.SessionID, err.Error())
+			return ActionResult{}, err
+		}
+		if s.MessageDeleter == nil {
+			err := errors.New("message deleter is not configured")
+			s.Audit.Record(req.Actor, "config_close_failed", req.SessionID, err.Error())
+			return ActionResult{}, err
+		}
+		if err := s.MessageDeleter.DeleteMessage(ctx, req.OpenMessageID); err != nil {
+			s.Audit.Record(req.Actor, "config_close_failed", req.SessionID, err.Error())
+			return ActionResult{}, fmt.Errorf("close config card: %w", err)
+		}
+		s.Audit.Record(req.Actor, "config_closed", req.SessionID, "config card deleted")
+		return ActionResult{}, nil
 	case "config.save":
 		if s.Preferences == nil {
 			err := errors.New("preference store is not configured")

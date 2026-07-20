@@ -35,6 +35,53 @@ type captureImageAPI struct {
 	err  error
 }
 
+type captureMessageDeleteAPI struct {
+	reqs        []*larkim.DeleteMessageReq
+	resp        *larkim.DeleteMessageResp
+	err         error
+	nilResponse bool
+}
+
+func (f *captureMessageDeleteAPI) Delete(_ context.Context, req *larkim.DeleteMessageReq, _ ...larkcore.RequestOptionFunc) (*larkim.DeleteMessageResp, error) {
+	f.reqs = append(f.reqs, req)
+	if f.nilResponse {
+		return nil, f.err
+	}
+	if f.resp == nil && f.err == nil {
+		return &larkim.DeleteMessageResp{}, nil
+	}
+	return f.resp, f.err
+}
+
+func TestSDKSenderDeleteMessage(t *testing.T) {
+	api := &captureMessageDeleteAPI{}
+	sender := &SDKSender{messageDeleteAPI: api}
+	if err := sender.DeleteMessage(t.Context(), "om_config"); err != nil {
+		t.Fatal(err)
+	}
+	if len(api.reqs) != 1 || api.reqs[0] == nil {
+		t.Fatalf("delete requests = %#v", api.reqs)
+	}
+
+	for _, tc := range []struct {
+		name   string
+		id     string
+		sender *SDKSender
+	}{
+		{name: "missing id", sender: &SDKSender{messageDeleteAPI: &captureMessageDeleteAPI{}}},
+		{name: "missing api", id: "om_config", sender: &SDKSender{}},
+		{name: "sdk error", id: "om_config", sender: &SDKSender{messageDeleteAPI: &captureMessageDeleteAPI{err: errors.New("network failed")}}},
+		{name: "nil response", id: "om_config", sender: &SDKSender{messageDeleteAPI: &captureMessageDeleteAPI{nilResponse: true}}},
+		{name: "business error", id: "om_config", sender: &SDKSender{messageDeleteAPI: &captureMessageDeleteAPI{resp: &larkim.DeleteMessageResp{CodeError: larkcore.CodeError{Code: 999, Msg: "denied"}}}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := tc.sender.DeleteMessage(t.Context(), tc.id); err == nil {
+				t.Fatal("expected error")
+			}
+		})
+	}
+}
+
 func (f *captureImageAPI) Create(_ context.Context, req *larkim.CreateImageReq, _ ...larkcore.RequestOptionFunc) (*larkim.CreateImageResp, error) {
 	f.reqs = append(f.reqs, req)
 	return f.resp, f.err

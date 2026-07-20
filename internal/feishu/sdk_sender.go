@@ -22,23 +22,50 @@ type MessageReactionAPI interface {
 	Delete(ctx context.Context, req *larkim.DeleteMessageReactionReq, options ...larkcore.RequestOptionFunc) (*larkim.DeleteMessageReactionResp, error)
 }
 
+type MessageDeleteAPI interface {
+	Delete(ctx context.Context, req *larkim.DeleteMessageReq, options ...larkcore.RequestOptionFunc) (*larkim.DeleteMessageResp, error)
+}
+
 type ImageAPI interface {
 	Create(context.Context, *larkim.CreateImageReq, ...larkcore.RequestOptionFunc) (*larkim.CreateImageResp, error)
 }
 
 type SDKSender struct {
-	api         ReplyAPI
-	reactionAPI MessageReactionAPI
-	imageAPI    ImageAPI
+	api              ReplyAPI
+	messageDeleteAPI MessageDeleteAPI
+	reactionAPI      MessageReactionAPI
+	imageAPI         ImageAPI
 }
 
 func NewSDKSender(appID, appSecret string) *SDKSender {
 	client := lark.NewClient(appID, appSecret)
 	return &SDKSender{
-		api:         client.Im.V1.Message,
-		reactionAPI: client.Im.V1.MessageReaction,
-		imageAPI:    client.Im.V1.Image,
+		api:              client.Im.V1.Message,
+		messageDeleteAPI: client.Im.V1.Message,
+		reactionAPI:      client.Im.V1.MessageReaction,
+		imageAPI:         client.Im.V1.Image,
 	}
+}
+
+func (s *SDKSender) DeleteMessage(ctx context.Context, messageID string) error {
+	if messageID == "" {
+		return fmt.Errorf("missing message id")
+	}
+	if s == nil || s.messageDeleteAPI == nil {
+		return fmt.Errorf("delete feishu message: api is not configured")
+	}
+	req := larkim.NewDeleteMessageReqBuilder().MessageId(messageID).Build()
+	resp, err := s.messageDeleteAPI.Delete(ctx, req)
+	if err != nil {
+		return fmt.Errorf("delete feishu message: %w", err)
+	}
+	if resp == nil {
+		return fmt.Errorf("delete feishu message failed: empty response")
+	}
+	if !resp.Success() {
+		return fmt.Errorf("delete feishu message failed: code=%d msg=%s", resp.Code, resp.Msg)
+	}
+	return nil
 }
 
 func (s *SDKSender) UploadImage(ctx context.Context, reader io.Reader) (string, error) {
