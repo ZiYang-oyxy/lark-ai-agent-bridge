@@ -382,7 +382,9 @@ func buildButtonActions(e Event) []any {
 			"size":       "medium",
 			"disabled":   action.Disabled,
 		}
-		if !action.Disabled {
+		if !action.Disabled && action.URL != "" {
+			button["behaviors"] = []any{map[string]any{"type": "open_url", "default_url": action.URL}}
+		} else if !action.Disabled {
 			button["behaviors"] = callbackBehavior(e.SessionID, action.ID, action.Value)
 		}
 		buttons = append(buttons, button)

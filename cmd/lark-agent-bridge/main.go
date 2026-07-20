@@ -305,7 +305,11 @@ func runServe(args []string) error {
 	svc.Access = accessStore
 	svc.AccessControls = access.NewRuntimeControls()
 	svc.AccessAppID = appID
-	svc.AccessInfo = &feishu.AccessInfoClient{Tokens: tokens}
+	accessInfo := &feishu.AccessInfoClient{Tokens: tokens}
+	svc.AccessInfo = accessInfo
+	svc.ScopeInspector = accessInfo
+	svc.ScopeGrants = feishu.NewSDKScopeGrantProvider()
+	svc.BotOpenID = botOpenID
 	if err := access.RefreshOwner(ctx, svc.AccessControls, svc.AccessInfo, appID); err != nil {
 		recorder.Record("system", "owner_refresh_failed", "", err.Error())
 	}

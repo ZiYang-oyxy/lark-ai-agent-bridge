@@ -58,6 +58,7 @@ type Action struct {
 	ID       string
 	Label    string
 	Value    string
+	URL      string
 	Disabled bool
 }
 

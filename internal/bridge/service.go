@@ -57,6 +57,8 @@ type Service struct {
 	AccessAppID        string
 	BotOpenID          string
 	TopicParticipation TopicParticipation
+	ScopeInspector     ScopeInspector
+	ScopeGrants        feishu.ScopeGrantProvider
 	accessMu           sync.RWMutex
 	knownChats         []feishu.KnownChat
 
@@ -72,6 +74,11 @@ type Service struct {
 	loopsStarted       bool
 	dispatchWG         sync.WaitGroup
 	runWG              sync.WaitGroup
+	scopeMu            sync.Mutex
+	scopeContext       context.Context
+	scopeCancel        context.CancelFunc
+	activeScopeCancel  context.CancelFunc
+	scopeWG            sync.WaitGroup
 
 	// Test seam: called after an active starting batch is registered and before
 	// the first cancellation check/card render.
@@ -230,6 +237,7 @@ func NewServiceWithSessions(cfg config.Config, renderer card.Renderer, runner Ag
 		recorder.Record("system", "session_recovery_"+string(notice.Status), notice.SessionID, "reply="+notice.ReplyToMessageID+" card_session="+notice.CardSessionID)
 	}
 	renderer = card.NewLimitRenderer(renderer, cfg.CardMaxChars)
+	scopeContext, scopeCancel := context.WithCancel(context.Background())
 	return &Service{
 		Config:             cfg,
 		Sessions:           sessions,
@@ -245,6 +253,8 @@ func NewServiceWithSessions(cfg config.Config, renderer card.Renderer, runner Ag
 		startedAt:          time.Now(),
 		accepting:          true,
 		RestoreNotices:     restoreNotices,
+		scopeContext:       scopeContext,
+		scopeCancel:        scopeCancel,
 	}
 }
 
@@ -1122,11 +1132,15 @@ func (s *Service) HandleActionResult(ctx context.Context, req ActionRequest) (Ac
 		preference = s.Preferences.Get()
 		s.Audit.Record(req.Actor, "config_saved", req.SessionID, fmt.Sprintf("agent=%s agent_home=%s agent_bin=%s model=%s effort=%s reply_mode=%s conversation_mode=%s group_message_mode=%s respond_to_bots=%t", preference.Agent, preference.AgentHome, preference.AgentBin, preference.Model, preference.Effort, preference.ReplyMode, preference.ConversationMode, preference.GroupMessageMode, preference.RespondToBots))
 		s.Audit.Record(req.Actor, "group_message_mode_saved", req.SessionID, fmt.Sprintf("mode=%s respond_to_bots=%t", preference.GroupMessageMode, preference.RespondToBots))
-		return s.renderActionEvent(card.Event{
+		result, err := s.renderActionEvent(card.Event{
 			Type:      "config_saved",
 			SessionID: req.SessionID,
 			Segments:  []card.Segment{{Kind: card.SegmentText, Text: fmt.Sprintf("偏好已保存。\n\nagent=`%s`\nagent home=`%s`\nagent bin=`%s`\nmodel=`%s`\neffort=`%s`\nreply mode=`%s`\nconversation mode=`%s`\ngroup message mode=`%s`\nrespond to bots=`%t`\n\n下一条新消息开始生效。", preference.Agent, orDefault(preference.AgentHome, config.DefaultHomeLabel), orDefault(preference.AgentBin, config.DefaultBinLabelFor(preference.Agent)), preference.Model, preference.Effort, preference.ReplyMode, preference.ConversationMode, preference.GroupMessageMode, preference.RespondToBots)}},
 		})
+		if err == nil {
+			s.ensureGroupMessageScope(req.SessionID, preference.GroupMessageMode)
+		}
+		return result, err
 	default:
 		return s.renderActionEvent(card.Event{Type: "error", SessionID: req.SessionID, Segments: []card.Segment{{Kind: card.SegmentError, Text: "unknown action: " + req.ActionID}}})
 	}
@@ -1189,6 +1203,19 @@ func (s *Service) Cleanup(ctx context.Context) error {
 // starts, then waits for active batches. Once its deadline expires it cancels
 // every remaining run and waits for their terminal persistence path.
 func (s *Service) Shutdown(ctx context.Context) error {
+	s.scopeMu.Lock()
+	if s.activeScopeCancel != nil {
+		s.activeScopeCancel()
+		s.activeScopeCancel = nil
+	}
+	if s.scopeCancel != nil {
+		s.scopeCancel()
+		s.scopeCancel = nil
+	}
+	s.scopeMu.Unlock()
+	if err := waitGroupContext(ctx, &s.scopeWG); err != nil {
+		return err
+	}
 	s.mu.Lock()
 	s.accepting = false
 	if s.loopsCancel != nil {
