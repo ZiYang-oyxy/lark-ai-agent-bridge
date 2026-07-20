@@ -3096,6 +3096,36 @@ func TestParseClaudeStreamSegmentsAssistantAnswersAndCountsUniqueTools(t *testin
 	}
 }
 
+func TestParseClaudeStreamPreservesOrderedTimeline(t *testing.T) {
+	lines := []string{
+		`{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"先检查"}]}}`,
+		`{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","name":"Bash","id":"tu-1","input":{"command":"ls"}}]}}`,
+		`{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"tu-1","content":"file.txt"}]}}`,
+		`{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"最终答案"}]}}`,
+	}
+	result, err := parseClaudeStream(bytes.NewReader([]byte(strings.Join(lines, "\n"))), nil, func(AgentStreamUpdate) {})
+	if err != nil {
+		t.Fatalf("parse stream error: %v", err)
+	}
+	wantKinds := []card.SegmentKind{
+		card.SegmentText,
+		card.SegmentTool,
+		card.SegmentTool,
+		card.SegmentText,
+	}
+	if len(result.OrderedSegments) != len(wantKinds) {
+		t.Fatalf("ordered segments = %#v", result.OrderedSegments)
+	}
+	for i, kind := range wantKinds {
+		if result.OrderedSegments[i].Kind != kind {
+			t.Fatalf("ordered segment %d = %#v, want %q", i, result.OrderedSegments[i], kind)
+		}
+	}
+	if !strings.Contains(result.OrderedSegments[1].Text, "Bash") || !strings.Contains(result.OrderedSegments[2].Text, "tool_result") {
+		t.Fatalf("ordered tool segments = %#v", result.OrderedSegments[1:3])
+	}
+}
+
 func TestTerminalAnswerFollowsReplyMode(t *testing.T) {
 	for _, tc := range []struct {
 		mode config.ReplyMode
