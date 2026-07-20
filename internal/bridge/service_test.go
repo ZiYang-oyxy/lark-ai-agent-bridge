@@ -1654,6 +1654,58 @@ func TestServiceQueuesSecondInputUntilFirstCompletes(t *testing.T) {
 	}
 }
 
+func TestServiceRearmsBusyRichMessageCohort(t *testing.T) {
+	cfg := testConfig(t)
+	runner := newFakeRunner()
+	runner.block = make(chan struct{})
+	svc := NewService(cfg, card.NewFakeRenderer(), runner, audit.NewRecorder())
+
+	if err := svc.HandleMessage(context.Background(), Message{ID: "active", ChatID: "chat", Sender: "u", Text: "active", MessageType: "text", Time: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.DrainReady(time.Now().Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	<-runner.started
+	if err := svc.HandleMessage(context.Background(), Message{ID: "rich", ChatID: "chat", Sender: "u", Text: "rich payload", MessageType: "interactive", Time: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	queuedBeforeCompletion, ok := svc.Sessions.Get(session.Key{Agent: agent.Claude, ChatID: "chat"})
+	if !ok || len(queuedBeforeCompletion.Queue) != 1 {
+		t.Fatalf("queued session = %#v", queuedBeforeCompletion)
+	}
+	deadlineBeforeCompletion := queuedBeforeCompletion.Queue[0].DebounceUntil
+	close(runner.block)
+	key := session.Key{Agent: agent.Claude, ChatID: "chat"}
+	waitForSessionNoActiveBatch(t, svc, key)
+
+	sess, ok := svc.Sessions.Get(key)
+	if !ok || len(sess.Queue) != 1 {
+		t.Fatalf("session = %#v, want one rearmed rich input", sess)
+	}
+	deadline := sess.Queue[0].DebounceUntil
+	if !deadline.After(deadlineBeforeCompletion) {
+		t.Fatalf("rearmed deadline = %s, want after receipt deadline %s", deadline, deadlineBeforeCompletion)
+	}
+	if err := svc.HandleMessage(context.Background(), Message{ID: "follow-up", ChatID: "chat", Sender: "u", Text: "follow-up text", MessageType: "text", Time: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.DrainReady(deadline.Add(-time.Nanosecond)); err != nil {
+		t.Fatal(err)
+	}
+	if got := len(runner.Calls()); got != 1 {
+		t.Fatalf("runner calls before rearmed deadline = %d, want 1", got)
+	}
+	if err := svc.DrainReady(deadline); err != nil {
+		t.Fatal(err)
+	}
+	waitForCalls(t, runner, 2)
+	calls := runner.Calls()
+	if !containsAll(calls[1].Prompt, "rich payload", "follow-up text") || strings.Index(calls[1].Prompt, "rich payload") > strings.Index(calls[1].Prompt, "follow-up text") {
+		t.Fatalf("second runner prompt = %q, want ordered rich cohort", calls[1].Prompt)
+	}
+}
+
 func TestDifferentTopicsRunInParallel(t *testing.T) {
 	cfg := testConfig(t)
 	renderer := card.NewFakeRenderer()

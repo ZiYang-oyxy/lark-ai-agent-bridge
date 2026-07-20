@@ -345,6 +345,45 @@ func TestFreezeReadyBatchDoesNotPromoteWhileBatchIsActive(t *testing.T) {
 	}
 }
 
+func TestFinishBatchRearmsCompatibleQueueHead(t *testing.T) {
+	m := NewManager()
+	key := Key{Agent: agent.Claude, ChatID: "rearm"}
+	now := time.Unix(100, 0)
+	limits := BatchLimits{MaxPending: 10}
+	if _, _, err := m.EnqueueDurable(key, Input{ID: "active", Text: "active", State: InputQueued, Time: now}, "/work", limits); err != nil {
+		t.Fatal(err)
+	}
+	_, batch, err := m.FreezeReadyBatch(key, now, limits)
+	if err != nil || batch == nil {
+		t.Fatalf("freeze active batch = %#v, err=%v", batch, err)
+	}
+	if _, _, err := m.MarkBatchRunning(key, batch.ID, nil, now); err != nil {
+		t.Fatal(err)
+	}
+	oldDeadline := now.Add(time.Second)
+	for _, input := range []Input{
+		{ID: "text", Text: "text", State: InputDebouncing, Time: now, DebounceUntil: oldDeadline, DebounceWindow: 250 * time.Millisecond},
+		{ID: "rich", Text: "rich", State: InputDebouncing, Time: now, DebounceUntil: oldDeadline, DebounceWindow: time.Second},
+		{ID: "different-bin", Text: "later", State: InputDebouncing, Time: now, DebounceUntil: oldDeadline, DebounceWindow: time.Second, AgentBin: "other"},
+	} {
+		if _, _, err := m.EnqueueDurable(key, input, "/work", limits); err != nil {
+			t.Fatal(err)
+		}
+	}
+	completedAt := now.Add(10 * time.Second)
+	sess, err := m.FinishBatch(key, batch.ID, BatchCompletion{Status: InputCompleted, At: completedAt})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := completedAt.Add(time.Second)
+	if len(sess.Queue) != 3 || !sess.Queue[0].DebounceUntil.Equal(want) || !sess.Queue[1].DebounceUntil.Equal(want) {
+		t.Fatalf("rearmed queue = %#v, want first cohort deadline %s", sess.Queue, want)
+	}
+	if !sess.Queue[2].DebounceUntil.Equal(oldDeadline) {
+		t.Fatalf("incompatible deadline = %s, want unchanged %s", sess.Queue[2].DebounceUntil, oldDeadline)
+	}
+}
+
 func TestFreezeReadyBatchUsesUniqueIDsToRejectLateCompletionAtSameTime(t *testing.T) {
 	m := NewManager()
 	key := Key{Agent: agent.Claude, ChatID: "same-time"}

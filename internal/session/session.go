@@ -536,6 +536,7 @@ func (m *Manager) FinishBatch(key Key, batchID string, completion BatchCompletio
 	s.State = StateIdle
 	if !completion.At.IsZero() {
 		s.LastActive = completion.At
+		rearmCompatibleDebounceHead(s.Queue, completion.At)
 	}
 
 	if m.storePath != "" {
@@ -544,6 +545,32 @@ func (m *Manager) FinishBatch(key Key, batchID string, completion BatchCompletio
 		}
 	}
 	return *cloneSession(s), nil
+}
+
+func rearmCompatibleDebounceHead(queue []Input, completedAt time.Time) {
+	if len(queue) == 0 || completedAt.IsZero() {
+		return
+	}
+	first := queue[0]
+	count := 0
+	window := time.Duration(0)
+	for i := range queue {
+		input := &queue[i]
+		if input.State != InputDebouncing || input.Reset || !compatibleBatchInput(first, *input) {
+			break
+		}
+		count++
+		if input.DebounceWindow > window {
+			window = input.DebounceWindow
+		}
+	}
+	if count == 0 || window <= 0 {
+		return
+	}
+	deadline := completedAt.Add(window)
+	for i := 0; i < count; i++ {
+		queue[i].DebounceUntil = deadline
+	}
 }
 
 // CancelQueuedInputByMessageID removes exactly one queued or debouncing input
