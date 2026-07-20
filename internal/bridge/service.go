@@ -1712,14 +1712,27 @@ func runID(baseSessionID, replyToMessageID string) string {
 	return baseSessionID + ":message:" + replyToMessageID
 }
 
-type CLIExecRunner struct{}
+type CLIExecRunner struct {
+	Instructions *bridgeinstructions.Runtime
+}
 
-func (CLIExecRunner) Run(ctx context.Context, req AgentRunRequest) (AgentRunResult, error) {
+func (r CLIExecRunner) Run(ctx context.Context, req AgentRunRequest) (AgentRunResult, error) {
 	bin := strings.TrimSpace(req.Bin)
 	if bin == "" {
 		bin = req.ClaudeBin
 	}
-	command, err := agent.BuildOneShotCommand(agent.OneShotConfig{
+	version := strings.TrimSpace(req.BridgeInstructionsVersion)
+	if version == "" {
+		return AgentRunResult{}, errors.New("missing bridge instructions version")
+	}
+	if r.Instructions == nil {
+		return AgentRunResult{}, errors.New("bridge instructions runtime is not configured")
+	}
+	content, err := r.Instructions.Content(version)
+	if err != nil {
+		return AgentRunResult{}, err
+	}
+	cfg := agent.OneShotConfig{
 		Kind:           req.Kind,
 		Bin:            bin,
 		WorkDir:        req.WorkDir,
@@ -1729,7 +1742,17 @@ func (CLIExecRunner) Run(ctx context.Context, req AgentRunRequest) (AgentRunResu
 		Effort:         req.Effort,
 		Home:           req.Home,
 		Images:         req.Images,
-	})
+	}
+	switch req.Kind {
+	case agent.Claude:
+		cfg.ClaudeSystemPromptFile, err = r.Instructions.ClaudeFile(version)
+	case agent.Codex:
+		cfg.DeveloperInstructions = content
+	}
+	if err != nil {
+		return AgentRunResult{}, err
+	}
+	command, err := agent.BuildOneShotCommand(cfg)
 	if err != nil {
 		return AgentRunResult{}, err
 	}

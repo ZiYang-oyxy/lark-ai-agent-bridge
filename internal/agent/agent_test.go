@@ -30,6 +30,17 @@ func TestBuildClaudeOneShotCommandResumesInternalSession(t *testing.T) {
 	}
 }
 
+func TestClaudeOneShotAppendsBridgeSystemPromptFileBeforeUserPrompt(t *testing.T) {
+	got, err := BuildOneShotCommand(OneShotConfig{Kind: Claude, Prompt: "hello", AgentSessionID: "sess", ClaudeSystemPromptFile: "/private/v1.md"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"claude", "-p", "--output-format", "stream-json", "--verbose", "--include-partial-messages", "--dangerously-skip-permissions", "--effort", "low", "--append-system-prompt-file", "/private/v1.md", "--resume", "sess", "hello"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("argv = %#v, want %#v", got, want)
+	}
+}
+
 func TestBuildClaudeOneShotCommandUsesConfiguredModelAndEffort(t *testing.T) {
 	cmd, err := BuildOneShotCommand(OneShotConfig{Kind: Claude, Prompt: "hello", Model: "opus", Effort: "high"})
 	if err != nil {
@@ -103,6 +114,45 @@ func TestBuildCodexOneShotCommandResumesAndAddsImages(t *testing.T) {
 	want := []string{"codex", "exec", "resume", "--json", "--image", "/cache/a.png", "--image", "/cache/b.jpg", "thread-1", "-"}
 	if !reflect.DeepEqual(cmd, want) {
 		t.Fatalf("command = %#v, want %#v", cmd, want)
+	}
+}
+
+func TestCodexResumeUsesOneDeveloperInstructionsOverrideBeforeResume(t *testing.T) {
+	got, err := BuildOneShotCommand(OneShotConfig{Kind: Codex, Prompt: "next", AgentSessionID: "thread", DeveloperInstructions: "bridge\n\"quoted\""})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"codex", "exec", "-c", `developer_instructions="bridge\n\"quoted\""`, "resume", "--json", "thread", "-"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("argv = %#v, want %#v", got, want)
+	}
+	if strings.Contains(strings.Join(got, "\x00"), "next") {
+		t.Fatalf("user prompt leaked into argv: %#v", got)
+	}
+}
+
+func TestCodexFreshUsesOneDeveloperInstructionsOverrideBeforeProtocolArgs(t *testing.T) {
+	got, err := BuildOneShotCommand(OneShotConfig{Kind: Codex, Prompt: "hello", DeveloperInstructions: "bridge"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"codex", "exec", "-c", `developer_instructions="bridge"`, "--json", "-"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("argv = %#v, want %#v", got, want)
+	}
+	if strings.Contains(strings.Join(got, "\x00"), "hello") {
+		t.Fatalf("user prompt leaked into argv: %#v", got)
+	}
+}
+
+func TestBuildOneShotRejectsNULInBridgeInstructions(t *testing.T) {
+	for _, cfg := range []OneShotConfig{
+		{Kind: Claude, Prompt: "hello", ClaudeSystemPromptFile: "/private/v1\x00.md"},
+		{Kind: Codex, Prompt: "hello", DeveloperInstructions: "bridge\x00rules"},
+	} {
+		if _, err := BuildOneShotCommand(cfg); err == nil || !strings.Contains(err.Error(), "NUL") {
+			t.Fatalf("config %#v error = %v", cfg, err)
+		}
 	}
 }
 

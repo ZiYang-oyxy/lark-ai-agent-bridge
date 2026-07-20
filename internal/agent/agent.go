@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 )
@@ -30,6 +31,10 @@ type OneShotConfig struct {
 	// Images are validated local image paths. Only Codex consumes them as
 	// repeated --image flags; Claude continues to receive paths in the prompt.
 	Images []string
+	// ClaudeSystemPromptFile is a bridge-owned immutable instruction file.
+	ClaudeSystemPromptFile string
+	// DeveloperInstructions is the bridge-owned Codex developer layer.
+	DeveloperInstructions string
 }
 
 func ParseKind(raw string) (Kind, bool) {
@@ -63,6 +68,14 @@ func buildCodexOneShotCommand(cfg OneShotConfig) ([]string, error) {
 	if bin == "" {
 		bin = "codex"
 	}
+	global := []string{}
+	if cfg.DeveloperInstructions != "" {
+		encoded, err := codexDeveloperInstructionsArg(cfg.DeveloperInstructions)
+		if err != nil {
+			return nil, err
+		}
+		global = append(global, "-c", encoded)
+	}
 	images := make([]string, 0, len(cfg.Images)*2)
 	for _, path := range cfg.Images {
 		if path = strings.TrimSpace(path); path != "" {
@@ -70,17 +83,32 @@ func buildCodexOneShotCommand(cfg OneShotConfig) ([]string, error) {
 		}
 	}
 	if sessionID := strings.TrimSpace(cfg.AgentSessionID); sessionID != "" {
-		args := []string{bin, "exec", "resume", "--json"}
+		args := []string{bin, "exec"}
+		args = append(args, global...)
+		args = append(args, "resume", "--json")
 		args = append(args, images...)
 		args = append(args, sessionID, "-")
 		return args, nil
 	}
-	args := []string{bin, "exec", "--json"}
+	args := []string{bin, "exec"}
+	args = append(args, global...)
+	args = append(args, "--json")
 	args = append(args, images...)
 	if len(images) > 0 {
 		args = append(args, "--")
 	}
 	return append(args, "-"), nil
+}
+
+func codexDeveloperInstructionsArg(text string) (string, error) {
+	if strings.ContainsRune(text, '\x00') {
+		return "", fmt.Errorf("codex developer instructions contain NUL")
+	}
+	encoded, err := json.Marshal(text)
+	if err != nil {
+		return "", fmt.Errorf("encode codex developer instructions: %w", err)
+	}
+	return "developer_instructions=" + string(encoded), nil
 }
 
 // PromptOnStdin reports whether the agent protocol reads the prompt from
@@ -123,6 +151,12 @@ func buildClaudeOneShotCommand(cfg OneShotConfig) ([]string, error) {
 	}
 	if !strings.EqualFold(effort, "default") {
 		args = append(args, "--effort", effort)
+	}
+	if path := strings.TrimSpace(cfg.ClaudeSystemPromptFile); path != "" {
+		if strings.ContainsRune(path, '\x00') {
+			return nil, fmt.Errorf("claude system prompt file contains NUL")
+		}
+		args = append(args, "--append-system-prompt-file", path)
 	}
 	if model := strings.TrimSpace(cfg.Model); model != "" && !strings.EqualFold(model, "default") {
 		args = append(args, "--model", model)

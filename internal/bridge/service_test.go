@@ -3,6 +3,7 @@ package bridge
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -3520,6 +3521,11 @@ func TestParseClaudeStreamOutputDoesNotDuplicateFinalResult(t *testing.T) {
 }
 
 func TestCLIExecRunnerUsesRequestedWorkDirAndPWD(t *testing.T) {
+	rt, err := bridgeinstructions.NewRuntime()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rt.Close()
 	fakeBin := t.TempDir()
 	fakeClaude := filepath.Join(fakeBin, "claude")
 	script := `#!/bin/sh
@@ -3530,10 +3536,11 @@ printf '{"type":"assistant","message":{"model":"fake-claude","content":[{"type":
 	}
 	t.Setenv("PATH", fakeBin+string(os.PathListSeparator)+os.Getenv("PATH"))
 	workDir := t.TempDir()
-	result, err := CLIExecRunner{}.Run(context.Background(), AgentRunRequest{
-		Kind:    agent.Claude,
-		Prompt:  "check cwd",
-		WorkDir: workDir,
+	result, err := (CLIExecRunner{Instructions: rt}).Run(context.Background(), AgentRunRequest{
+		Kind:                      agent.Claude,
+		Prompt:                    "check cwd",
+		WorkDir:                   workDir,
+		BridgeInstructionsVersion: bridgeinstructions.CurrentVersion,
 	})
 	if err != nil {
 		t.Fatalf("runner error: %v", err)
@@ -3548,6 +3555,11 @@ printf '{"type":"assistant","message":{"model":"fake-claude","content":[{"type":
 }
 
 func TestCLIExecRunnerRunsCodexWithStdinImagesAndConfiguredWorkDir(t *testing.T) {
+	rt, err := bridgeinstructions.NewRuntime()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rt.Close()
 	binDir := t.TempDir()
 	fakeCodex := filepath.Join(binDir, "cx3")
 	logPath := filepath.Join(t.TempDir(), "codex.log")
@@ -3564,14 +3576,15 @@ printf '%s\n' '{"type":"turn.completed","usage":{"input_tokens":2,"output_tokens
 	}
 	t.Setenv("FAKE_CODEX_LOG", logPath)
 	workDir := t.TempDir()
-	result, err := CLIExecRunner{}.Run(context.Background(), AgentRunRequest{
-		Kind:           agent.Codex,
-		Bin:            fakeCodex,
-		Prompt:         "inspect repo",
-		WorkDir:        workDir,
-		Home:           "/isolated/codex-home",
-		Images:         []string{"/cache/a.png", "/cache/b.jpg"},
-		AgentSessionID: "",
+	result, err := (CLIExecRunner{Instructions: rt}).Run(context.Background(), AgentRunRequest{
+		Kind:                      agent.Codex,
+		Bin:                       fakeCodex,
+		Prompt:                    "inspect repo",
+		WorkDir:                   workDir,
+		Home:                      "/isolated/codex-home",
+		Images:                    []string{"/cache/a.png", "/cache/b.jpg"},
+		AgentSessionID:            "",
+		BridgeInstructionsVersion: bridgeinstructions.CurrentVersion,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -3584,12 +3597,117 @@ printf '%s\n' '{"type":"turn.completed","usage":{"input_tokens":2,"output_tokens
 		t.Fatal(err)
 	}
 	log := string(data)
-	if !containsAll(log, "args=exec --json --image /cache/a.png --image /cache/b.jpg -- -", "pwd="+workDir, "stdin=inspect repo", "home=/isolated/codex-home") {
+	if !containsAll(log, "args=exec -c developer_instructions=", " --json --image /cache/a.png --image /cache/b.jpg -- -", "pwd="+workDir, "stdin=inspect repo", "home=/isolated/codex-home") {
 		t.Fatalf("fake codex log = %q", log)
 	}
 	for _, forbidden := range []string{"--sandbox", "approval_policy", "--model", "--profile", "--ignore-rules", "--skip-git-repo-check"} {
 		if strings.Contains(log, forbidden) {
 			t.Fatalf("unexpected %q in log %q", forbidden, log)
+		}
+	}
+}
+
+func TestCLIExecRunnerBridgeInstructionsUseNativeChannels(t *testing.T) {
+	rt, err := bridgeinstructions.NewRuntime()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rt.Close()
+	runner := CLIExecRunner{Instructions: rt}
+	binDir := t.TempDir()
+
+	claudeBin := filepath.Join(binDir, "claude")
+	claudeScript := `#!/bin/sh
+previous=
+instruction_file=
+last=
+for arg in "$@"; do
+  if [ "$previous" = "--append-system-prompt-file" ]; then instruction_file="$arg"; fi
+  previous="$arg"
+  last="$arg"
+done
+test -r "$instruction_file"
+grep -q 'Feishu Bridge Runtime Instructions' "$instruction_file"
+printf '%s\n%s\n' "$instruction_file" "$last" >"$FAKE_AGENT_LOG"
+printf '%s\n' '{"type":"assistant","message":{"model":"fake-claude","content":[{"type":"text","text":"ok"}]},"session_id":"claude-session"}'
+`
+	if err := os.WriteFile(claudeBin, []byte(claudeScript), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	var claudeInstructionPath string
+	for i, prompt := range []string{"first prompt", "second prompt"} {
+		logPath := filepath.Join(t.TempDir(), fmt.Sprintf("claude-%d.log", i))
+		t.Setenv("FAKE_AGENT_LOG", logPath)
+		if _, err := runner.Run(context.Background(), AgentRunRequest{Kind: agent.Claude, Bin: claudeBin, Prompt: prompt, BridgeInstructionsVersion: bridgeinstructions.CurrentVersion}); err != nil {
+			t.Fatal(err)
+		}
+		data, err := os.ReadFile(logPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		lines := strings.Split(strings.TrimSpace(string(data)), "\n")
+		if len(lines) != 2 || lines[1] != prompt {
+			t.Fatalf("claude log = %q", data)
+		}
+		if i == 0 {
+			claudeInstructionPath = lines[0]
+		} else if lines[0] != claudeInstructionPath {
+			t.Fatalf("claude instruction paths differ: %q and %q", claudeInstructionPath, lines[0])
+		}
+	}
+
+	codexBin := filepath.Join(binDir, "codex")
+	codexScript := `#!/bin/sh
+count=0
+instruction=
+for arg in "$@"; do
+  case "$arg" in
+    developer_instructions=*) count=$((count + 1)); instruction="$arg" ;;
+  esac
+done
+test "$count" -eq 1
+printf '%s' "$instruction" >"$FAKE_CONFIG_LOG"
+IFS= read -r prompt || true
+printf '%s' "$prompt" >"$FAKE_STDIN_LOG"
+printf '%s\n' '{"type":"thread.started","thread_id":"codex-thread"}'
+printf '%s\n' '{"type":"item.completed","item":{"id":"msg-1","type":"agent_message","text":"ok"}}'
+printf '%s\n' '{"type":"turn.completed","usage":{"input_tokens":1,"output_tokens":1}}'
+`
+	if err := os.WriteFile(codexBin, []byte(codexScript), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	content, err := rt.Content(bridgeinstructions.CurrentVersion)
+	if err != nil {
+		t.Fatal(err)
+	}
+	encoded, err := json.Marshal(content)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i, tc := range []struct {
+		prompt    string
+		sessionID string
+	}{{prompt: "fresh prompt"}, {prompt: "resume prompt", sessionID: "codex-thread"}} {
+		configLog := filepath.Join(t.TempDir(), fmt.Sprintf("codex-config-%d.log", i))
+		stdinLog := filepath.Join(t.TempDir(), fmt.Sprintf("codex-stdin-%d.log", i))
+		t.Setenv("FAKE_CONFIG_LOG", configLog)
+		t.Setenv("FAKE_STDIN_LOG", stdinLog)
+		if _, err := runner.Run(context.Background(), AgentRunRequest{Kind: agent.Codex, Bin: codexBin, Prompt: tc.prompt, AgentSessionID: tc.sessionID, BridgeInstructionsVersion: bridgeinstructions.CurrentVersion}); err != nil {
+			t.Fatal(err)
+		}
+		gotConfig, err := os.ReadFile(configLog)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(gotConfig) != "developer_instructions="+string(encoded) {
+			t.Fatalf("codex config = %q", gotConfig)
+		}
+		gotStdin, err := os.ReadFile(stdinLog)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(gotStdin) != tc.prompt || strings.Contains(string(gotStdin), "Feishu Bridge Runtime Instructions") {
+			t.Fatalf("codex stdin = %q", gotStdin)
 		}
 	}
 }

@@ -17,6 +17,7 @@ import (
 	"lark-agent-bridge/internal/agent"
 	"lark-agent-bridge/internal/audit"
 	"lark-agent-bridge/internal/bridge"
+	"lark-agent-bridge/internal/bridgeinstructions"
 	"lark-agent-bridge/internal/card"
 	"lark-agent-bridge/internal/config"
 	"lark-agent-bridge/internal/doctor"
@@ -279,7 +280,12 @@ func runServe(args []string) error {
 		return err
 	}
 	defer closeAudit()
-	sessions := session.NewManagerWithStore(cfg.SessionStorePath)
+	instructions, err := bridgeinstructions.NewRuntime()
+	if err != nil {
+		return fmt.Errorf("initialize bridge instructions: %w", err)
+	}
+	defer instructions.Close()
+	sessions := session.NewManagerWithStoreVersion(cfg.SessionStorePath, bridgeinstructions.CurrentVersion)
 	notices, err := sessions.Restore()
 	if err != nil {
 		return fmt.Errorf("restore session store: %w", err)
@@ -310,7 +316,8 @@ func runServe(args []string) error {
 	}
 	cardRouter := newServeCardRouter(cardClient, recorder, sequenceJournal)
 	renderer := feishu.NewReactionCardRenderer(sender, cardRouter)
-	svc := bridge.NewServiceWithSessions(cfg, renderer, nil, recorder, sessions, notices)
+	runner := &bridge.CLIExecRunner{Instructions: instructions}
+	svc := bridge.NewServiceWithSessions(cfg, renderer, runner, recorder, sessions, notices)
 	svc.Agents = agents
 	svc.Preferences = preferences
 	svc.TopicParticipation = topicStore

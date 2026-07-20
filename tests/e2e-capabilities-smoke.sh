@@ -301,6 +301,15 @@ fi
 if ! rg -F 'svc.OutputImages = sender' "$ROOT/cmd/lark-agent-bridge/main.go" >/dev/null; then
   fail "production serve must wire SDKSender as the output image sender"
 fi
+for required in \
+  'bridgeinstructions.NewRuntime()' \
+  'session.NewManagerWithStoreVersion(cfg.SessionStorePath, bridgeinstructions.CurrentVersion)' \
+  'bridge.CLIExecRunner{Instructions: instructions}' \
+  'bridge-instructions/feishu-runtime-v1.md'; do
+  if ! rg -F -- "$required" "$ROOT/cmd/lark-agent-bridge/main.go" "$ROOT/internal/bridgeinstructions/catalog.go" >/dev/null; then
+    fail "production serve must wire versioned bridge instructions: $required"
+  fi
+done
 mget_source="$(sed -n '/^mget() {/,/^}/p' "$ROOT/scripts/e2e-real.sh")"
 if ! printf '%s\n' "$mget_source" | rg -F 'audit_reply_message_id' >/dev/null; then
   fail "mget must resolve non-thread CardKit replies from the reply audit"
