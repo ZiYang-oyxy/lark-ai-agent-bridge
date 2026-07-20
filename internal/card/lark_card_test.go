@@ -236,6 +236,24 @@ func TestBuildLarkCardIncludesActionsAndMeta(t *testing.T) {
 	}
 }
 
+func TestMetaRowsFormatsCompleteFooter(t *testing.T) {
+	primary, runtime := MetaRows(Meta{
+		Agent:       "claude",
+		ModelInfo:   ModelInfo{Actual: "claude-opus-4-8[1m]", Effort: "default"},
+		RunTokens:   21_743_200,
+		TotalTokens: 29_261_500,
+		User:        "developer",
+		IP:          "192.0.2.10",
+		WorkDir:     "/workspace/lark-agent-workspace",
+	})
+	if want := "🤖 Claude · 🧠 claude-opus-4-8[1m]（default） · 🔢 tokens: ▶ 21743.2k / ∑ 29261.5k"; primary != want {
+		t.Fatalf("primary = %q, want %q", primary, want)
+	}
+	if want := "👤 developer · 🖥️ 192.0.2.10 · 📁 `/workspace/lark-agent-workspace`"; runtime != want {
+		t.Fatalf("runtime = %q, want %q", runtime, want)
+	}
+}
+
 func TestBuildLarkCardLabelsRequestedAndActualModel(t *testing.T) {
 	for _, tc := range []struct {
 		name string

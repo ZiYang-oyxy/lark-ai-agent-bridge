@@ -471,7 +471,7 @@ func callbackBehavior(sessionID, actionID, value string) []any {
 // 第一行 agent · model(effort) · tokens,第二行 user · ip · workdir。
 // 用间隔点连接、图标前缀,避免旧的加权分栏在窄屏错行;空字段跳过,空行不渲染。
 func buildMetaElements(meta Meta) []any {
-	first, second := metaRows(meta)
+	first, second := MetaRows(meta)
 	if first == "" && second == "" {
 		return nil
 	}
@@ -485,7 +485,9 @@ func buildMetaElements(meta Meta) []any {
 	return elements
 }
 
-func metaRows(meta Meta) (string, string) {
+// MetaRows formats the two compact metadata rows shared by full CardKit and
+// lightweight append replies.
+func MetaRows(meta Meta) (string, string) {
 	var first []string
 	if meta.Agent != "" {
 		first = append(first, "🤖 "+displayAgent(meta.Agent))

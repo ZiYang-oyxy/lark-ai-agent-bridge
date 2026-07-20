@@ -59,6 +59,54 @@ func TestRenderMarkdownShowsOneDerivedRunningStatus(t *testing.T) {
 	}
 }
 
+func TestRenderMarkdownCompleteTerminalFooter(t *testing.T) {
+	got := RenderMarkdown(card.Event{
+		Type:     "result",
+		Segments: []card.Segment{{Kind: card.SegmentText, Text: "done"}},
+		Meta: card.Meta{
+			Agent:       "claude",
+			ModelInfo:   card.ModelInfo{Actual: "claude-opus-4-8[1m]", Effort: "default"},
+			RunTokens:   21_743_200,
+			TotalTokens: 29_261_500,
+			User:        "developer",
+			IP:          "192.0.2.10",
+			WorkDir:     "/workspace/lark-agent-workspace",
+		},
+	})
+	want := "done\n\n" +
+		"🤖 Claude · 🧠 claude-opus-4-8[1m]（default） · 🔢 tokens: ▶ 21743.2k / ∑ 29261.5k\n" +
+		"👤 developer · 🖥️ 192.0.2.10 · 📁 `/workspace/lark-agent-workspace`"
+	if got != want {
+		t.Fatalf("markdown = %q, want %q", got, want)
+	}
+}
+
+func TestRenderMarkdownPartialTerminalFooter(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		meta card.Meta
+		want string
+	}{
+		{
+			name: "primary only",
+			meta: card.Meta{ModelInfo: card.ModelInfo{Actual: "claude-sonnet-4-6"}},
+			want: "🧠 claude-sonnet-4-6",
+		},
+		{
+			name: "runtime only",
+			meta: card.Meta{User: "developer", WorkDir: "/repo"},
+			want: "👤 developer · 📁 `/repo`",
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			got := RenderMarkdown(card.Event{Type: "result", Meta: test.meta})
+			if got != test.want || strings.HasPrefix(got, "\n") || strings.HasSuffix(got, "\n") || strings.Contains(got, " ·  · ") {
+				t.Fatalf("markdown = %q, want %q", got, test.want)
+			}
+		})
+	}
+}
+
 func TestRenderMarkdownBoundsInlineToolSummary(t *testing.T) {
 	longASCII := strings.Repeat("a", 81)
 	longUnicode := strings.Repeat("界", 81)

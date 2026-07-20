@@ -1,7 +1,6 @@
 package reply
 
 import (
-	"fmt"
 	"strings"
 
 	"lark-agent-bridge/internal/card"
@@ -52,7 +51,7 @@ func RenderMarkdown(event card.Event) string {
 		parts = append(parts, status)
 	}
 	if !event.Streaming {
-		if meta := markdownMetaLine(event.Meta); meta != "" {
+		if meta := markdownMetaFooter(event.Meta); meta != "" {
 			parts = append(parts, meta)
 		}
 	}
@@ -124,36 +123,14 @@ func terminalStatusLine(eventType string, hasError bool) string {
 	return ""
 }
 
-func markdownMetaLine(meta card.Meta) string {
-	parts := make([]string, 0, 2)
-	if agent := strings.TrimSpace(meta.Agent); agent != "" {
-		if strings.EqualFold(agent, "claude") {
-			agent = "Claude"
-		}
-		parts = append(parts, "🤖 "+agent)
+func markdownMetaFooter(meta card.Meta) string {
+	primary, runtime := card.MetaRows(meta)
+	rows := make([]string, 0, 2)
+	if primary != "" {
+		rows = append(rows, primary)
 	}
-	runTokens := meta.RunTokens
-	totalTokens := meta.TotalTokens
-	if runTokens == 0 && meta.Tokens > 0 {
-		runTokens = meta.Tokens
+	if runtime != "" {
+		rows = append(rows, runtime)
 	}
-	if totalTokens == 0 && meta.Tokens > 0 {
-		totalTokens = meta.Tokens
-	}
-	if runTokens > 0 || totalTokens > 0 {
-		tokens := "🔢 tokens: ▶ " + compactMarkdownInt(runTokens)
-		if totalTokens > 0 {
-			tokens += " / ∑ " + compactMarkdownInt(totalTokens)
-		}
-		parts = append(parts, tokens)
-	}
-	return strings.Join(parts, " · ")
-}
-
-func compactMarkdownInt(value int) string {
-	if value < 1000 {
-		return fmt.Sprintf("%d", value)
-	}
-	text := fmt.Sprintf("%.1fk", float64(value)/1000)
-	return strings.Replace(text, ".0k", "k", 1)
+	return strings.Join(rows, "\n")
 }
