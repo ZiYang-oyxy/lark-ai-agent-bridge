@@ -405,7 +405,7 @@ func (s *Service) HandleMessage(ctx context.Context, msg Message) error {
 	if cmd.Type == CommandIgnored {
 		return nil
 	}
-	if selected, ok := agent.ParseKind(preference.Agent); ok && (cmd.Type == CommandRun || cmd.Type == CommandStatus) {
+	if selected, ok := agent.ParseKind(preference.Agent); ok && (cmd.Type == CommandRun || cmd.Type == CommandStatus || cmd.Type == CommandStop) {
 		cmd.Agent = selected
 	}
 	if s.adminCommand(cmd.Type) && !s.canRunAdminCommand(msg.Sender) {
@@ -429,6 +429,8 @@ func (s *Service) HandleMessage(ctx context.Context, msg Message) error {
 		return s.renderTextWithMode("command", msg.ID, card.SegmentError, cmd.Text, preference.ConversationMode)
 	case CommandStatus:
 		return s.renderTextWithMode("status", msg.ID, card.SegmentText, s.statusTextWithPreference(cmd.Agent, msg, preference), preference.ConversationMode)
+	case CommandStop:
+		return s.handleStopCommand(msg, cmd, preference)
 	case CommandConfig:
 		return s.handleConfigCommand(ctx, msg, cmd, preference)
 	case CommandAgentMode:
@@ -442,6 +444,20 @@ func (s *Service) HandleMessage(ctx context.Context, msg Message) error {
 	default:
 		return s.renderTextWithMode("command", msg.ID, card.SegmentError, "unsupported command", preference.ConversationMode)
 	}
+}
+
+func (s *Service) handleStopCommand(msg Message, cmd Command, preference config.RuntimePreference) error {
+	if strings.TrimSpace(cmd.Text) != "" {
+		return s.renderTextWithMode("stop-usage", msg.ID, card.SegmentError, "用法：/stop（仅停止当前会话正在运行的任务，并保留排队输入）", preference.ConversationMode)
+	}
+	key := sessionKeyForMode(cmd.Agent, msg, preference.ConversationMode)
+	run, ok := s.cancelActiveRunByKey(key)
+	if !ok {
+		s.Audit.Record(msg.Sender, "batch_stop_ignored", key.ID(), "no active batch")
+		return s.renderTextWithMode("stop-idle", msg.ID, card.SegmentText, "当前会话没有正在运行的任务。", preference.ConversationMode)
+	}
+	s.Audit.Record(msg.Sender, "batch_stop_requested", run.BaseSessionID, run.BatchID)
+	return s.renderTextWithMode("stop-requested", msg.ID, card.SegmentText, "已请求停止当前任务；排队输入将继续执行。", preference.ConversationMode)
 }
 
 func (s *Service) handleConfigCommand(ctx context.Context, msg Message, cmd Command, preference config.RuntimePreference) error {
@@ -1430,6 +1446,26 @@ func (s *Service) cancelActiveRun(id string) (activeRun, bool) {
 		run.Stream.markStopping()
 	}
 	return run, ok
+}
+
+func (s *Service) cancelActiveRunByKey(key session.Key) (activeRun, bool) {
+	s.mu.Lock()
+	var matched activeRun
+	found := false
+	for _, run := range s.activeRuns {
+		if run.Key == key {
+			matched, found = run, true
+			matched.Cancel()
+			break
+		}
+	}
+	s.mu.Unlock()
+	// Match cancelActiveRun: prevent a queued preview from reverting the run
+	// card to "running" after the text command acknowledged the stop request.
+	if found && matched.Stream != nil {
+		matched.Stream.markStopping()
+	}
+	return matched, found
 }
 
 func (s *Service) cancelActiveRunByMessageID(messageID string) (activeRun, bool) {

@@ -2129,6 +2129,161 @@ func TestServiceStopCancelsActiveOneShotRun(t *testing.T) {
 	}
 }
 
+func TestServiceTextStopCancelsCurrentScopeAndRejectsArguments(t *testing.T) {
+	cfg := testConfig(t)
+	renderer := card.NewFakeRenderer()
+	runner := newFakeRunner()
+	runner.block = make(chan struct{})
+	svc := NewService(cfg, renderer, runner, audit.NewRecorder())
+	now := time.Now()
+	key := session.Key{Agent: agent.Claude, ChatID: "chat", Thread: "topic"}
+	if err := svc.HandleMessage(context.Background(), Message{ID: "run", ChatID: "chat", ThreadID: "topic", Sender: "u", Text: "/new long", Time: now}); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.DrainReady(now.Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	<-runner.started
+
+	if err := svc.HandleMessage(context.Background(), Message{ID: "bad-stop", ChatID: "chat", ThreadID: "topic", Sender: "u", Text: "/stop all", Time: now.Add(time.Second)}); err != nil {
+		t.Fatal(err)
+	}
+	if sess, ok := svc.Sessions.Get(key); !ok || sess.ActiveBatch == nil {
+		t.Fatalf("invalid /stop cancelled active batch: %#v", sess)
+	}
+	if !eventsContainText(renderer.Events(), "用法：/stop") {
+		t.Fatalf("events = %#v, want stop usage", renderer.Events())
+	}
+
+	if err := svc.HandleMessage(context.Background(), Message{ID: "stop", ChatID: "chat", ThreadID: "topic", Sender: "u", Text: "/stop", Time: now.Add(2 * time.Second)}); err != nil {
+		t.Fatal(err)
+	}
+	waitForSessionNoActiveBatch(t, svc, key)
+	if !eventsContainText(renderer.Events(), "已请求停止当前任务") {
+		t.Fatalf("events = %#v, want stop acknowledgement", renderer.Events())
+	}
+}
+
+func TestServiceTextStopIdleRendersExactResponseWithoutRunningAgent(t *testing.T) {
+	renderer := card.NewFakeRenderer()
+	runner := newFakeRunner()
+	svc := NewService(testConfig(t), renderer, runner, audit.NewRecorder())
+	if err := svc.HandleMessage(context.Background(), Message{ID: "idle-stop", ChatID: "chat", ThreadID: "topic", Sender: "u", Text: "/stop", Time: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	events := renderer.Events()
+	if len(events) != 1 || len(events[0].Segments) != 1 || events[0].Segments[0].Text != "当前会话没有正在运行的任务。" {
+		t.Fatalf("events = %#v, want exact idle response", events)
+	}
+	if got := len(runner.Calls()); got != 0 {
+		t.Fatalf("runner calls = %d, want 0", got)
+	}
+}
+
+func TestServiceTextStopIsolatesTopics(t *testing.T) {
+	cfg := testConfig(t)
+	runner := newFakeRunner()
+	runner.block = make(chan struct{})
+	svc := NewService(cfg, card.NewFakeRenderer(), runner, audit.NewRecorder())
+	now := time.Now()
+	key := session.Key{Agent: agent.Claude, ChatID: "chat", Thread: "topic-a"}
+	if err := svc.HandleMessage(context.Background(), Message{ID: "run", ChatID: "chat", ThreadID: "topic-a", Sender: "u", Text: "long", Time: now}); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.DrainReady(now.Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	<-runner.started
+
+	if err := svc.HandleMessage(context.Background(), Message{ID: "wrong-topic", ChatID: "chat", ThreadID: "topic-b", Sender: "u", Text: "/stop", Time: now.Add(time.Second)}); err != nil {
+		t.Fatal(err)
+	}
+	if sess, ok := svc.Sessions.Get(key); !ok || sess.ActiveBatch == nil {
+		t.Fatalf("cross-topic /stop cancelled active batch: %#v", sess)
+	}
+	if err := svc.HandleMessage(context.Background(), Message{ID: "right-topic", ChatID: "chat", ThreadID: "topic-a", Sender: "u", Text: "/stop", Time: now.Add(2 * time.Second)}); err != nil {
+		t.Fatal(err)
+	}
+	waitForSessionNoActiveBatch(t, svc, key)
+}
+
+func TestServiceTextStopUsesSelectedAgent(t *testing.T) {
+	cfg := testConfig(t)
+	cfg.ConversationMode = config.ConversationModeChat
+	defaults := config.RuntimePreference{Model: "default", Effort: "low", ReplyMode: config.ReplyModeAppend, ConversationMode: config.ConversationModeChat, Agent: "claude"}
+	agents := config.AgentsConfig{SchemaVersion: config.AgentsSchemaVersion, Agents: []config.AgentDef{
+		{Kind: "claude", Homes: []config.AgentHome{{Label: config.DefaultHomeLabel}}, Bins: []config.AgentBin{{Label: config.DefaultBinLabel}}},
+		{Kind: "codex", Homes: []config.AgentHome{{Label: config.DefaultHomeLabel}}, Bins: []config.AgentBin{{Label: config.DefaultBinLabelFor("codex")}}},
+	}}
+	preferences, err := config.OpenPreferenceStore(filepath.Join(t.TempDir(), "preferences.json"), defaults, cfg.AllowedModels, agents.Agents...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runner := newFakeRunner()
+	runner.block = make(chan struct{})
+	svc := NewService(cfg, card.NewFakeRenderer(), runner, audit.NewRecorder())
+	svc.Agents = agents
+	svc.Preferences = preferences
+	now := time.Now()
+	key := session.Key{Agent: agent.Claude, ChatID: "chat"}
+	if err := svc.HandleMessage(context.Background(), Message{ID: "run", ChatID: "chat", Sender: "u", Text: "long", Time: now}); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.DrainReady(now.Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	<-runner.started
+
+	codex := defaults
+	codex.Agent = "codex"
+	if err := preferences.Set(codex); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.HandleMessage(context.Background(), Message{ID: "codex-stop", ChatID: "chat", Sender: "u", Text: "/stop", Time: now.Add(time.Second)}); err != nil {
+		t.Fatal(err)
+	}
+	if sess, ok := svc.Sessions.Get(key); !ok || sess.ActiveBatch == nil {
+		t.Fatalf("codex /stop cancelled claude batch: %#v", sess)
+	}
+	if err := preferences.Set(defaults); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.HandleMessage(context.Background(), Message{ID: "claude-stop", ChatID: "chat", Sender: "u", Text: "/stop", Time: now.Add(2 * time.Second)}); err != nil {
+		t.Fatal(err)
+	}
+	waitForSessionNoActiveBatch(t, svc, key)
+}
+
+func TestServiceTextStopKeepsLaterQueue(t *testing.T) {
+	cfg := testConfig(t)
+	runner := newFakeRunner()
+	runner.block = make(chan struct{})
+	svc := NewService(cfg, card.NewFakeRenderer(), runner, audit.NewRecorder())
+	now := time.Now()
+	key := session.Key{Agent: agent.Claude, ChatID: "chat", Thread: "topic"}
+	if err := svc.HandleMessage(context.Background(), Message{ID: "first", ChatID: "chat", ThreadID: "topic", Sender: "u", Text: "first", Time: now}); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.DrainReady(now.Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	<-runner.started
+	if err := svc.HandleMessage(context.Background(), Message{ID: "later", ChatID: "chat", ThreadID: "topic", Sender: "u", Text: "later", Time: now.Add(time.Second)}); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.HandleMessage(context.Background(), Message{ID: "stop", ChatID: "chat", ThreadID: "topic", Sender: "u", Text: "/stop", Time: now.Add(2 * time.Second)}); err != nil {
+		t.Fatal(err)
+	}
+	waitForSessionNoActiveBatch(t, svc, key)
+	if err := svc.DrainReady(now.Add(3 * time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	waitForCalls(t, runner, 2)
+	if got := runner.Calls()[1].Prompt; got != "later" {
+		t.Fatalf("later prompt = %q, want later", got)
+	}
+}
+
 func TestServiceStopIsIdempotentForAlreadyStoppedRun(t *testing.T) {
 	cfg := testConfig(t)
 	renderer := card.NewFakeRenderer()
