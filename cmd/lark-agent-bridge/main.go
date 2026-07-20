@@ -22,6 +22,7 @@ import (
 	"lark-agent-bridge/internal/doctor"
 	"lark-agent-bridge/internal/feishu"
 	"lark-agent-bridge/internal/media"
+	"lark-agent-bridge/internal/participation"
 	"lark-agent-bridge/internal/reply"
 	"lark-agent-bridge/internal/session"
 )
@@ -371,6 +372,14 @@ func runtimePreferenceDefaults(cfg config.Config) config.RuntimePreference {
 		GroupMessageMode: cfg.GroupMessageMode,
 		RespondToBots:    cfg.RespondToBots,
 	}
+}
+
+func openParticipationStore(cfg config.Config) (*participation.Store, error) {
+	store, err := participation.OpenStore(cfg.ParticipatedTopicsStorePath, 10_000)
+	if err != nil {
+		return nil, fmt.Errorf("open participation store: %w", err)
+	}
+	return store, nil
 }
 
 func newServeCardRouter(client feishu.CardKitClientAPI, observer feishu.CardKitRenderObserver, journal feishu.NativeSequenceJournal) *feishu.CardKitRouterRenderer {

@@ -407,6 +407,17 @@ func TestRuntimePreferenceDefaultsIncludeGroupMessageSettings(t *testing.T) {
 	}
 }
 
+func TestOpenParticipationStoreFailsClosedOnCorruptSnapshot(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "topics.json")
+	if err := os.WriteFile(path, []byte(`{`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, err := openParticipationStore(config.Config{ParticipatedTopicsStorePath: path})
+	if err == nil || !strings.Contains(err.Error(), "open participation store") {
+		t.Fatalf("openParticipationStore error = %v", err)
+	}
+}
+
 type fakeLongConnClient struct {
 	run func(context.Context, func(context.Context, feishu.InboundMessage) error) error
 }
