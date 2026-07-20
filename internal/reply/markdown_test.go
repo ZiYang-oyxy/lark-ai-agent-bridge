@@ -59,6 +59,64 @@ func TestRenderMarkdownShowsOneDerivedRunningStatus(t *testing.T) {
 	}
 }
 
+func TestRenderMarkdownBoundsInlineToolSummary(t *testing.T) {
+	longASCII := strings.Repeat("a", 81)
+	longUnicode := strings.Repeat("界", 81)
+	tests := []struct {
+		name    string
+		summary string
+		want    string
+	}{
+		{name: "ascii", summary: longASCII, want: strings.Repeat("a", 80) + "…"},
+		{name: "unicode", summary: longUnicode, want: strings.Repeat("界", 80) + "…"},
+		{name: "whitespace", summary: "git  status\n--short", want: "git status --short"},
+		{name: "markdown", summary: strings.Repeat("x", 79) + "*tail", want: strings.Repeat("x", 79) + "\\*…"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := RenderMarkdown(card.Event{
+				Type:      "stream",
+				Streaming: true,
+				Activity:  "tool",
+				Segments: []card.Segment{{
+					Kind: card.SegmentTool,
+					Tool: &card.ToolMeta{ID: "t1", Name: "Bash", Summary: tt.summary, Phase: "use"},
+				}},
+			})
+			if !strings.Contains(got, "· "+tt.want+"\n\n_🧰 正在调用工具…_") {
+				t.Fatalf("markdown = %q, want summary %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestRenderMarkdownKeepsBoundedSummaryAcrossToolLifecycle(t *testing.T) {
+	summary := strings.Repeat("c", 81)
+	wantSummary := strings.Repeat("c", 80) + "…"
+	for _, test := range []struct {
+		name    string
+		isError bool
+		status  string
+	}{
+		{name: "done", status: "✅"},
+		{name: "error", isError: true, status: "❌"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			got := RenderMarkdown(card.Event{
+				Type: "result",
+				Segments: []card.Segment{
+					{Kind: card.SegmentTool, Tool: &card.ToolMeta{ID: "t1", Name: "Bash", Summary: summary, Phase: "use"}},
+					{Kind: card.SegmentTool, Tool: &card.ToolMeta{ID: "t1", Phase: "result", IsError: test.isError}},
+				},
+			})
+			want := "> " + test.status + " **Bash** · " + wantSummary
+			if got != want {
+				t.Fatalf("markdown = %q, want %q", got, want)
+			}
+		})
+	}
+}
+
 func TestRenderMarkdownShowsFailedToolAndTerminalState(t *testing.T) {
 	got := RenderMarkdown(card.Event{
 		Type: "stopped",

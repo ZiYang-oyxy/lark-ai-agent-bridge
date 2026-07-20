@@ -7,6 +7,8 @@ import (
 	"lark-agent-bridge/internal/card"
 )
 
+const toolHeaderSummaryMaxRunes = 80
+
 func RenderMarkdown(event card.Event) string {
 	parts := make([]string, 0, len(event.Segments)+2)
 	toolParts := make(map[string]int)
@@ -66,7 +68,7 @@ func renderToolUse(meta *card.ToolMeta) string {
 		name = "Tool"
 	}
 	line := "> ⏳ **" + name + "**"
-	if summary := safeInline(meta.Summary); summary != "" {
+	if summary := safeInlineSummary(meta.Summary, toolHeaderSummaryMaxRunes); summary != "" {
 		line += " · " + summary
 	}
 	return line
@@ -82,6 +84,19 @@ func renderToolLine(existing string, result *card.ToolMeta) string {
 
 func safeInline(value string) string {
 	value = strings.Join(strings.Fields(value), " ")
+	return escapeMarkdownInline(value)
+}
+
+func safeInlineSummary(value string, maxRunes int) string {
+	value = strings.Join(strings.Fields(value), " ")
+	runes := []rune(value)
+	if maxRunes > 0 && len(runes) > maxRunes {
+		value = string(runes[:maxRunes]) + "…"
+	}
+	return escapeMarkdownInline(value)
+}
+
+func escapeMarkdownInline(value string) string {
 	replacer := strings.NewReplacer("\\", "\\\\", "*", "\\*", "_", "\\_", "`", "\\`", "[", "\\[", "]", "\\]")
 	return replacer.Replace(value)
 }
