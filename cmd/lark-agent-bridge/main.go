@@ -307,6 +307,7 @@ func runServe(args []string) error {
 	svc.SequenceResolver = sequenceJournal
 	svc.CardTarget = cardRouter
 	svc.Reactions = sender
+	svc.OutputImages = sender
 	actionGateway := bridge.ActionGateway{Service: svc, Fencer: cardRouter}
 	actionHandler, callbackHandler := newServeActionTransports(actionGateway, cfg.CardMaxChars)
 	svc.ProcessRecoveryNotices(ctx)

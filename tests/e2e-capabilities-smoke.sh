@@ -298,6 +298,9 @@ server_start_source="$(sed -n '/^start_server_if_needed() {/,/^}/p' "$ROOT/scrip
 if ! printf '%s\n' "$server_start_source" | rg -F '[[ -n "$CALLBACK_ADDR" ]]' >/dev/null; then
   fail "non-action E2E servers must not receive E2E_CALLBACK_ADDR"
 fi
+if ! rg -F 'svc.OutputImages = sender' "$ROOT/cmd/lark-agent-bridge/main.go" >/dev/null; then
+  fail "production serve must wire SDKSender as the output image sender"
+fi
 mget_source="$(sed -n '/^mget() {/,/^}/p' "$ROOT/scripts/e2e-real.sh")"
 if ! printf '%s\n' "$mget_source" | rg -F 'audit_reply_message_id' >/dev/null; then
   fail "mget must resolve non-thread CardKit replies from the reply audit"
@@ -308,6 +311,9 @@ if ! printf '%s\n' "$fake_claude_source" | rg -F "grep -Eo 'E2E_[A-Za-z0-9_-]+'"
 fi
 if ! printf '%s\n' "$fake_claude_source" | rg -F '*E2E_*_STREAM*)' >/dev/null; then
   fail "fake Claude must emit an intermediate delta for streaming_card"
+fi
+if ! printf '%s\n' "$fake_claude_source" | rg -F '*E2E_*_OUTPUT_IMAGE*)' >/dev/null; then
+  fail "fake Claude must expose an explicit local image output contract"
 fi
 native_fake_source="$(printf '%s\n' "$fake_claude_source" | sed -n '/\*E2E_\*_NATIVE_TEXT_STREAM_NORMAL\*)/,/;;/p')"
 if ! printf '%s\n' "$fake_claude_source" | rg -F '*E2E_*_NATIVE_TEXT_STREAM_NORMAL*)' >/dev/null || \
@@ -346,6 +352,13 @@ rg -q 'E2E_20260719-123456_STREAM' "$FAKE_CONTRACT_DIR/stream.jsonl"
 
 "$FAKE_BIN_DIR/claude" 'E2E_20260719-123456_DEFAULT' >"$FAKE_CONTRACT_DIR/default.jsonl"
 rg -q 'FAKE_E2E_STARTED E2E_20260719-123456_DEFAULT' "$FAKE_CONTRACT_DIR/default.jsonl"
+
+(
+  cd "$FAKE_CONTRACT_DIR"
+  "$FAKE_BIN_DIR/claude" 'E2E_20260719-123456_OUTPUT_IMAGE' >"$FAKE_CONTRACT_DIR/output-image.jsonl"
+)
+test -s "$FAKE_CONTRACT_DIR/e2e-output-E2E_20260719-123456_OUTPUT_IMAGE.png"
+rg -Fq '![E2E_20260719-123456_OUTPUT_IMAGE](./e2e-output-E2E_20260719-123456_OUTPUT_IMAGE.png)' "$FAKE_CONTRACT_DIR/output-image.jsonl"
 
 : >"$FAKE_CONTRACT_DIR/native-stop.jsonl"
 "$FAKE_BIN_DIR/claude" 'E2E_20260719-123456_NATIVE_TEXT_STREAM_STOP_E2E_BLOCK' >"$FAKE_CONTRACT_DIR/native-stop.jsonl" &

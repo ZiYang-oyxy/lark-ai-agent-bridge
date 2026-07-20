@@ -476,6 +476,16 @@ args="$(printf '%s' "$*" | tr '\n' ' ')"
 printf 'pid=%s args=%s\n' "$$" "$args" >>"${FAKE_CLAUDE_LOG:?FAKE_CLAUDE_LOG is required}"
 marker="$(printf '%s\n' "$args" | grep -Eo 'E2E_[A-Za-z0-9_-]+' | tail -n 1 || true)"
 case "$args" in
+  *E2E_*_OUTPUT_IMAGE*)
+    image_name="e2e-output-${marker}.png"
+    image_base64='iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII='
+    if ! printf '%s' "$image_base64" | base64 --decode >"$image_name" 2>/dev/null; then
+      printf '%s' "$image_base64" | base64 -D >"$image_name"
+    fi
+    result="![${marker}](./${image_name})"
+    jq -nc --arg result "$result" '{type:"result",result:$result,model:"fake-claude-e2e",usage:{output_tokens:1},session_id:"fake-e2e-session"}'
+    exit 0
+    ;;
   *E2E_*_NATIVE_TEXT_STREAM_STOP_E2E_BLOCK*)
     printf '%s\n' '{"type":"content_block_delta","delta":{"type":"text_delta","text":"native-stop-one "}}'
     sleep 1.2

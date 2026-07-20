@@ -57,6 +57,24 @@ owner 或管理员可在飞书中管理名单：
 
 该设置与 Reply mode（`append`、`append-clean-card`、`latest-card`）相互独立。保存成功后只影响新接收的消息；已有 session 不迁移、不删除，已经排队或停在 workdir 确认阶段的输入继续使用接收时的 mode。启动环境可用 `E2E_CONVERSATION_MODE=chat|topic` 设置 `/config reset` 恢复的默认值。
 
+## 图片输出
+
+Agent 可在最终回复中显式引用当前 workdir 内的本地图片：
+
+```markdown
+![趋势图](./output/chart.png)
+```
+
+Bridge 会按引用顺序把图片作为独立的飞书图片消息发送，并在同一结果卡中把引用更新为“已作为图片发送”或安全的失败原因。Bridge 不扫描目录，不从 thinking 或 tool output 提取图片，也不会下载并转发公网图片。
+
+首版限制：
+
+- 支持 PNG、JPEG、WebP、GIF，按文件内容识别格式。
+- 单张必须大于 0 且不超过 10 MiB；每轮最多发送 5 张唯一图片。
+- 相对路径和绝对路径最终都必须解析到当前 workdir 内；越界路径与 symlink 逃逸会被拒绝。
+- 不支持 HTTP(S)、`data:`、`file://`、HTML `<img>` 或 reference-style Markdown 图片。
+- 单张失败不影响其他图片，也不会把已完成的 Agent run 改成失败状态。
+
 ## Agent 选择
 
 `/config` 卡片新增三个下拉，用于选择运行所用的 agent：
