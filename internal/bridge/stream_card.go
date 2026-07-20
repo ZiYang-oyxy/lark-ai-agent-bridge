@@ -69,6 +69,7 @@ type agentCardStream struct {
 	answer           strings.Builder
 	thought          strings.Builder
 	tools            strings.Builder
+	ordered          []card.Segment
 	toolCallCount    int
 	stopping         bool
 }
@@ -170,8 +171,18 @@ func (s *agentCardStream) Handle(update AgentStreamUpdate) {
 	if update.AnswerSnapshot {
 		s.answer.Reset()
 	}
+	snapshotApplied := false
 	for _, segment := range update.Segments {
 		s.appendSegmentLocked(segment, update.Incremental)
+		if s.replyMode != config.ReplyModeAppend || segment.Kind == card.SegmentThought {
+			continue
+		}
+		if update.AnswerSnapshot && segment.Kind == card.SegmentText && !snapshotApplied {
+			s.ordered = replaceActiveAnswerSnapshot(s.ordered, segment.Text)
+			snapshotApplied = true
+			continue
+		}
+		s.ordered = appendOrderedSegment(s.ordered, segment, update.Incremental)
 	}
 	if update.AnswerSnapshot || len(update.Segments) > 0 {
 		s.contentRevision++
@@ -221,7 +232,9 @@ func (s *agentCardStream) Finish(status string, meta card.Meta, result AgentRunR
 	if result.ToolCallCount > 0 {
 		s.toolCallCount = result.ToolCallCount
 	}
-	if len(result.Segments) > 0 {
+	if s.replyMode == config.ReplyModeAppend {
+		s.mergeAppendFinalSegmentsLocked(result)
+	} else if len(result.Segments) > 0 {
 		s.mergeFinalSegmentsLocked(result.Segments, result.AnswerSegments)
 	}
 	if status == "stopped" {
@@ -423,6 +436,69 @@ func (s *agentCardStream) appendSegmentLocked(segment card.Segment, incremental 
 	appendSegmentToBuilders(segment, incremental, &s.answer, &s.thought, &s.tools)
 }
 
+func appendOrderedSegment(segments []card.Segment, segment card.Segment, incremental bool) []card.Segment {
+	if segment.Text == "" || segment.Kind == card.SegmentThought {
+		return segments
+	}
+	if incremental && len(segments) > 0 && segments[len(segments)-1].Kind == segment.Kind {
+		segments[len(segments)-1].Text += segment.Text
+		return segments
+	}
+	return append(segments, segment)
+}
+
+func replaceActiveAnswerSnapshot(segments []card.Segment, snapshot string) []card.Segment {
+	if snapshot == "" {
+		return segments
+	}
+	if len(segments) > 0 && segments[len(segments)-1].Kind == card.SegmentText {
+		segments[len(segments)-1].Text = snapshot
+		return segments
+	}
+	return append(segments, card.Segment{Kind: card.SegmentText, Text: snapshot})
+}
+
+func (s *agentCardStream) mergeAppendFinalSegmentsLocked(result AgentRunResult) {
+	if len(result.OrderedSegments) > 0 {
+		s.ordered = append([]card.Segment(nil), result.OrderedSegments...)
+	} else if hasVisibleOrderedSegments(result.Segments) {
+		s.ordered = nil
+		for _, segment := range result.Segments {
+			s.ordered = appendOrderedSegment(s.ordered, segment, false)
+		}
+	}
+	for _, segment := range result.Segments {
+		if segment.Kind == card.SegmentThought {
+			if text := strings.TrimSpace(segment.Text); text != "" {
+				s.thought.Reset()
+				s.thought.WriteString(text)
+			}
+			continue
+		}
+		if segment.Kind == card.SegmentError && !containsOrderedSegment(s.ordered, segment) {
+			s.ordered = appendOrderedSegment(s.ordered, segment, false)
+		}
+	}
+}
+
+func hasVisibleOrderedSegments(segments []card.Segment) bool {
+	for _, segment := range segments {
+		if segment.Kind != card.SegmentThought && strings.TrimSpace(segment.Text) != "" {
+			return true
+		}
+	}
+	return false
+}
+
+func containsOrderedSegment(segments []card.Segment, want card.Segment) bool {
+	for _, segment := range segments {
+		if segment.Kind == want.Kind && segment.Text == want.Text {
+			return true
+		}
+	}
+	return false
+}
+
 // mergeFinalSegmentsLocked 用终态结果重建卡片正文。append 保留本次 run
 // 的聚合正文；append-clean-card/latest-card 只保留最后一段 assistant
 // 回复。runner 错误作为独立块追加，不参与最后一段选取。
@@ -512,10 +588,14 @@ func (s *agentCardStream) eventLocked(initial bool) card.Event {
 		// v2:过程折叠区在运行期固定折叠,不随 activity 开合,保持骨架稳定以便 native 流式命中。
 		ProcessExpanded: false,
 		ToolCallCount:   s.toolCallCount,
+		OrderedLayout:   s.replyMode == config.ReplyModeAppend,
 	}
 }
 
 func (s *agentCardStream) segmentsLocked() []card.Segment {
+	if s.replyMode == config.ReplyModeAppend {
+		return s.orderedSegmentsLocked()
+	}
 	var segments []card.Segment
 	if text := stripTrailingBotSignature(s.answer.String()); strings.TrimSpace(text) != "" {
 		segments = append(segments, card.Segment{Kind: card.SegmentText, Text: text})
@@ -527,6 +607,28 @@ func (s *agentCardStream) segmentsLocked() []card.Segment {
 		segments = append(segments, card.Segment{Kind: card.SegmentTool, Text: text})
 	}
 	return segments
+}
+
+func (s *agentCardStream) orderedSegmentsLocked() []card.Segment {
+	segments := make([]card.Segment, 0, len(s.ordered)+1)
+	if text := strings.TrimSpace(s.thought.String()); text != "" {
+		segments = append(segments, card.Segment{Kind: card.SegmentThought, Text: text})
+	}
+	segments = append(segments, s.ordered...)
+	for i := len(segments) - 1; i >= 0; i-- {
+		if segments[i].Kind != card.SegmentText {
+			continue
+		}
+		segments[i].Text = stripTrailingBotSignature(segments[i].Text)
+		break
+	}
+	out := segments[:0]
+	for _, segment := range segments {
+		if strings.TrimSpace(segment.Text) != "" {
+			out = append(out, segment)
+		}
+	}
+	return out
 }
 
 func (s *agentCardStream) statusEventTypeLocked() string {

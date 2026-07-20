@@ -10,6 +10,7 @@ import (
 
 	"lark-agent-bridge/internal/audit"
 	"lark-agent-bridge/internal/card"
+	"lark-agent-bridge/internal/config"
 	"lark-agent-bridge/internal/session"
 )
 
@@ -100,6 +101,10 @@ func (r *indexedFailRenderer) Events() []card.Event {
 }
 
 func newPreviewTestStream(t *testing.T, renderer card.Renderer, clock streamClock, minDelta, maxPreview int) *agentCardStream {
+	return newPreviewTestStreamForMode(t, renderer, clock, minDelta, maxPreview, config.ReplyModeAppend)
+}
+
+func newPreviewTestStreamForMode(t *testing.T, renderer card.Renderer, clock streamClock, minDelta, maxPreview int, mode config.ReplyMode) *agentCardStream {
 	t.Helper()
 	cfg := testConfig(t)
 	cfg.CardUpdateEvery = 800 * time.Millisecond
@@ -107,8 +112,88 @@ func newPreviewTestStream(t *testing.T, renderer card.Renderer, clock streamCloc
 	cfg.CardPreviewMaxChars = maxPreview
 	svc := NewService(cfg, card.NewFakeRenderer(), newFakeRunner(), audit.NewRecorder())
 	sess := session.Session{ID: "claude:chat", Tokens: 2}
-	input := session.Input{ReplyToMessageID: "source", RequestedModel: "default", RequestedEffort: "low", Time: clock.Now()}
+	input := session.Input{ReplyToMessageID: "source", RequestedModel: "default", RequestedEffort: "low", ReplyMode: mode, Time: clock.Now()}
 	return newAgentCardStreamWithClock(svc, "run", sess, input, renderer, nil, clock)
+}
+
+func segmentKinds(segments []card.Segment) []card.SegmentKind {
+	kinds := make([]card.SegmentKind, len(segments))
+	for i, segment := range segments {
+		kinds[i] = segment.Kind
+	}
+	return kinds
+}
+
+func assertSegmentKinds(t *testing.T, event card.Event, want ...card.SegmentKind) {
+	t.Helper()
+	got := segmentKinds(event.Segments)
+	if len(got) != len(want) {
+		t.Fatalf("segment kinds = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("segment kinds = %v, want %v", got, want)
+		}
+	}
+}
+
+func TestAppendStreamPreservesTimeline(t *testing.T) {
+	clock := &fakeStreamClock{now: time.Unix(50, 0)}
+	renderer := card.NewFakeRenderer()
+	stream := newPreviewTestStream(t, renderer, clock, 1, 2000)
+	if err := stream.Start(); err != nil {
+		t.Fatal(err)
+	}
+	stream.Handle(AgentStreamUpdate{Segments: []card.Segment{{Kind: card.SegmentText, Text: "先检查"}}})
+	stream.Handle(AgentStreamUpdate{Segments: []card.Segment{{Kind: card.SegmentTool, Text: "Bash(ls)"}}})
+	stream.Handle(AgentStreamUpdate{Segments: []card.Segment{{Kind: card.SegmentText, Text: "最终答案"}}})
+	if err := stream.Flush(); err != nil {
+		t.Fatal(err)
+	}
+	previewEvents := renderer.Events()
+	preview := previewEvents[len(previewEvents)-1]
+	assertSegmentKinds(t, preview, card.SegmentText, card.SegmentTool, card.SegmentText)
+	if !preview.OrderedLayout {
+		t.Fatal("append preview did not request ordered layout")
+	}
+
+	terminal, err := stream.Finish("completed", card.Meta{}, AgentRunResult{OrderedSegments: []card.Segment{
+		{Kind: card.SegmentText, Text: "先检查"},
+		{Kind: card.SegmentTool, Text: "Bash(ls)"},
+		{Kind: card.SegmentText, Text: "最终答案"},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertSegmentKinds(t, terminal, card.SegmentText, card.SegmentTool, card.SegmentText)
+	if !terminal.OrderedLayout {
+		t.Fatal("append terminal did not request ordered layout")
+	}
+}
+
+func TestNonAppendStreamsKeepAggregateLayout(t *testing.T) {
+	for _, mode := range []config.ReplyMode{config.ReplyModeAppendCleanCard, config.ReplyModeLatestCard} {
+		t.Run(string(mode), func(t *testing.T) {
+			clock := &fakeStreamClock{now: time.Unix(60, 0)}
+			renderer := card.NewFakeRenderer()
+			stream := newPreviewTestStreamForMode(t, renderer, clock, 1, 2000, mode)
+			if err := stream.Start(); err != nil {
+				t.Fatal(err)
+			}
+			stream.Handle(AgentStreamUpdate{Segments: []card.Segment{{Kind: card.SegmentText, Text: "先检查"}}})
+			stream.Handle(AgentStreamUpdate{Segments: []card.Segment{{Kind: card.SegmentTool, Text: "Bash(ls)"}}})
+			stream.Handle(AgentStreamUpdate{Segments: []card.Segment{{Kind: card.SegmentText, Text: "最终答案"}}})
+			if err := stream.Flush(); err != nil {
+				t.Fatal(err)
+			}
+			events := renderer.Events()
+			preview := events[len(events)-1]
+			assertSegmentKinds(t, preview, card.SegmentText, card.SegmentTool)
+			if preview.OrderedLayout {
+				t.Fatalf("%s preview unexpectedly requested ordered layout", mode)
+			}
+		})
+	}
 }
 
 func TestStreamPreviewCannotRenderAfterFinish(t *testing.T) {
@@ -352,7 +437,7 @@ func TestStreamRemovesSignatureCompletedAcrossChunks(t *testing.T) {
 	}
 }
 
-func TestStreamAnswerSnapshotDoesNotDuplicatePartialDeltas(t *testing.T) {
+func TestAppendStreamSnapshotDoesNotDuplicate(t *testing.T) {
 	clock := &fakeStreamClock{now: time.Unix(700, 0)}
 	renderer := card.NewFakeRenderer()
 	stream := newPreviewTestStream(t, renderer, clock, 30, 2000)
@@ -366,8 +451,12 @@ func TestStreamAnswerSnapshotDoesNotDuplicatePartialDeltas(t *testing.T) {
 		t.Fatal(err)
 	}
 	events := renderer.Events()
-	if got := events[len(events)-1].Segments[0].Text; got != "Hello world" {
+	preview := events[len(events)-1]
+	if got := preview.Segments[0].Text; got != "Hello world" {
 		t.Fatalf("snapshot preview = %q, want no duplicated partial text", got)
+	}
+	if len(preview.Segments) != 1 || !preview.OrderedLayout {
+		t.Fatalf("snapshot preview = %#v, want one ordered text block", preview)
 	}
 }
 
