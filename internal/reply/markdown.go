@@ -60,6 +60,71 @@ func RenderMarkdown(event card.Event) string {
 	return strings.Join(parts, "\n\n")
 }
 
+// RenderInlineTimeline projects ordered assistant and tool events into the
+// single Markdown element used by append cards. Card status, actions, and meta
+// remain in the surrounding CardKit shell and are intentionally omitted here.
+func RenderInlineTimeline(event card.Event) string {
+	parts := make([]string, 0, len(event.Segments))
+	toolParts := make(map[string]int)
+	pendingTools := make(map[string]bool)
+	for _, segment := range event.Segments {
+		text := strings.TrimSpace(segment.Text)
+		switch segment.Kind {
+		case card.SegmentThought:
+			continue
+		case card.SegmentTool:
+			meta := segment.Tool
+			if meta == nil || strings.TrimSpace(meta.ID) == "" {
+				continue
+			}
+			if meta.Phase == "result" {
+				if index, ok := toolParts[meta.ID]; ok && pendingTools[meta.ID] {
+					parts[index] = renderToolLine(parts[index], meta)
+					pendingTools[meta.ID] = false
+				}
+				continue
+			}
+			if _, exists := toolParts[meta.ID]; exists {
+				continue
+			}
+			line := renderToolUse(meta)
+			if line != "" {
+				toolParts[meta.ID] = len(parts)
+				pendingTools[meta.ID] = true
+				parts = append(parts, line)
+			}
+		case card.SegmentError:
+			if text != "" {
+				parts = append(parts, "⚠️ Agent 执行失败："+text)
+			}
+		default:
+			if text != "" {
+				parts = append(parts, text)
+			}
+		}
+	}
+
+	marker := ""
+	switch event.Type {
+	case "stopped", "interrupted":
+		marker = "⏹"
+	case "error":
+		marker = "⚠️"
+	}
+	if marker != "" {
+		for id, pending := range pendingTools {
+			if pending {
+				parts[toolParts[id]] = strings.Replace(parts[toolParts[id]], "⏳", marker, 1)
+			}
+		}
+	}
+
+	if len(parts) == 0 {
+		return "_（未返回内容）_"
+	}
+	return strings.Join(parts, "\n\n")
+}
+
 func renderToolUse(meta *card.ToolMeta) string {
 	name := safeInline(meta.Name)
 	if name == "" {

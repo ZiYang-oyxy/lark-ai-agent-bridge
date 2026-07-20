@@ -83,6 +83,59 @@ func TestRenderMarkdownHandlesErrorAndEmptyResult(t *testing.T) {
 	}
 }
 
+func TestRenderInlineTimelineOrdersRepliesAndPlainTextTools(t *testing.T) {
+	got := RenderInlineTimeline(card.Event{
+		Type:      "stream",
+		Streaming: true,
+		Segments: []card.Segment{
+			{Kind: card.SegmentText, Text: "先检查配置。"},
+			{Kind: card.SegmentThought, Text: "private reasoning"},
+			{Kind: card.SegmentTool, Text: "private input", Tool: &card.ToolMeta{ID: "t1", Name: "Bash", Summary: "git status", Phase: "use"}},
+			{Kind: card.SegmentText, Text: "配置正常。"},
+			{Kind: card.SegmentTool, Text: "secret output", Tool: &card.ToolMeta{ID: "t1", Phase: "result"}},
+		},
+	})
+	want := "先检查配置。\n\n> ✅ **Bash** · git status\n\n配置正常。"
+	if got != want {
+		t.Fatalf("timeline = %q, want %q", got, want)
+	}
+	for _, forbidden := range []string{"private reasoning", "private input", "secret output", "正在输出", "tokens:"} {
+		if strings.Contains(got, forbidden) {
+			t.Fatalf("timeline leaked %q: %q", forbidden, got)
+		}
+	}
+}
+
+func TestRenderInlineTimelineMapsPendingToolsAtTerminal(t *testing.T) {
+	base := []card.Segment{{Kind: card.SegmentTool, Tool: &card.ToolMeta{ID: "t1", Name: "Bash", Summary: "sleep 8", Phase: "use"}}}
+	if got := RenderInlineTimeline(card.Event{Type: "stopped", Segments: base}); got != "> ⏹ **Bash** · sleep 8" {
+		t.Fatalf("stopped = %q", got)
+	}
+	if got := RenderInlineTimeline(card.Event{Type: "error", Segments: base}); got != "> ⚠️ **Bash** · sleep 8" {
+		t.Fatalf("failed = %q", got)
+	}
+	if got := RenderInlineTimeline(card.Event{Type: "stream", Streaming: true, Segments: base}); got != "> ⏳ **Bash** · sleep 8" {
+		t.Fatalf("stream = %q", got)
+	}
+}
+
+func TestRenderInlineTimelineDeduplicatesResultsAndUsesSafeFallbacks(t *testing.T) {
+	got := RenderInlineTimeline(card.Event{Type: "result", Segments: []card.Segment{
+		{Kind: card.SegmentTool, Tool: &card.ToolMeta{ID: "orphan", Phase: "result"}, Text: "orphan secret"},
+		{Kind: card.SegmentTool, Tool: &card.ToolMeta{ID: "t1", Summary: "safe", Phase: "use"}, Text: "private input"},
+		{Kind: card.SegmentTool, Tool: &card.ToolMeta{ID: "t1", Phase: "result"}, Text: "first secret"},
+		{Kind: card.SegmentTool, Tool: &card.ToolMeta{ID: "t1", Phase: "result"}, Text: "second secret"},
+	}})
+	if got != "> ✅ **Tool** · safe" {
+		t.Fatalf("timeline = %q", got)
+	}
+	for _, forbidden := range []string{"orphan", "private input", "first secret", "second secret"} {
+		if strings.Contains(got, forbidden) {
+			t.Fatalf("timeline leaked %q: %q", forbidden, got)
+		}
+	}
+}
+
 func TestMarkdownCardRendererConvertsRunToMinimalLayout(t *testing.T) {
 	inner := &fakeMarkdownCardRenderer{ref: session.RenderRef{CardID: "card-1", ReplyMessageID: "reply-1"}}
 	renderer := NewMarkdownCardRenderer(inner)
