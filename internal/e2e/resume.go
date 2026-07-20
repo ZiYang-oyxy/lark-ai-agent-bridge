@@ -367,7 +367,7 @@ func sendFixtureAndWaitCompleted(ctx context.Context, rc *RunContext, body strin
 		return Reply{}, failure
 	}
 	rc.SetLastObserved("source=" + source)
-	event, failure := rc.Drivers.Audit.Wait(ctx, mark, AuditMatch{Action: "cardkit_update", Source: source, Detail: "event=completed"})
+	event, failure := rc.Drivers.Audit.Wait(ctx, mark, AuditMatch{Action: "cardkit_update", Source: source, Detail: "event=result"})
 	if failure != nil {
 		return Reply{}, failure
 	}

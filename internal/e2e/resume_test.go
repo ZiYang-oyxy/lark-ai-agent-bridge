@@ -28,6 +28,9 @@ func TestResumeScenarioCoversCatalogRestartAndBackendArgv(t *testing.T) {
 	if fake.backendCommands != 14 {
 		t.Fatalf("backend commands = %d, want 14", fake.backendCommands)
 	}
+	if fake.resultWaits != 13 {
+		t.Fatalf("terminal result waits = %d, want 13", fake.resultWaits)
+	}
 	data, err := os.ReadFile(filepath.Join(rc.Evidence.Dir(), "fixture-invocations.jsonl"))
 	if err != nil {
 		t.Fatal(err)
@@ -62,6 +65,7 @@ type fakeResumeDrivers struct {
 	restarts        int
 	omitResume      bool
 	backendCommands int
+	resultWaits     int
 }
 
 func newFakeResumeDrivers() *fakeResumeDrivers {
@@ -73,8 +77,11 @@ func (f *fakeResumeDrivers) driverSet() Drivers {
 }
 
 func (f *fakeResumeDrivers) Mark(context.Context) (int64, *Failure) { f.mark++; return f.mark, nil }
-func (f *fakeResumeDrivers) Wait(context.Context, int64, AuditMatch) (AuditEvent, *Failure) {
-	return AuditEvent{}, nil
+func (f *fakeResumeDrivers) Wait(_ context.Context, _ int64, match AuditMatch) (AuditEvent, *Failure) {
+	if match.Action == "cardkit_update" && match.Detail == "event=result" {
+		f.resultWaits++
+	}
+	return AuditEvent{Action: match.Action, Detail: match.Detail}, nil
 }
 
 func (f *fakeResumeDrivers) SendText(_ context.Context, body string) (string, *Failure) {
