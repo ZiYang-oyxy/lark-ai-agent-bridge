@@ -103,6 +103,23 @@ func TestCronListIsScopedToCurrentConversation(t *testing.T) {
 	}
 }
 
+func TestTimerAddIsNotDeduplicatedBeforeAgentEnqueue(t *testing.T) {
+	service, _, _ := scheduleTestService(t)
+	now := time.Now()
+	msg := Message{ID: "om_timer_add", ChatID: "oc_chat", Sender: "ou_creator", Text: "/timer add 明天下午三点提醒我评审", Time: now}
+	if err := service.HandleMessage(context.Background(), msg); err != nil {
+		t.Fatal(err)
+	}
+	key := session.Key{Agent: agent.Claude, ChatID: msg.ChatID}
+	sess, ok := service.Sessions.Get(key)
+	if !ok || len(sess.Queue) != 1 {
+		t.Fatalf("timer add was not queued: session=%#v ok=%v", sess, ok)
+	}
+	if sess.Queue[0].ID != msg.ID || sess.Queue[0].ScheduleKind != string(schedule.KindTimer) {
+		t.Fatalf("queued schedule input = %#v", sess.Queue[0])
+	}
+}
+
 func TestScheduleDispatchUsesFrozenConfiguration(t *testing.T) {
 	service, _, _ := scheduleTestService(t)
 	workDir := t.TempDir()

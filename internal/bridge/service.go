@@ -428,7 +428,7 @@ func (s *Service) HandleMessage(ctx context.Context, msg Message) error {
 		s.Audit.Record(msg.Sender, "admin_denied", msg.ChatID, string(cmd.Type))
 		return s.renderTextWithMode("admin-denied", msg.ID, card.SegmentError, "❌ 此命令仅管理员可用。", preference.ConversationMode)
 	}
-	if cmd.Type != CommandRun {
+	if cmd.Type != CommandRun && !scheduleCommandStartsAgentRun(cmd) {
 		accepted, err := s.Sessions.AcceptMessage(msg.ID, effectiveMessageTime(msg), s.dedupTTL(), s.dedupMaxEntries())
 		if err != nil {
 			s.Audit.Record(msg.Sender, "command_persist_failed", "", err.Error())
@@ -466,6 +466,14 @@ func (s *Service) HandleMessage(ctx context.Context, msg Message) error {
 	default:
 		return s.renderTextWithMode("command", msg.ID, card.SegmentError, "unsupported command", preference.ConversationMode)
 	}
+}
+
+func scheduleCommandStartsAgentRun(cmd Command) bool {
+	if cmd.Type != CommandCron && cmd.Type != CommandTimer {
+		return false
+	}
+	fields := strings.Fields(cmd.Text)
+	return len(fields) > 0 && strings.EqualFold(fields[0], "add")
 }
 
 func (s *Service) handleStopCommand(msg Message, cmd Command, preference config.RuntimePreference) error {
