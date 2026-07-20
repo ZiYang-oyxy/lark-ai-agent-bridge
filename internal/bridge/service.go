@@ -1472,14 +1472,14 @@ type CLIExecRunner struct{}
 
 func (CLIExecRunner) Run(ctx context.Context, req AgentRunRequest) (AgentRunResult, error) {
 	command, err := agent.BuildOneShotCommand(agent.OneShotConfig{
-		Kind:            req.Kind,
-		Bin:             req.ClaudeBin,
-		WorkDir:         req.WorkDir,
-		Prompt:          req.Prompt,
-		ClaudeSessionID: req.ClaudeSessionID,
-		Model:           req.Model,
-		Effort:          req.Effort,
-		Home:            req.Home,
+		Kind:           req.Kind,
+		Bin:            req.ClaudeBin,
+		WorkDir:        req.WorkDir,
+		Prompt:         req.Prompt,
+		AgentSessionID: req.ClaudeSessionID,
+		Model:          req.Model,
+		Effort:         req.Effort,
+		Home:           req.Home,
 	})
 	if err != nil {
 		return AgentRunResult{}, err
