@@ -11,6 +11,8 @@ func BuildLarkCard(e Event) map[string]any {
 	if e.ConfigForm != nil {
 		e.Streaming = false
 		elements = buildConfigFormElements(e.SessionID, *e.ConfigForm)
+	} else if e.MarkdownLayout {
+		elements = []any{markdownElement("answer", e.Markdown)}
 	} else {
 		elements = make([]any, 0, len(e.Segments)+5)
 		if e.OrderedLayout {
@@ -42,16 +44,18 @@ func BuildLarkCard(e Event) map[string]any {
 			"streaming_mode": e.Streaming,
 			"summary":        map[string]string{"content": title},
 		},
-		"header": map[string]any{
-			"template": headerTemplate(e),
-			"title":    map[string]any{"tag": "plain_text", "content": title},
-		},
 		"body": map[string]any{
 			"direction":        "vertical",
 			"vertical_spacing": "8px",
 			"padding":          "12px 12px 12px 12px",
 			"elements":         elements,
 		},
+	}
+	if !e.MarkdownLayout {
+		payload["header"] = map[string]any{
+			"template": headerTemplate(e),
+			"title":    map[string]any{"tag": "plain_text", "content": title},
+		}
 	}
 	if e.Streaming {
 		config := payload["config"].(map[string]any)

@@ -30,10 +30,6 @@ import (
 
 const recoveryNoticesTimeout = 5 * time.Second
 
-type MarkdownTarget interface {
-	Begin(context.Context, string, bool) (card.Renderer, error)
-}
-
 type Service struct {
 	Config           config.Config
 	Sessions         *session.Manager
@@ -47,7 +43,6 @@ type Service struct {
 	Agents           config.AgentsConfig
 	Replies          *reply.Store
 	CardTarget       reply.CardTarget
-	MarkdownTarget   MarkdownTarget
 	Reactions        feishu.ReactionSink
 	SequenceResolver session.RenderRefSequenceResolver
 	RestoreNotices   []session.RecoveryNotice
@@ -653,19 +648,7 @@ func (s *Service) startBatch(parent context.Context, sess session.Session, batch
 	}
 	stream := newAgentCardStream(s, id, sess, anchor)
 	mode := anchor.EffectiveReplyMode()
-	if mode == config.ReplyModeAppend && s.MarkdownTarget != nil {
-		renderer, err := s.MarkdownTarget.Begin(runCtx, anchor.ReplyToMessageID, anchor.ConversationMode == config.ConversationModeTopic)
-		if err != nil {
-			cancel()
-			typing.Close()
-			_, _ = s.finishBatchOrRemember(sess, batch.ID, session.BatchCompletion{Status: session.InputFailed, At: time.Now()}, "batch_finish_failed")
-			s.Audit.Record("system", "reply_start_failed", sess.ID, err.Error())
-			_ = s.Cards.Render(card.Event{Type: "error", SessionID: id, ReplyToMessageID: anchor.ReplyToMessageID, ReplyInThread: anchor.ConversationMode == config.ConversationModeTopic, Segments: []card.Segment{{Kind: card.SegmentError, Text: "回复初始化失败，请重试。"}}})
-			return
-		}
-		stream = newAgentCardStreamWithRenderer(s, id, sess, anchor, card.NewLimitRenderer(renderer, s.Config.CardMaxChars), nil)
-		stream.markdownReply = true
-	} else if s.CardTarget != nil {
+	if s.CardTarget != nil {
 		latestScope := ""
 		if mode == config.ReplyModeLatestCard {
 			latestScope = sess.ID
@@ -683,7 +666,11 @@ func (s *Service) startBatch(parent context.Context, sess session.Session, batch
 			_ = s.Cards.Render(card.Event{Type: "error", SessionID: id, ReplyToMessageID: anchor.ReplyToMessageID, ReplyInThread: anchor.ConversationMode == config.ConversationModeTopic, Segments: []card.Segment{{Kind: card.SegmentError, Text: "回复卡片初始化失败，请重试。"}}})
 			return
 		}
-		stream = newAgentCardStreamWithRenderer(s, id, sess, anchor, card.NewLimitRenderer(policyRun, s.Config.CardMaxChars), policyRun)
+		var renderer card.Renderer = policyRun
+		if mode == config.ReplyModeAppend {
+			renderer = reply.NewMarkdownCardRenderer(policyRun)
+		}
+		stream = newAgentCardStreamWithRenderer(s, id, sess, anchor, card.NewLimitRenderer(renderer, s.Config.CardMaxChars), policyRun)
 	}
 	s.storeActiveRun(id, activeRun{BaseSessionID: sess.ID, BatchID: batch.ID, SourceMessageIDs: sources, Key: sess.Key, WorkDir: sess.WorkDir, Cancel: cancel, Stream: stream, Typing: typing})
 	if s.afterStoreActiveRunHook != nil {

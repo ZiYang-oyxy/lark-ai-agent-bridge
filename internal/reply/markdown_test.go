@@ -5,7 +5,20 @@ import (
 	"testing"
 
 	"lark-agent-bridge/internal/card"
+	"lark-agent-bridge/internal/session"
 )
+
+type fakeMarkdownCardRenderer struct {
+	events []card.Event
+	ref    session.RenderRef
+}
+
+func (f *fakeMarkdownCardRenderer) Render(event card.Event) error {
+	f.events = append(f.events, event)
+	return nil
+}
+
+func (f *fakeMarkdownCardRenderer) RenderRef() session.RenderRef { return f.ref }
 
 func TestRenderMarkdownHidesThinkingAndCollapsesToolLifecycle(t *testing.T) {
 	got := RenderMarkdown(card.Event{
@@ -67,5 +80,38 @@ func TestRenderMarkdownHandlesErrorAndEmptyResult(t *testing.T) {
 	}
 	if got := RenderMarkdown(card.Event{Type: "result"}); got != "_（未返回内容）_" {
 		t.Fatalf("empty markdown = %q", got)
+	}
+}
+
+func TestMarkdownCardRendererConvertsRunToMinimalLayout(t *testing.T) {
+	inner := &fakeMarkdownCardRenderer{ref: session.RenderRef{CardID: "card-1", ReplyMessageID: "reply-1"}}
+	renderer := NewMarkdownCardRenderer(inner)
+	err := renderer.Render(card.Event{
+		Type:      "result",
+		Streaming: false,
+		Segments: []card.Segment{
+			{Kind: card.SegmentThought, Text: "private"},
+			{Kind: card.SegmentTool, Text: "secret", Tool: &card.ToolMeta{ID: "t1", Name: "Bash", Summary: "pwd", Phase: "use"}},
+			{Kind: card.SegmentTool, Text: "/private/output", Tool: &card.ToolMeta{ID: "t1", Phase: "result"}},
+			{Kind: card.SegmentText, Text: "done"},
+		},
+		Meta:       card.Meta{Agent: "codex", RunTokens: 10, TotalTokens: 20},
+		StopButton: card.StopButton{Visible: true},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(inner.events) != 1 {
+		t.Fatalf("events = %#v", inner.events)
+	}
+	got := inner.events[0]
+	if !got.MarkdownLayout || got.Markdown != "> ✅ **Bash** · pwd\n\ndone\n\n🤖 codex · 🔢 tokens: ▶ 10 / ∑ 20" {
+		t.Fatalf("markdown event = %#v", got)
+	}
+	if len(got.Segments) != 0 || got.StopButton.Visible || got.Meta != (card.Meta{}) || strings.Contains(got.Markdown, "private") {
+		t.Fatalf("markdown event leaked card state: %#v", got)
+	}
+	if ref := renderer.RenderRef(); ref.CardID != "card-1" || ref.ReplyMessageID != "reply-1" {
+		t.Fatalf("render ref = %#v", ref)
 	}
 }

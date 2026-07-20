@@ -115,6 +115,8 @@ type Event struct {
 	ToolCallCount    int
 	HideAgentPanels  bool
 	OrderedLayout    bool
+	MarkdownLayout   bool
+	Markdown         string
 	ConfigForm       *ConfigForm
 }
 

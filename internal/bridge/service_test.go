@@ -102,28 +102,6 @@ func (r *bridgeReplyRenderer) Render(event card.Event) error {
 
 func (r *bridgeReplyRenderer) RenderRef() session.RenderRef { return r.ref }
 
-type bridgeMarkdownTarget struct {
-	mu         sync.Mutex
-	beginCalls int
-	events     []card.Event
-}
-
-func (t *bridgeMarkdownTarget) Begin(context.Context, string, bool) (card.Renderer, error) {
-	t.mu.Lock()
-	t.beginCalls++
-	t.mu.Unlock()
-	return &bridgeMarkdownRenderer{target: t}, nil
-}
-
-type bridgeMarkdownRenderer struct{ target *bridgeMarkdownTarget }
-
-func (r *bridgeMarkdownRenderer) Render(event card.Event) error {
-	r.target.mu.Lock()
-	r.target.events = append(r.target.events, event)
-	r.target.mu.Unlock()
-	return nil
-}
-
 type contextBlockingRecoveryTarget struct {
 	renderer *contextBlockingRecoveryRenderer
 }
@@ -832,15 +810,13 @@ func TestServiceRoutesBatchThroughReplyPolicyAndPersistsActiveRenderRef(t *testi
 	}
 }
 
-func TestServiceRoutesAppendToMarkdown(t *testing.T) {
+func TestServiceRoutesAppendToMarkdownCard(t *testing.T) {
 	cfg := testConfig(t)
 	cfg.ReplyMode = config.ReplyModeAppend
 	runner := newFakeRunner()
 	runner.block = make(chan struct{})
-	markdown := &bridgeMarkdownTarget{}
 	cards := &bridgeReplyTarget{}
 	svc := NewService(cfg, card.NewFakeRenderer(), runner, audit.NewRecorder())
-	svc.MarkdownTarget = markdown
 	svc.CardTarget = cards
 	now := time.Now()
 	if err := svc.HandleMessage(context.Background(), Message{ID: "append-source", ChatID: "chat", Sender: "user", Text: "hello", Time: now}); err != nil {
@@ -850,18 +826,19 @@ func TestServiceRoutesAppendToMarkdown(t *testing.T) {
 		t.Fatal(err)
 	}
 	<-runner.started
-	markdown.mu.Lock()
-	beginCalls := markdown.beginCalls
-	markdown.mu.Unlock()
 	cards.mu.Lock()
 	cardCalls := cards.newCalls
+	events := append([]card.Event(nil), cards.events...)
 	cards.mu.Unlock()
-	if beginCalls != 1 || cardCalls != 0 {
-		t.Fatalf("markdown/card calls = %d/%d, want 1/0", beginCalls, cardCalls)
+	if cardCalls != 1 {
+		t.Fatalf("card calls = %d, want 1", cardCalls)
+	}
+	if len(events) == 0 || !events[len(events)-1].MarkdownLayout || len(events[len(events)-1].Segments) != 0 || events[len(events)-1].StopButton.Visible {
+		t.Fatalf("append card event = %#v, want minimal markdown layout", events)
 	}
 	sess, ok := svc.Sessions.Get(session.Key{Agent: agent.Claude, ChatID: "chat"})
-	if !ok || sess.ActiveBatch == nil || sess.ActiveBatch.RenderRef != nil {
-		t.Fatalf("append active session = %#v, want no CardKit render ref", sess)
+	if !ok || sess.ActiveBatch == nil || sess.ActiveBatch.RenderRef == nil || sess.ActiveBatch.RenderRef.CardID != "new-card" {
+		t.Fatalf("append active session = %#v, want CardKit render ref", sess)
 	}
 	close(runner.block)
 	waitForSessionNoActiveBatch(t, svc, session.Key{Agent: agent.Claude, ChatID: "chat"})
@@ -874,10 +851,8 @@ func TestServiceKeepsCardModesOnCardKit(t *testing.T) {
 			cfg.ReplyMode = mode
 			runner := newFakeRunner()
 			runner.block = make(chan struct{})
-			markdown := &bridgeMarkdownTarget{}
 			cards := &bridgeReplyTarget{}
 			svc := NewService(cfg, card.NewFakeRenderer(), runner, audit.NewRecorder())
-			svc.MarkdownTarget = markdown
 			svc.CardTarget = cards
 			now := time.Now()
 			if err := svc.HandleMessage(context.Background(), Message{ID: "card-source", ChatID: "chat", Sender: "user", Text: "hello", Time: now}); err != nil {
@@ -887,14 +862,15 @@ func TestServiceKeepsCardModesOnCardKit(t *testing.T) {
 				t.Fatal(err)
 			}
 			<-runner.started
-			markdown.mu.Lock()
-			beginCalls := markdown.beginCalls
-			markdown.mu.Unlock()
 			cards.mu.Lock()
 			cardCalls := cards.newCalls + cards.rehydrateCalls
+			events := append([]card.Event(nil), cards.events...)
 			cards.mu.Unlock()
-			if beginCalls != 0 || cardCalls != 1 {
-				t.Fatalf("markdown/card calls = %d/%d, want 0/1", beginCalls, cardCalls)
+			if cardCalls != 1 {
+				t.Fatalf("card calls = %d, want 1", cardCalls)
+			}
+			if len(events) == 0 || events[len(events)-1].MarkdownLayout {
+				t.Fatalf("card mode event = %#v, want standard CardKit layout", events)
 			}
 			close(runner.block)
 			waitForSessionNoActiveBatch(t, svc, session.Key{Agent: agent.Claude, ChatID: "chat"})

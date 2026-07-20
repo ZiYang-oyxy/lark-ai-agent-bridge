@@ -1,6 +1,6 @@
 # Lark AI Agent Bridge
 
-独立的 Feishu/Lark AI agent bridge，用于让用户在飞书里触发 Claude Code 或 Codex 任务，并用 Markdown 流式消息或 CardKit 卡片同步展示执行状态与结果。
+独立的 Feishu/Lark AI agent bridge，用于让用户在飞书里触发 Claude Code 或 Codex 任务，并用轻量 Markdown CardKit 或完整 CardKit 卡片同步展示执行状态与结果。
 
 当前实现聚焦 CLI one-shot 模式：
 
@@ -11,7 +11,7 @@
 - 默认使用普通聊天模式：回复进入聊天主消息流，同一 chat 按 Agent 共用 session 并串行执行。
 - `/config` 可切换为话题模式：回复进入话题，有 `ThreadID` 时每个 topic 独立 session，不同 topic 可并行执行。
 - `/new` 重置当前 conversation scope；普通文本继续该 scope 已保存的 Agent session。
-- `append` 每轮新建 Markdown 流式回复：隐藏 thinking，工具调用只显示一行安全摘要，终态保留 agent/token footer。
+- `append` 每轮新建无标题、单 Markdown 元素的轻量 CardKit 流式回复：隐藏 thinking，工具调用只显示一行安全摘要，终态保留 agent/token footer。
 - `append-clean-card` 与 `latest-card` 使用 CardKit：运行中可展示折叠过程，并支持一次性停止按钮；clean/latest 终态只保留最终答案。
 - 执行中标题使用蓝色 `正在推理/正在执行工具/正在回复 · ⏱ Ns`，完成绿色，停止灰色，失败红色。
 - 底部状态栏使用分割线和两行分栏：agent/model/tokens，以及 user/ip/workdir。

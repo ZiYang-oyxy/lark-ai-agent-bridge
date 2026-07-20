@@ -1412,7 +1412,7 @@ audit_reply_message_id() {
     return 1
   fi
   line="$(jq -r --arg reply_to "$reply_to" \
-    'select(.Action == "cardkit_reply" or .Action == "markdown_reply") | select((" " + (.Detail // "") + " ") | contains(" reply_to=" + $reply_to + " ")) | .Detail' \
+    'select(.Action == "cardkit_reply") | select((" " + (.Detail // "") + " ") | contains(" reply_to=" + $reply_to + " ")) | .Detail' \
     "$AUDIT" | tail -n 1)"
   message_id="$(printf '%s\n' "$line" | sed -n 's/.* message_id=\([^ ]*\).*/\1/p')"
   if [[ -z "$message_id" ]]; then
@@ -2150,7 +2150,7 @@ case_reply_append() {
   first_reply="$(audit_reply_message_id "$first")"
   first_file="$(mget reply_append_dm_first "$first")"
   assert_file_contains "$first_file" '"msg_type"'
-  assert_file_contains "$first_file" '"post"'
+  assert_file_contains "$first_file" '"interactive"'
   assert_file_contains "$first_file" "E2E_INTERMEDIATE_ANSWER"
   assert_file_contains "$first_file" "E2E_FINAL_ANSWER"
   assert_file_contains "$first_file" "E2E_TOOL_CALL"
@@ -2163,7 +2163,7 @@ case_reply_append() {
   second_reply="$(audit_reply_message_id "$second")"
   second_file="$(mget reply_append_dm_second "$second")"
   assert_file_contains "$second_file" '"msg_type"'
-  assert_file_contains "$second_file" '"post"'
+  assert_file_contains "$second_file" '"interactive"'
   if [[ "$first_reply" == "$second_reply" ]]; then
     echo "append mode reused DM reply $first_reply" >&2
     return 1

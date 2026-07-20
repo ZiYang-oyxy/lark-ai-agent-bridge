@@ -2,6 +2,7 @@ package card
 
 import (
 	"encoding/json"
+	"fmt"
 	"reflect"
 	"regexp"
 	"strings"
@@ -72,6 +73,24 @@ func TestBuildLarkCardStreamingEmptyAnswerReservesSingleNativeTarget(t *testing.
 	want := []map[string]any{{"tag": "markdown", "element_id": "answer", "content": ""}}
 	if !reflect.DeepEqual(answers, want) {
 		t.Fatalf("answer elements = %#v, want %#v", answers, want)
+	}
+}
+
+func TestBuildLarkCardMarkdownLayoutIsHeaderlessAndPanelFree(t *testing.T) {
+	payload := BuildLarkCard(Event{Type: "stream", Streaming: true, MarkdownLayout: true, Markdown: "answer\n\n> ✅ **Bash** · pwd"})
+	if _, ok := payload["header"]; ok {
+		t.Fatalf("markdown layout unexpectedly has header: %#v", payload["header"])
+	}
+	elements := payload["body"].(map[string]any)["elements"].([]any)
+	if len(elements) != 1 {
+		t.Fatalf("markdown elements = %#v, want one", elements)
+	}
+	answer := elements[0].(map[string]any)
+	if answer["tag"] != "markdown" || answer["element_id"] != "answer" || answer["content"] != "answer\n\n> ✅ **Bash** · pwd" {
+		t.Fatalf("markdown answer = %#v", answer)
+	}
+	if strings.Contains(fmt.Sprint(payload), "collapsible_panel") {
+		t.Fatalf("markdown layout contains panel: %#v", payload)
 	}
 }
 

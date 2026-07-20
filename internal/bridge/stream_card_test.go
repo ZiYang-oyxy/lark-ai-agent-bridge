@@ -141,12 +141,10 @@ func TestAppendStreamPreservesTimeline(t *testing.T) {
 	clock := &fakeStreamClock{now: time.Unix(50, 0)}
 	renderer := card.NewFakeRenderer()
 	stream := newPreviewTestStream(t, renderer, clock, 1, 2000)
-	stream.markdownReply = true
 	if err := stream.Start(); err != nil {
 		t.Fatal(err)
 	}
 	stream.Handle(AgentStreamUpdate{Segments: []card.Segment{{Kind: card.SegmentText, Text: "先检查"}}})
-	stream.Handle(AgentStreamUpdate{Segments: []card.Segment{{Kind: card.SegmentThought, Text: "private"}}})
 	stream.Handle(AgentStreamUpdate{Segments: []card.Segment{{Kind: card.SegmentTool, Text: "Bash(ls)"}}})
 	stream.Handle(AgentStreamUpdate{Segments: []card.Segment{{Kind: card.SegmentText, Text: "最终答案"}}})
 	if err := stream.Flush(); err != nil {
@@ -158,10 +156,6 @@ func TestAppendStreamPreservesTimeline(t *testing.T) {
 	if !preview.OrderedLayout {
 		t.Fatal("append preview did not request ordered layout")
 	}
-	if preview.StopButton.Visible {
-		t.Fatal("append markdown preview exposed a card stop button")
-	}
-
 	terminal, err := stream.Finish("completed", card.Meta{}, AgentRunResult{OrderedSegments: []card.Segment{
 		{Kind: card.SegmentText, Text: "先检查"},
 		{Kind: card.SegmentTool, Text: "Bash(ls)"},

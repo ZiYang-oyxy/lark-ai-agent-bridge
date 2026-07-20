@@ -60,7 +60,6 @@ type agentCardStream struct {
 	replyTo          string
 	replyInThread    bool
 	replyMode        config.ReplyMode
-	markdownReply    bool
 	startedAt        time.Time
 	status           string
 	activity         string
@@ -643,7 +642,7 @@ func (s *agentCardStream) eventLocked(initial bool) card.Event {
 	if initial && len(segments) == 0 {
 		message = "正在执行 Claude 请求..."
 	}
-	stopVisible := !s.markdownReply && s.stopVisible && (s.status == "running" || s.status == "stopped" || s.status == "completed" || s.status == "failed")
+	stopVisible := s.stopVisible && (s.status == "running" || s.status == "stopped" || s.status == "completed" || s.status == "failed")
 	stopDisabled := s.status != "running"
 	return card.Event{
 		Type:             s.statusEventTypeLocked(),
@@ -684,10 +683,8 @@ func (s *agentCardStream) segmentsLocked() []card.Segment {
 
 func (s *agentCardStream) orderedSegmentsLocked() []card.Segment {
 	segments := make([]card.Segment, 0, len(s.ordered)+1)
-	if !s.markdownReply {
-		if text := strings.TrimSpace(s.thought.String()); text != "" {
-			segments = append(segments, card.Segment{Kind: card.SegmentThought, Text: text})
-		}
+	if text := strings.TrimSpace(s.thought.String()); text != "" {
+		segments = append(segments, card.Segment{Kind: card.SegmentThought, Text: text})
 	}
 	segments = append(segments, s.ordered...)
 	for i := len(segments) - 1; i >= 0; i-- {
