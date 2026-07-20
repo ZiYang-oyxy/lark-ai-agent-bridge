@@ -525,9 +525,9 @@ func loadAgentsInto(svc *bridge.Service, cfg config.Config, recorder *audit.Reco
 
 func (simulateRunner) Run(_ context.Context, req bridge.AgentRunRequest) (bridge.AgentRunResult, error) {
 	return bridge.AgentRunResult{
-		Model:           "simulate-claude",
-		Tokens:          len([]rune(req.Prompt)),
-		ClaudeSessionID: "simulate-session",
+		Model:          "simulate-claude",
+		Tokens:         len([]rune(req.Prompt)),
+		AgentSessionID: "simulate-session",
 		Segments: []card.Segment{
 			{Kind: card.SegmentText, Text: "simulated answer: " + req.Prompt},
 			{Kind: card.SegmentThought, Text: "simulated reasoning for local workflow validation"},

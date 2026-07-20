@@ -5,11 +5,13 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"lark-agent-bridge/internal/agent"
 	"lark-agent-bridge/internal/audit"
 	"lark-agent-bridge/internal/card"
 	"lark-agent-bridge/internal/config"
+	"lark-agent-bridge/internal/session"
 )
 
 func TestResolveAgentBinHomeDefaultsToConfigBin(t *testing.T) {
@@ -22,6 +24,42 @@ func TestResolveAgentBinHomeDefaultsToConfigBin(t *testing.T) {
 	}
 	if home != "" {
 		t.Fatalf("home = %q, want empty (default)", home)
+	}
+}
+
+func TestServiceFreezesResolvedAgentBinAndHomeAtEnqueue(t *testing.T) {
+	agents := config.AgentsConfig{
+		SchemaVersion: config.AgentsSchemaVersion,
+		Agents: []config.AgentDef{{
+			Kind:  "claude",
+			Homes: []config.AgentHome{{Label: config.DefaultHomeLabel}, {Label: "home-a", Path: "/h/a"}, {Label: "home-b", Path: "/h/b"}},
+			Bins:  []config.AgentBin{{Label: config.DefaultBinLabel}, {Label: "cc4", Path: "/b/cc4"}, {Label: "cc5", Path: "/b/cc5"}},
+		}},
+	}
+	defaults := config.RuntimePreference{Model: "default", Effort: "low", ReplyMode: config.ReplyModeAppend, ConversationMode: config.ConversationModeChat, Agent: "claude", AgentHome: "home-a", AgentBin: "cc4"}
+	store, err := config.OpenPreferenceStore(filepath.Join(t.TempDir(), "preferences.json"), defaults, nil, agents.Agents...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc := NewService(config.Config{DefaultAgent: "claude", DefaultWorkDir: t.TempDir()}, card.NewFakeRenderer(), newFakeRunner(), audit.NewRecorder())
+	svc.Agents = agents
+	svc.Preferences = store
+	now := time.Now()
+	if err := svc.HandleMessage(context.Background(), Message{ID: "first", ChatID: "chat", Sender: "u", Text: "one", Time: now}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Set(config.RuntimePreference{Model: "default", Effort: "low", ReplyMode: config.ReplyModeAppend, ConversationMode: config.ConversationModeChat, Agent: "claude", AgentHome: "home-b", AgentBin: "cc5"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.HandleMessage(context.Background(), Message{ID: "second", ChatID: "chat", Sender: "u", Text: "two", Time: now.Add(time.Millisecond)}); err != nil {
+		t.Fatal(err)
+	}
+	got, ok := svc.Sessions.Get(session.Key{Agent: agent.Claude, ChatID: "chat"})
+	if !ok || len(got.Queue) != 2 {
+		t.Fatalf("session = %#v", got)
+	}
+	if got.Queue[0].AgentBin != "/b/cc4" || got.Queue[0].AgentHome != "/h/a" || got.Queue[1].AgentBin != "/b/cc5" || got.Queue[1].AgentHome != "/h/b" {
+		t.Fatalf("frozen presets = %#v", got.Queue)
 	}
 }
 

@@ -151,7 +151,7 @@ func (s *agentCardStream) Handle(update AgentStreamUpdate) {
 		s.mu.Unlock()
 		return
 	}
-	if update.ClaudeSessionID != "" {
+	if update.AgentSessionID != "" {
 		// Session id is applied to the durable session after Run returns; streaming
 		// updates only need model/tokens for display.
 	}

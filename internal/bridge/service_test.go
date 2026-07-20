@@ -1066,7 +1066,7 @@ func TestServiceNewRunsClaudeOneShotAndRendersResult(t *testing.T) {
 	cfg := testConfig(t)
 	renderer := card.NewFakeRenderer()
 	runner := newFakeRunner()
-	runner.results = []AgentRunResult{{Model: "claude-sonnet", Tokens: 42, ClaudeSessionID: "sess-1", Segments: []card.Segment{
+	runner.results = []AgentRunResult{{Model: "claude-sonnet", Tokens: 42, AgentSessionID: "sess-1", Segments: []card.Segment{
 		{Kind: card.SegmentText, Text: "answer"},
 		{Kind: card.SegmentThought, Text: "thinking"},
 		{Kind: card.SegmentTool, Text: "Bash(ls)"},
@@ -1085,7 +1085,7 @@ func TestServiceNewRunsClaudeOneShotAndRendersResult(t *testing.T) {
 	if len(calls) != 1 {
 		t.Fatalf("calls len = %d, want 1", len(calls))
 	}
-	if calls[0].Kind != agent.Claude || calls[0].Prompt != "hello" || calls[0].ClaudeSessionID != "" {
+	if calls[0].Kind != agent.Claude || calls[0].Prompt != "hello" || calls[0].AgentSessionID != "" {
 		t.Fatalf("runner call = %#v", calls[0])
 	}
 	events := renderer.Events()
@@ -1450,8 +1450,8 @@ func TestPlainTextAfterReadySessionKeepsWorkDir(t *testing.T) {
 	if calls[0].WorkDir != workDir {
 		t.Fatalf("runner workdir = %q, want %q", calls[0].WorkDir, workDir)
 	}
-	if calls[0].ClaudeSessionID != "" {
-		t.Fatalf("ready scope has no stored Claude session yet, got %q", calls[0].ClaudeSessionID)
+	if calls[0].AgentSessionID != "" {
+		t.Fatalf("ready scope has no stored Claude session yet, got %q", calls[0].AgentSessionID)
 	}
 	waitForEvents(t, renderer, 3)
 	events := renderer.Events()
@@ -1466,8 +1466,8 @@ func TestTopicPlainTextContinuesStoredClaudeSession(t *testing.T) {
 	renderer := card.NewFakeRenderer()
 	runner := newFakeRunner()
 	runner.results = []AgentRunResult{
-		{ClaudeSessionID: "sess-topic", Tokens: 2, Segments: []card.Segment{{Kind: card.SegmentText, Text: "first"}}},
-		{ClaudeSessionID: "sess-topic", Tokens: 3, Segments: []card.Segment{{Kind: card.SegmentText, Text: "second"}}},
+		{AgentSessionID: "sess-topic", Tokens: 2, Segments: []card.Segment{{Kind: card.SegmentText, Text: "first"}}},
+		{AgentSessionID: "sess-topic", Tokens: 3, Segments: []card.Segment{{Kind: card.SegmentText, Text: "second"}}},
 	}
 	svc := NewService(cfg, renderer, runner, audit.NewRecorder())
 	msg1 := Message{ID: "msg-1", ChatID: "chat", ThreadID: "topic-a", Sender: "u1", Text: "/new first", Time: time.Now()}
@@ -1488,8 +1488,8 @@ func TestTopicPlainTextContinuesStoredClaudeSession(t *testing.T) {
 	}
 	waitForCalls(t, runner, 2)
 	calls := runner.Calls()
-	if calls[1].ClaudeSessionID != "sess-topic" {
-		t.Fatalf("second call session id = %q, want sess-topic", calls[1].ClaudeSessionID)
+	if calls[1].AgentSessionID != "sess-topic" {
+		t.Fatalf("second call session id = %q, want sess-topic", calls[1].AgentSessionID)
 	}
 	waitForEvents(t, renderer, 4)
 	events := renderer.Events()
@@ -1504,8 +1504,8 @@ func TestNewInTopicResetsStoredClaudeSession(t *testing.T) {
 	renderer := card.NewFakeRenderer()
 	runner := newFakeRunner()
 	runner.results = []AgentRunResult{
-		{ClaudeSessionID: "sess-old", Segments: []card.Segment{{Kind: card.SegmentText, Text: "old"}}},
-		{ClaudeSessionID: "sess-new", Segments: []card.Segment{{Kind: card.SegmentText, Text: "new"}}},
+		{AgentSessionID: "sess-old", Segments: []card.Segment{{Kind: card.SegmentText, Text: "old"}}},
+		{AgentSessionID: "sess-new", Segments: []card.Segment{{Kind: card.SegmentText, Text: "new"}}},
 	}
 	svc := NewService(cfg, renderer, runner, audit.NewRecorder())
 	msg1 := Message{ID: "msg-1", ChatID: "chat", ThreadID: "topic-a", Sender: "u1", Text: "/new first", Time: time.Now()}
@@ -1526,8 +1526,8 @@ func TestNewInTopicResetsStoredClaudeSession(t *testing.T) {
 	}
 	waitForCalls(t, runner, 2)
 	calls := runner.Calls()
-	if calls[1].ClaudeSessionID != "" {
-		t.Fatalf("new call session id = %q, want reset", calls[1].ClaudeSessionID)
+	if calls[1].AgentSessionID != "" {
+		t.Fatalf("new call session id = %q, want reset", calls[1].AgentSessionID)
 	}
 }
 
@@ -2925,7 +2925,7 @@ func TestServiceStopKeepsLaterQueue(t *testing.T) {
 func TestServiceNewPromptIsBatchBoundaryAndResetsNextContext(t *testing.T) {
 	cfg := testConfig(t)
 	runner := newFakeRunner()
-	runner.results = []AgentRunResult{{ClaudeSessionID: "old"}, {ClaudeSessionID: "new"}, {ClaudeSessionID: "new"}}
+	runner.results = []AgentRunResult{{AgentSessionID: "old"}, {AgentSessionID: "new"}, {AgentSessionID: "new"}}
 	svc := NewService(cfg, card.NewFakeRenderer(), runner, audit.NewRecorder())
 	now := time.Now()
 	inputs := []Message{{ID: "before", ChatID: "chat", ThreadID: "topic", Sender: "u", Text: "before", Time: now}, {ID: "new", ChatID: "chat", ThreadID: "topic", Sender: "u", Text: "/new reset", Time: now}, {ID: "after", ChatID: "chat", ThreadID: "topic", Sender: "u", Text: "after", Time: now}}
@@ -2948,14 +2948,14 @@ func TestServiceNewPromptIsBatchBoundaryAndResetsNextContext(t *testing.T) {
 	}
 	waitForCalls(t, runner, 2)
 	waitForSessionNoActiveBatch(t, svc, key)
-	if call := runner.Calls()[1]; call.Prompt != "reset" || call.ClaudeSessionID != "" {
+	if call := runner.Calls()[1]; call.Prompt != "reset" || call.AgentSessionID != "" {
 		t.Fatalf("reset call = %#v", call)
 	}
 	if err := svc.DrainReady(now.Add(3 * time.Second)); err != nil {
 		t.Fatal(err)
 	}
 	waitForCalls(t, runner, 3)
-	if call := runner.Calls()[2]; call.Prompt != "after" || call.ClaudeSessionID != "new" {
+	if call := runner.Calls()[2]; call.Prompt != "after" || call.AgentSessionID != "new" {
 		t.Fatalf("after call = %#v", call)
 	}
 }
@@ -3155,7 +3155,7 @@ func TestParseClaudeStreamOutputDoesNotDuplicateFinalResult(t *testing.T) {
 		`{"type":"result","result":"E2E_ONESHOT","usage":{"input_tokens":2}}`,
 	}, "\n"))
 	result := ParseClaudeStreamOutput(data)
-	if result.ClaudeSessionID != "sess-1" || result.Model != "claude-opus" || result.Tokens != 5 {
+	if result.AgentSessionID != "sess-1" || result.Model != "claude-opus" || result.Tokens != 5 {
 		t.Fatalf("metadata = %#v", result)
 	}
 	if len(result.Segments) != 1 || result.Segments[0].Text != "E2E_ONESHOT" {
@@ -3230,10 +3230,10 @@ func TestStreamUpdateUnwrapsClaudePartialStreamEvents(t *testing.T) {
 	if len(got) != 2 {
 		t.Fatalf("updates = %#v, want two unwrapped partial updates", got)
 	}
-	if got[0].ClaudeSessionID != "sess-partial" || got[0].Segments[0].Kind != card.SegmentThought || got[0].Segments[0].Text != "hidden partial" {
+	if got[0].AgentSessionID != "sess-partial" || got[0].Segments[0].Kind != card.SegmentThought || got[0].Segments[0].Text != "hidden partial" {
 		t.Fatalf("thinking update = %#v", got[0])
 	}
-	if got[1].ClaudeSessionID != "sess-partial" || got[1].Segments[0].Kind != card.SegmentText || got[1].Segments[0].Text != "visible partial" {
+	if got[1].AgentSessionID != "sess-partial" || got[1].Segments[0].Kind != card.SegmentText || got[1].Segments[0].Text != "visible partial" {
 		t.Fatalf("text update = %#v", got[1])
 	}
 }
