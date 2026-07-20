@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -136,8 +137,13 @@ func hasTopLevelDeveloperInstructions(path string) (bool, error) {
 	scanner := bufio.NewScanner(f)
 	scanner.Buffer(make([]byte, 4096), 64<<10)
 	inTable := false
+	valueState := tomlValueScanState{}
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
+		if valueState.continuing() {
+			valueState.consume(line)
+			continue
+		}
 		if line == "" || strings.HasPrefix(line, "#") {
 			continue
 		}
@@ -148,19 +154,171 @@ func hasTopLevelDeveloperInstructions(path string) (bool, error) {
 		if inTable {
 			continue
 		}
-		key, _, found := strings.Cut(line, "=")
+		key, value, found := splitTOMLAssignment(line)
 		if !found {
 			continue
 		}
-		key = strings.Trim(strings.TrimSpace(key), "'\"")
-		if key == "developer_instructions" {
+		if decoded, ok := decodeTOMLKey(key); ok && decoded == "developer_instructions" {
 			return true, nil
 		}
+		valueState.consume(value)
 	}
 	if err := scanner.Err(); err != nil {
 		return false, err
 	}
 	return false, nil
+}
+
+func splitTOMLAssignment(line string) (key, value string, found bool) {
+	quote := byte(0)
+	for i := 0; i < len(line); i++ {
+		current := line[i]
+		if quote != 0 {
+			if quote == '"' && current == '\\' {
+				i++
+				continue
+			}
+			if current == quote {
+				quote = 0
+			}
+			continue
+		}
+		switch current {
+		case '\'', '"':
+			quote = current
+		case '=':
+			return line[:i], line[i+1:], true
+		case '#':
+			return "", "", false
+		}
+	}
+	return "", "", false
+}
+
+func decodeTOMLKey(raw string) (string, bool) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return "", false
+	}
+	if raw[0] == '"' {
+		if raw[len(raw)-1] != '"' {
+			return "", false
+		}
+		decoded, err := strconv.Unquote(raw)
+		return decoded, err == nil
+	}
+	if raw[0] == '\'' {
+		if len(raw) < 2 || raw[len(raw)-1] != '\'' {
+			return "", false
+		}
+		return raw[1 : len(raw)-1], true
+	}
+	return raw, true
+}
+
+type tomlValueScanState struct {
+	multiline string
+	square    int
+	curly     int
+}
+
+func (s tomlValueScanState) continuing() bool {
+	return s.multiline != "" || s.square > 0 || s.curly > 0
+}
+
+func (s *tomlValueScanState) consume(value string) {
+	for i := 0; i < len(value); {
+		if s.multiline != "" {
+			end := -1
+			if s.multiline == `'''` {
+				if relative := strings.Index(value[i:], s.multiline); relative >= 0 {
+					end = i + relative
+				}
+			} else {
+				end = findTOMLMultilineClose(value, s.multiline, i)
+			}
+			if end < 0 {
+				return
+			}
+			i = end + 3
+			s.multiline = ""
+			continue
+		}
+		switch {
+		case value[i] == '#':
+			return
+		case strings.HasPrefix(value[i:], `"""`):
+			if end := findTOMLMultilineClose(value, `"""`, i+3); end >= 0 {
+				i = end + 3
+				continue
+			}
+			s.multiline = `"""`
+			return
+		case strings.HasPrefix(value[i:], `'''`):
+			if end := strings.Index(value[i+3:], `'''`); end >= 0 {
+				i += 3 + end + 3
+				continue
+			}
+			s.multiline = `'''`
+			return
+		case value[i] == '"':
+			i++
+			for i < len(value) {
+				if value[i] == '"' && !escapedTOMLByte(value, i) {
+					i++
+					break
+				}
+				i++
+			}
+		case value[i] == '\'':
+			if end := strings.IndexByte(value[i+1:], '\''); end >= 0 {
+				i += end + 2
+			} else {
+				return
+			}
+		case value[i] == '[':
+			s.square++
+			i++
+		case value[i] == ']':
+			if s.square > 0 {
+				s.square--
+			}
+			i++
+		case value[i] == '{':
+			s.curly++
+			i++
+		case value[i] == '}':
+			if s.curly > 0 {
+				s.curly--
+			}
+			i++
+		default:
+			i++
+		}
+	}
+}
+
+func findTOMLMultilineClose(value, delimiter string, start int) int {
+	for start <= len(value)-len(delimiter) {
+		relative := strings.Index(value[start:], delimiter)
+		if relative < 0 {
+			return -1
+		}
+		index := start + relative
+		if !escapedTOMLByte(value, index) {
+			return index
+		}
+		start = index + 1
+	}
+	return -1
+}
+
+func escapedTOMLByte(value string, index int) bool {
+	backslashes := 0
+	for index--; index >= 0 && value[index] == '\\'; index-- {
+		backslashes++
+	}
+	return backslashes%2 == 1
 }
 
 // agentsConfigCheck verifies agents.json parses. It is a soft check: an

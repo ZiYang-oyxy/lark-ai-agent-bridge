@@ -132,6 +132,112 @@ func TestCodexDeveloperInstructionsCheckAllowsMissingNestedAndUnrelatedConfig(t 
 	}
 }
 
+func TestCodexDeveloperInstructionsCheckIgnoresMultilineStringContents(t *testing.T) {
+	home := t.TempDir()
+	content := `banner = """
+developer_instructions = "STRING_CONTENT_ONLY"
+[not-a-table]
+"""
+model = "gpt-5"
+`
+	if err := os.WriteFile(filepath.Join(home, "config.toml"), []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	check := codexDeveloperInstructionsCheck(config.Config{AgentsConfigPath: writeCodexAgentsConfig(t, home)})
+	if !check.OK || check.Warning || strings.Contains(check.Detail, "STRING_CONTENT_ONLY") {
+		t.Fatalf("check = %#v", check)
+	}
+}
+
+func TestCodexDeveloperInstructionsCheckFindsConflictAfterMultilineString(t *testing.T) {
+	home := t.TempDir()
+	content := `banner = '''
+[not-a-table]
+'''
+developer_instructions = "PRIVATE_AFTER_BANNER"
+`
+	if err := os.WriteFile(filepath.Join(home, "config.toml"), []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	check := codexDeveloperInstructionsCheck(config.Config{AgentsConfigPath: writeCodexAgentsConfig(t, home)})
+	if check.OK || check.Warning || !strings.Contains(check.Detail, "conflict") || strings.Contains(check.Detail, "PRIVATE_AFTER_BANNER") {
+		t.Fatalf("check = %#v", check)
+	}
+}
+
+func TestCodexDeveloperInstructionsCheckIgnoresArrayMultilineStringContents(t *testing.T) {
+	home := t.TempDir()
+	content := `banner = [
+"""
+developer_instructions = "ARRAY_STRING_CONTENT"
+[not-a-table]
+""",
+]
+model = "gpt-5"
+`
+	if err := os.WriteFile(filepath.Join(home, "config.toml"), []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	check := codexDeveloperInstructionsCheck(config.Config{AgentsConfigPath: writeCodexAgentsConfig(t, home)})
+	if !check.OK || check.Warning || strings.Contains(check.Detail, "ARRAY_STRING_CONTENT") {
+		t.Fatalf("check = %#v", check)
+	}
+}
+
+func TestCodexDeveloperInstructionsCheckFindsConflictAfterArrayMultilineString(t *testing.T) {
+	home := t.TempDir()
+	content := `banner = [
+'''
+[not-a-table]
+''',
+]
+developer_instructions = "PRIVATE_AFTER_ARRAY"
+`
+	if err := os.WriteFile(filepath.Join(home, "config.toml"), []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	check := codexDeveloperInstructionsCheck(config.Config{AgentsConfigPath: writeCodexAgentsConfig(t, home)})
+	if check.OK || check.Warning || !strings.Contains(check.Detail, "conflict") || strings.Contains(check.Detail, "PRIVATE_AFTER_ARRAY") {
+		t.Fatalf("check = %#v", check)
+	}
+}
+
+func TestCodexDeveloperInstructionsCheckFindsConflictAfterNestedArray(t *testing.T) {
+	home := t.TempDir()
+	content := "matrix = [\n  [1, 2],\n  [3, 4],\n]\ndeveloper_instructions = \"PRIVATE_AFTER_MATRIX\"\n"
+	if err := os.WriteFile(filepath.Join(home, "config.toml"), []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	check := codexDeveloperInstructionsCheck(config.Config{AgentsConfigPath: writeCodexAgentsConfig(t, home)})
+	if check.OK || !strings.Contains(check.Detail, "conflict") || strings.Contains(check.Detail, "PRIVATE_AFTER_MATRIX") {
+		t.Fatalf("check = %#v", check)
+	}
+}
+
+func TestCodexDeveloperInstructionsCheckDecodesQuotedTopLevelKey(t *testing.T) {
+	home := t.TempDir()
+	content := `"developer\u005finstructions" = "PRIVATE_QUOTED_KEY"`
+	if err := os.WriteFile(filepath.Join(home, "config.toml"), []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	check := codexDeveloperInstructionsCheck(config.Config{AgentsConfigPath: writeCodexAgentsConfig(t, home)})
+	if check.OK || !strings.Contains(check.Detail, "conflict") || strings.Contains(check.Detail, "PRIVATE_QUOTED_KEY") {
+		t.Fatalf("check = %#v", check)
+	}
+}
+
+func TestCodexDeveloperInstructionsCheckIgnoresEqualsInsideQuotedKey(t *testing.T) {
+	home := t.TempDir()
+	content := `"developer_instructions=disabled" = "value"`
+	if err := os.WriteFile(filepath.Join(home, "config.toml"), []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	check := codexDeveloperInstructionsCheck(config.Config{AgentsConfigPath: writeCodexAgentsConfig(t, home)})
+	if !check.OK || check.Warning {
+		t.Fatalf("check = %#v", check)
+	}
+}
+
 func writeCodexAgentsConfig(t *testing.T, home string) string {
 	t.Helper()
 	dir := t.TempDir()
