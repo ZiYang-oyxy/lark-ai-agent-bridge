@@ -690,6 +690,9 @@ func TestServiceConfigSavePersistsValidValuesAndRejectsInvalidValues(t *testing.
 	if result.Event == nil || result.Event.Type != "config_saved" || store.Get() != (config.RuntimePreference{Model: "claude-custom-1", Effort: "medium", ReplyMode: config.ReplyModeLatestCard, ConversationMode: config.ConversationModeTopic, GroupMessageMode: config.GroupMessageModeMentionOnly, Agent: config.DefaultAgentKind}) {
 		t.Fatalf("save result/store = %#v / %#v", result, store.Get())
 	}
+	if result.Event.ConfigForm != nil {
+		t.Fatalf("successful config save must close the form, got %#v", result.Event.ConfigForm)
+	}
 	reopened, err := config.OpenPreferenceStore(path, defaults, cfg.AllowedModels)
 	if err != nil {
 		t.Fatal(err)

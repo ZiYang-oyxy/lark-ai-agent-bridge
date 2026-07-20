@@ -95,14 +95,8 @@ func TestConfigSaveChangingAgentClearsForeignBinAndHome(t *testing.T) {
 	if result.Event == nil || result.Event.Type != "config_saved" || got.Agent != "codex" || got.AgentHome != "" || got.AgentBin != "" {
 		t.Fatalf("result/store = %#v / %#v", result, got)
 	}
-	if result.Event.ConfigForm == nil || result.Event.ConfigForm.Agent != "codex" || result.Event.ConfigForm.AgentHome != "" || result.Event.ConfigForm.AgentBin != "" {
-		t.Fatalf("refreshed config form = %#v", result.Event.ConfigForm)
-	}
-	if got := result.Event.ConfigForm.AgentBins; len(got) != 2 || got[0].Value != config.DefaultBinLabelFor("codex") || got[1].Value != "cx3" {
-		t.Fatalf("refreshed codex bins = %#v", got)
-	}
-	if got := result.Event.ConfigForm.AgentHomes; len(got) != 2 || got[0].Value != config.DefaultHomeLabel || got[1].Value != "codex-home" {
-		t.Fatalf("refreshed codex homes = %#v", got)
+	if result.Event.ConfigForm != nil {
+		t.Fatalf("successful config save must close the form, got %#v", result.Event.ConfigForm)
 	}
 }
 

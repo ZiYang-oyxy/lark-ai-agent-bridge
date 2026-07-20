@@ -1154,10 +1154,9 @@ func (s *Service) HandleActionResult(ctx context.Context, req ActionRequest) (Ac
 		s.Audit.Record(req.Actor, "config_saved", req.SessionID, fmt.Sprintf("agent=%s agent_home=%s agent_bin=%s model=%s effort=%s reply_mode=%s conversation_mode=%s group_message_mode=%s respond_to_bots=%t", preference.Agent, preference.AgentHome, preference.AgentBin, preference.Model, preference.Effort, preference.ReplyMode, preference.ConversationMode, preference.GroupMessageMode, preference.RespondToBots))
 		s.Audit.Record(req.Actor, "group_message_mode_saved", req.SessionID, fmt.Sprintf("mode=%s respond_to_bots=%t", preference.GroupMessageMode, preference.RespondToBots))
 		result, err := s.renderActionEvent(card.Event{
-			Type:       "config_saved",
-			SessionID:  req.SessionID,
-			ConfigForm: s.configForm(preference),
-			Segments:   []card.Segment{{Kind: card.SegmentText, Text: fmt.Sprintf("偏好已保存。\n\nagent=`%s`\nagent home=`%s`\nagent bin=`%s`\nmodel=`%s`\neffort=`%s`\nreply mode=`%s`\nconversation mode=`%s`\ngroup message mode=`%s`\nrespond to bots=`%t`\n\n下一条新消息开始生效。", preference.Agent, orDefault(preference.AgentHome, config.DefaultHomeLabel), orDefault(preference.AgentBin, config.DefaultBinLabelFor(preference.Agent)), preference.Model, preference.Effort, preference.ReplyMode, preference.ConversationMode, preference.GroupMessageMode, preference.RespondToBots)}},
+			Type:      "config_saved",
+			SessionID: req.SessionID,
+			Segments:  []card.Segment{{Kind: card.SegmentText, Text: fmt.Sprintf("偏好已保存。\n\nagent=`%s`\nagent home=`%s`\nagent bin=`%s`\nmodel=`%s`\neffort=`%s`\nreply mode=`%s`\nconversation mode=`%s`\ngroup message mode=`%s`\nrespond to bots=`%t`\n\n下一条新消息开始生效。", preference.Agent, orDefault(preference.AgentHome, config.DefaultHomeLabel), orDefault(preference.AgentBin, config.DefaultBinLabelFor(preference.Agent)), preference.Model, preference.Effort, preference.ReplyMode, preference.ConversationMode, preference.GroupMessageMode, preference.RespondToBots)}},
 		})
 		if err == nil {
 			s.ensureGroupMessageScope(req.SessionID, preference.GroupMessageMode)
