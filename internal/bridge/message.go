@@ -11,12 +11,14 @@ type Message struct {
 	ChatID         string
 	ThreadID       string
 	Sender         string
+	SenderType     string
 	Text           string
 	MessageType    string
 	Attachments    []media.Ref
 	IsGroup        bool
 	HasAttachments bool
 	Mentioned      bool
+	MentionAll     bool
 	Mentions       []Mention
 	Time           time.Time
 }
@@ -25,6 +27,7 @@ type Mention struct {
 	OpenID string
 	Name   string
 	IsBot  bool
+	IsAll  bool
 }
 
 type MessageRecall struct {

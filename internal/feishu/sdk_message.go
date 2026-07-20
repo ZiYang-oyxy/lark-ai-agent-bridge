@@ -287,7 +287,11 @@ func buildMentions(mentions []*larkim.MentionEvent, botOpenID string) []Mention 
 		if openID == "" || key == "" {
 			continue
 		}
-		result = append(result, Mention{Key: key, OpenID: openID, Name: stringValue(mention.Name), IsBot: openID == botOpenID})
+		result = append(result, Mention{
+			Key: key, OpenID: openID, Name: stringValue(mention.Name),
+			IsBot: openID == botOpenID,
+			IsAll: openID == "all" || key == "@_all",
+		})
 	}
 	return result
 }

@@ -69,3 +69,30 @@ func TestMessageFromFeishuDropsDirectAttachmentResourceJSONFromText(t *testing.T
 		}
 	}
 }
+
+func TestMessageFromFeishuNormalizesSenderType(t *testing.T) {
+	for _, tc := range []struct {
+		raw  string
+		want string
+	}{
+		{raw: "user", want: "user"},
+		{raw: "app", want: "bot"},
+		{raw: "bot", want: "bot"},
+		{raw: "anonymous", want: ""},
+	} {
+		got := MessageFromFeishu(feishu.InboundMessage{SenderType: tc.raw})
+		if got.SenderType != tc.want {
+			t.Fatalf("sender type %q normalized to %q, want %q", tc.raw, got.SenderType, tc.want)
+		}
+	}
+}
+
+func TestMessageFromFeishuDistinguishesMentionAllFromBotMention(t *testing.T) {
+	got := MessageFromFeishu(feishu.InboundMessage{
+		MentionsBot: false,
+		Mentions:    []feishu.Mention{{Key: "@_all", OpenID: "all", IsAll: true}},
+	})
+	if !got.MentionAll || got.Mentioned || len(got.Mentions) != 1 || !got.Mentions[0].IsAll {
+		t.Fatalf("message = %#v", got)
+	}
+}

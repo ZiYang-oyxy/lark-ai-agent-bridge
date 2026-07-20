@@ -18,6 +18,7 @@ type Mention struct {
 	OpenID string
 	Name   string
 	IsBot  bool
+	IsAll  bool
 }
 
 type InboundMessage struct {

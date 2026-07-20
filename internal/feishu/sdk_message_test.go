@@ -120,3 +120,23 @@ func TestBuildInboundMessageParsesAttachments(t *testing.T) {
 		t.Fatalf("attachments = %#v, want %#v", got.Attachments, want)
 	}
 }
+
+func TestBuildInboundMessagePreservesSenderTypeAndMentionAll(t *testing.T) {
+	senderType := "app"
+	allOpenID, allKey, allName := "all", "@_all", "所有人"
+	botOpenID, botKey, botName := "ou_bot", "@_user_1", "Bridge"
+	event := &larkim.P2MessageReceiveV1{Event: &larkim.P2MessageReceiveV1Data{
+		Sender: &larkim.EventSender{SenderType: &senderType},
+		Message: &larkim.EventMessage{Mentions: []*larkim.MentionEvent{
+			{Key: &allKey, Id: &larkim.UserId{OpenId: &allOpenID}, Name: &allName},
+			{Key: &botKey, Id: &larkim.UserId{OpenId: &botOpenID}, Name: &botName},
+		}},
+	}}
+	got := BuildInboundMessageFromLark(event, botOpenID)
+	if got.SenderType != "app" || !got.MentionsBot {
+		t.Fatalf("inbound sender/mention = %q/%t", got.SenderType, got.MentionsBot)
+	}
+	if len(got.Mentions) != 2 || !got.Mentions[0].IsAll || got.Mentions[0].IsBot || !got.Mentions[1].IsBot {
+		t.Fatalf("mentions = %#v", got.Mentions)
+	}
+}
