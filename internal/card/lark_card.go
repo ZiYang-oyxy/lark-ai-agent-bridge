@@ -13,17 +13,21 @@ func BuildLarkCard(e Event) map[string]any {
 		elements = buildConfigFormElements(e.SessionID, *e.ConfigForm)
 	} else {
 		elements = make([]any, 0, len(e.Segments)+5)
-		answer, thought, tools := splitCardSections(e.Segments)
-		if strings.TrimSpace(answer) != "" || e.Streaming {
-			elements = append(elements, markdownElement("answer", answer))
+		if e.OrderedLayout {
+			elements = append(elements, buildOrderedTimelineElements(e)...)
+		} else {
+			answer, thought, tools := splitCardSections(e.Segments)
+			if strings.TrimSpace(answer) != "" || e.Streaming {
+				elements = append(elements, markdownElement("answer", answer))
+			}
+			if shouldShowAgentPanels(e, thought, tools) {
+				elements = append(elements,
+					collapsiblePanelElement("panel_process", processPanelTitle(e, tools), e.ProcessExpanded, processPanelBody(thought, tools)),
+				)
+			}
 		}
 		if e.Message != "" {
 			elements = append(elements, markdownElement("message", e.Message))
-		}
-		if shouldShowAgentPanels(e, thought, tools) {
-			elements = append(elements,
-				collapsiblePanelElement("panel_process", processPanelTitle(e, tools), e.ProcessExpanded, processPanelBody(thought, tools)),
-			)
 		}
 		for _, action := range buildButtonActions(e) {
 			elements = append(elements, action)
@@ -58,6 +62,50 @@ func BuildLarkCard(e Event) map[string]any {
 		}
 	}
 	return payload
+}
+
+func buildOrderedTimelineElements(e Event) []any {
+	elements := make([]any, 0, len(e.Segments)+1)
+	_, thought, _ := splitCardSections(e.Segments)
+	if !e.HideAgentPanels && strings.TrimSpace(thought) != "" {
+		elements = append(elements, collapsiblePanelElement(
+			"panel_thought",
+			"思考",
+			false,
+			[]map[string]any{markdownElement("timeline_thought", thought)},
+		))
+	}
+	textIndex := 0
+	toolIndex := 0
+	errorIndex := 0
+	for _, segment := range e.Segments {
+		text := strings.TrimSpace(segment.Text)
+		if text == "" {
+			continue
+		}
+		switch segment.Kind {
+		case SegmentThought:
+			continue
+		case SegmentTool:
+			if e.HideAgentPanels {
+				continue
+			}
+			toolIndex++
+			elements = append(elements, collapsiblePanelElement(
+				fmt.Sprintf("timeline_tool_%d", toolIndex),
+				"工具调用",
+				false,
+				[]map[string]any{markdownElement(fmt.Sprintf("timeline_tool_body_%d", toolIndex), text)},
+			))
+		case SegmentError:
+			errorIndex++
+			elements = append(elements, markdownElement(fmt.Sprintf("timeline_error_%d", errorIndex), "**Error**\n"+text))
+		default:
+			textIndex++
+			elements = append(elements, markdownElement(fmt.Sprintf("timeline_text_%d", textIndex), text))
+		}
+	}
+	return elements
 }
 
 func terminalCardEvent(eventType string) bool {

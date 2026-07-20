@@ -636,3 +636,63 @@ func TestBuildLarkCardFormatsRichSegments(t *testing.T) {
 		t.Fatalf("process panel body = %#v", byID)
 	}
 }
+
+func TestBuildLarkCardOrderedTimeline(t *testing.T) {
+	payload := BuildLarkCard(Event{
+		Type:          "result",
+		OrderedLayout: true,
+		Segments: []Segment{
+			{Kind: SegmentThought, Text: "内部思考"},
+			{Kind: SegmentText, Text: "先检查"},
+			{Kind: SegmentTool, Text: "Bash(ls)"},
+			{Kind: SegmentText, Text: "最终答案"},
+		},
+	})
+	elements := payload["body"].(map[string]any)["elements"].([]any)
+	if len(elements) != 4 {
+		t.Fatalf("ordered elements = %#v, want thought + 3 timeline blocks", elements)
+	}
+	thought := elements[0].(map[string]any)
+	first := elements[1].(map[string]any)
+	tool := elements[2].(map[string]any)
+	last := elements[3].(map[string]any)
+	if thought["tag"] != "collapsible_panel" || thought["element_id"] != "panel_thought" {
+		t.Fatalf("ordered thought element = %#v", thought)
+	}
+	if first["tag"] != "markdown" || first["content"] != "先检查" {
+		t.Fatalf("first ordered element = %#v", first)
+	}
+	if tool["tag"] != "collapsible_panel" || tool["expanded"] != false {
+		t.Fatalf("ordered tool element = %#v", tool)
+	}
+	toolElements := tool["elements"].([]map[string]any)
+	if len(toolElements) != 1 || toolElements[0]["content"] != "Bash(ls)" {
+		t.Fatalf("ordered tool body = %#v", toolElements)
+	}
+	if last["tag"] != "markdown" || last["content"] != "最终答案" {
+		t.Fatalf("last ordered element = %#v", last)
+	}
+}
+
+func TestBuildLarkCardKeepsLegacyAggregateLayout(t *testing.T) {
+	payload := BuildLarkCard(Event{
+		Type: "result",
+		Segments: []Segment{
+			{Kind: SegmentText, Text: "先检查"},
+			{Kind: SegmentTool, Text: "Bash(ls)"},
+			{Kind: SegmentText, Text: "最终答案"},
+		},
+	})
+	elements := payload["body"].(map[string]any)["elements"].([]any)
+	if len(elements) != 2 {
+		t.Fatalf("legacy elements = %#v, want answer + process panel", elements)
+	}
+	answer := elements[0].(map[string]any)
+	process := elements[1].(map[string]any)
+	if answer["tag"] != "markdown" || answer["content"] != "先检查\n\n最终答案" {
+		t.Fatalf("legacy answer = %#v", answer)
+	}
+	if process["tag"] != "collapsible_panel" || process["element_id"] != "panel_process" {
+		t.Fatalf("legacy process panel = %#v", process)
+	}
+}
