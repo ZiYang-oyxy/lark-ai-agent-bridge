@@ -105,6 +105,7 @@ type Event struct {
 	ProcessExpanded  bool
 	ToolCallCount    int
 	HideAgentPanels  bool
+	OrderedLayout    bool
 	ConfigForm       *ConfigForm
 }
 

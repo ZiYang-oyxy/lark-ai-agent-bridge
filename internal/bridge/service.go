@@ -105,6 +105,7 @@ type AgentRunRequest struct {
 
 type AgentRunResult struct {
 	Segments        []card.Segment
+	OrderedSegments []card.Segment
 	Model           string
 	Tokens          int
 	ClaudeSessionID string
@@ -127,6 +128,12 @@ type AgentStreamUpdate struct {
 	// AnswerSnapshot marks a complete assistant message. It replaces any
 	// partial answer accumulated for that message instead of duplicating it.
 	AnswerSnapshot bool
+	// AssistantSnapshot marks the boundary of any complete assistant message,
+	// including tool-only messages that do not replace the answer builder.
+	AssistantSnapshot bool
+	// PartialMessage marks content_block/stream_event updates emitted before
+	// the corresponding complete assistant message snapshot.
+	PartialMessage bool
 }
 
 type pendingRun struct {
@@ -1625,6 +1632,7 @@ func parseClaudeStream(input io.Reader, copyTo *bytes.Buffer, onEvent func(Agent
 			answer.WriteString(line)
 			answer.WriteByte('\n')
 			state.addAnswerSegment(line)
+			state.appendOrdered(card.SegmentText, line)
 			emitStreamUpdate(onEvent, AgentStreamUpdate{
 				Segments: []card.Segment{{Kind: card.SegmentText, Text: line}},
 				Activity: streamActivityAnswering,
@@ -1642,6 +1650,7 @@ func parseClaudeStream(input io.Reader, copyTo *bytes.Buffer, onEvent func(Agent
 		if copyTo != nil {
 			answer.Write(copyTo.Bytes())
 			state.addAnswerSegment(string(copyTo.Bytes()))
+			state.appendOrdered(card.SegmentText, string(copyTo.Bytes()))
 		}
 	}
 	addSegment := func(kind card.SegmentKind, text string) {
@@ -1653,6 +1662,7 @@ func parseClaudeStream(input io.Reader, copyTo *bytes.Buffer, onEvent func(Agent
 	addSegment(card.SegmentText, answer.String())
 	addSegment(card.SegmentThought, thought.String())
 	addSegment(card.SegmentTool, tool.String())
+	result.OrderedSegments = append([]card.Segment(nil), state.orderedSegments...)
 	result.AnswerSegments = state.answerSegments
 	result.ToolCallCount = len(state.seenToolUse)
 	return result, nil
@@ -1661,8 +1671,9 @@ func parseClaudeStream(input io.Reader, copyTo *bytes.Buffer, onEvent func(Agent
 // claudeParseState 跟踪解析 Claude stream-json 时的跨行状态:
 // 按 assistant message 边界收集的正文分段,以及去重后的 tool_use.id 集合。
 type claudeParseState struct {
-	answerSegments []string
-	seenToolUse    map[string]struct{}
+	answerSegments  []string
+	orderedSegments []card.Segment
+	seenToolUse     map[string]struct{}
 }
 
 func (s *claudeParseState) addAnswerSegment(text string) {
@@ -1673,6 +1684,17 @@ func (s *claudeParseState) addAnswerSegment(text string) {
 	if text != "" {
 		s.answerSegments = append(s.answerSegments, text)
 	}
+}
+
+func (s *claudeParseState) appendOrdered(kind card.SegmentKind, text string) {
+	if s == nil || kind == card.SegmentThought {
+		return
+	}
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return
+	}
+	s.orderedSegments = append(s.orderedSegments, card.Segment{Kind: kind, Text: text})
 }
 
 func consumeClaudeEvent(event map[string]any, answer, thought, tool *strings.Builder, result *AgentRunResult, state *claudeParseState) {
@@ -1688,6 +1710,7 @@ func consumeClaudeEvent(event map[string]any, answer, thought, tool *strings.Bui
 			answer.WriteString(text)
 			answer.WriteByte('\n')
 			state.addAnswerSegment(text)
+			state.appendOrdered(card.SegmentText, text)
 		}
 		return
 	}
@@ -1716,6 +1739,9 @@ func consumeClaudeEvent(event map[string]any, answer, thought, tool *strings.Bui
 		switch blockType {
 		case "text":
 			writeBlockText(answer, block)
+			var ordered strings.Builder
+			writeBlockText(&ordered, block)
+			state.appendOrdered(card.SegmentText, ordered.String())
 			if isAssistant {
 				writeBlockText(&messageText, block)
 			}
@@ -1723,11 +1749,17 @@ func consumeClaudeEvent(event map[string]any, answer, thought, tool *strings.Bui
 			writeBlockText(thought, block)
 		case "tool_use":
 			writeToolUse(tool, block)
+			var ordered strings.Builder
+			writeToolUse(&ordered, block)
+			state.appendOrdered(card.SegmentTool, ordered.String())
 			if id, ok := block["id"].(string); ok && id != "" {
 				state.seenToolUse[id] = struct{}{}
 			}
 		case "tool_result":
 			writeToolResult(tool, block)
+			var ordered strings.Builder
+			writeToolResult(&ordered, block)
+			state.appendOrdered(card.SegmentTool, ordered.String())
 		}
 	}
 	// 同一个 assistant message 内的多个 text block 合并为一段回复(而非逐 block / 逐 delta 拆分)。
@@ -1748,12 +1780,14 @@ func emitStreamUpdate(onEvent func(AgentStreamUpdate), update AgentStreamUpdate)
 
 func streamUpdateFromClaudeEvent(event map[string]any) AgentStreamUpdate {
 	var update AgentStreamUpdate
+	eventType, _ := event["type"].(string)
 	if id, ok := event["session_id"].(string); ok {
 		update.ClaudeSessionID = id
 	}
-	if eventType, _ := event["type"].(string); eventType == "stream_event" {
+	if eventType == "stream_event" {
 		if nested, _ := event["event"].(map[string]any); nested != nil {
 			nestedUpdate := streamUpdateFromClaudeEvent(nested)
+			nestedUpdate.PartialMessage = true
 			if nestedUpdate.ClaudeSessionID == "" {
 				nestedUpdate.ClaudeSessionID = update.ClaudeSessionID
 			}
@@ -1764,7 +1798,7 @@ func streamUpdateFromClaudeEvent(event map[string]any) AgentStreamUpdate {
 		update.Model = model
 	}
 	update.Tokens += tokensFromValue(event["usage"])
-	if eventType, _ := event["type"].(string); eventType == "result" {
+	if eventType == "result" {
 		return update
 	}
 	if message, _ := event["message"].(map[string]any); message != nil {
@@ -1784,6 +1818,7 @@ func streamUpdateFromClaudeEvent(event map[string]any) AgentStreamUpdate {
 		}
 		role, _ := message["role"].(string)
 		if role == "" || role == "assistant" {
+			update.AssistantSnapshot = len(update.Segments) > 0
 			for _, segment := range update.Segments {
 				if segment.Kind == card.SegmentText {
 					update.AnswerSnapshot = true
@@ -1797,7 +1832,10 @@ func streamUpdateFromClaudeEvent(event map[string]any) AgentStreamUpdate {
 		return update
 	}
 	update.Segments = append(update.Segments, streamSegmentsFromTopLevelEvent(event)...)
-	if eventType, _ := event["type"].(string); eventType == "content_block_delta" {
+	if eventType == "content_block_start" || eventType == "content_block_delta" {
+		update.PartialMessage = true
+	}
+	if eventType == "content_block_delta" {
 		update.Incremental = true
 	}
 	if len(update.Segments) > 0 {

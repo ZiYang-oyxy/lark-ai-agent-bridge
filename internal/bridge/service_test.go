@@ -1396,7 +1396,10 @@ func TestServiceStreamsRunnerUpdatesIntoSameCard(t *testing.T) {
 	if last.Meta.RunTokens != 3 || last.Meta.TotalTokens != 3 {
 		t.Fatalf("last meta = %#v, want run and total tokens", last.Meta)
 	}
-	if !containsAll(last.Segments[0].Text, "answer") || !containsAll(last.Segments[1].Text, "plan") || !containsAll(last.Segments[2].Text, "Bash(ls)") {
+	if !last.OrderedLayout || len(last.Segments) != 3 ||
+		last.Segments[0].Kind != card.SegmentThought || !containsAll(last.Segments[0].Text, "plan") ||
+		last.Segments[1].Kind != card.SegmentTool || !containsAll(last.Segments[1].Text, "Bash(ls)") ||
+		last.Segments[2].Kind != card.SegmentText || !containsAll(last.Segments[2].Text, "answer") {
 		t.Fatalf("final segments = %#v", last.Segments)
 	}
 }
@@ -2998,7 +3001,7 @@ func TestStreamUpdateParsesToolUseBlockIntoToolSegment(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parse stream error: %v", err)
 	}
-	if len(got) != 1 || len(got[0].Segments) != 1 {
+	if len(got) != 1 || len(got[0].Segments) != 1 || !got[0].PartialMessage {
 		t.Fatalf("updates = %#v", got)
 	}
 	seg := got[0].Segments[0]
@@ -3093,6 +3096,36 @@ func TestParseClaudeStreamSegmentsAssistantAnswersAndCountsUniqueTools(t *testin
 	}
 	if result.ToolCallCount != 1 {
 		t.Fatalf("tool call count = %d, want 1 (deduped by tool_use.id)", result.ToolCallCount)
+	}
+}
+
+func TestParseClaudeStreamPreservesOrderedTimeline(t *testing.T) {
+	lines := []string{
+		`{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"先检查"}]}}`,
+		`{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","name":"Bash","id":"tu-1","input":{"command":"ls"}}]}}`,
+		`{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"tu-1","content":"file.txt"}]}}`,
+		`{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"最终答案"}]}}`,
+	}
+	result, err := parseClaudeStream(bytes.NewReader([]byte(strings.Join(lines, "\n"))), nil, func(AgentStreamUpdate) {})
+	if err != nil {
+		t.Fatalf("parse stream error: %v", err)
+	}
+	wantKinds := []card.SegmentKind{
+		card.SegmentText,
+		card.SegmentTool,
+		card.SegmentTool,
+		card.SegmentText,
+	}
+	if len(result.OrderedSegments) != len(wantKinds) {
+		t.Fatalf("ordered segments = %#v", result.OrderedSegments)
+	}
+	for i, kind := range wantKinds {
+		if result.OrderedSegments[i].Kind != kind {
+			t.Fatalf("ordered segment %d = %#v, want %q", i, result.OrderedSegments[i], kind)
+		}
+	}
+	if !strings.Contains(result.OrderedSegments[1].Text, "Bash") || !strings.Contains(result.OrderedSegments[2].Text, "tool_result") {
+		t.Fatalf("ordered tool segments = %#v", result.OrderedSegments[1:3])
 	}
 }
 
@@ -3230,10 +3263,10 @@ func TestStreamUpdateUnwrapsClaudePartialStreamEvents(t *testing.T) {
 	if len(got) != 2 {
 		t.Fatalf("updates = %#v, want two unwrapped partial updates", got)
 	}
-	if got[0].ClaudeSessionID != "sess-partial" || got[0].Segments[0].Kind != card.SegmentThought || got[0].Segments[0].Text != "hidden partial" {
+	if got[0].ClaudeSessionID != "sess-partial" || !got[0].PartialMessage || got[0].Segments[0].Kind != card.SegmentThought || got[0].Segments[0].Text != "hidden partial" {
 		t.Fatalf("thinking update = %#v", got[0])
 	}
-	if got[1].ClaudeSessionID != "sess-partial" || got[1].Segments[0].Kind != card.SegmentText || got[1].Segments[0].Text != "visible partial" {
+	if got[1].ClaudeSessionID != "sess-partial" || !got[1].PartialMessage || got[1].Segments[0].Kind != card.SegmentText || got[1].Segments[0].Text != "visible partial" {
 		t.Fatalf("text update = %#v", got[1])
 	}
 }
@@ -3277,6 +3310,20 @@ func TestStreamUpdateMarksFullAssistantMessageAsAnswerSnapshot(t *testing.T) {
 	}
 	if len(got) != 1 || !got[0].AnswerSnapshot || got[0].Incremental {
 		t.Fatalf("updates = %#v, want one non-incremental answer snapshot", got)
+	}
+}
+
+func TestStreamUpdateMarksToolOnlyAssistantMessageAsSnapshot(t *testing.T) {
+	data := []byte(`{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","name":"Bash","id":"tu-1","input":{"command":"ls"}}]}}`)
+	var got []AgentStreamUpdate
+	_, err := parseClaudeStream(bytes.NewReader(data), nil, func(update AgentStreamUpdate) {
+		got = append(got, update)
+	})
+	if err != nil {
+		t.Fatalf("parse stream error: %v", err)
+	}
+	if len(got) != 1 || !got[0].AssistantSnapshot || got[0].AnswerSnapshot {
+		t.Fatalf("tool-only assistant update = %#v, want assistant boundary without answer snapshot", got)
 	}
 }
 

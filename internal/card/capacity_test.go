@@ -152,6 +152,15 @@ func TestPrepareLarkCardNativeReadyRequiresStreamingAnswerTarget(t *testing.T) {
 			want:  false,
 		},
 		{
+			name: "ordered streaming uses full card updates",
+			event: Event{Type: "stream", Streaming: true, OrderedLayout: true, Segments: []Segment{
+				{Kind: SegmentText, Text: "first"},
+				{Kind: SegmentTool, Text: "Bash(ls)"},
+				{Kind: SegmentText, Text: "final"},
+			}},
+			want: false,
+		},
+		{
 			name:  "result",
 			event: Event{Type: "result", Streaming: true, Segments: []Segment{{Kind: SegmentText, Text: "answer"}}},
 			want:  false,
@@ -295,6 +304,39 @@ func TestPrepareLarkCardFitsMultipleAnswerSegmentsBeforeEmergencyFallback(t *tes
 				t.Fatalf("answer tail was not retained: %q", got)
 			}
 		})
+	}
+}
+
+func TestPrepareLarkCardPreservesOrderedTimeline(t *testing.T) {
+	event := Event{
+		Type:          "stream",
+		Streaming:     true,
+		OrderedLayout: true,
+		Segments: []Segment{
+			{Kind: SegmentText, Text: "leading " + strings.Repeat("text ", LarkCardSoftMaxJSONBytes)},
+			{Kind: SegmentTool, Text: "latest tool"},
+			{Kind: SegmentText, Text: "final answer"},
+			{Kind: SegmentError, Text: "terminal error"},
+		},
+	}
+	prepared, err := PrepareLarkCard(event)
+	if err != nil {
+		t.Fatalf("PrepareLarkCard() error: %v", err)
+	}
+	got := prepared.EventCopy().Segments
+	positions := map[string]int{}
+	for i, segment := range got {
+		for _, marker := range []string{"latest tool", "final answer", "terminal error"} {
+			if strings.Contains(segment.Text, marker) {
+				positions[marker] = i
+			}
+		}
+	}
+	if len(positions) != 3 {
+		t.Fatalf("prepared ordered segments lost tail markers: %#v", got)
+	}
+	if !(positions["latest tool"] < positions["final answer"] && positions["final answer"] < positions["terminal error"]) {
+		t.Fatalf("prepared ordered segments = %#v", got)
 	}
 }
 
