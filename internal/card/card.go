@@ -19,6 +19,15 @@ const (
 type Segment struct {
 	Kind SegmentKind
 	Text string
+	Tool *ToolMeta
+}
+
+type ToolMeta struct {
+	ID      string
+	Name    string
+	Summary string
+	Phase   string
+	IsError bool
 }
 
 type ModelInfo struct {

@@ -3197,6 +3197,12 @@ func TestParseClaudeStreamPreservesOrderedTimeline(t *testing.T) {
 	if !strings.Contains(result.OrderedSegments[1].Text, "Bash") || !strings.Contains(result.OrderedSegments[2].Text, "tool_result") {
 		t.Fatalf("ordered tool segments = %#v", result.OrderedSegments[1:3])
 	}
+	if got := result.OrderedSegments[1].Tool; got == nil || got.ID != "tu-1" || got.Name != "Bash" || got.Phase != "use" || got.Summary != "ls" {
+		t.Fatalf("tool use metadata = %#v", got)
+	}
+	if got := result.OrderedSegments[2].Tool; got == nil || got.ID != "tu-1" || got.Phase != "result" || got.Summary != "" || got.IsError {
+		t.Fatalf("tool result metadata = %#v", got)
+	}
 }
 
 func TestTerminalAnswerFollowsReplyMode(t *testing.T) {

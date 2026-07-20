@@ -34,6 +34,14 @@ func TestParseCodexStreamTranslatesThreadContentToolsAndUsage(t *testing.T) {
 	assertCodexSegment(t, result.Segments, card.SegmentThought, "inspect first")
 	assertCodexSegment(t, result.Segments, card.SegmentTool, "pwd")
 	assertCodexSegment(t, result.Segments, card.SegmentTool, "/repo")
+	toolUse := findCodexSegment(t, result.Segments, card.SegmentTool, "pwd")
+	if got := toolUse.Tool; got == nil || got.ID != "cmd-1" || got.Name != "Bash" || got.Phase != "use" || got.Summary != "pwd" {
+		t.Fatalf("tool use metadata = %#v", got)
+	}
+	toolResult := findCodexSegment(t, result.Segments, card.SegmentTool, "/repo")
+	if got := toolResult.Tool; got == nil || got.ID != "cmd-1" || got.Name != "Bash" || got.Phase != "result" || got.Summary != "" || got.IsError {
+		t.Fatalf("tool result metadata = %#v", got)
+	}
 	if len(updates) == 0 || updates[0].AgentSessionID != "thread-1" {
 		t.Fatalf("updates = %#v", updates)
 	}
@@ -95,10 +103,16 @@ func TestParseCodexStreamTracksProtocolDrift(t *testing.T) {
 
 func assertCodexSegment(t *testing.T, segments []card.Segment, kind card.SegmentKind, contains string) {
 	t.Helper()
+	_ = findCodexSegment(t, segments, kind, contains)
+}
+
+func findCodexSegment(t *testing.T, segments []card.Segment, kind card.SegmentKind, contains string) card.Segment {
+	t.Helper()
 	for _, segment := range segments {
 		if segment.Kind == kind && strings.Contains(segment.Text, contains) {
-			return
+			return segment
 		}
 	}
 	t.Fatalf("missing %s segment containing %q in %#v", kind, contains, segments)
+	return card.Segment{}
 }
