@@ -13,6 +13,7 @@ const (
 	CommandHelp      CommandType = "help"
 	CommandRun       CommandType = "run"
 	CommandStatus    CommandType = "status"
+	CommandStop      CommandType = "stop"
 	CommandConfig    CommandType = "config"
 	CommandAgentMode CommandType = "agent-mode"
 	CommandInvite    CommandType = "invite"
@@ -45,6 +46,8 @@ func ParseCommand(msg Message, defaultAgent agent.Kind) Command {
 		return Command{Type: CommandHelp, Raw: raw}
 	case "status":
 		return Command{Type: CommandStatus, Agent: defaultAgent, Raw: raw}
+	case "stop":
+		return Command{Type: CommandStop, Agent: defaultAgent, Text: strings.TrimSpace(rest), Raw: raw}
 	case "config":
 		return Command{Type: CommandConfig, Text: strings.TrimSpace(rest), Raw: raw}
 	case "agent-mode":
@@ -112,6 +115,7 @@ func HelpText() string {
 		"Feishu AI Agent Bridge commands:",
 		"/new [--workdir <path>] [prompt] - start a new configured agent session in this chat/topic",
 		"/status - show the current chat/topic session status",
+		"/stop - stop the active task in this chat/topic; queued inputs are preserved",
 		"/agent-mode - choose claude or codex for subsequent messages",
 		"/config - configure the current agent home, executable, Claude model/effort, reply mode, and chat/topic mode",
 		"/invite user|admin @user, /invite group, /invite all group - grant access",

@@ -138,6 +138,25 @@ func TestParseStatusCommand(t *testing.T) {
 	}
 }
 
+func TestParseStopCommand(t *testing.T) {
+	cmd := ParseCommand(Message{Text: "/stop"}, agent.Claude)
+	if cmd.Type != CommandStop || cmd.Agent != agent.Claude || cmd.Text != "" {
+		t.Fatalf("cmd = %#v, want exact claude stop", cmd)
+	}
+
+	withArgs := ParseCommand(Message{Text: "/stop all"}, agent.Codex)
+	if withArgs.Type != CommandStop || withArgs.Agent != agent.Codex || withArgs.Text != "all" {
+		t.Fatalf("stop with args = %#v, want retained args", withArgs)
+	}
+}
+
+func TestHelpTextIncludesStopQueueSemantics(t *testing.T) {
+	text := HelpText()
+	if !strings.Contains(text, "/stop") || !strings.Contains(text, "queued") {
+		t.Fatalf("help text = %q, want /stop and queued semantics", text)
+	}
+}
+
 func TestParseHelpCommand(t *testing.T) {
 	cmd := ParseCommand(Message{Text: "/help"}, agent.Claude)
 	if cmd.Type != CommandHelp {
