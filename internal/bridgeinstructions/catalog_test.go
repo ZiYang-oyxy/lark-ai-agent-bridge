@@ -35,7 +35,7 @@ func TestCurrentCatalogContainsScheduleProposalContract(t *testing.T) {
 	}
 	for _, want := range []string{
 		"自然语言定时意图",
-		"lark-agent-bridge schedule propose",
+		`"$LAB_SCHEDULE_CLI" schedule propose`,
 		"--kind cron",
 		"--kind timer",
 		"不要声称任务已经创建",

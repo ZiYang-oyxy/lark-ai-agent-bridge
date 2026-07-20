@@ -2175,7 +2175,15 @@ func (r CLIExecRunner) Run(ctx context.Context, req AgentRunRequest) (AgentRunRe
 	cmd := exec.CommandContext(ctx, command[0], command[1:]...)
 	agentEnv := agent.AgentEnv(req.Kind, req.Home)
 	if req.ScheduleSocket != "" && req.ScheduleToken != "" {
-		agentEnv = append(agentEnv, "LAB_SCHEDULE_SOCKET="+req.ScheduleSocket, "LAB_SCHEDULE_TOKEN="+req.ScheduleToken)
+		scheduleCLI, executableErr := os.Executable()
+		if executableErr != nil {
+			return AgentRunResult{}, fmt.Errorf("resolve schedule proposal CLI: %w", executableErr)
+		}
+		scheduleCLI, executableErr = filepath.Abs(scheduleCLI)
+		if executableErr != nil {
+			return AgentRunResult{}, fmt.Errorf("resolve absolute schedule proposal CLI: %w", executableErr)
+		}
+		agentEnv = append(agentEnv, "LAB_SCHEDULE_CLI="+scheduleCLI, "LAB_SCHEDULE_SOCKET="+req.ScheduleSocket, "LAB_SCHEDULE_TOKEN="+req.ScheduleToken)
 	}
 	if req.WorkDir != "" {
 		workDir, err := filepath.Abs(req.WorkDir)
@@ -2236,7 +2244,7 @@ func childEnv(workDir string, extra []string) []string {
 	}
 	env := make([]string, 0, len(os.Environ())+len(overrides)+1)
 	for _, item := range os.Environ() {
-		if strings.HasPrefix(item, "LAB_SCHEDULE_SOCKET=") || strings.HasPrefix(item, "LAB_SCHEDULE_TOKEN=") {
+		if strings.HasPrefix(item, "LAB_SCHEDULE_CLI=") || strings.HasPrefix(item, "LAB_SCHEDULE_SOCKET=") || strings.HasPrefix(item, "LAB_SCHEDULE_TOKEN=") {
 			continue
 		}
 		if workDir != "" && strings.HasPrefix(item, "PWD=") {

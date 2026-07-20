@@ -26,18 +26,18 @@
 如果执行时间、时区或任务内容存在实质歧义,先向用户追问。信息明确后,只能调用一次受限命令提交提案:
 
 ```text
-lark-agent-bridge schedule propose --kind cron --cron "<标准五段 cron>" --timezone "<IANA 时区>" --description "<简短自然语言规则>" --prompt "<到期时实际执行的完整任务>"
+"$LAB_SCHEDULE_CLI" schedule propose --kind cron --cron "<标准五段 cron>" --timezone "<IANA 时区>" --description "<简短自然语言规则>" --prompt "<到期时实际执行的完整任务>"
 ```
 
 或:
 
 ```text
-lark-agent-bridge schedule propose --kind timer --at "<RFC3339 时间>" --timezone "<IANA 时区>" --description "<简短自然语言规则>" --prompt "<到期时实际执行的完整任务>"
+"$LAB_SCHEDULE_CLI" schedule propose --kind timer --at "<RFC3339 时间>" --timezone "<IANA 时区>" --description "<简短自然语言规则>" --prompt "<到期时实际执行的完整任务>"
 ```
 
 约束:
 
-1. 不要用 shell、后台进程、`sleep`、`at`、`cron` 或修改文件来实现定时。
+1. shell 只用于执行上述精确 proposal 命令;不要用后台进程、`sleep`、`at`、`cron` 或修改文件来实现定时。
 2. 不要传入聊天目标、用户身份、工作目录、Agent binary、model 或 effort;Bridge 会冻结当前会话中已经授权的执行配置。
 3. 提案成功只表示 Bridge 已生成待确认规则。不要声称任务已经创建、启用或保证会执行。
 4. 最终回复简短说明规则已交给 Bridge 等待用户确认。Bridge 展示的确认卡及用户确认结果才是权威状态。

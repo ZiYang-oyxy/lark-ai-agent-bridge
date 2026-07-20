@@ -11,6 +11,7 @@ import (
 
 	"lark-agent-bridge/internal/agent"
 	"lark-agent-bridge/internal/audit"
+	"lark-agent-bridge/internal/bridgeinstructions"
 	"lark-agent-bridge/internal/card"
 	"lark-agent-bridge/internal/schedule"
 	"lark-agent-bridge/internal/session"
@@ -145,6 +146,45 @@ type proposingRunner struct {
 
 type deadlineRunner struct {
 	started chan struct{}
+}
+
+func TestCLIExecRunnerInjectsAbsoluteScheduleCLI(t *testing.T) {
+	runtime, err := bridgeinstructions.NewRuntime()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer runtime.Close()
+	logPath := filepath.Join(t.TempDir(), "schedule-env.log")
+	t.Setenv("FAKE_AGENT_LOG", logPath)
+	bin := filepath.Join(t.TempDir(), "claude")
+	script := `#!/bin/sh
+printf '%s\n%s\n%s\n' "$LAB_SCHEDULE_CLI" "$LAB_SCHEDULE_SOCKET" "$LAB_SCHEDULE_TOKEN" >"$FAKE_AGENT_LOG"
+printf '%s\n' '{"type":"assistant","message":{"model":"fake","content":[{"type":"text","text":"ok"}]}}'
+`
+	if err := os.WriteFile(bin, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	runner := CLIExecRunner{Instructions: runtime}
+	if _, err := runner.Run(context.Background(), AgentRunRequest{
+		Kind: agent.Claude, Bin: bin, Prompt: "propose", BridgeInstructionsVersion: bridgeinstructions.CurrentVersion,
+		ScheduleSocket: "/tmp/schedule.sock", ScheduleToken: "single-use-token",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(strings.TrimSpace(string(data)), "\n")
+	if len(lines) != 3 {
+		t.Fatalf("schedule env line count = %d", len(lines))
+	}
+	if !filepath.IsAbs(lines[0]) {
+		t.Fatal("schedule CLI is not absolute")
+	}
+	if lines[1] != "/tmp/schedule.sock" || lines[2] != "single-use-token" {
+		t.Fatal("schedule socket or token was not injected")
+	}
 }
 
 func (r *deadlineRunner) Run(ctx context.Context, _ AgentRunRequest) (AgentRunResult, error) {

@@ -217,6 +217,7 @@ func TestChildEnvOverridesAndPWD(t *testing.T) {
 
 func TestChildEnvNoWorkDirKeepsInheritedPWDButAppliesExtra(t *testing.T) {
 	t.Setenv("PWD", "/keep")
+	t.Setenv("LAB_SCHEDULE_CLI", "/stale/bridge")
 	env := childEnv("", []string{"CODEX_HOME=/data/codex"})
 	joined := strings.Join(env, "\n")
 	if !strings.Contains(joined, "CODEX_HOME=/data/codex") {
@@ -224,5 +225,8 @@ func TestChildEnvNoWorkDirKeepsInheritedPWDButAppliesExtra(t *testing.T) {
 	}
 	if !strings.Contains(joined, "PWD=/keep") {
 		t.Fatalf("with no workdir, inherited PWD should be kept: %q", joined)
+	}
+	if strings.Contains(joined, "LAB_SCHEDULE_CLI=") {
+		t.Fatal("inherited schedule CLI leaked")
 	}
 }
