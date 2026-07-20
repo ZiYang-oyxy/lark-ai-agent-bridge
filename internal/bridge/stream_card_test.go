@@ -219,6 +219,45 @@ func TestStreamPreviewCannotRenderAfterFinish(t *testing.T) {
 	}
 }
 
+func TestAgentCardStreamAllowsTransformedFinishThenTerminalUpdate(t *testing.T) {
+	clock := &fakeStreamClock{now: time.Unix(100, 0)}
+	renderer := card.NewFakeRenderer()
+	stream := newPreviewTestStream(t, renderer, clock, 30, 2000)
+
+	terminal, err := stream.FinishTransformed("completed", card.Meta{}, AgentRunResult{
+		Segments: []card.Segment{{Kind: card.SegmentText, Text: "![图](chart.png)"}},
+	}, func(event card.Event) card.Event {
+		event.Segments[0].Text = "🖼️ 图（正在发送）"
+		return event
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if terminal.Type != "result" || terminal.Streaming || terminal.Segments[0].Text != "🖼️ 图（正在发送）" {
+		t.Fatalf("pending terminal=%#v", terminal)
+	}
+	terminal.Segments = append([]card.Segment(nil), terminal.Segments...)
+	terminal.Segments[0].Text = "🖼️ 图（已作为图片发送）"
+	if err := stream.RenderTerminalUpdate(terminal); err != nil {
+		t.Fatal(err)
+	}
+	events := renderer.Events()
+	if len(events) != 2 || events[0].SessionID != events[1].SessionID {
+		t.Fatalf("events=%#v", events)
+	}
+	if events[0].Segments[0].Text != "🖼️ 图（正在发送）" || events[1].Segments[0].Text != "🖼️ 图（已作为图片发送）" {
+		t.Fatalf("events=%#v", events)
+	}
+}
+
+func TestAgentCardStreamRejectsNonTerminalSecondUpdate(t *testing.T) {
+	clock := &fakeStreamClock{now: time.Unix(100, 0)}
+	stream := newPreviewTestStream(t, card.NewFakeRenderer(), clock, 30, 2000)
+	if err := stream.RenderTerminalUpdate(card.Event{Type: "stream", Streaming: true}); err == nil {
+		t.Fatal("accepted non-terminal update")
+	}
+}
+
 func TestStreamMarkStoppingBlocksRunningRenders(t *testing.T) {
 	// v2 R5:标记停止后,排队/后续到达的 Handle 不再渲染运行中卡片,
 	// 避免停止卡发出后被覆盖回"运行中"造成闪烁。

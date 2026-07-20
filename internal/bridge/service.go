@@ -44,6 +44,7 @@ type Service struct {
 	Replies          *reply.Store
 	CardTarget       reply.CardTarget
 	Reactions        feishu.ReactionSink
+	OutputImages     feishu.ImageSender
 	SequenceResolver session.RenderRefSequenceResolver
 	RestoreNotices   []session.RecoveryNotice
 	Access           *access.Store
@@ -765,7 +766,11 @@ func (s *Service) executeBatch(ctx context.Context, sess session.Session, batch 
 		s.Audit.Record("system", "codex_protocol_drift", sess.ID, fmt.Sprintf("unknown=%d anomalies=%d", result.ProtocolUnknown, result.ProtocolAnomalies))
 	}
 	if run, ok := s.activeRun(id); ok && run.BatchID == batch.ID && run.Stream != nil {
-		s.finishStreamAndAudit(run.Stream, cardStatus, metaFromSession(sess), result, sess.ID)
+		if status == session.InputCompleted {
+			s.finishStreamWithOutputImages(ctx, run.Stream, cardStatus, metaFromSession(sess), result, sess, batch)
+		} else {
+			s.finishStreamAndAudit(run.Stream, cardStatus, metaFromSession(sess), result, sess.ID)
+		}
 	}
 	_, _ = s.finishBatchOrRemember(sess, batch.ID, session.BatchCompletion{Status: status, AgentSessionID: result.AgentSessionID, Model: result.Model, Tokens: result.Tokens, At: time.Now()}, "completion_persist_failed")
 }

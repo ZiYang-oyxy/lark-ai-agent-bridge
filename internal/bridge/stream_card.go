@@ -203,6 +203,10 @@ func (s *agentCardStream) Handle(update AgentStreamUpdate) {
 }
 
 func (s *agentCardStream) Finish(status string, meta card.Meta, result AgentRunResult) (card.Event, error) {
+	return s.FinishTransformed(status, meta, result, nil)
+}
+
+func (s *agentCardStream) FinishTransformed(status string, meta card.Meta, result AgentRunResult, transform func(card.Event) card.Event) (card.Event, error) {
 	s.mu.Lock()
 	if s.closed {
 		s.mu.Unlock()
@@ -256,8 +260,27 @@ func (s *agentCardStream) Finish(status string, meta card.Meta, result AgentRunR
 	}
 	s.previewPending = false
 	event := s.eventLocked(false)
+	if transform != nil {
+		event = transform(event)
+	}
 	s.mu.Unlock()
 	return event, s.renderEvent(event)
+}
+
+func (s *agentCardStream) RenderTerminalUpdate(event card.Event) error {
+	if !terminalStreamEvent(event.Type) || event.Streaming {
+		return fmt.Errorf("terminal card update requires a non-streaming terminal event")
+	}
+	return s.renderEvent(event)
+}
+
+func terminalStreamEvent(eventType string) bool {
+	switch eventType {
+	case "result", "error", "stopped", "interrupted":
+		return true
+	default:
+		return false
+	}
 }
 
 // markStopping 标记本轮已请求停止:后续运行期 Handle/preview 不再渲染 Streaming=true 的中间帧,
