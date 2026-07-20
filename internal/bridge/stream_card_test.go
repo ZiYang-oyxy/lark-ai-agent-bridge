@@ -299,7 +299,7 @@ func TestStreamPreviewTruncatesUnicodeButTerminalIsCompleteAndCancelsTimer(t *te
 	}
 	events := renderer.Events()
 	terminal := events[len(events)-1]
-	if terminal.Type != "result" || len(terminal.Segments) != 1 || terminal.Segments[0].Text != full+"尾" {
+	if terminal.Type != "result" || !terminal.OrderedLayout || len(terminal.Segments) != 2 || terminal.Segments[0].Text+terminal.Segments[1].Text != full+"尾" {
 		t.Fatalf("terminal = %#v", terminal)
 	}
 	before := len(events)
@@ -513,6 +513,74 @@ func TestAppendStreamSnapshotWithoutPartialAppendsAfterToolResult(t *testing.T) 
 	assertSegmentKinds(t, preview, card.SegmentText, card.SegmentTool, card.SegmentTool, card.SegmentText)
 	if preview.Segments[0].Text != "先检查" || preview.Segments[3].Text != "最终答案" {
 		t.Fatalf("snapshot timeline = %#v, want prior tool history plus final answer", preview.Segments)
+	}
+}
+
+func TestAppendStreamConsecutiveFullSnapshotsPreservePrefixHistory(t *testing.T) {
+	clock := &fakeStreamClock{now: time.Unix(780, 0)}
+	renderer := card.NewFakeRenderer()
+	stream := newPreviewTestStream(t, renderer, clock, 30, 2000)
+	if err := stream.Start(); err != nil {
+		t.Fatal(err)
+	}
+	stream.Handle(AgentStreamUpdate{
+		Segments:       []card.Segment{{Kind: card.SegmentText, Text: "检查中"}},
+		AnswerSnapshot: true,
+	})
+	stream.Handle(AgentStreamUpdate{
+		Segments:       []card.Segment{{Kind: card.SegmentText, Text: "检查中，请稍候"}},
+		AnswerSnapshot: true,
+	})
+	if err := stream.Flush(); err != nil {
+		t.Fatal(err)
+	}
+	events := renderer.Events()
+	preview := events[len(events)-1]
+	assertSegmentKinds(t, preview, card.SegmentText, card.SegmentText)
+	if preview.Segments[0].Text != "检查中" || preview.Segments[1].Text != "检查中，请稍候" {
+		t.Fatalf("snapshot timeline = %#v, want both complete messages", preview.Segments)
+	}
+}
+
+func TestAppendLegacyTerminalPreservesStreamedTextTimeline(t *testing.T) {
+	clock := &fakeStreamClock{now: time.Unix(785, 0)}
+	renderer := card.NewFakeRenderer()
+	stream := newPreviewTestStream(t, renderer, clock, 30, 2000)
+	if err := stream.Start(); err != nil {
+		t.Fatal(err)
+	}
+	stream.Handle(AgentStreamUpdate{Segments: []card.Segment{{Kind: card.SegmentText, Text: "第一段"}}})
+	stream.Handle(AgentStreamUpdate{Segments: []card.Segment{{Kind: card.SegmentText, Text: "第二段"}}})
+	terminal, err := stream.Finish("completed", card.Meta{}, AgentRunResult{
+		Segments: []card.Segment{{Kind: card.SegmentText, Text: "第一段\n\n第二段"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertSegmentKinds(t, terminal, card.SegmentText, card.SegmentText)
+	if terminal.Segments[0].Text != "第一段" || terminal.Segments[1].Text != "第二段" {
+		t.Fatalf("legacy terminal timeline = %#v, want streamed blocks preserved", terminal.Segments)
+	}
+}
+
+func TestAppendLegacyTerminalAppendsAnswerAfterTrailingTool(t *testing.T) {
+	clock := &fakeStreamClock{now: time.Unix(790, 0)}
+	renderer := card.NewFakeRenderer()
+	stream := newPreviewTestStream(t, renderer, clock, 30, 2000)
+	if err := stream.Start(); err != nil {
+		t.Fatal(err)
+	}
+	stream.Handle(AgentStreamUpdate{Segments: []card.Segment{{Kind: card.SegmentText, Text: "先检查"}}})
+	stream.Handle(AgentStreamUpdate{Segments: []card.Segment{{Kind: card.SegmentTool, Text: "Bash(ls)"}}})
+	terminal, err := stream.Finish("completed", card.Meta{}, AgentRunResult{
+		Segments: []card.Segment{{Kind: card.SegmentText, Text: "最终答案"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertSegmentKinds(t, terminal, card.SegmentText, card.SegmentTool, card.SegmentText)
+	if terminal.Segments[0].Text != "先检查" || terminal.Segments[2].Text != "最终答案" {
+		t.Fatalf("legacy terminal timeline = %#v, want answer appended after tool", terminal.Segments)
 	}
 }
 

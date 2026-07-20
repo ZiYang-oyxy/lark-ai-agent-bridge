@@ -152,6 +152,15 @@ func TestPrepareLarkCardNativeReadyRequiresStreamingAnswerTarget(t *testing.T) {
 			want:  false,
 		},
 		{
+			name: "ordered streaming uses full card updates",
+			event: Event{Type: "stream", Streaming: true, OrderedLayout: true, Segments: []Segment{
+				{Kind: SegmentText, Text: "first"},
+				{Kind: SegmentTool, Text: "Bash(ls)"},
+				{Kind: SegmentText, Text: "final"},
+			}},
+			want: false,
+		},
+		{
 			name:  "result",
 			event: Event{Type: "result", Streaming: true, Segments: []Segment{{Kind: SegmentText, Text: "answer"}}},
 			want:  false,

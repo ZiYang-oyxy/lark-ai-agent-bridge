@@ -118,6 +118,9 @@ type AgentStreamUpdate struct {
 	// AnswerSnapshot marks a complete assistant message. It replaces any
 	// partial answer accumulated for that message instead of duplicating it.
 	AnswerSnapshot bool
+	// PartialMessage marks content_block/stream_event updates emitted before
+	// the corresponding complete assistant message snapshot.
+	PartialMessage bool
 }
 
 type pendingRun struct {
@@ -1745,12 +1748,14 @@ func emitStreamUpdate(onEvent func(AgentStreamUpdate), update AgentStreamUpdate)
 
 func streamUpdateFromClaudeEvent(event map[string]any) AgentStreamUpdate {
 	var update AgentStreamUpdate
+	eventType, _ := event["type"].(string)
 	if id, ok := event["session_id"].(string); ok {
 		update.ClaudeSessionID = id
 	}
-	if eventType, _ := event["type"].(string); eventType == "stream_event" {
+	if eventType == "stream_event" {
 		if nested, _ := event["event"].(map[string]any); nested != nil {
 			nestedUpdate := streamUpdateFromClaudeEvent(nested)
+			nestedUpdate.PartialMessage = true
 			if nestedUpdate.ClaudeSessionID == "" {
 				nestedUpdate.ClaudeSessionID = update.ClaudeSessionID
 			}
@@ -1761,7 +1766,7 @@ func streamUpdateFromClaudeEvent(event map[string]any) AgentStreamUpdate {
 		update.Model = model
 	}
 	update.Tokens += tokensFromValue(event["usage"])
-	if eventType, _ := event["type"].(string); eventType == "result" {
+	if eventType == "result" {
 		return update
 	}
 	if message, _ := event["message"].(map[string]any); message != nil {
@@ -1794,7 +1799,10 @@ func streamUpdateFromClaudeEvent(event map[string]any) AgentStreamUpdate {
 		return update
 	}
 	update.Segments = append(update.Segments, streamSegmentsFromTopLevelEvent(event)...)
-	if eventType, _ := event["type"].(string); eventType == "content_block_delta" {
+	if eventType == "content_block_start" || eventType == "content_block_delta" {
+		update.PartialMessage = true
+	}
+	if eventType == "content_block_delta" {
 		update.Incremental = true
 	}
 	if len(update.Segments) > 0 {

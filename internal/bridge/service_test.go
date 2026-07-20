@@ -3001,7 +3001,7 @@ func TestStreamUpdateParsesToolUseBlockIntoToolSegment(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parse stream error: %v", err)
 	}
-	if len(got) != 1 || len(got[0].Segments) != 1 {
+	if len(got) != 1 || len(got[0].Segments) != 1 || !got[0].PartialMessage {
 		t.Fatalf("updates = %#v", got)
 	}
 	seg := got[0].Segments[0]
@@ -3263,10 +3263,10 @@ func TestStreamUpdateUnwrapsClaudePartialStreamEvents(t *testing.T) {
 	if len(got) != 2 {
 		t.Fatalf("updates = %#v, want two unwrapped partial updates", got)
 	}
-	if got[0].ClaudeSessionID != "sess-partial" || got[0].Segments[0].Kind != card.SegmentThought || got[0].Segments[0].Text != "hidden partial" {
+	if got[0].ClaudeSessionID != "sess-partial" || !got[0].PartialMessage || got[0].Segments[0].Kind != card.SegmentThought || got[0].Segments[0].Text != "hidden partial" {
 		t.Fatalf("thinking update = %#v", got[0])
 	}
-	if got[1].ClaudeSessionID != "sess-partial" || got[1].Segments[0].Kind != card.SegmentText || got[1].Segments[0].Text != "visible partial" {
+	if got[1].ClaudeSessionID != "sess-partial" || !got[1].PartialMessage || got[1].Segments[0].Kind != card.SegmentText || got[1].Segments[0].Text != "visible partial" {
 		t.Fatalf("text update = %#v", got[1])
 	}
 }

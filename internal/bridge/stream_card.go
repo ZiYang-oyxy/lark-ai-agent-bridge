@@ -70,6 +70,8 @@ type agentCardStream struct {
 	thought          strings.Builder
 	tools            strings.Builder
 	ordered          []card.Segment
+	orderedPartialAt int
+	orderedPartial   bool
 	toolCallCount    int
 	stopping         bool
 }
@@ -171,6 +173,11 @@ func (s *agentCardStream) Handle(update AgentStreamUpdate) {
 	if update.AnswerSnapshot {
 		s.answer.Reset()
 	}
+	partialUpdate := update.PartialMessage || update.Incremental
+	if s.replyMode == config.ReplyModeAppend && !update.AnswerSnapshot && partialUpdate && !s.orderedPartial && hasVisibleOrderedSegments(update.Segments) {
+		s.orderedPartialAt = len(s.ordered)
+		s.orderedPartial = true
+	}
 	for _, segment := range update.Segments {
 		s.appendSegmentLocked(segment, update.Incremental)
 		if s.replyMode != config.ReplyModeAppend || update.AnswerSnapshot || segment.Kind == card.SegmentThought {
@@ -179,7 +186,9 @@ func (s *agentCardStream) Handle(update AgentStreamUpdate) {
 		s.ordered = appendOrderedSegment(s.ordered, segment, update.Incremental)
 	}
 	if s.replyMode == config.ReplyModeAppend && update.AnswerSnapshot {
-		s.ordered = replaceOrderedAnswerSnapshot(s.ordered, update.Segments)
+		s.ordered = replaceOrderedAnswerSnapshot(s.ordered, update.Segments, s.orderedPartialAt, s.orderedPartial)
+		s.orderedPartialAt = 0
+		s.orderedPartial = false
 	}
 	if update.AnswerSnapshot || len(update.Segments) > 0 {
 		s.contentRevision++
@@ -444,7 +453,7 @@ func appendOrderedSegment(segments []card.Segment, segment card.Segment, increme
 	return append(segments, segment)
 }
 
-func replaceOrderedAnswerSnapshot(segments, snapshot []card.Segment) []card.Segment {
+func replaceOrderedAnswerSnapshot(segments, snapshot []card.Segment, partialAt int, hasPartial bool) []card.Segment {
 	visible := make([]card.Segment, 0, len(snapshot))
 	for _, segment := range snapshot {
 		if segment.Kind != card.SegmentThought && segment.Text != "" {
@@ -454,54 +463,25 @@ func replaceOrderedAnswerSnapshot(segments, snapshot []card.Segment) []card.Segm
 	if len(visible) == 0 {
 		return segments
 	}
-	start := len(segments)
-	for i := len(segments) - 1; i >= 0; i-- {
-		if orderedSnapshotPrefix(segments[i:], visible) {
-			start = i
-			break
-		}
+	if !hasPartial || partialAt < 0 || partialAt > len(segments) {
+		return append(segments, visible...)
 	}
-	out := make([]card.Segment, 0, start+len(visible))
-	out = append(out, segments[:start]...)
+	out := make([]card.Segment, 0, partialAt+len(visible))
+	out = append(out, segments[:partialAt]...)
 	out = append(out, visible...)
 	return out
-}
-
-func orderedSnapshotPrefix(partial, snapshot []card.Segment) bool {
-	if len(partial) == 0 || len(partial) > len(snapshot) {
-		return false
-	}
-	for i := range partial {
-		if partial[i].Kind != snapshot[i].Kind {
-			return false
-		}
-		if partial[i].Kind == card.SegmentTool {
-			if isToolResultSegment(partial[i]) != isToolResultSegment(snapshot[i]) {
-				return false
-			}
-			continue
-		}
-		if !strings.HasPrefix(snapshot[i].Text, partial[i].Text) {
-			return false
-		}
-	}
-	return true
-}
-
-func isToolResultSegment(segment card.Segment) bool {
-	return segment.Kind == card.SegmentTool && strings.Contains(segment.Text, "tool_result")
 }
 
 func (s *agentCardStream) mergeAppendFinalSegmentsLocked(result AgentRunResult) {
 	if len(result.OrderedSegments) > 0 {
 		s.ordered = append([]card.Segment(nil), result.OrderedSegments...)
 	} else if hasVisibleOrderedSegments(result.Segments) {
-		if len(s.ordered) == 0 || !containsOrderedKind(s.ordered, card.SegmentTool) {
+		if len(s.ordered) == 0 {
 			s.ordered = nil
 			for _, segment := range result.Segments {
 				s.ordered = appendOrderedSegment(s.ordered, segment, false)
 			}
-		} else {
+		} else if containsOrderedKind(s.ordered, card.SegmentTool) || countOrderedKind(s.ordered, card.SegmentText) == 1 {
 			s.mergeLegacyAppendAnswerLocked(result.Segments)
 		}
 	}
@@ -519,6 +499,16 @@ func (s *agentCardStream) mergeAppendFinalSegmentsLocked(result AgentRunResult) 
 	}
 }
 
+func countOrderedKind(segments []card.Segment, kind card.SegmentKind) int {
+	count := 0
+	for _, segment := range segments {
+		if segment.Kind == kind && strings.TrimSpace(segment.Text) != "" {
+			count++
+		}
+	}
+	return count
+}
+
 func (s *agentCardStream) mergeLegacyAppendAnswerLocked(segments []card.Segment) {
 	finalAnswer := ""
 	for _, segment := range segments {
@@ -529,11 +519,19 @@ func (s *agentCardStream) mergeLegacyAppendAnswerLocked(segments []card.Segment)
 	if finalAnswer == "" {
 		return
 	}
-	for i := len(s.ordered) - 1; i >= 0; i-- {
-		if s.ordered[i].Kind == card.SegmentText {
-			s.ordered[i].Text = finalAnswer
-			return
+	lastText := -1
+	lastTool := -1
+	for i, segment := range s.ordered {
+		switch segment.Kind {
+		case card.SegmentText:
+			lastText = i
+		case card.SegmentTool:
+			lastTool = i
 		}
+	}
+	if lastText > lastTool {
+		s.ordered[lastText].Text = finalAnswer
+		return
 	}
 	s.ordered = append(s.ordered, card.Segment{Kind: card.SegmentText, Text: finalAnswer})
 }
