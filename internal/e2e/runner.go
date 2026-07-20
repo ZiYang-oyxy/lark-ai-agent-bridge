@@ -44,6 +44,7 @@ type RunContext struct {
 	Deployment Deployment
 	Config     Config
 	Evidence   *Evidence
+	Drivers    Drivers
 
 	mu           sync.Mutex
 	Values       map[string]string
