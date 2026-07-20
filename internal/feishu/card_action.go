@@ -7,13 +7,14 @@ import (
 )
 
 type CardAction struct {
-	SessionID  string
-	ActionID   string
-	Value      string
-	Actor      string
-	Tag        string
-	Option     string
-	FormValues map[string]string
+	SessionID     string
+	ActionID      string
+	Value         string
+	Actor         string
+	OpenMessageID string
+	Tag           string
+	Option        string
+	FormValues    map[string]string
 }
 
 func BuildCardActionFromLark(event *callback.CardActionTriggerEvent) (CardAction, error) {
@@ -28,13 +29,14 @@ func BuildCardActionFromLark(event *callback.CardActionTriggerEvent) (CardAction
 		return CardAction{}, err
 	}
 	req := CardAction{
-		SessionID:  anyString(value["session"]),
-		ActionID:   anyString(value["action_id"]),
-		Value:      anyString(value["value"]),
-		Actor:      operatorActor(event.Event.Operator),
-		Tag:        action.Tag,
-		Option:     action.Option,
-		FormValues: formValues,
+		SessionID:     anyString(value["session"]),
+		ActionID:      anyString(value["action_id"]),
+		Value:         anyString(value["value"]),
+		Actor:         operatorActor(event.Event.Operator),
+		OpenMessageID: cardActionOpenMessageID(event.Event.Context),
+		Tag:           action.Tag,
+		Option:        action.Option,
+		FormValues:    formValues,
 	}
 	if req.SessionID == "" {
 		req.SessionID = anyString(formValue["session"])
@@ -62,6 +64,13 @@ func BuildCardActionFromLark(event *callback.CardActionTriggerEvent) (CardAction
 		return CardAction{}, fmt.Errorf("missing session")
 	}
 	return req, nil
+}
+
+func cardActionOpenMessageID(context *callback.Context) string {
+	if context == nil {
+		return ""
+	}
+	return context.OpenMessageID
 }
 
 func boundedFormValues(values map[string]any) (map[string]string, error) {

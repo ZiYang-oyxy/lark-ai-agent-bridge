@@ -61,6 +61,7 @@ func TestActionRequestFromNestedEventPayload(t *testing.T) {
 	req, err := ActionRequestFromCardCallback([]byte(`{
 		"event": {
 			"operator": {"open_id": "user-1"},
+			"context": {"open_message_id": "om_config"},
 			"action": {
 				"value": {
 					"session": "claude:chat",
@@ -73,7 +74,7 @@ func TestActionRequestFromNestedEventPayload(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parse error: %v", err)
 	}
-	if req.ActionID != "create_workdir" || req.Value != "/tmp/work" {
+	if req.ActionID != "create_workdir" || req.Value != "/tmp/work" || req.OpenMessageID != "om_config" {
 		t.Fatalf("request = %#v", req)
 	}
 }

@@ -438,11 +438,12 @@ func actionRequestFromFeishu(action feishu.CardAction) bridge.ActionRequest {
 		formValues = nil
 	}
 	return bridge.ActionRequest{
-		SessionID:  action.SessionID,
-		ActionID:   action.ActionID,
-		Value:      action.Value,
-		Actor:      action.Actor,
-		FormValues: formValues,
+		SessionID:     action.SessionID,
+		ActionID:      action.ActionID,
+		Value:         action.Value,
+		Actor:         action.Actor,
+		OpenMessageID: action.OpenMessageID,
+		FormValues:    formValues,
 	}
 }
 

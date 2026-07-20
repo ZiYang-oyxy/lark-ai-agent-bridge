@@ -11,9 +11,11 @@ func ActionRequestFromCardCallback(payload []byte) (ActionRequest, error) {
 		return ActionRequest{}, err
 	}
 	action, _ := raw["action"].(map[string]any)
+	contextValue, _ := raw["context"].(map[string]any)
 	if action == nil {
 		if event, _ := raw["event"].(map[string]any); event != nil {
 			action, _ = event["action"].(map[string]any)
+			contextValue, _ = event["context"].(map[string]any)
 			if operator, _ := event["operator"].(map[string]any); operator != nil {
 				raw["operator"] = operator
 			}
@@ -34,11 +36,12 @@ func ActionRequestFromCardCallback(payload []byte) (ActionRequest, error) {
 		return ActionRequest{}, err
 	}
 	req := ActionRequest{
-		SessionID:  stringField(value, "session"),
-		ActionID:   stringField(value, "action_id"),
-		Value:      stringField(value, "value"),
-		Actor:      actorFromPayload(raw),
-		FormValues: formValues,
+		SessionID:     stringField(value, "session"),
+		ActionID:      stringField(value, "action_id"),
+		Value:         stringField(value, "value"),
+		Actor:         actorFromPayload(raw),
+		OpenMessageID: stringField(contextValue, "open_message_id"),
+		FormValues:    formValues,
 	}
 	if req.ActionID == "" {
 		req.ActionID = stringField(action, "action_id")
