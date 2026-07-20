@@ -23,6 +23,7 @@ type MessageReactionAPI interface {
 
 type SDKSender struct {
 	api         ReplyAPI
+	markdownAPI MarkdownMessageAPI
 	reactionAPI MessageReactionAPI
 }
 
@@ -30,6 +31,7 @@ func NewSDKSender(appID, appSecret string) *SDKSender {
 	client := lark.NewClient(appID, appSecret)
 	return &SDKSender{
 		api:         client.Im.V1.Message,
+		markdownAPI: client.Im.V1.Message,
 		reactionAPI: client.Im.V1.MessageReaction,
 	}
 }
