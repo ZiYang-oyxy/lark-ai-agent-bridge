@@ -118,6 +118,9 @@ type AgentStreamUpdate struct {
 	// AnswerSnapshot marks a complete assistant message. It replaces any
 	// partial answer accumulated for that message instead of duplicating it.
 	AnswerSnapshot bool
+	// AssistantSnapshot marks the boundary of any complete assistant message,
+	// including tool-only messages that do not replace the answer builder.
+	AssistantSnapshot bool
 	// PartialMessage marks content_block/stream_event updates emitted before
 	// the corresponding complete assistant message snapshot.
 	PartialMessage bool
@@ -1786,6 +1789,7 @@ func streamUpdateFromClaudeEvent(event map[string]any) AgentStreamUpdate {
 		}
 		role, _ := message["role"].(string)
 		if role == "" || role == "assistant" {
+			update.AssistantSnapshot = len(update.Segments) > 0
 			for _, segment := range update.Segments {
 				if segment.Kind == card.SegmentText {
 					update.AnswerSnapshot = true

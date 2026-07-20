@@ -173,19 +173,20 @@ func (s *agentCardStream) Handle(update AgentStreamUpdate) {
 	if update.AnswerSnapshot {
 		s.answer.Reset()
 	}
+	assistantSnapshot := update.AssistantSnapshot || update.AnswerSnapshot
 	partialUpdate := update.PartialMessage || update.Incremental
-	if s.replyMode == config.ReplyModeAppend && !update.AnswerSnapshot && partialUpdate && !s.orderedPartial && hasVisibleOrderedSegments(update.Segments) {
+	if s.replyMode == config.ReplyModeAppend && !assistantSnapshot && partialUpdate && !s.orderedPartial && hasVisibleOrderedSegments(update.Segments) {
 		s.orderedPartialAt = len(s.ordered)
 		s.orderedPartial = true
 	}
 	for _, segment := range update.Segments {
 		s.appendSegmentLocked(segment, update.Incremental)
-		if s.replyMode != config.ReplyModeAppend || update.AnswerSnapshot || segment.Kind == card.SegmentThought {
+		if s.replyMode != config.ReplyModeAppend || assistantSnapshot || segment.Kind == card.SegmentThought {
 			continue
 		}
 		s.ordered = appendOrderedSegment(s.ordered, segment, update.Incremental)
 	}
-	if s.replyMode == config.ReplyModeAppend && update.AnswerSnapshot {
+	if s.replyMode == config.ReplyModeAppend && assistantSnapshot {
 		s.ordered = replaceOrderedAnswerSnapshot(s.ordered, update.Segments, s.orderedPartialAt, s.orderedPartial)
 		s.orderedPartialAt = 0
 		s.orderedPartial = false

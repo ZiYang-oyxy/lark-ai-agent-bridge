@@ -3313,6 +3313,20 @@ func TestStreamUpdateMarksFullAssistantMessageAsAnswerSnapshot(t *testing.T) {
 	}
 }
 
+func TestStreamUpdateMarksToolOnlyAssistantMessageAsSnapshot(t *testing.T) {
+	data := []byte(`{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","name":"Bash","id":"tu-1","input":{"command":"ls"}}]}}`)
+	var got []AgentStreamUpdate
+	_, err := parseClaudeStream(bytes.NewReader(data), nil, func(update AgentStreamUpdate) {
+		got = append(got, update)
+	})
+	if err != nil {
+		t.Fatalf("parse stream error: %v", err)
+	}
+	if len(got) != 1 || !got[0].AssistantSnapshot || got[0].AnswerSnapshot {
+		t.Fatalf("tool-only assistant update = %#v, want assistant boundary without answer snapshot", got)
+	}
+}
+
 func testConfig(t *testing.T) config.Config {
 	t.Helper()
 	return config.Config{DefaultAgent: "claude", DefaultWorkDir: t.TempDir(), CardMaxChars: 1000, InteractionTimeout: time.Second, ConversationMode: config.ConversationModeTopic}

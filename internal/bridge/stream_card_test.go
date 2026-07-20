@@ -516,6 +516,48 @@ func TestAppendStreamSnapshotWithoutPartialAppendsAfterToolResult(t *testing.T) 
 	}
 }
 
+func TestAppendStreamToolOnlySnapshotClosesPartialBeforeToolResult(t *testing.T) {
+	clock := &fakeStreamClock{now: time.Unix(777, 0)}
+	renderer := card.NewFakeRenderer()
+	stream := newPreviewTestStream(t, renderer, clock, 30, 2000)
+	if err := stream.Start(); err != nil {
+		t.Fatal(err)
+	}
+	stream.Handle(AgentStreamUpdate{
+		Segments:          []card.Segment{{Kind: card.SegmentText, Text: "先检查"}},
+		AnswerSnapshot:    true,
+		AssistantSnapshot: true,
+	})
+	stream.Handle(AgentStreamUpdate{
+		Segments:       []card.Segment{{Kind: card.SegmentTool, Text: "partial tool"}},
+		PartialMessage: true,
+	})
+	stream.Handle(AgentStreamUpdate{
+		Segments:          []card.Segment{{Kind: card.SegmentTool, Text: "Bash(ls)"}},
+		AssistantSnapshot: true,
+	})
+	stream.Handle(AgentStreamUpdate{Segments: []card.Segment{{Kind: card.SegmentTool, Text: "tool_result: file.txt"}}})
+	stream.Handle(AgentStreamUpdate{
+		Segments:       []card.Segment{{Kind: card.SegmentText, Text: "最终"}},
+		PartialMessage: true,
+		Incremental:    true,
+	})
+	stream.Handle(AgentStreamUpdate{
+		Segments:          []card.Segment{{Kind: card.SegmentText, Text: "最终答案"}},
+		AnswerSnapshot:    true,
+		AssistantSnapshot: true,
+	})
+	if err := stream.Flush(); err != nil {
+		t.Fatal(err)
+	}
+	events := renderer.Events()
+	preview := events[len(events)-1]
+	assertSegmentKinds(t, preview, card.SegmentText, card.SegmentTool, card.SegmentTool, card.SegmentText)
+	if preview.Segments[0].Text != "先检查" || preview.Segments[1].Text != "Bash(ls)" || preview.Segments[2].Text != "tool_result: file.txt" || preview.Segments[3].Text != "最终答案" {
+		t.Fatalf("tool-loop timeline = %#v", preview.Segments)
+	}
+}
+
 func TestAppendStreamConsecutiveFullSnapshotsPreservePrefixHistory(t *testing.T) {
 	clock := &fakeStreamClock{now: time.Unix(780, 0)}
 	renderer := card.NewFakeRenderer()
