@@ -265,6 +265,57 @@ func (s *Store) SetTaskEnabled(id string, enabled bool) (Task, error) {
 	return candidate.Tasks[idx], nil
 }
 
+func (s *Store) UpdateTaskSchedule(id string, next time.Time, archived bool) (Task, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	idx, ok := taskIndex(s.snapshot.Tasks, id)
+	if !ok {
+		return Task{}, fmt.Errorf("task %q not found", id)
+	}
+	candidate := cloneSnapshot(s.snapshot)
+	candidate.Tasks[idx].NextRun = next
+	candidate.Tasks[idx].Archived = archived
+	if archived {
+		candidate.Tasks[idx].Enabled = false
+	}
+	if err := s.publishLocked(candidate); err != nil {
+		return Task{}, err
+	}
+	return candidate.Tasks[idx], nil
+}
+
+func (s *Store) ActiveRun(taskID, exceptID string) (Run, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, run := range s.snapshot.Runs {
+		if run.TaskID == taskID && run.ID != exceptID && (run.State == RunPending || run.State == RunQueued || run.State == RunRunning) {
+			return run, true
+		}
+	}
+	return Run{}, false
+}
+
+func (s *Store) ExpireDrafts(now time.Time) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	candidate := cloneSnapshot(s.snapshot)
+	kept := candidate.Drafts[:0]
+	for _, draft := range candidate.Drafts {
+		if draft.ExpiresAt.IsZero() || draft.ExpiresAt.After(now) {
+			kept = append(kept, draft)
+		}
+	}
+	expired := len(candidate.Drafts) - len(kept)
+	if expired == 0 {
+		return 0, nil
+	}
+	candidate.Drafts = kept
+	if err := s.publishLocked(candidate); err != nil {
+		return 0, err
+	}
+	return expired, nil
+}
+
 func (s *Store) DeleteTask(id string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()

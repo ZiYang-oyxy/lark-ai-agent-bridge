@@ -108,7 +108,7 @@ type Run struct {
 }
 
 func RunID(kind Kind, taskID string, scheduledAt time.Time) string {
-	return fmt.Sprintf("%s:%s:%s", kind, taskID, scheduledAt.UTC().Format(time.RFC3339))
+	return fmt.Sprintf("%s:%s:%s", kind, taskID, scheduledAt.UTC().Format(time.RFC3339Nano))
 }
 
 func terminalRunState(state RunState) bool {
