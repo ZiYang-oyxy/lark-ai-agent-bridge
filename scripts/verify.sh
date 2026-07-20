@@ -27,6 +27,21 @@ require_not_contains() {
   fi
 }
 
+echo "== group intake documentation contracts =="
+readme_output="$(<README.md)"
+help_source="$(<internal/bridge/command.go)"
+capability_source="$(<scripts/e2e-real.sh)"
+for mode in mention_only participated_topics all_group_messages; do
+  require_contains "$readme_output" "$mode" "README group intake modes"
+done
+require_contains "$readme_output" "im:message.group_msg" "README group scope"
+require_contains "$readme_output" "E2E_PARTICIPATED_TOPICS_STORE" "README participation store"
+require_contains "$readme_output" "默认关闭" "README bot sender default"
+require_contains "$help_source" "participated topics" "help group intake"
+require_contains "$capability_source" "group_message_intake" "real E2E capability"
+require_contains "$capability_source" "scope_incremental_grant" "real E2E capability"
+echo "group intake documentation contracts ok"
+
 echo "== go test ./... =="
 go test ./...
 
@@ -66,6 +81,22 @@ echo "== group mention filter simulation =="
 group_output="$(go run ./cmd/lark-agent-bridge simulate -group=true -mentioned=false -text "hello")"
 require_contains "$group_output" '"events": []' "group mention filter simulation"
 echo "group mention filter ok"
+
+echo "== group intake mode simulation =="
+all_group_output="$(E2E_GROUP_MESSAGE_MODE=all_group_messages go run ./cmd/lark-agent-bridge simulate -group=true -mentioned=false -text "hello all")"
+require_contains "$all_group_output" "simulated answer: hello all" "all group messages simulation"
+
+bot_off_output="$(E2E_GROUP_MESSAGE_MODE=all_group_messages go run ./cmd/lark-agent-bridge simulate -group=true -mentioned=true -sender-type bot -text "/help")"
+require_contains "$bot_off_output" '"events": []' "bot sender default off simulation"
+bot_on_output="$(E2E_GROUP_MESSAGE_MODE=all_group_messages E2E_RESPOND_TO_BOTS=true go run ./cmd/lark-agent-bridge simulate -group=true -mentioned=true -sender-type bot -text "/help")"
+require_contains "$bot_on_output" "/new [--workdir" "bot sender enabled simulation"
+
+topics_store="$ROOT/.cache/verify-participated-topics-$RANDOM.json"
+E2E_GROUP_MESSAGE_MODE=participated_topics E2E_PARTICIPATED_TOPICS_STORE="$topics_store" go run ./cmd/lark-agent-bridge simulate -group=true -thread=topic-verify -mentioned=true -text "/help" >/dev/null
+topic_followup_output="$(E2E_GROUP_MESSAGE_MODE=participated_topics E2E_PARTICIPATED_TOPICS_STORE="$topics_store" go run ./cmd/lark-agent-bridge simulate -group=true -thread=topic-verify -mentioned=false -text "/help")"
+require_contains "$topic_followup_output" "/new [--workdir" "participated topic restart simulation"
+rm -f "$topics_store"
+echo "group intake modes ok"
 
 echo "== session behavior tests =="
 go test ./internal/bridge -run 'TestServiceQueuesSecondInputUntilFirstCompletes|TestDifferentTopicsRunInParallel|TestTopicPlainTextContinuesStoredClaudeSession|TestNewInTopicResetsStoredClaudeSession|TestServiceNewWithoutPromptCreatesReadySession|TestQueuedRunPreservesInputWorkDir|TestServiceSkipsDuplicateRunAndOldDelivery|TestServiceRejectsTwentyFirstPendingInput|TestServiceRestoreDoesNotRunClearedQueue|TestServiceMergesBusyTopicInputsIntoNextBatch|TestServiceStopKeepsLaterQueue|TestMessageRecallRemovesQueuedInput'

@@ -57,6 +57,18 @@ owner 或管理员可在飞书中管理名单：
 
 该设置与 Reply mode（`append`、`append-clean-card`、`latest-card`）相互独立。保存成功后只影响新接收的消息；已有 session 不迁移、不删除，已经排队或停在 workdir 确认阶段的输入继续使用接收时的 mode。启动环境可用 `E2E_CONVERSATION_MODE=chat|topic` 设置 `/config reset` 恢复的默认值。
 
+## 群消息接收
+
+`/config` 的 **Group message intake** 是一个互斥选择，默认保持最小接收范围：
+
+- `mention_only`（默认）：只处理明确 `@bot` 的群消息。
+- `participated_topics`：除明确 `@bot` 外，还处理 bot 已参与话题中的后续消息；参与状态持久化，重启后仍有效。
+- `all_group_messages`：处理已授权群中的所有消息，无需 `@bot`。
+
+**Respond to bot/app senders** 是独立开关，默认关闭；关闭时会忽略其他 bot/app 发送的消息，避免机器人之间互相触发。Bridge 自身消息始终忽略，即使打开此开关也不会自循环。开启扩展接收模式时，Bridge 会检查 tenant 是否已有 `im:message.group_msg` 权限；缺失时发送带授权链接的卡片，授权完成后再次确认才报告权限生效。权限状态无法确认时不会伪报授权成功；切回 `mention_only` 即可回滚本地 intake 行为，不会主动撤销 tenant scope。
+
+启动默认值可由 `E2E_GROUP_MESSAGE_MODE=mention_only|participated_topics|all_group_messages` 和 `E2E_RESPOND_TO_BOTS=true|false` 配置；参与话题记录默认位于 `<workdir>/.lark-agent-bridge/participated-topics.json`，可用 `E2E_PARTICIPATED_TOPICS_STORE` 覆盖。记录采用最多 10,000 条的确定性 LRU；文件损坏时 `serve` 会 fail-closed，避免悄悄丢失参与边界。`/config reset` 会恢复启动默认值。
+
 ## 图片输出
 
 Agent 可在最终回复中显式引用当前 workdir 内的本地图片：

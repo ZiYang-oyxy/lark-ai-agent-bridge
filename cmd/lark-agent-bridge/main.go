@@ -156,6 +156,7 @@ func runSimulate(args []string) error {
 	chat := fs.String("chat", "chat-demo", "chat id")
 	thread := fs.String("thread", "", "thread id")
 	sender := fs.String("sender", "user-demo", "sender id")
+	senderType := fs.String("sender-type", "user", "sender type: user or bot")
 	group := fs.Bool("group", false, "simulate group chat")
 	mentioned := fs.Bool("mentioned", true, "whether bot was mentioned")
 	timeoutNow := fs.Bool("timeout-now", false, "immediately trigger pending confirmation timeout after message handling")
@@ -168,42 +169,53 @@ func runSimulate(args []string) error {
 	if err := applyDefaultWorkDir(&cfg, *defaultWorkDir); err != nil {
 		return err
 	}
+	if *senderType != "user" && *senderType != "bot" {
+		return fmt.Errorf("sender-type must be user or bot")
+	}
 	renderer := card.NewFakeRenderer()
 	recorder := audit.NewRecorder()
 	baseMsg := bridge.Message{
-		ChatID:    *chat,
-		ThreadID:  *thread,
-		Sender:    *sender,
-		Text:      *text,
-		IsGroup:   *group,
-		Mentioned: *mentioned,
-		Time:      time.Now(),
+		ChatID:     *chat,
+		ThreadID:   *thread,
+		Sender:     *sender,
+		SenderType: *senderType,
+		Text:       *text,
+		IsGroup:    *group,
+		Mentioned:  *mentioned,
+		Time:       time.Now(),
 	}
 	svc := bridge.NewService(cfg, renderer, simulateRunner{}, recorder)
+	topics, err := openParticipationStore(cfg)
+	if err != nil {
+		return err
+	}
+	svc.TopicParticipation = topics
 	loadAgentsInto(svc, cfg, recorder)
 	msg := bridge.Message{
-		ID:        fmt.Sprintf("local-%d", time.Now().UnixNano()),
-		ChatID:    *chat,
-		ThreadID:  *thread,
-		Sender:    *sender,
-		Text:      *text,
-		IsGroup:   *group,
-		Mentioned: *mentioned,
-		Time:      baseMsg.Time,
+		ID:         fmt.Sprintf("local-%d", time.Now().UnixNano()),
+		ChatID:     *chat,
+		ThreadID:   *thread,
+		Sender:     *sender,
+		SenderType: *senderType,
+		Text:       *text,
+		IsGroup:    *group,
+		Mentioned:  *mentioned,
+		Time:       baseMsg.Time,
 	}
 	if err := svc.HandleMessage(context.Background(), msg); err != nil {
 		return err
 	}
 	for _, nextText := range nextMessages {
 		nextMsg := bridge.Message{
-			ID:        fmt.Sprintf("local-%d", time.Now().UnixNano()),
-			ChatID:    *chat,
-			ThreadID:  *thread,
-			Sender:    *sender,
-			Text:      nextText,
-			IsGroup:   *group,
-			Mentioned: *mentioned,
-			Time:      time.Now(),
+			ID:         fmt.Sprintf("local-%d", time.Now().UnixNano()),
+			ChatID:     *chat,
+			ThreadID:   *thread,
+			Sender:     *sender,
+			SenderType: *senderType,
+			Text:       nextText,
+			IsGroup:    *group,
+			Mentioned:  *mentioned,
+			Time:       time.Now(),
 		}
 		if err := svc.HandleMessage(context.Background(), nextMsg); err != nil {
 			return err

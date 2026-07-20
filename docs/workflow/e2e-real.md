@@ -117,7 +117,7 @@ Recommended existing subscriptions for diagnostics:
 - `im.message.reaction.created_v1`
 - `im.message.reaction.deleted_v1`
 
-Current known permission note: `im:message.group_msg` is only needed for proactively listing group message history. The bridge main path receives group messages through long connection events and does not depend on group history listing.
+`mention_only` 继续依赖原有 @bot 事件范围。`participated_topics` 和 `all_group_messages` 需要 tenant scope `im:message.group_msg`，Bridge 会在 `/config` 保存后检查并发起增量授权；授权成功必须经过二次 scope 查询确认。
 
 ## Local Prerequisites
 
@@ -211,6 +211,16 @@ Run selected cases:
   --case media_images \
   --case recall_state
 ```
+
+群消息三档的真实 feature case 需要 fake Claude，并会在退出前恢复 `mention_only`、关闭 bot sender 开关、删除该 run 隔离的 participation store，再确认 WSS 重连：
+
+```bash
+E2E_REAL_E2E_FAKE_CLAUDE=1 ./scripts/e2e-real.sh \
+  --profile personal \
+  --case group_message_intake
+```
+
+该 case 自动覆盖默认非 @ 忽略、参与话题前后差异、marker 跨 Bridge 重启、`all_group_messages` 和回滚。其他 bot sender 需要另一个可控 bot 身份；增量授权完成需要初始缺少 `im:message.group_msg` 的专用 profile。缺少这些外部条件时，capability summary 会保留为 `SKIPPED`，不能视作通过。
 
 Run the native `element_id=answer` smoke and profile E2E only from a deliberately configured profile. The Go smoke is opt-in and must never be added to ordinary CI:
 

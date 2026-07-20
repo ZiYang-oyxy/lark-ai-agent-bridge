@@ -113,6 +113,7 @@ func HelpText() string {
 		"/invite user|admin @user, /invite group, /invite all group - grant access",
 		"/remove user|admin @user, /remove group - revoke access",
 		"/help - show this help",
+		"Group intake: mention only (default), participated topics, or all group messages; bot senders are ignored by default.",
 		"",
 		"Plain text continues the current configured agent conversation. Use /new to start a new session.",
 	}, "\n")

@@ -3014,7 +3014,10 @@ func TestServiceRetriesPersistedCompletionBeforeStartingLaterQueue(t *testing.T)
 	if got := len(runner.Calls()); got != 1 {
 		t.Fatalf("runner calls before repair = %d, want 1", got)
 	}
-	if got := len(svc.pendingCompletions); got != 1 {
+	svc.mu.Lock()
+	pendingBeforeRepair := len(svc.pendingCompletions)
+	svc.mu.Unlock()
+	if got := pendingBeforeRepair; got != 1 {
 		t.Fatalf("pending completions = %d, want 1", got)
 	}
 	if err := os.Remove(dir); err != nil {
@@ -3027,7 +3030,10 @@ func TestServiceRetriesPersistedCompletionBeforeStartingLaterQueue(t *testing.T)
 		t.Fatal(err)
 	}
 	waitForCalls(t, runner, 2)
-	if got := len(svc.pendingCompletions); got != 0 {
+	svc.mu.Lock()
+	pendingAfterRetry := len(svc.pendingCompletions)
+	svc.mu.Unlock()
+	if got := pendingAfterRetry; got != 0 {
 		t.Fatalf("pending completions after retry = %d", got)
 	}
 }

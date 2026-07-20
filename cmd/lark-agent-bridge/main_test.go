@@ -35,6 +35,13 @@ func TestSimulateRunnerReportsSelectedAgent(t *testing.T) {
 	}
 }
 
+func TestSimulateRejectsUnknownSenderType(t *testing.T) {
+	err := runSimulate([]string{"-sender-type", "service-account"})
+	if err == nil || !strings.Contains(err.Error(), "sender-type must be user or bot") {
+		t.Fatalf("runSimulate error = %v", err)
+	}
+}
+
 func (f *serveCardKitClientFake) CreateCard(context.Context, feishu.CardKitCreateRequest) (feishu.CardKitCreateResult, error) {
 	return feishu.CardKitCreateResult{CardID: "card"}, nil
 }

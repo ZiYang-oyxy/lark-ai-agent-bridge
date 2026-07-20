@@ -26,6 +26,10 @@ FULL_EXTRA_CASES=(
   latest_restart_fallback
 )
 
+FEATURE_CASES=(
+  group_message_intake
+)
+
 MODE="smoke"
 KEEP_SERVER_ON_FAIL=0
 LIST_CASES=0
@@ -80,6 +84,7 @@ Environment:
   .lark-agent-bridge/e2e.env is loaded automatically when present.
   Required for real execution: LARK_APP_ID, LARK_APP_SECRET, E2E_E2E_CHAT_ID.
   Optional: LARK_BOT_OPEN_ID, E2E_REAL_E2E_TIMEOUT_SEC, E2E_REAL_E2E_FAKE_CLAUDE=1.
+  Feature case group_message_intake is explicit-only and restores mention_only before exit.
   Media file cases also require E2E_REAL_E2E_P2P_CHAT_ID for the user's direct chat with this bot.
 USAGE
 }
@@ -155,6 +160,7 @@ esac
 all_cases() {
   printf '%s\n' "${SMOKE_CASES[@]}"
   printf '%s\n' "${FULL_EXTRA_CASES[@]}"
+  printf '%s\n' "${FEATURE_CASES[@]}"
 }
 
 cases_for_mode() {
@@ -187,7 +193,7 @@ configure_callback_for_cases() {
   CALLBACK_ADDR=""
   for case_name in "${RUN_CASES[@]}"; do
     case "$case_name" in
-      native_text_stream|latest_restart_fallback)
+      native_text_stream|latest_restart_fallback|group_message_intake)
         enable_callback
         return
         ;;
@@ -227,6 +233,7 @@ STATE_DIR="$RUN_DIR/state"
 SESSION_STORE="$STATE_DIR/sessions.json"
 PREFERENCE_STORE="$STATE_DIR/preferences.json"
 REPLY_STORE="$STATE_DIR/replies.json"
+PARTICIPATED_TOPICS_STORE="$STATE_DIR/participated-topics.json"
 FAKE_CLAUDE_LOG="$RUN_DIR/fake-claude.log"
 MEDIA_CACHE_DIR="$RUN_DIR/media-cache"
 MEDIA_FIXTURE_DIR="$RUN_DIR/media-fixtures"
@@ -424,6 +431,11 @@ record_static_exclusivity() {
   fi
 }
 
+record_static_group_intake_features() {
+  e2e_cap_record group_message_intake PASS local_contract "explicit real-E2E case is available" "run --case group_message_intake with fake Claude"
+  e2e_cap_record scope_incremental_grant SKIPPED dedicated_profile_required "grant completion needs a profile that initially lacks im:message.group_msg" "use a dedicated missing-scope profile and complete its authorization card"
+}
+
 run_static_capability_doctor() {
   mkdir -p "$RUN_DIR"
   e2e_cap_reset
@@ -433,6 +445,7 @@ run_static_capability_doctor() {
   record_static_chats
   record_static_wrapper
   record_static_exclusivity
+  record_static_group_intake_features
   e2e_cap_write_json "$CAPABILITIES_JSON"
   e2e_cap_write_summary "$SUMMARY"
 }
@@ -594,6 +607,7 @@ start_server_if_needed() {
     "E2E_SESSION_STORE=$SESSION_STORE"
     "E2E_PREFERENCE_STORE=$PREFERENCE_STORE"
     "E2E_REPLY_STORE=$REPLY_STORE"
+    "E2E_PARTICIPATED_TOPICS_STORE=$PARTICIPATED_TOPICS_STORE"
     "E2E_MEDIA_CACHE_DIR=$MEDIA_CACHE_DIR"
     "E2E_ALLOWED_MODELS=${E2E_ALLOWED_MODELS:+$E2E_ALLOWED_MODELS,}$CONFIG_CUSTOM_MODEL"
     "GOCACHE=$GOCACHE"
@@ -1318,11 +1332,13 @@ submit_config() {
   local effort="$4"
   local reply_mode="${5:-append}"
   local conversation_mode="${6:-chat}"
-  local out="$RUN_DIR/${case_name}-${model}-${effort}-${reply_mode}-${conversation_mode}.json"
+  local group_message_mode="${7:-mention_only}"
+  local respond_to_bots="${8:-false}"
+  local out="$RUN_DIR/${case_name}-${model}-${effort}-${reply_mode}-${conversation_mode}-${group_message_mode}-${respond_to_bots}.json"
   local payload mark
   wait_callback_ready
-  payload="$(jq -nc --arg session "$session_id" --arg model "$model" --arg effort "$effort" --arg reply_mode "$reply_mode" --arg conversation_mode "$conversation_mode" \
-    '{operator:{open_id:"e2e"},action:{value:{session:$session,action_id:"config.save"},form_value:{model:$model,effort:$effort,reply_mode:$reply_mode,conversation_mode:$conversation_mode}}}')"
+  payload="$(jq -nc --arg session "$session_id" --arg model "$model" --arg effort "$effort" --arg reply_mode "$reply_mode" --arg conversation_mode "$conversation_mode" --arg group_message_mode "$group_message_mode" --arg respond_to_bots "$respond_to_bots" \
+    '{operator:{open_id:"e2e"},action:{value:{session:$session,action_id:"config.save"},form_value:{model:$model,effort:$effort,reply_mode:$reply_mode,conversation_mode:$conversation_mode,group_message_mode:$group_message_mode,respond_to_bots:$respond_to_bots}}}')"
   mark="$(audit_mark)"
   curl -fsS -X POST "http://$CALLBACK_ADDR/card/callback" -H 'Content-Type: application/json' -d "$payload" >"$out"
   jq -e '.ok == true and .card != null' "$out" >/dev/null
@@ -1331,6 +1347,8 @@ submit_config() {
   assert_file_contains "$out" "effort=\`$effort\`"
   assert_file_contains "$out" "reply mode=\`$reply_mode\`"
   assert_file_contains "$out" "conversation mode=\`$conversation_mode\`"
+  assert_file_contains "$out" "group message mode=\`$group_message_mode\`"
+  assert_file_contains "$out" "respond to bots=\`$respond_to_bots\`"
 }
 
 submit_invalid_config() {
@@ -1371,6 +1389,25 @@ set_conversation_mode() {
   fi
   config_msg="$(open_config "${case_name}_${mode}")"
   submit_config "$case_name" "config:message:${config_msg}" "$model" "$effort" "$reply_mode" "$mode"
+}
+
+set_group_message_mode() {
+  local case_name="$1"
+  local mode="$2"
+  local respond_to_bots="${3:-false}"
+  local model="$CONFIG_DEFAULT_MODEL"
+  local effort="$CONFIG_DEFAULT_EFFORT"
+  local reply_mode="append"
+  local conversation_mode="chat"
+  local config_msg
+  if [[ -f "$PREFERENCE_STORE" ]] && jq -e '.override != null' "$PREFERENCE_STORE" >/dev/null 2>&1; then
+    model="$(jq -r '.override.model' "$PREFERENCE_STORE")"
+    effort="$(jq -r '.override.effort' "$PREFERENCE_STORE")"
+    reply_mode="$(jq -r '.override.reply_mode // "append"' "$PREFERENCE_STORE")"
+    conversation_mode="$(jq -r '.override.conversation_mode // "chat"' "$PREFERENCE_STORE")"
+  fi
+  config_msg="$(open_config "${case_name}_${mode}")"
+  submit_config "$case_name" "config:message:${config_msg}" "$model" "$effort" "$reply_mode" "$conversation_mode" "$mode" "$respond_to_bots"
 }
 
 audit_card_id_since() {
@@ -1573,6 +1610,73 @@ case_topic_reply_without_at_negative() {
   record_message topic_reply_without_at_negative root "$root"
   record_message topic_reply_without_at_negative reply_without_at "$reply"
   set_conversation_mode topic_reply_without_at_negative_restore chat
+}
+
+group_message_intake_cleanup() {
+  set +e
+  set_group_message_mode group_message_intake_restore mention_only false
+  stop_server TERM
+  rm -f "$PARTICIPATED_TOPICS_STORE"
+  start_server_if_needed group_message_intake_restore
+}
+
+case_group_message_intake() {
+  require_fake_claude
+  local mention_marker="E2E_${RUN_ID}_MENTION_ONLY"
+  local topic_marker="E2E_${RUN_ID}_PARTICIPATED"
+  local restart_marker="E2E_${RUN_ID}_PARTICIPATED_RESTART"
+  local other_marker="E2E_${RUN_ID}_OTHER_TOPIC"
+  local all_marker="E2E_${RUN_ID}_ALL_GROUP"
+  local rollback_marker="E2E_${RUN_ID}_ROLLBACK"
+  local root other_root msg
+  trap group_message_intake_cleanup EXIT
+
+  set_group_message_mode group_message_intake_mention mention_only false
+  msg="$(send_text "$mention_marker")"
+  sleep 8
+  if grep -F "$msg" "$AUDIT" >/dev/null 2>&1; then
+    echo "mention_only unexpectedly accepted non-mention message: $msg" >&2
+    return 1
+  fi
+
+  set_group_message_mode group_message_intake_participated participated_topics false
+  root="$(send_at "/new E2E_${RUN_ID}_TOPIC_ROOT")"
+  wait_audit "$root.*event=result" 60
+  msg="$(reply_thread "$root" "<at user_id=\"${BOT_OPEN_ID}\"></at> $topic_marker")"
+  wait_audit "$msg.*event=result" 60
+  msg="$(reply_thread "$root" "$topic_marker-followup")"
+  wait_audit "$msg.*event=result" 60
+
+  other_root="$(send_text "${other_marker}-root")"
+  msg="$(reply_thread "$other_root" "$other_marker")"
+  sleep 8
+  if grep -F "$msg" "$AUDIT" >/dev/null 2>&1; then
+    echo "participated_topics unexpectedly accepted another topic: $msg" >&2
+    return 1
+  fi
+
+  restart_server TERM
+  msg="$(reply_thread "$root" "$restart_marker")"
+  wait_audit "$msg.*event=result" 60
+
+  set_group_message_mode group_message_intake_all all_group_messages false
+  msg="$(send_text "$all_marker")"
+  wait_audit "$msg.*event=result" 60
+
+  set_group_message_mode group_message_intake_rollback mention_only false
+  msg="$(send_text "$rollback_marker")"
+  sleep 8
+  if grep -F "$msg" "$AUDIT" >/dev/null 2>&1; then
+    echo "mention_only rollback unexpectedly accepted non-mention message: $msg" >&2
+    return 1
+  fi
+
+  group_message_intake_cleanup
+  trap - EXIT
+  summary "- group_message_modes: mention_only, participated_topics, all_group_messages"
+  summary "- participation_restart: passed"
+  summary "- bot_sender: not exercised (requires a separately controlled bot identity)"
+  summary "- scope_incremental_grant: not exercised unless this profile initially lacks im:message.group_msg"
 }
 
 case_message_revoke() {
