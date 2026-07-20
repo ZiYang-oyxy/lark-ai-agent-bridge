@@ -4043,6 +4043,66 @@ func waitForAuditAction(t *testing.T, recorder *audit.Recorder, action string) {
 	t.Fatalf("audit events = %#v, want action %q", recorder.Events(), action)
 }
 
+func TestServiceRecordsCompletedSessionInCatalog(t *testing.T) {
+	workDir, err := session.CanonicalWorkDir(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	catalog, err := session.OpenCatalog(filepath.Join(t.TempDir(), "catalog.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager := session.NewManager()
+	manager.AttachCatalog(catalog)
+	svc := NewServiceWithSessions(config.Config{}, card.NewFakeRenderer(), &fakeRunner{}, audit.NewRecorder(), manager, nil)
+	now := time.Date(2026, 7, 20, 12, 0, 0, 0, time.UTC)
+	updated := session.Session{
+		Key: session.Key{Agent: agent.Claude, ChatID: "chat"}, AgentSessionID: "agent-session",
+		WorkDir: workDir, BridgeInstructionsVersion: "v1", LastActive: now,
+	}
+	batch := session.Batch{Inputs: []session.Input{{Text: "  first\n\tprompt with   spacing  "}}}
+
+	svc.recordCompletedSession(updated, batch)
+
+	entries, err := manager.RecentSessions(session.CatalogIdentity{Agent: agent.Claude, WorkDir: workDir}, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 || entries[0].SessionID != "agent-session" || entries[0].BridgeInstructionsVersion != "v1" || entries[0].Summary != "first prompt with spacing" || !entries[0].UpdatedAt.Equal(now) {
+		t.Fatalf("catalog entries = %#v", entries)
+	}
+}
+
+func TestServiceCatalogFailureIsAuditedWithoutChangingCompletedSession(t *testing.T) {
+	workDir, err := session.CanonicalWorkDir(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	root := t.TempDir()
+	catalogPath := filepath.Join(root, "catalog.json")
+	catalog, err := session.OpenCatalog(catalogPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(catalogPath, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	manager := session.NewManager()
+	manager.AttachCatalog(catalog)
+	recorder := audit.NewRecorder()
+	svc := NewServiceWithSessions(config.Config{}, card.NewFakeRenderer(), &fakeRunner{}, recorder, manager, nil)
+	updated := session.Session{Key: session.Key{Agent: agent.Codex, ChatID: "chat"}, AgentSessionID: "thread", WorkDir: workDir, LastActive: time.Now()}
+
+	svc.recordCompletedSession(updated, session.Batch{Inputs: []session.Input{{Text: "prompt"}}})
+
+	if !auditContainsAction(recorder.Events(), "session_catalog_upsert_failed") {
+		t.Fatalf("audit = %#v", recorder.Events())
+	}
+	if updated.AgentSessionID != "thread" || updated.State != "" {
+		t.Fatalf("recording mutated completed session = %#v", updated)
+	}
+}
+
 func waitForSessionNoActiveBatch(t *testing.T, svc *Service, key session.Key) {
 	t.Helper()
 	deadline := time.Now().Add(time.Second)

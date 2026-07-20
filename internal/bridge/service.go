@@ -889,6 +889,9 @@ func completionKey(key session.Key, batchID string) string { return key.ID() + "
 func (s *Service) finishBatchOrRemember(sess session.Session, batchID string, completion session.BatchCompletion, auditAction string) (session.Session, error) {
 	updated, err := s.Sessions.FinishBatch(sess.Key, batchID, completion)
 	if err == nil {
+		if completion.Status == session.InputCompleted && sess.ActiveBatch != nil && sess.ActiveBatch.ID == batchID {
+			s.recordCompletedSession(updated, *sess.ActiveBatch)
+		}
 		return updated, nil
 	}
 	s.mu.Lock()
@@ -926,7 +929,8 @@ func (s *Service) retryPendingCompletions(now time.Time, force bool) {
 	s.mu.Unlock()
 	for _, pendingCompletion := range pending {
 		key := completionKey(pendingCompletion.Key, pendingCompletion.BatchID)
-		if sess, ok := s.Sessions.Get(pendingCompletion.Key); !ok || sess.ActiveBatch == nil || sess.ActiveBatch.ID != pendingCompletion.BatchID {
+		sess, ok := s.Sessions.Get(pendingCompletion.Key)
+		if !ok || sess.ActiveBatch == nil || sess.ActiveBatch.ID != pendingCompletion.BatchID {
 			s.mu.Lock()
 			delete(s.pendingCompletions, key)
 			s.mu.Unlock()
@@ -935,7 +939,10 @@ func (s *Service) retryPendingCompletions(now time.Time, force bool) {
 		if s.beforePendingCompletionRetryHook != nil {
 			s.beforePendingCompletionRetryHook()
 		}
-		if _, err := s.Sessions.FinishBatch(pendingCompletion.Key, pendingCompletion.BatchID, pendingCompletion.Completion); err == nil {
+		if updated, err := s.Sessions.FinishBatch(pendingCompletion.Key, pendingCompletion.BatchID, pendingCompletion.Completion); err == nil {
+			if pendingCompletion.Completion.Status == session.InputCompleted && sess.ActiveBatch != nil {
+				s.recordCompletedSession(updated, *sess.ActiveBatch)
+			}
 			s.mu.Lock()
 			delete(s.pendingCompletions, key)
 			s.mu.Unlock()
@@ -950,6 +957,48 @@ func (s *Service) retryPendingCompletions(now time.Time, force bool) {
 			s.mu.Unlock()
 		}
 	}
+}
+
+func (s *Service) recordCompletedSession(updated session.Session, batch session.Batch) {
+	if strings.TrimSpace(updated.AgentSessionID) == "" || strings.TrimSpace(updated.WorkDir) == "" {
+		return
+	}
+	workDir, err := session.CanonicalWorkDir(updated.WorkDir)
+	if err != nil {
+		s.Audit.Record("system", "session_catalog_upsert_failed", updated.ID, err.Error())
+		return
+	}
+	updatedAt := updated.LastActive
+	if updatedAt.IsZero() {
+		updatedAt = time.Now()
+	}
+	summary := ""
+	if len(batch.Inputs) > 0 {
+		summary = normalizeSessionSummary(batch.Inputs[0].Text, 120)
+	}
+	err = s.Sessions.RecordSession(session.CatalogEntry{
+		SessionID:                 updated.AgentSessionID,
+		Agent:                     updated.Key.Agent,
+		WorkDir:                   workDir,
+		UpdatedAt:                 updatedAt,
+		BridgeInstructionsVersion: updated.BridgeInstructionsVersion,
+		Summary:                   summary,
+	})
+	if err != nil && !errors.Is(err, session.ErrCatalogUnavailable) {
+		s.Audit.Record("system", "session_catalog_upsert_failed", updated.ID, err.Error())
+	}
+}
+
+func normalizeSessionSummary(text string, maxRunes int) string {
+	text = strings.Join(strings.Fields(text), " ")
+	if maxRunes <= 0 {
+		return ""
+	}
+	runes := []rune(text)
+	if len(runes) > maxRunes {
+		return string(runes[:maxRunes])
+	}
+	return text
 }
 
 func completionRetryDelay(attempts int) time.Duration {

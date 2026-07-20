@@ -1,6 +1,7 @@
 package session
 
 import (
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -155,7 +156,14 @@ type Manager struct {
 	lastPersistErr                   error
 	receipts                         []Receipt
 	currentBridgeInstructionsVersion string
+	catalog                          *Catalog
 }
+
+var (
+	ErrSessionBusy        = errors.New("session: scope has active or queued work")
+	ErrSessionNotFound    = errors.New("session: resumable session not found")
+	ErrCatalogUnavailable = errors.New("session: catalog unavailable")
+)
 
 func NewManager() *Manager {
 	return NewManagerWithStoreVersion("", "")
@@ -175,6 +183,83 @@ func NewManagerWithStoreVersion(path, currentVersion string) *Manager {
 		storePath:                        path,
 		currentBridgeInstructionsVersion: strings.TrimSpace(currentVersion),
 	}
+}
+
+func (m *Manager) AttachCatalog(catalog *Catalog) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.catalog = catalog
+}
+
+func (m *Manager) RecentSessions(identity CatalogIdentity, limit int) ([]CatalogEntry, error) {
+	m.mu.Lock()
+	catalog := m.catalog
+	m.mu.Unlock()
+	if catalog == nil {
+		return nil, ErrCatalogUnavailable
+	}
+	return catalog.Recent(identity, limit), nil
+}
+
+func (m *Manager) RecordSession(entry CatalogEntry) error {
+	m.mu.Lock()
+	catalog := m.catalog
+	m.mu.Unlock()
+	if catalog == nil {
+		return ErrCatalogUnavailable
+	}
+	return catalog.Upsert(entry)
+}
+
+// Resume switches an idle conversation scope to an existing catalog entry.
+// Catalog ordering is touched before the authoritative session snapshot; a
+// later snapshot failure may advance list ordering but never publishes a new
+// in-memory binding or loses queued work.
+func (m *Manager) Resume(key Key, identity CatalogIdentity, sessionID string, now time.Time) (Session, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	current := m.currentSessionLocked(key)
+	if m.catalog == nil {
+		return current, ErrCatalogUnavailable
+	}
+	if key.Agent != identity.Agent {
+		return current, ErrSessionNotFound
+	}
+	if existing, ok := m.sessions[key.ID()]; ok && (existing.State == StateRunning || existing.ActiveBatch != nil || len(existing.Queue) != 0) {
+		return current, ErrSessionBusy
+	}
+	entry, ok := m.catalog.Resolve(identity, strings.TrimSpace(sessionID))
+	if !ok {
+		return current, ErrSessionNotFound
+	}
+	if now.IsZero() {
+		now = time.Now()
+	}
+	if _, err := m.catalog.Touch(identity, entry.SessionID, now); err != nil {
+		return current, fmt.Errorf("session: touch catalog: %w", err)
+	}
+
+	sessions := cloneSessions(m.sessions)
+	s := ensureSessionIn(sessions, key, identity.WorkDir)
+	s.AgentSessionID = entry.SessionID
+	s.WorkDir = entry.WorkDir
+	s.BridgeInstructionsVersion = entry.BridgeInstructionsVersion
+	s.Model = ""
+	s.Tokens = 0
+	s.History = nil
+	s.Queue = nil
+	s.ActiveBatch = nil
+	s.State = StateIdle
+	s.LastActive = now
+	if m.storePath != "" {
+		if err := m.persistCandidateLocked(sessions, m.receipts, m.revision); err != nil {
+			return m.currentSessionLocked(key), err
+		}
+	} else {
+		m.sessions = sessions
+	}
+	return *cloneSession(s), nil
 }
 
 // RecoveryNotice is the terminal handoff for a pending input that was cleared

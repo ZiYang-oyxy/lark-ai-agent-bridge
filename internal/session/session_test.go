@@ -3,6 +3,8 @@ package session
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -999,6 +1001,122 @@ func TestQueuedResetClearsBeforeNextInput(t *testing.T) {
 	}
 	if len(after.History) != 1 || after.History[0].Text != "second" {
 		t.Fatalf("history = %#v, want only reset prompt", after.History)
+	}
+}
+
+func TestManagerResumeSwitchesIdleBindingAndRestoresPinnedVersion(t *testing.T) {
+	workDir := mustCanonicalWorkDir(t, t.TempDir())
+	catalog, err := OpenCatalog(filepath.Join(t.TempDir(), "catalog.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 7, 20, 12, 0, 0, 0, time.UTC)
+	entry := CatalogEntry{SessionID: "target", Agent: agent.Claude, WorkDir: workDir, UpdatedAt: now.Add(-time.Hour), BridgeInstructionsVersion: "v1", Summary: "old prompt"}
+	if err := catalog.Upsert(entry); err != nil {
+		t.Fatal(err)
+	}
+	manager := NewManagerWithStore(filepath.Join(t.TempDir(), "sessions.json"))
+	manager.AttachCatalog(catalog)
+	key := Key{Agent: agent.Claude, ChatID: "chat"}
+	manager.sessions[key.ID()] = &Session{
+		Key: key, ID: key.ID(), WorkDir: workDir, AgentSessionID: "current",
+		BridgeInstructionsVersion: "v2", State: StateIdle, Model: "model", Tokens: 9,
+		History: []Prompt{{Text: "current prompt"}}, CreatedAt: now.Add(-time.Hour), LastActive: now.Add(-time.Minute),
+	}
+
+	got, err := manager.Resume(key, CatalogIdentity{Agent: agent.Claude, WorkDir: workDir}, "target", now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.AgentSessionID != "target" || got.BridgeInstructionsVersion != "v1" || got.WorkDir != workDir {
+		t.Fatalf("resumed = %#v", got)
+	}
+	if got.State != StateIdle || got.ActiveBatch != nil || len(got.Queue) != 0 || len(got.History) != 0 || got.Model != "" || got.Tokens != 0 {
+		t.Fatalf("stale scope state survived: %#v", got)
+	}
+	if !got.LastActive.Equal(now) {
+		t.Fatalf("last active = %v, want %v", got.LastActive, now)
+	}
+	resolved, ok := catalog.Resolve(CatalogIdentity{Agent: agent.Claude, WorkDir: workDir}, "target")
+	if !ok || !resolved.UpdatedAt.Equal(now) {
+		t.Fatalf("catalog target = %#v, ok=%t", resolved, ok)
+	}
+
+	restored := NewManagerWithStore(filepath.Join(manager.storePath))
+	if _, err := restored.Restore(); err != nil {
+		t.Fatal(err)
+	}
+	stored, ok := restored.Get(key)
+	if !ok || stored.AgentSessionID != "target" || stored.BridgeInstructionsVersion != "v1" {
+		t.Fatalf("stored binding = %#v, ok=%t", stored, ok)
+	}
+}
+
+func TestManagerResumeRejectsUnavailableMissingAndBusyScopes(t *testing.T) {
+	workDir := mustCanonicalWorkDir(t, t.TempDir())
+	identity := CatalogIdentity{Agent: agent.Claude, WorkDir: workDir}
+	key := Key{Agent: agent.Claude, ChatID: "chat"}
+	manager := NewManager()
+	if _, err := manager.Resume(key, identity, "target", time.Now()); !errors.Is(err, ErrCatalogUnavailable) {
+		t.Fatalf("unavailable error = %v", err)
+	}
+	catalog, err := OpenCatalog(filepath.Join(t.TempDir(), "catalog.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager.AttachCatalog(catalog)
+	if _, err := manager.Resume(key, identity, "missing", time.Now()); !errors.Is(err, ErrSessionNotFound) {
+		t.Fatalf("missing error = %v", err)
+	}
+	entry := CatalogEntry{SessionID: "target", Agent: agent.Claude, WorkDir: workDir, UpdatedAt: time.Now(), BridgeInstructionsVersion: "v1"}
+	if err := catalog.Upsert(entry); err != nil {
+		t.Fatal(err)
+	}
+	for name, session := range map[string]*Session{
+		"running": {Key: key, ID: key.ID(), WorkDir: workDir, State: StateRunning},
+		"active":  {Key: key, ID: key.ID(), WorkDir: workDir, State: StateIdle, ActiveBatch: &Batch{ID: "active"}},
+		"queued":  {Key: key, ID: key.ID(), WorkDir: workDir, State: StateIdle, Queue: []Input{{ID: "queued"}}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			manager.sessions[key.ID()] = cloneSession(session)
+			before := *cloneSession(manager.sessions[key.ID()])
+			if _, err := manager.Resume(key, identity, "target", time.Now()); !errors.Is(err, ErrSessionBusy) {
+				t.Fatalf("busy error = %v", err)
+			}
+			after := manager.sessions[key.ID()]
+			if after.AgentSessionID != before.AgentSessionID || len(after.Queue) != len(before.Queue) || (after.ActiveBatch == nil) != (before.ActiveBatch == nil) {
+				t.Fatalf("busy session changed: before=%#v after=%#v", before, after)
+			}
+		})
+	}
+}
+
+func TestManagerResumeSnapshotFailureDoesNotPublishBinding(t *testing.T) {
+	workDir := mustCanonicalWorkDir(t, t.TempDir())
+	identity := CatalogIdentity{Agent: agent.Claude, WorkDir: workDir}
+	catalog, err := OpenCatalog(filepath.Join(t.TempDir(), "catalog.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := catalog.Upsert(CatalogEntry{SessionID: "target", Agent: agent.Claude, WorkDir: workDir, UpdatedAt: time.Now(), BridgeInstructionsVersion: "v1"}); err != nil {
+		t.Fatal(err)
+	}
+	manager := NewManagerWithStore(filepath.Join(t.TempDir(), "missing", "parent", "sessions.json"))
+	manager.AttachCatalog(catalog)
+	key := Key{Agent: agent.Claude, ChatID: "chat"}
+	manager.sessions[key.ID()] = &Session{Key: key, ID: key.ID(), WorkDir: workDir, AgentSessionID: "current", State: StateIdle}
+	manager.storePath = filepath.Join(t.TempDir(), "not-a-directory")
+	if err := os.WriteFile(manager.storePath, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	manager.storePath = filepath.Join(manager.storePath, "sessions.json")
+
+	if _, err := manager.Resume(key, identity, "target", time.Now()); err == nil {
+		t.Fatal("resume succeeded with unwritable snapshot path")
+	}
+	got, _ := manager.Get(key)
+	if got.AgentSessionID != "current" {
+		t.Fatalf("failed resume published binding = %#v", got)
 	}
 }
 
