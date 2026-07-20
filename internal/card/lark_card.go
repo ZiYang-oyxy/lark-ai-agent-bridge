@@ -150,8 +150,16 @@ func normalizeTerminalEvent(e Event) Event {
 }
 
 func buildConfigFormElements(sessionID string, form ConfigForm) []any {
+	intro := "⚙️ **个人运行偏好**\n\n修改后只影响新进入队列的消息。"
+	saveAction := "config.save"
+	saveValue := ""
+	if form.ChatID != "" {
+		intro = "⚙️ **本群运行偏好覆盖**\n\n仅影响当前群；未修改的项继承全局 `/config`。修改后只影响新进入队列的消息。"
+		saveAction = "local_config.save"
+		saveValue = form.ChatID
+	}
 	return []any{
-		markdownElement("config_intro", "⚙️ **个人运行偏好**\n\n修改后只影响新进入队列的消息。"),
+		markdownElement("config_intro", intro),
 		map[string]any{
 			"tag":  "form",
 			"name": "runtime_config",
@@ -187,7 +195,7 @@ func buildConfigFormElements(sessionID string, form ConfigForm) []any {
 					"text":             map[string]any{"tag": "plain_text", "content": "保存"},
 					"type":             "primary",
 					"form_action_type": "submit",
-					"behaviors":        callbackBehavior(sessionID, "config.save", ""),
+					"behaviors":        callbackBehavior(sessionID, saveAction, saveValue),
 				},
 			},
 		},
@@ -595,6 +603,10 @@ func titleForEvent(eventType string) string {
 		return "服务重启，任务已中断"
 	case "config":
 		return "个人运行偏好"
+	case "local_config":
+		return "本群运行偏好覆盖"
+	case "local_config_saved":
+		return "本群覆盖已保存"
 	default:
 		return "AI Agent"
 	}
@@ -612,7 +624,7 @@ func templateForEvent(eventType string) string {
 		return "red"
 	case "interrupted":
 		return "orange"
-	case "config":
+	case "config", "local_config":
 		return "blue"
 	default:
 		return "green"

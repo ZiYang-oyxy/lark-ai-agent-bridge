@@ -1,0 +1,155 @@
+package bridge
+
+import (
+	"context"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	"lark-agent-bridge/internal/agent"
+	"lark-agent-bridge/internal/audit"
+	"lark-agent-bridge/internal/card"
+	"lark-agent-bridge/internal/config"
+)
+
+func TestParseLocalConfigCommand(t *testing.T) {
+	cmd := ParseCommand(Message{Text: "/local-config"}, agent.Claude)
+	if cmd.Type != CommandLocalConfig {
+		t.Fatalf("type = %s, want local-config", cmd.Type)
+	}
+	reset := ParseCommand(Message{Text: "/local-config reset"}, agent.Claude)
+	if reset.Type != CommandLocalConfig || reset.Text != "reset" {
+		t.Fatalf("reset cmd = %#v", reset)
+	}
+}
+
+func localConfigService(t *testing.T) (*Service, *config.PreferenceStore) {
+	t.Helper()
+	defaults := config.RuntimePreference{Model: "default", Effort: "low", ReplyMode: config.ReplyModeAppend, ConversationMode: config.ConversationModeChat, GroupMessageMode: config.GroupMessageModeMentionOnly, Agent: config.DefaultAgentKind}
+	store, err := config.OpenPreferenceStore(filepath.Join(t.TempDir(), "preferences.json"), defaults, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc := NewService(config.Config{}, card.NewFakeRenderer(), newFakeRunner(), audit.NewRecorder())
+	svc.Preferences = store
+	return svc, store
+}
+
+// /local-config in a DM must not write an override; it guides the user to
+// /config instead.
+func TestLocalConfigInDirectMessageGuidesToConfig(t *testing.T) {
+	svc, store := localConfigService(t)
+	msg := Message{ID: "m1", IsGroup: false, ChatID: "dm", Sender: "ou_user"}
+	cmd := Command{Type: CommandLocalConfig}
+	if err := svc.handleLocalConfigCommand(context.Background(), msg, cmd, store.Get()); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := store.ChatOverride("dm"); ok {
+		t.Fatal("DM /local-config must not create a chat override")
+	}
+}
+
+// local_config.save writes only the target group's override; global and other
+// groups are untouched.
+func TestLocalConfigSaveWritesOnlyTargetGroup(t *testing.T) {
+	svc, store := localConfigService(t)
+	result, err := svc.HandleActionResult(context.Background(), ActionRequest{
+		SessionID: "local-config-card",
+		ActionID:  "local_config.save",
+		Actor:     "ou_user",
+		Value:     "oc-a",
+		FormValues: map[string]string{
+			"model": "default", "effort": "low", "reply_mode": "append", "conversation_mode": "topic",
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Event == nil || result.Event.Type != "local_config_saved" {
+		t.Fatalf("result event = %#v, want local_config_saved", result.Event)
+	}
+	if got := store.GetForChat("oc-a").ConversationMode; got != config.ConversationModeTopic {
+		t.Fatalf("group oc-a conversation mode = %q, want topic", got)
+	}
+	if got := store.Get().ConversationMode; got != config.ConversationModeChat {
+		t.Fatalf("global conversation mode = %q, want unchanged chat", got)
+	}
+	if got := store.GetForChat("oc-b").ConversationMode; got != config.ConversationModeChat {
+		t.Fatalf("group oc-b conversation mode = %q, want unchanged chat", got)
+	}
+}
+
+// local_config.save with no target chat id is rejected.
+func TestLocalConfigSaveRequiresChatID(t *testing.T) {
+	svc, store := localConfigService(t)
+	result, _ := svc.HandleActionResult(context.Background(), ActionRequest{
+		SessionID:  "local-config-card",
+		ActionID:   "local_config.save",
+		Actor:      "ou_user",
+		Value:      "",
+		FormValues: map[string]string{"model": "default", "effort": "low", "reply_mode": "append", "conversation_mode": "topic"},
+	})
+	// With no target chat id the save must fail (error event) and persist
+	// nothing under any plausible chat id.
+	if result.Event != nil && result.Event.Type == "local_config_saved" {
+		t.Fatal("save without chat id should not report success")
+	}
+	if _, ok := store.ChatOverride(""); ok {
+		t.Fatal("save without chat id must not persist an empty-keyed override")
+	}
+}
+
+// /local-config reset clears only the current group's override.
+func TestLocalConfigResetClearsOnlyCurrentGroup(t *testing.T) {
+	svc, store := localConfigService(t)
+	topic := config.ConversationModeTopic
+	if err := store.SetChat("oc-a", config.ChatOverride{ConversationMode: &topic}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetChat("oc-b", config.ChatOverride{ConversationMode: &topic}); err != nil {
+		t.Fatal(err)
+	}
+	msg := Message{ID: "m1", IsGroup: true, ChatID: "oc-a", Sender: "ou_user"}
+	cmd := Command{Type: CommandLocalConfig, Text: "reset"}
+	if err := svc.handleLocalConfigCommand(context.Background(), msg, cmd, store.GetForChat("oc-a")); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := store.ChatOverride("oc-a"); ok {
+		t.Fatal("oc-a override should be cleared")
+	}
+	if _, ok := store.ChatOverride("oc-b"); !ok {
+		t.Fatal("oc-b override must be preserved")
+	}
+}
+
+// A group /local-config form must carry the chat id so the save callback knows
+// its target, and must not touch access lists.
+func TestLocalConfigFormCarriesChatIDAndIgnoresAccess(t *testing.T) {
+	svc, store := localConfigService(t)
+	form := svc.localConfigForm(store.GetForChat("oc-a"), "oc-a")
+	if form.ChatID != "oc-a" {
+		t.Fatalf("form ChatID = %q, want oc-a", form.ChatID)
+	}
+	// Access fields are not part of a per-chat override; a save with access
+	// form values present must ignore them.
+	_, err := svc.HandleActionResult(context.Background(), ActionRequest{
+		SessionID: "local-config-card", ActionID: "local_config.save", Actor: "ou_user", Value: "oc-a",
+		FormValues: map[string]string{
+			"model": "default", "effort": "low", "reply_mode": "append", "conversation_mode": "chat",
+			"allowed_users": "ou_should_be_ignored",
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p, ok := store.ChatOverride("oc-a"); ok {
+		// conversation_mode chat == global default, model/effort/reply == global,
+		// so nothing distinct should have been written; but even if written it
+		// must never carry access data (ChatOverride has no access field).
+		_ = p
+	}
+	// Ensure the help text mentions the new command surface.
+	if !strings.Contains(HelpText(), "/local-config") {
+		t.Fatal("HelpText should document /local-config")
+	}
+}

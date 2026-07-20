@@ -62,9 +62,10 @@ type RuntimePreference struct {
 const DefaultAgentKind = "claude"
 
 type preferenceSnapshot struct {
-	SchemaVersion int                `json:"schema_version"`
-	Revision      uint64             `json:"revision"`
-	Override      *RuntimePreference `json:"override,omitempty"`
+	SchemaVersion int                     `json:"schema_version"`
+	Revision      uint64                  `json:"revision"`
+	Override      *RuntimePreference      `json:"override,omitempty"`
+	ChatOverrides map[string]ChatOverride `json:"chat_overrides,omitempty"`
 }
 
 type PreferenceStore struct {
@@ -75,6 +76,7 @@ type PreferenceStore struct {
 	agents        []AgentDef
 	revision      uint64
 	override      *RuntimePreference
+	chatOverrides map[string]ChatOverride
 }
 
 // OpenPreferenceStore opens (or lazily creates on first Set) the preference
@@ -115,6 +117,23 @@ func OpenPreferenceStore(path string, defaults RuntimePreference, allowedModels 
 		}
 		store.override = &preference
 	}
+	if len(snapshot.ChatOverrides) > 0 {
+		loaded := make(map[string]ChatOverride, len(snapshot.ChatOverrides))
+		for chatID, override := range snapshot.ChatOverrides {
+			chatID = strings.TrimSpace(chatID)
+			if chatID == "" {
+				continue
+			}
+			override = normalizeChatOverride(override)
+			// Validate that the stored override still merges into a legal
+			// preference against the current defaults/catalogue.
+			if _, err := mergeChatOverride(store.effectiveGlobalLocked(), override, models, agents); err != nil {
+				return nil, fmt.Errorf("validate stored chat override %q: %w", chatID, err)
+			}
+			loaded[chatID] = override
+		}
+		store.chatOverrides = loaded
+	}
 	store.revision = snapshot.Revision
 	return store, nil
 }
@@ -136,7 +155,7 @@ func (s *PreferenceStore) Set(preference RuntimePreference) error {
 		return err
 	}
 	revision := s.revision + 1
-	if err := savePreferenceSnapshot(s.path, preferenceSnapshot{SchemaVersion: PreferenceSchemaVersion, Revision: revision, Override: &preference}); err != nil {
+	if err := savePreferenceSnapshot(s.path, preferenceSnapshot{SchemaVersion: PreferenceSchemaVersion, Revision: revision, Override: &preference, ChatOverrides: s.chatOverrides}); err != nil {
 		return err
 	}
 	s.override = &preference
@@ -148,7 +167,8 @@ func (s *PreferenceStore) Reset() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	revision := s.revision + 1
-	if err := savePreferenceSnapshot(s.path, preferenceSnapshot{SchemaVersion: PreferenceSchemaVersion, Revision: revision}); err != nil {
+	// Reset only clears the global override; per-chat overrides are preserved.
+	if err := savePreferenceSnapshot(s.path, preferenceSnapshot{SchemaVersion: PreferenceSchemaVersion, Revision: revision, ChatOverrides: s.chatOverrides}); err != nil {
 		return err
 	}
 	s.override = nil

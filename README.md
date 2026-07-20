@@ -10,6 +10,7 @@
 - Codex 以 `codex exec --json ... -` 启动，prompt 通过 stdin 传入；Bridge 不额外传 model、effort、sandbox、approval 或 profile 参数。
 - 默认使用普通聊天模式：回复进入聊天主消息流，同一 chat 按 Agent 共用 session 并串行执行。
 - `/config` 可切换为话题模式：回复进入话题，有 `ThreadID` 时每个 topic 独立 session，不同 topic 可并行执行。
+- `/local-config` 让每个群覆盖全局默认的执行类偏好（逐字段继承），从而不同群可用不同方式（如 A 群 `topic`、B 群 `chat`）；访问控制永远全局。
 - `/new` 重置当前 conversation scope；普通文本继续该 scope 已保存的 Agent session。
 - `/stop` 只停止当前 agent/chat/topic scope 的 active batch；后续 queued 输入保留并继续调度，空闲时安全提示无运行任务。
 - `/resume` 列出当前 Agent 与 workdir 最近使用的 10 个 Bridge Session；`/resume <session-id>` 切换后由下一条普通消息继续目标 Session。
@@ -66,6 +67,18 @@ owner 或管理员可在飞书中管理名单：
 - `/resume <session-id>`：精确恢复列表中的完整 Session ID；命令本身不会发送给 Agent，下一条普通消息才执行 Claude `--resume` 或 Codex `exec resume`。
 
 恢复不会扫描 Claude/Codex 在终端或其他客户端创建的历史。当前 conversation scope 有 active batch 或 queued input 时会拒绝切换，避免中断任务或把旧队列发送到另一个 Session。历史目录保存在 Session store 同目录的 `session-catalog.json`；文件损坏或 schema 不兼容会阻止 `serve` 启动。
+
+## 本群偏好覆盖（`/local-config`）
+
+`/config` 配置的是**全局默认**；`/local-config` 让每个群按需**覆盖**其中的执行类偏好，从而不同群可用不同方式（例如 A 群走 `topic`、B 群走 `chat`）。
+
+- **作用域路由：** `/config` 始终写全局默认；`/local-config` 只在群里生效，写当前群的覆盖。私聊里发 `/local-config` 会引导改用 `/config`。
+- **逐字段继承：** 覆盖是逐字段的——群里只存显式改过、且与全局不同的字段，其余字段实时继承全局。改了全局默认，未覆盖该字段的群立即跟随。
+- **可覆盖项：** model、effort、agent、agent_home、agent_bin、reply_mode、conversation_mode、group_message_mode、respond_to_bots。
+- **访问控制永远全局：** allowed_users / allowed_chats / admins 不可 per-chat，`/local-config` 表单不展示、也不接受这些字段，管理仍走 `/invite`、`/remove`。
+- **重置：** `/local-config reset` 只清当前群的覆盖，全部回到继承全局；不影响全局默认，也不影响其它群。全局 `/config reset` 不会清空任何群覆盖。
+- **可解释性：** 群里 `/status` 会以 `local_overrides=<字段列表>` 标出本群覆盖了哪些字段，其余继承全局。
+- 覆盖存放在与全局同一份 `<workdir>/.lark-agent-bridge/preferences.json` 的 `chat_overrides` 表中；旧快照无此字段时按空覆盖表平滑加载。保存后只影响新接收的消息。
 
 ## 群消息接收
 

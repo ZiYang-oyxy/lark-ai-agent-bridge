@@ -15,8 +15,9 @@ const (
 	CommandStatus    CommandType = "status"
 	CommandResume    CommandType = "resume"
 	CommandStop      CommandType = "stop"
-	CommandConfig    CommandType = "config"
-	CommandAgentMode CommandType = "agent-mode"
+	CommandConfig      CommandType = "config"
+	CommandLocalConfig CommandType = "local-config"
+	CommandAgentMode   CommandType = "agent-mode"
 	CommandInvite    CommandType = "invite"
 	CommandRemove    CommandType = "remove"
 	CommandUnknown   CommandType = "unknown"
@@ -51,6 +52,8 @@ func ParseCommand(msg Message, defaultAgent agent.Kind) Command {
 		return Command{Type: CommandStop, Agent: defaultAgent, Text: strings.TrimSpace(rest), Raw: raw}
 	case "config":
 		return Command{Type: CommandConfig, Text: strings.TrimSpace(rest), Raw: raw}
+	case "local-config":
+		return Command{Type: CommandLocalConfig, Text: strings.TrimSpace(rest), Raw: raw}
 	case "agent-mode":
 		return Command{Type: CommandAgentMode, Text: strings.TrimSpace(rest), Raw: raw}
 	case "invite":
@@ -124,7 +127,8 @@ func HelpText() string {
 		"/resume <session-id> - resume that session on the next message",
 		"/stop - stop the active task in this chat/topic; queued inputs are preserved",
 		"/agent-mode - choose claude or codex for subsequent messages",
-		"/config - configure the current agent home, executable, Claude model/effort, reply mode, and chat/topic mode",
+		"/config - configure global defaults",
+		"/local-config [reset] - override or reset this group's inherited defaults",
 		"/invite user|admin @user, /invite group, /invite all group - grant access",
 		"/remove user|admin @user, /remove group - revoke access",
 		"/help - show this help",

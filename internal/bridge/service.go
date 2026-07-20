@@ -357,7 +357,7 @@ func (s *Service) HandleMessage(ctx context.Context, msg Message) error {
 		s.Audit.Record(msg.Sender, "old_message_skipped", "", msg.ID)
 		return nil
 	}
-	preference := s.runtimePreference()
+	preference := s.runtimePreferenceFor(msg)
 	if reason := senderRejectionReason(msg, preference.RespondToBots, s.BotOpenID); reason != "" {
 		action := "group_message_skipped"
 		if reason == IntakeReasonBotDisabled {
@@ -435,6 +435,8 @@ func (s *Service) HandleMessage(ctx context.Context, msg Message) error {
 		return s.handleResumeCommand(msg, cmd, preference)
 	case CommandConfig:
 		return s.handleConfigCommand(ctx, msg, cmd, preference)
+	case CommandLocalConfig:
+		return s.handleLocalConfigCommand(ctx, msg, cmd, preference)
 	case CommandAgentMode:
 		return s.handleAgentModeCommand(ctx, msg, cmd, preference)
 	case CommandInvite:
@@ -551,6 +553,45 @@ func (s *Service) handleConfigCommand(ctx context.Context, msg Message, cmd Comm
 	}
 }
 
+// handleLocalConfigCommand manages per-chat preference overrides via
+// /local-config. It only applies in groups; in a direct message it guides the
+// user to /config (which edits the global default). The rendered form shows the
+// group's current *effective* preference (global with this group's override
+// layered on) and carries the ChatID so the save callback knows its target.
+func (s *Service) handleLocalConfigCommand(ctx context.Context, msg Message, cmd Command, preference config.RuntimePreference) error {
+	if !msg.IsGroup || strings.TrimSpace(msg.ChatID) == "" {
+		return s.renderTextWithMode("local-config", msg.ID, card.SegmentText, "`/local-config` 只用于群里设置本群覆盖。私聊请用 `/config` 配置全局默认。", preference.ConversationMode)
+	}
+	switch strings.ToLower(strings.TrimSpace(cmd.Text)) {
+	case "":
+		if s.AccessInfo != nil {
+			if s.AccessAppID != "" {
+				_ = access.RefreshOwner(ctx, s.AccessControls, s.AccessInfo, s.AccessAppID)
+			}
+			_ = s.refreshKnownChats(ctx)
+		}
+		return s.Cards.Render(card.Event{
+			Type:             "local_config",
+			SessionID:        runID("local-config", msg.ID),
+			ReplyToMessageID: msg.ID,
+			ReplyInThread:    preference.ConversationMode == config.ConversationModeTopic,
+			ConfigForm:       s.localConfigForm(preference, msg.ChatID),
+		})
+	case "reset":
+		if s.Preferences == nil {
+			return s.renderTextWithMode("local-config-reset", msg.ID, card.SegmentError, "偏好存储尚未配置。", preference.ConversationMode)
+		}
+		if err := s.Preferences.ResetChat(msg.ChatID); err != nil {
+			s.Audit.Record(msg.Sender, "local_config_reset_failed", msg.ChatID, err.Error())
+			return s.renderTextWithMode("local-config-reset", msg.ID, card.SegmentError, "本群覆盖重置失败，请检查存储状态。", preference.ConversationMode)
+		}
+		s.Audit.Record(msg.Sender, "local_config_reset", msg.ChatID, "chat overrides cleared")
+		return s.renderTextWithMode("local-config-reset", msg.ID, card.SegmentText, "已清空本群覆盖，全部回到继承全局 `/config`；下一条新消息开始生效。", preference.ConversationMode)
+	default:
+		return s.renderTextWithMode("local-config", msg.ID, card.SegmentError, "用法：/local-config 或 /local-config reset", preference.ConversationMode)
+	}
+}
+
 func (s *Service) handleAgentModeCommand(_ context.Context, msg Message, cmd Command, preference config.RuntimePreference) error {
 	mode := strings.ToLower(strings.TrimSpace(cmd.Text))
 	if mode == "" {
@@ -575,6 +616,20 @@ func (s *Service) handleAgentModeCommand(_ context.Context, msg Message, cmd Com
 		return s.renderTextWithMode("agent-mode", msg.ID, card.SegmentError, "Agent mode 保存失败，请检查配置。", preference.ConversationMode)
 	}
 	return s.renderTextWithMode("agent-mode", msg.ID, card.SegmentText, fmt.Sprintf("已切换到 `%s`。`/config` 现在只显示该 Agent 可用的 home/bin。", mode), preference.ConversationMode)
+}
+
+// runtimePreferenceFor resolves the effective preference for a specific
+// incoming message. Direct messages always use the global preference; group
+// messages layer that group's per-chat override on top of the global one.
+// Messages without a preference store fall back to the environment defaults.
+func (s *Service) runtimePreferenceFor(msg Message) config.RuntimePreference {
+	if s.Preferences != nil {
+		if msg.IsGroup && strings.TrimSpace(msg.ChatID) != "" {
+			return s.Preferences.GetForChat(msg.ChatID)
+		}
+		return s.Preferences.Get()
+	}
+	return s.runtimePreference()
 }
 
 func (s *Service) runtimePreference() config.RuntimePreference {
@@ -1200,7 +1255,7 @@ func (s *Service) HandleAction(ctx context.Context, req ActionRequest) error {
 
 func (s *Service) HandleActionResult(ctx context.Context, req ActionRequest) (ActionResult, error) {
 	s.Audit.Record(req.Actor, "card_action", req.SessionID, req.ActionID+" "+req.Value)
-	if (req.ActionID == "config.save" || req.ActionID == "agent_mode.save") && !s.canRunAdminCommand(req.Actor) {
+	if (req.ActionID == "config.save" || req.ActionID == "local_config.save" || req.ActionID == "agent_mode.save") && !s.canRunAdminCommand(req.Actor) {
 		s.Audit.Record(req.Actor, "admin_denied", req.SessionID, req.ActionID)
 		return s.renderActionEvent(card.Event{Type: "error", SessionID: req.SessionID, Segments: []card.Segment{{Kind: card.SegmentError, Text: "❌ 此操作仅管理员可用。"}}})
 	}
@@ -1287,6 +1342,33 @@ func (s *Service) HandleActionResult(ctx context.Context, req ActionRequest) (Ac
 			s.ensureGroupMessageScope(req.SessionID, preference.GroupMessageMode)
 		}
 		return result, err
+	case "local_config.save":
+		if s.Preferences == nil {
+			err := errors.New("preference store is not configured")
+			s.Audit.Record(req.Actor, "local_config_save_failed", req.SessionID, err.Error())
+			return s.renderActionEvent(configSaveErrorEvent(req.SessionID))
+		}
+		chatID := strings.TrimSpace(req.Value)
+		if chatID == "" {
+			s.Audit.Record(req.Actor, "local_config_save_failed", req.SessionID, "missing chat id")
+			return s.renderActionEvent(configSaveErrorEvent(req.SessionID))
+		}
+		// Build a per-field override from the form, keeping only the fields the
+		// user set to something different from the current global default.
+		// Fields left equal to global stay nil so they keep inheriting.
+		global := s.Preferences.Get()
+		override := chatOverrideFromForm(req.FormValues, global)
+		if err := s.Preferences.SetChat(chatID, override); err != nil {
+			s.Audit.Record(req.Actor, "local_config_save_failed", chatID, err.Error())
+			return s.renderActionEvent(configSaveErrorEvent(req.SessionID))
+		}
+		effective := s.Preferences.GetForChat(chatID)
+		s.Audit.Record(req.Actor, "local_config_saved", chatID, fmt.Sprintf("agent=%s model=%s effort=%s reply_mode=%s conversation_mode=%s group_message_mode=%s respond_to_bots=%t", effective.Agent, effective.Model, effective.Effort, effective.ReplyMode, effective.ConversationMode, effective.GroupMessageMode, effective.RespondToBots))
+		return s.renderActionEvent(card.Event{
+			Type:      "local_config_saved",
+			SessionID: req.SessionID,
+			Segments:  []card.Segment{{Kind: card.SegmentText, Text: fmt.Sprintf("本群覆盖已保存（未修改的项继承全局）。\n\nagent=`%s`\nmodel=`%s`\neffort=`%s`\nreply mode=`%s`\nconversation mode=`%s`\ngroup message mode=`%s`\nrespond to bots=`%t`\n\n下一条新消息开始生效。", effective.Agent, effective.Model, effective.Effort, effective.ReplyMode, effective.ConversationMode, effective.GroupMessageMode, effective.RespondToBots)}},
+		})
 	case "agent_mode.save":
 		if s.Preferences == nil {
 			err := errors.New("preference store is not configured")
@@ -1336,6 +1418,75 @@ func (s *Service) configForm(preference config.RuntimePreference) *card.ConfigFo
 	}
 	s.populateAccessConfigForm(form)
 	return form
+}
+
+// localConfigForm builds a per-chat override editor. It reuses the global
+// config form layout (so the group sees its current effective values) but
+// carries the ChatID and drops the access panel: access control is never
+// per-chat and is managed only via /invite in the global surface.
+func (s *Service) localConfigForm(preference config.RuntimePreference, chatID string) *card.ConfigForm {
+	form := s.configForm(preference)
+	form.ChatID = chatID
+	form.AllowedUsers = nil
+	form.AllowedChats = nil
+	form.Admins = nil
+	form.OwnerState = ""
+	return form
+}
+
+// chatOverrideFromForm derives a per-chat override from submitted form values.
+// A field is included in the override only when it is present in the form and
+// differs from the current global default; fields equal to global stay nil so
+// the group keeps inheriting them. Access-control form values are intentionally
+// never read here — access is global-only.
+func chatOverrideFromForm(values map[string]string, global config.RuntimePreference) config.ChatOverride {
+	var override config.ChatOverride
+	if raw, ok := values["model"]; ok {
+		if v := strings.TrimSpace(raw); v != "" && v != global.Model {
+			override.Model = &v
+		}
+	}
+	if raw, ok := values["effort"]; ok {
+		if v := strings.ToLower(strings.TrimSpace(raw)); v != "" && v != global.Effort {
+			override.Effort = &v
+		}
+	}
+	if raw, ok := values["reply_mode"]; ok {
+		if v := config.ReplyMode(strings.TrimSpace(raw)); v != "" && v != global.ReplyMode {
+			override.ReplyMode = &v
+		}
+	}
+	if raw, ok := values["conversation_mode"]; ok {
+		if v := config.ConversationMode(strings.TrimSpace(raw)); v != "" && v != global.ConversationMode {
+			override.ConversationMode = &v
+		}
+	}
+	if raw, ok := values["group_message_mode"]; ok {
+		if v := config.GroupMessageMode(strings.TrimSpace(raw)); v != "" && v != global.GroupMessageMode {
+			override.GroupMessageMode = &v
+		}
+	}
+	if raw, ok := values["respond_to_bots"]; ok {
+		if parsed, err := strconv.ParseBool(strings.TrimSpace(raw)); err == nil && parsed != global.RespondToBots {
+			override.RespondToBots = &parsed
+		}
+	}
+	if raw, ok := values["agent"]; ok {
+		if v := strings.ToLower(strings.TrimSpace(raw)); v != "" && v != global.Agent {
+			override.Agent = &v
+		}
+	}
+	if raw, ok := values["agent_home"]; ok {
+		if v := strings.TrimSpace(raw); v != global.AgentHome {
+			override.AgentHome = &v
+		}
+	}
+	if raw, ok := values["agent_bin"]; ok {
+		if v := strings.TrimSpace(raw); v != global.AgentBin {
+			override.AgentBin = &v
+		}
+	}
+	return override
 }
 
 func configSaveErrorEvent(sessionID string) card.Event {
@@ -1727,6 +1878,9 @@ func (s *Service) statusTextWithPreference(kind agent.Kind, msg Message, prefere
 	fmt.Fprintf(&b, "current_session=%s\n", key.ID())
 	fmt.Fprintf(&b, "reply_mode=%s\n", preference.ReplyMode)
 	fmt.Fprintf(&b, "conversation_mode=%s\n", preference.ConversationMode)
+	if fields := s.localOverrideFields(msg); len(fields) > 0 {
+		fmt.Fprintf(&b, "local_overrides=%s\n", strings.Join(fields, ","))
+	}
 	sess := s.findSession(key.ID())
 	if sess == nil {
 		b.WriteString("state=not_started")
@@ -1751,6 +1905,48 @@ func (s *Service) statusTextWithPreference(kind agent.Kind, msg Message, prefere
 		fmt.Fprintf(&b, "chat_sessions=%d\n", s.countChatSessions(msg.ChatID))
 	}
 	return strings.TrimSpace(b.String())
+}
+
+// localOverrideFields lists the names of preference fields this group overrides
+// (empty when the message is a DM, there is no store, or the group inherits
+// everything from the global default).
+func (s *Service) localOverrideFields(msg Message) []string {
+	if !msg.IsGroup || s.Preferences == nil || strings.TrimSpace(msg.ChatID) == "" {
+		return nil
+	}
+	override, ok := s.Preferences.ChatOverride(msg.ChatID)
+	if !ok {
+		return nil
+	}
+	var fields []string
+	if override.Model != nil {
+		fields = append(fields, "model")
+	}
+	if override.Effort != nil {
+		fields = append(fields, "effort")
+	}
+	if override.ReplyMode != nil {
+		fields = append(fields, "reply_mode")
+	}
+	if override.ConversationMode != nil {
+		fields = append(fields, "conversation_mode")
+	}
+	if override.GroupMessageMode != nil {
+		fields = append(fields, "group_message_mode")
+	}
+	if override.RespondToBots != nil {
+		fields = append(fields, "respond_to_bots")
+	}
+	if override.Agent != nil {
+		fields = append(fields, "agent")
+	}
+	if override.AgentHome != nil {
+		fields = append(fields, "agent_home")
+	}
+	if override.AgentBin != nil {
+		fields = append(fields, "agent_bin")
+	}
+	return fields
 }
 
 func (s *Service) findSession(id string) *session.Session {

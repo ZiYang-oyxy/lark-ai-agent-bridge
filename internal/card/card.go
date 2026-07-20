@@ -91,6 +91,11 @@ type ConfigForm struct {
 	AllowedChats      []AccessChat
 	Admins            []string
 	OwnerState        string
+	// ChatID, when non-empty, marks this form as a per-chat override editor
+	// (the /local-config surface). It is carried back to the save callback as
+	// the action value so the store knows which group to write. Empty means
+	// the global /config editor.
+	ChatID string
 }
 
 type AgentModeForm struct {
