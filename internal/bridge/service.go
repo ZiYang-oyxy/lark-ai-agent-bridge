@@ -432,6 +432,8 @@ func (s *Service) resolveAgentBinHome(kind agent.Kind, preference config.Runtime
 	}
 	if path, ok := s.Agents.BinPath(agentKind, preference.AgentBin); ok && strings.TrimSpace(path) != "" {
 		bin = path
+	} else if kind == agent.Codex {
+		bin = "codex"
 	} else {
 		bin = s.Config.ClaudeBin
 	}
@@ -970,6 +972,15 @@ func (s *Service) HandleActionResult(ctx context.Context, req ActionRequest) (Ac
 			return s.renderActionEvent(configSaveErrorEvent(req.SessionID))
 		}
 		preference := config.RuntimePreference{Model: req.FormValues["model"], Effort: req.FormValues["effort"], ReplyMode: config.ReplyMode(req.FormValues["reply_mode"]), ConversationMode: config.ConversationMode(req.FormValues["conversation_mode"]), Agent: req.FormValues["agent"], AgentHome: req.FormValues["agent_home"], AgentBin: req.FormValues["agent_bin"]}
+		current := s.Preferences.Get()
+		if !strings.EqualFold(strings.TrimSpace(current.Agent), strings.TrimSpace(preference.Agent)) {
+			if _, ok := s.Agents.HomePath(preference.Agent, preference.AgentHome); !ok {
+				preference.AgentHome = ""
+			}
+			if _, ok := s.Agents.BinPath(preference.Agent, preference.AgentBin); !ok {
+				preference.AgentBin = ""
+			}
+		}
 		if err := s.Preferences.Set(preference); err != nil {
 			s.Audit.Record(req.Actor, "config_save_failed", req.SessionID, err.Error())
 			return s.renderActionEvent(configSaveErrorEvent(req.SessionID))

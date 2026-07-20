@@ -1,6 +1,8 @@
 package bridge
 
 import (
+	"context"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -20,6 +22,40 @@ func TestResolveAgentBinHomeDefaultsToConfigBin(t *testing.T) {
 	}
 	if home != "" {
 		t.Fatalf("home = %q, want empty (default)", home)
+	}
+}
+
+func TestConfigSaveChangingAgentClearsForeignBinAndHome(t *testing.T) {
+	agents := config.AgentsConfig{
+		SchemaVersion: config.AgentsSchemaVersion,
+		Agents: []config.AgentDef{
+			{Kind: "claude", Homes: []config.AgentHome{{Label: config.DefaultHomeLabel}, {Label: "claude-home", Path: "/h/claude"}}, Bins: []config.AgentBin{{Label: config.DefaultBinLabel}, {Label: "cc4", Path: "/b/cc4"}}},
+			{Kind: "codex", Homes: []config.AgentHome{{Label: config.DefaultHomeLabel}, {Label: "codex-home", Path: "/h/codex"}}, Bins: []config.AgentBin{{Label: config.DefaultBinLabelFor("codex")}, {Label: "cx3", Path: "/b/cx3"}}},
+		},
+	}
+	defaults := config.RuntimePreference{Model: "default", Effort: "low", ReplyMode: config.ReplyModeAppend, ConversationMode: config.ConversationModeChat, Agent: "claude", AgentHome: "claude-home", AgentBin: "cc4"}
+	store, err := config.OpenPreferenceStore(filepath.Join(t.TempDir(), "preferences.json"), defaults, nil, agents.Agents...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc := NewService(config.Config{}, card.NewFakeRenderer(), newFakeRunner(), audit.NewRecorder())
+	svc.Agents = agents
+	svc.Preferences = store
+	result, err := svc.HandleActionResult(context.Background(), ActionRequest{
+		SessionID: "config-card",
+		ActionID:  "config.save",
+		Actor:     "user",
+		FormValues: map[string]string{
+			"agent": "codex", "agent_home": "claude-home", "agent_bin": "cc4",
+			"model": "default", "effort": "low", "reply_mode": "append", "conversation_mode": "chat",
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := store.Get()
+	if result.Event == nil || result.Event.Type != "config_saved" || got.Agent != "codex" || got.AgentHome != "" || got.AgentBin != "" {
+		t.Fatalf("result/store = %#v / %#v", result, got)
 	}
 }
 
@@ -45,6 +81,23 @@ func TestResolveAgentBinHomeUsesCataloguePresets(t *testing.T) {
 	bin, home = svc.resolveAgentBinHome(agent.Claude, config.RuntimePreference{Agent: "claude", AgentBin: config.DefaultBinLabel, AgentHome: config.DefaultHomeLabel})
 	if bin != "cc" || home != "" {
 		t.Fatalf("default presets = %q/%q, want cc/empty", bin, home)
+	}
+}
+
+func TestResolveAgentBinHomeDefaultsCodexToHostCodex(t *testing.T) {
+	svc := NewService(config.Config{ClaudeBin: "/opt/wrap/cc", DefaultWorkDir: t.TempDir()}, card.NewFakeRenderer(), newFakeRunner(), audit.NewRecorder())
+	svc.Agents = config.AgentsConfig{
+		SchemaVersion: config.AgentsSchemaVersion,
+		Agents: []config.AgentDef{{
+			Kind:  "codex",
+			Label: "Codex CLI",
+			Homes: []config.AgentHome{{Label: config.DefaultHomeLabel}},
+			Bins:  []config.AgentBin{{Label: "主机 codex"}},
+		}},
+	}
+	bin, home := svc.resolveAgentBinHome(agent.Codex, config.RuntimePreference{Agent: "codex"})
+	if bin != "codex" || home != "" {
+		t.Fatalf("resolved = %q/%q, want codex/empty", bin, home)
 	}
 }
 

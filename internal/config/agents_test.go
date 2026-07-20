@@ -208,14 +208,41 @@ func TestLoadAgentsConfigResolvesRelativeAndTildePaths(t *testing.T) {
 	}
 }
 
-func TestAgentsConfigCodexReserved(t *testing.T) {
-	// Codex is reserved and must be rejected from agents.json for now.
-	path := filepath.Join(t.TempDir(), "agents.json")
-	doc := `{"schema_version":1,"agents":[{"kind":"codex"}]}`
+func TestAgentsConfigAcceptsCodexAndCxPresets(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, ".lark-agent-bridge", "agents.json")
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	doc := `{
+      "schema_version": 1,
+      "agents": [
+        {"kind":"claude","bins":[{"label":"shared","path":"bin/cc4"}]},
+        {"kind":"codex","label":"Codex CLI","homes":[{"label":"workspace","path":".codex-home"}],"bins":[
+          {"label":"shared","path":"bin/cx1"},
+          {"label":"cx2","path":"bin/cx2"},
+          {"label":"cx3","path":"bin/cx3"},
+          {"label":"cx4","path":"bin/cx4"}
+        ]}
+      ]
+    }`
 	if err := os.WriteFile(path, []byte(doc), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := LoadAgentsConfig(path); err == nil {
-		t.Fatal("expected codex to be rejected")
+	cfg, err := LoadAgentsConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := cfg.Kinds(); len(got) != 2 || got[0] != "claude" || got[1] != "codex" {
+		t.Fatalf("kinds = %#v", got)
+	}
+	if got, ok := cfg.BinPath("codex", "cx3"); !ok || got != filepath.Join(dir, "bin/cx3") {
+		t.Fatalf("codex cx3 = %q/%v", got, ok)
+	}
+	if got, ok := cfg.HomePath("codex", "workspace"); !ok || got != filepath.Join(dir, ".codex-home") {
+		t.Fatalf("codex home = %q/%v", got, ok)
+	}
+	if got := cfg.BinLabels("codex"); len(got) != 5 || got[0] != "主机 codex" {
+		t.Fatalf("codex bin labels = %#v", got)
 	}
 }
