@@ -460,6 +460,62 @@ func TestAppendStreamSnapshotDoesNotDuplicate(t *testing.T) {
 	}
 }
 
+func TestAppendStreamSnapshotReplacesTextAndToolTail(t *testing.T) {
+	clock := &fakeStreamClock{now: time.Unix(750, 0)}
+	renderer := card.NewFakeRenderer()
+	stream := newPreviewTestStream(t, renderer, clock, 30, 2000)
+	if err := stream.Start(); err != nil {
+		t.Fatal(err)
+	}
+	stream.Handle(AgentStreamUpdate{Segments: []card.Segment{{Kind: card.SegmentText, Text: "先检查"}}, Incremental: true})
+	stream.Handle(AgentStreamUpdate{Segments: []card.Segment{{Kind: card.SegmentTool, Text: "partial tool"}}, Incremental: true})
+	stream.Handle(AgentStreamUpdate{
+		Segments: []card.Segment{
+			{Kind: card.SegmentText, Text: "先检查"},
+			{Kind: card.SegmentTool, Text: "Bash(ls)"},
+		},
+		AnswerSnapshot: true,
+	})
+	if err := stream.Flush(); err != nil {
+		t.Fatal(err)
+	}
+	events := renderer.Events()
+	preview := events[len(events)-1]
+	assertSegmentKinds(t, preview, card.SegmentText, card.SegmentTool)
+	if preview.Segments[0].Text != "先检查" || preview.Segments[1].Text != "Bash(ls)" {
+		t.Fatalf("snapshot timeline = %#v, want replacement without duplicate tail", preview.Segments)
+	}
+}
+
+func TestAppendStreamSnapshotWithoutPartialAppendsAfterToolResult(t *testing.T) {
+	clock := &fakeStreamClock{now: time.Unix(775, 0)}
+	renderer := card.NewFakeRenderer()
+	stream := newPreviewTestStream(t, renderer, clock, 30, 2000)
+	if err := stream.Start(); err != nil {
+		t.Fatal(err)
+	}
+	for _, segment := range []card.Segment{
+		{Kind: card.SegmentText, Text: "先检查"},
+		{Kind: card.SegmentTool, Text: "Bash(ls)"},
+		{Kind: card.SegmentTool, Text: "tool_result: file.txt"},
+	} {
+		stream.Handle(AgentStreamUpdate{Segments: []card.Segment{segment}})
+	}
+	stream.Handle(AgentStreamUpdate{
+		Segments:       []card.Segment{{Kind: card.SegmentText, Text: "最终答案"}},
+		AnswerSnapshot: true,
+	})
+	if err := stream.Flush(); err != nil {
+		t.Fatal(err)
+	}
+	events := renderer.Events()
+	preview := events[len(events)-1]
+	assertSegmentKinds(t, preview, card.SegmentText, card.SegmentTool, card.SegmentTool, card.SegmentText)
+	if preview.Segments[0].Text != "先检查" || preview.Segments[3].Text != "最终答案" {
+		t.Fatalf("snapshot timeline = %#v, want prior tool history plus final answer", preview.Segments)
+	}
+}
+
 func TestStreamPreservesFullThinkingBoundariesAndThinkingDeltas(t *testing.T) {
 	clock := &fakeStreamClock{now: time.Unix(800, 0)}
 	renderer := card.NewFakeRenderer()

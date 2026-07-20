@@ -171,18 +171,15 @@ func (s *agentCardStream) Handle(update AgentStreamUpdate) {
 	if update.AnswerSnapshot {
 		s.answer.Reset()
 	}
-	snapshotApplied := false
 	for _, segment := range update.Segments {
 		s.appendSegmentLocked(segment, update.Incremental)
-		if s.replyMode != config.ReplyModeAppend || segment.Kind == card.SegmentThought {
-			continue
-		}
-		if update.AnswerSnapshot && segment.Kind == card.SegmentText && !snapshotApplied {
-			s.ordered = replaceActiveAnswerSnapshot(s.ordered, segment.Text)
-			snapshotApplied = true
+		if s.replyMode != config.ReplyModeAppend || update.AnswerSnapshot || segment.Kind == card.SegmentThought {
 			continue
 		}
 		s.ordered = appendOrderedSegment(s.ordered, segment, update.Incremental)
+	}
+	if s.replyMode == config.ReplyModeAppend && update.AnswerSnapshot {
+		s.ordered = replaceOrderedAnswerSnapshot(s.ordered, update.Segments)
 	}
 	if update.AnswerSnapshot || len(update.Segments) > 0 {
 		s.contentRevision++
@@ -447,15 +444,52 @@ func appendOrderedSegment(segments []card.Segment, segment card.Segment, increme
 	return append(segments, segment)
 }
 
-func replaceActiveAnswerSnapshot(segments []card.Segment, snapshot string) []card.Segment {
-	if snapshot == "" {
+func replaceOrderedAnswerSnapshot(segments, snapshot []card.Segment) []card.Segment {
+	visible := make([]card.Segment, 0, len(snapshot))
+	for _, segment := range snapshot {
+		if segment.Kind != card.SegmentThought && segment.Text != "" {
+			visible = append(visible, segment)
+		}
+	}
+	if len(visible) == 0 {
 		return segments
 	}
-	if len(segments) > 0 && segments[len(segments)-1].Kind == card.SegmentText {
-		segments[len(segments)-1].Text = snapshot
-		return segments
+	start := len(segments)
+	for i := len(segments) - 1; i >= 0; i-- {
+		if orderedSnapshotPrefix(segments[i:], visible) {
+			start = i
+			break
+		}
 	}
-	return append(segments, card.Segment{Kind: card.SegmentText, Text: snapshot})
+	out := make([]card.Segment, 0, start+len(visible))
+	out = append(out, segments[:start]...)
+	out = append(out, visible...)
+	return out
+}
+
+func orderedSnapshotPrefix(partial, snapshot []card.Segment) bool {
+	if len(partial) == 0 || len(partial) > len(snapshot) {
+		return false
+	}
+	for i := range partial {
+		if partial[i].Kind != snapshot[i].Kind {
+			return false
+		}
+		if partial[i].Kind == card.SegmentTool {
+			if isToolResultSegment(partial[i]) != isToolResultSegment(snapshot[i]) {
+				return false
+			}
+			continue
+		}
+		if !strings.HasPrefix(snapshot[i].Text, partial[i].Text) {
+			return false
+		}
+	}
+	return true
+}
+
+func isToolResultSegment(segment card.Segment) bool {
+	return segment.Kind == card.SegmentTool && strings.Contains(segment.Text, "tool_result")
 }
 
 func (s *agentCardStream) mergeAppendFinalSegmentsLocked(result AgentRunResult) {
