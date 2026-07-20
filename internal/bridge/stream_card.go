@@ -7,6 +7,7 @@ import (
 	"sync"
 	"time"
 
+	"lark-agent-bridge/internal/agent"
 	"lark-agent-bridge/internal/card"
 	"lark-agent-bridge/internal/config"
 	"lark-agent-bridge/internal/session"
@@ -256,7 +257,13 @@ func (s *agentCardStream) markStopping() {
 func metaForRun(sess session.Session, input session.Input) card.Meta {
 	meta := metaFromSession(sess)
 	meta.Model = ""
-	meta.ModelInfo = card.ModelInfo{Requested: input.RequestedModel, Effort: input.RequestedEffort}
+	if sess.Key.Agent == agent.Codex {
+		// Bridge deliberately does not select Codex model or reasoning effort.
+		// The chosen executable and its environment own that configuration.
+		meta.ModelInfo = card.ModelInfo{}
+	} else {
+		meta.ModelInfo = card.ModelInfo{Requested: input.RequestedModel, Effort: input.RequestedEffort}
+	}
 	return meta
 }
 

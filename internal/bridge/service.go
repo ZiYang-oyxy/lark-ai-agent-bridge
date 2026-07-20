@@ -1019,7 +1019,7 @@ func (s *Service) HandleActionResult(ctx context.Context, req ActionRequest) (Ac
 		return s.renderActionEvent(card.Event{
 			Type:      "config_saved",
 			SessionID: req.SessionID,
-			Segments:  []card.Segment{{Kind: card.SegmentText, Text: fmt.Sprintf("偏好已保存。\n\nagent=`%s`\nagent home=`%s`\nagent bin=`%s`\nmodel=`%s`\neffort=`%s`\nreply mode=`%s`\nconversation mode=`%s`\n\n下一条新消息开始生效。", preference.Agent, orDefault(preference.AgentHome, config.DefaultHomeLabel), orDefault(preference.AgentBin, config.DefaultBinLabel), preference.Model, preference.Effort, preference.ReplyMode, preference.ConversationMode)}},
+			Segments:  []card.Segment{{Kind: card.SegmentText, Text: fmt.Sprintf("偏好已保存。\n\nagent=`%s`\nagent home=`%s`\nagent bin=`%s`\nmodel=`%s`\neffort=`%s`\nreply mode=`%s`\nconversation mode=`%s`\n\n下一条新消息开始生效。", preference.Agent, orDefault(preference.AgentHome, config.DefaultHomeLabel), orDefault(preference.AgentBin, config.DefaultBinLabelFor(preference.Agent)), preference.Model, preference.Effort, preference.ReplyMode, preference.ConversationMode)}},
 		})
 	default:
 		return s.renderActionEvent(card.Event{Type: "error", SessionID: req.SessionID, Segments: []card.Segment{{Kind: card.SegmentError, Text: "unknown action: " + req.ActionID}}})
@@ -1376,7 +1376,8 @@ func (s *Service) statusText(kind agent.Kind, msg Message) string {
 func (s *Service) statusTextWithPreference(kind agent.Kind, msg Message, preference config.RuntimePreference) string {
 	key := sessionKeyForMode(kind, msg, preference.ConversationMode)
 	var b strings.Builder
-	fmt.Fprintf(&b, "mode=claude_oneshot\n")
+	fmt.Fprintf(&b, "mode=%s_oneshot\n", kind)
+	fmt.Fprintf(&b, "agent=%s\n", kind)
 	fmt.Fprintf(&b, "default_workdir=%s\n", s.Config.DefaultWorkDir)
 	fmt.Fprintf(&b, "current_session=%s\n", key.ID())
 	fmt.Fprintf(&b, "reply_mode=%s\n", preference.ReplyMode)
@@ -1391,10 +1392,12 @@ func (s *Service) statusTextWithPreference(kind agent.Kind, msg Message, prefere
 	fmt.Fprintf(&b, "queue=%d\n", len(sess.Queue))
 	fmt.Fprintf(&b, "history=%d\n", len(sess.History))
 	if sess.AgentSessionID != "" {
-		fmt.Fprintf(&b, "claude_session=%s\n", sess.AgentSessionID)
+		fmt.Fprintf(&b, "agent_session=%s\n", sess.AgentSessionID)
 	}
 	if sess.Model != "" {
 		fmt.Fprintf(&b, "model=%s\n", sess.Model)
+	} else if kind == agent.Codex {
+		fmt.Fprintf(&b, "model=由 Codex 配置决定\n")
 	}
 	if sess.Tokens > 0 {
 		fmt.Fprintf(&b, "tokens=%d\n", sess.Tokens)

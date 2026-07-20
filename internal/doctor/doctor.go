@@ -87,7 +87,11 @@ func agentsConfigCheck(cfg config.Config) Check {
 	if err != nil {
 		return Check{Name: "agents_config", OK: true, Warning: true, Detail: "using built-in default: " + err.Error()}
 	}
-	return Check{Name: "agents_config", OK: true, Detail: fmt.Sprintf("%d agent(s)", len(agents.Agents))}
+	detail := fmt.Sprintf("%d agent(s): %s", len(agents.Agents), strings.Join(agents.Kinds(), ","))
+	if _, ok := agents.Find("codex"); ok {
+		detail += "; Codex policy and model come from executable configuration"
+	}
+	return Check{Name: "agents_config", OK: true, Detail: detail}
 }
 
 func ClaudeWrapperPreflight(ctx context.Context, cfg config.Config) Check {

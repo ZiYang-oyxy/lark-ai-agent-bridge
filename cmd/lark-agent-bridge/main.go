@@ -13,6 +13,7 @@ import (
 	"syscall"
 	"time"
 
+	"lark-agent-bridge/internal/agent"
 	"lark-agent-bridge/internal/audit"
 	"lark-agent-bridge/internal/bridge"
 	"lark-agent-bridge/internal/card"
@@ -524,10 +525,16 @@ func loadAgentsInto(svc *bridge.Service, cfg config.Config, recorder *audit.Reco
 }
 
 func (simulateRunner) Run(_ context.Context, req bridge.AgentRunRequest) (bridge.AgentRunResult, error) {
+	model := "simulate-claude"
+	sessionID := "simulate-session"
+	if req.Kind == agent.Codex {
+		model = "simulate-codex"
+		sessionID = "simulate-thread"
+	}
 	return bridge.AgentRunResult{
-		Model:          "simulate-claude",
+		Model:          model,
 		Tokens:         len([]rune(req.Prompt)),
-		AgentSessionID: "simulate-session",
+		AgentSessionID: sessionID,
 		Segments: []card.Segment{
 			{Kind: card.SegmentText, Text: "simulated answer: " + req.Prompt},
 			{Kind: card.SegmentThought, Text: "simulated reasoning for local workflow validation"},

@@ -717,7 +717,8 @@ func TestServiceFreezesReplyModeBeforeQueuedBatchStarts(t *testing.T) {
 	runner := newFakeRunner()
 	runner.block = make(chan struct{})
 	target := &bridgeReplyTarget{}
-	svc := NewService(cfg, card.NewFakeRenderer(), runner, audit.NewRecorder())
+	renderer := card.NewFakeRenderer()
+	svc := NewService(cfg, renderer, runner, audit.NewRecorder())
 	svc.Preferences = preferences
 	svc.Replies = replies
 	svc.CardTarget = target
@@ -1104,7 +1105,7 @@ func TestServiceNewRunsClaudeOneShotAndRendersResult(t *testing.T) {
 		t.Fatalf("completed event should show disabled stop button: %#v", last.StopButton)
 	}
 	status := svc.statusText(agent.Claude, Message{ChatID: "chat"})
-	if !containsAll(status, "claude_session=sess-1", "state=idle") {
+	if !containsAll(status, "agent_session=sess-1", "state=idle") {
 		t.Fatalf("status = %q, want stored claude session", status)
 	}
 }
@@ -1522,7 +1523,8 @@ func TestServiceRunsConfiguredCodexPresetWithImagesAndResumesThread(t *testing.T
 		{AgentSessionID: "thread-codex", Tokens: 2, Segments: []card.Segment{{Kind: card.SegmentText, Text: "first"}}},
 		{AgentSessionID: "thread-codex", Tokens: 3, Segments: []card.Segment{{Kind: card.SegmentText, Text: "second"}}},
 	}
-	svc := NewService(cfg, card.NewFakeRenderer(), runner, audit.NewRecorder())
+	renderer := card.NewFakeRenderer()
+	svc := NewService(cfg, renderer, runner, audit.NewRecorder())
 	svc.Agents = agents
 	svc.Preferences = store
 	configureTestMedia(svc, &resolutionCacheStub{resolution: media.Resolution{Attachments: []media.Attachment{
@@ -1545,6 +1547,10 @@ func TestServiceRunsConfiguredCodexPresetWithImagesAndResumesThread(t *testing.T
 	if !strings.Contains(first.Prompt, "/cache/notes.txt") {
 		t.Fatalf("prompt = %q", first.Prompt)
 	}
+	events := renderer.Events()
+	if got := events[len(events)-1].Meta.ModelInfo; got != (card.ModelInfo{}) {
+		t.Fatalf("Codex model provenance = %#v, want executable-owned empty metadata", got)
+	}
 
 	secondAt := now.Add(2 * time.Second)
 	if err := svc.HandleMessage(context.Background(), Message{ID: "codex-2", ChatID: "chat", Sender: "u", Text: "continue", Time: secondAt}); err != nil {
@@ -1556,6 +1562,10 @@ func TestServiceRunsConfiguredCodexPresetWithImagesAndResumesThread(t *testing.T
 	waitForCalls(t, runner, 2)
 	if got := runner.Calls()[1].AgentSessionID; got != "thread-codex" {
 		t.Fatalf("resumed thread = %q", got)
+	}
+	status := svc.statusTextWithPreference(agent.Codex, Message{ChatID: "chat"}, store.Get())
+	if !containsAll(status, "mode=codex_oneshot", "agent=codex", "agent_session=thread-codex", "model=由 Codex 配置决定") || strings.Contains(status, "claude_session=") {
+		t.Fatalf("Codex status = %q", status)
 	}
 }
 
