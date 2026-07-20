@@ -72,9 +72,9 @@ go test ./internal/bridge -run 'TestServiceQueuesSecondInputUntilFirstCompletes|
 go test ./internal/session -run 'TestEnqueueQueuesWhileRunning|TestResetClearsClaudeSessionAndHistory|TestQueuedResetClearsBeforeNextInput|TestRestoreKeepsContextButClearsPending|TestRestoreDebouncingInputIsCancelled|TestRestoreQueuedInputIsCancelled|TestRestoreStartingInputIsCancelled|TestRestoreRunningInputIsInterrupted|TestAcceptAndEnqueueDuplicateDoesNotAdvanceRevision|TestAcceptAndEnqueueQueueFullDoesNotRecordReceipt|TestAcceptAndEnqueueExtendsCompatibleDebounceCohort'
 echo "session behavior ok"
 
-echo "== claude one-shot runner tests =="
-go test ./internal/agent ./internal/bridge -run 'TestBuildClaudeOneShotCommand|TestBuildClaudeOneShotCommandResumesInternalSession|TestBuildOneShotRejectsUnsupportedAgent|TestServiceNewRunsClaudeOneShotAndRendersResult|TestCLIExecRunnerUsesRequestedWorkDirAndPWD'
-echo "claude one-shot ok"
+echo "== agent one-shot runner tests =="
+go test ./internal/agent ./internal/config ./internal/bridge -run 'TestBuildClaudeOneShotCommand|TestBuildClaudeOneShotCommandResumesInternalSession|TestBuildCodexOneShotCommand|TestParseKindAcceptsCodex|TestBuildOneShotRejectsUnsupportedAgent|TestAgentsConfigAcceptsCodexAndCxPresets|TestServiceNewRunsClaudeOneShotAndRendersResult|TestCLIExecRunnerUsesRequestedWorkDirAndPWD|TestCLIExecRunnerRunsCodexWithStdinImagesAndConfiguredWorkDir|TestServiceRunsConfiguredCodexPresetWithImagesAndResumesThread|TestParseCodexStream'
+echo "agent one-shot ok"
 
 echo "== stop button and workdir tests =="
 go test ./internal/bridge ./internal/card -run 'TestServiceStopCancelsActiveOneShotRun|TestBuildLarkCardIncludesDisabledStopButton|TestServiceMissingWorkdirAsksThenRunsAfterCreate|TestWorkdirCancelDoesNotRun|TestWorkDirCreateActions|TestBuildLarkCardDisablesWorkdirTerminalActions'
