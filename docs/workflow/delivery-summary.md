@@ -25,6 +25,8 @@
 - topic/chat 内普通文本续接对应 Agent 保存的 session/thread id。
 - `/new` 重置当前 chat/topic 会话。
 - 同一 chat/topic 串行排队，不同 topic 并行。
+- 消息按 quiet window 聚合：纯 P2P `text` 为 250 ms、群聊 `text` 为 600 ms，`interactive`、图片、文件、富文本附件和未知非纯文字类型为 1 s；后一条兼容消息延长同一 cohort 的截止时间。
+- active run 期间积累的消息不会在上一批结束后立即启动；terminal completion 会原子地为队首兼容 cohort 重置一个完整 quiet window，再由既有 durable scheduler 冻结下一批。
 - 工作目录不存在时的创建/取消确认；create/cancel 后确认卡片进入绿色/灰色终态并禁用按钮，create 后 Claude 执行另起运行卡片。
 - `/new --workdir` 会传递到 Claude 子进程的 `cmd.Dir` 和 `PWD`，排队输入也保留各自 workdir。
 - 执行中停止按钮取消 active run，并把同一卡片置灰为“已停止”。
@@ -45,6 +47,7 @@
 - 自写 Chrome/CDP full 路径已移除；真实撤回场景改为通过 `lark-cli im messages delete --as user` 自动验证，按钮类历史证据仍保留在 audit/evidence 中。
 - 已验证群话题内 @bot 续聊进入 `thread:<thread_id>` 会话；当前飞书权限下，群话题内不 @bot 的消息不会推送到 bridge。
 - 已使用同 bridge app 的隔离用户 OAuth profile 完成真实 P2P 与文件输入验证。
+- 已用确定性 service regression 覆盖 `interactive + text` 与 `image + text` 在 1 s 内各只启动一次 Agent；真实远程组合场景在对应部署 E2E 中复核。
 - 已完成 Reply Experience 六项真实 E2E：`append`、`append-clean-card`、`latest-card`、preview 双门限、reaction cleanup、restart/stale-card fallback。
 - 已在最终 integration 版本重跑十项核心真实 E2E，session restart、pending recovery、DM/group debounce、busy merge、queue full、scope parallel、stop 和 recall 全部通过。
 - 独立 reviewer 提出的两项 Important 已关闭:preview 不会在 final 后覆盖终态,recovery 卡片更新使用整批 5 秒 context budget。

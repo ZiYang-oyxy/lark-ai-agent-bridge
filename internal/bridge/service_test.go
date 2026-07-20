@@ -460,7 +460,7 @@ func TestServiceResolvesAttachmentsBeforeDurableEnqueue(t *testing.T) {
 	if cache.releases != 1 {
 		t.Fatalf("release calls = %d, want 1 after durable enqueue", cache.releases)
 	}
-	if err := svc.DrainReady(now.Add(time.Second)); err != nil {
+	if err := svc.DrainReady(sess.Queue[0].DebounceUntil); err != nil {
 		t.Fatal(err)
 	}
 	waitForCalls(t, runner, 1)
@@ -929,7 +929,11 @@ func TestServiceRunsAttachmentOnlyMessageAndRejectsTotalFailure(t *testing.T) {
 		if err := svc.HandleMessage(context.Background(), Message{ID: "attachment-only", ChatID: "chat", Sender: "alice", Time: now, Attachments: []media.Ref{{FileKey: "image", Kind: "image"}}}); err != nil {
 			t.Fatal(err)
 		}
-		if err := svc.DrainReady(now.Add(time.Second)); err != nil {
+		sess, ok := svc.Sessions.Get(session.Key{Agent: agent.Claude, ChatID: "chat"})
+		if !ok || len(sess.Queue) != 1 {
+			t.Fatalf("session = %#v, want one attachment input", sess)
+		}
+		if err := svc.DrainReady(sess.Queue[0].DebounceUntil); err != nil {
 			t.Fatal(err)
 		}
 		waitForCalls(t, runner, 1)
@@ -1275,6 +1279,71 @@ func TestServiceFreezesInteractiveDebounceWindowAtIntake(t *testing.T) {
 	}
 }
 
+func TestServiceBatchesInteractiveAndText(t *testing.T) {
+	cfg := testConfig(t)
+	runner := newFakeRunner()
+	svc := NewService(cfg, card.NewFakeRenderer(), runner, audit.NewRecorder())
+	receivedBefore := time.Now()
+	if err := svc.HandleMessage(context.Background(), Message{
+		ID: "interactive", ChatID: "chat", Sender: "u", Text: "rich card payload", MessageType: "interactive", Time: receivedBefore,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.DrainReady(receivedBefore.Add(750 * time.Millisecond)); err != nil {
+		t.Fatal(err)
+	}
+	if got := len(runner.Calls()); got != 0 {
+		t.Fatalf("runner calls at 750ms = %d, want rich message still debouncing", got)
+	}
+	if err := svc.HandleMessage(context.Background(), Message{
+		ID: "text", ChatID: "chat", Sender: "u", Text: "follow-up text", MessageType: "text", Time: receivedBefore.Add(750 * time.Millisecond),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.DrainReady(time.Now().Add(2 * time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	waitForCalls(t, runner, 1)
+	calls := runner.Calls()
+	if len(calls) != 1 || !containsAll(calls[0].Prompt, "rich card payload", "follow-up text") {
+		t.Fatalf("runner calls = %#v, want one interactive+text batch", calls)
+	}
+}
+
+func TestServiceBatchesImageAndText(t *testing.T) {
+	cfg := testConfig(t)
+	runner := newFakeRunner()
+	svc := NewService(cfg, card.NewFakeRenderer(), runner, audit.NewRecorder())
+	imagePath := "/cache/sha-image.png"
+	configureTestMedia(svc, &resolutionCacheStub{resolution: media.Resolution{Attachments: []media.Attachment{{Path: imagePath, MIME: "image/png", Size: 7}}}})
+	receivedBefore := time.Now()
+	if err := svc.HandleMessage(context.Background(), Message{
+		ID: "image", ChatID: "chat", Sender: "u", MessageType: "image", Time: receivedBefore,
+		Attachments: []media.Ref{{MessageID: "image", FileKey: "img-key", Kind: "image"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.DrainReady(receivedBefore.Add(750 * time.Millisecond)); err != nil {
+		t.Fatal(err)
+	}
+	if got := len(runner.Calls()); got != 0 {
+		t.Fatalf("runner calls at 750ms = %d, want image still debouncing", got)
+	}
+	if err := svc.HandleMessage(context.Background(), Message{
+		ID: "text", ChatID: "chat", Sender: "u", Text: "describe this image", MessageType: "text", Time: receivedBefore.Add(750 * time.Millisecond),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.DrainReady(time.Now().Add(2 * time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	waitForCalls(t, runner, 1)
+	calls := runner.Calls()
+	if len(calls) != 1 || !containsAll(calls[0].Prompt, imagePath, "describe this image") {
+		t.Fatalf("runner calls = %#v, want one image+text batch", calls)
+	}
+}
+
 func TestServiceStartsDMDebounceFromLocalReceiptTime(t *testing.T) {
 	cfg := testConfig(t)
 	svc := NewService(cfg, card.NewFakeRenderer(), newFakeRunner(), audit.NewRecorder())
@@ -1556,7 +1625,11 @@ func TestServiceRunsConfiguredCodexPresetWithImagesAndResumesThread(t *testing.T
 	if err := svc.HandleMessage(context.Background(), Message{ID: "codex-1", ChatID: "chat", Sender: "u", Text: "inspect", Time: now, Attachments: []media.Ref{{FileKey: "image", Kind: "image"}, {FileKey: "notes", Kind: "file"}}}); err != nil {
 		t.Fatal(err)
 	}
-	if err := svc.DrainReady(now.Add(time.Second)); err != nil {
+	queued, ok := svc.Sessions.Get(session.Key{Agent: agent.Codex, ChatID: "chat"})
+	if !ok || len(queued.Queue) != 1 {
+		t.Fatalf("session = %#v, want one Codex attachment input", queued)
+	}
+	if err := svc.DrainReady(queued.Queue[0].DebounceUntil); err != nil {
 		t.Fatal(err)
 	}
 	waitForCalls(t, runner, 1)
