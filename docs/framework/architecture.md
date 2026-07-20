@@ -85,7 +85,7 @@ Claude runner 使用 `--output-format stream-json`，通过 stdout pipe 逐行�
 - token 数：递归统计 usage 中以 `tokens` 结尾的数字字段
 - Claude session id：顶层或 message 内的 `session_id`
 
-输出会映射为 `card.Segment`，CardKit 卡片中正文直接展示，思考过程和工具调用放入折叠面板。
+输出会映射为 `card.Segment`。`append` 将 assistant 回复与工具安全摘要按事件顺序投影到同一个稳定的 `answer` Markdown 元素，工具始终以普通文字展示；thinking 单独放入折叠面板。`append-clean-card` 与 `latest-card` 继续使用聚合正文和过程折叠面板。
 
 ## Codex 输出解析
 
@@ -96,7 +96,7 @@ Codex runner 逐行解析 `exec --json` 输出：`thread.started` 保存 thread 
 CardKit 卡片负责展示一次 Claude 请求的状态：
 
 - 执行中：蓝色 header，标题显示当前活动和耗时，例如 `🧠 正在推理 · ⏱ 12s`、`🛠️ 正在执行工具 · ⏱ 18s`、`✍️ 正在回复 · ⏱ 24s`，显示“停止”按钮。
-- 结果：绿色 header，标题显示 `✅ 已完成 · ⏱ X`，展示正文、折叠思考过程、折叠工具调用，停止按钮变为灰色 disabled “已完成”。
+- 结果：绿色 header，标题显示 `✅ 已完成 · ⏱ X`；`append` 保留有序正文、内联工具文字和折叠 thinking，clean/latest 只保留最终答案；停止按钮变为灰色 disabled “已完成”。
 - 停止：灰色 header，标题显示 `⏹ 已停止 · ⏱ X`，同一卡片按钮置灰为“已停止”。
 - 错误：红色 header，标题显示 `❌ 执行失败 · ⏱ X`，展示错误内容，停止按钮变为灰色 disabled “已结束”。
 - 工作目录确认：当 `--workdir` 不存在时提供“Create directory”和“Cancel”按钮；创建成功后确认卡变为绿色终态并禁用按钮，取消后变为灰色终态并禁用按钮。创建成功后 Claude 执行使用独立运行卡片，不覆盖确认卡片。
