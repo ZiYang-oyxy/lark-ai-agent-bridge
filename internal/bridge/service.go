@@ -103,6 +103,9 @@ type AgentRunResult struct {
 	AnswerSegments []string
 	// ToolCallCount 是本次 run 内唯一 tool_use.id 的数量,用于卡片过程区标题的稳定计数。
 	ToolCallCount int
+	// ProtocolUnknown/ProtocolAnomalies expose Codex JSONL drift for audit.
+	ProtocolUnknown   int
+	ProtocolAnomalies int
 }
 
 type AgentStreamUpdate struct {
