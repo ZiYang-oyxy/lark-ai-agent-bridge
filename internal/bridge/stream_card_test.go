@@ -498,12 +498,11 @@ func TestFailedStreamRemovesAnswerSignatureBeforeErrorBlock(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(terminal.Segments) != 1 {
+	if len(terminal.Segments) != 2 || terminal.Segments[0].Kind != card.SegmentText || terminal.Segments[1].Kind != card.SegmentError {
 		t.Fatalf("terminal segments = %#v", terminal.Segments)
 	}
-	got := terminal.Segments[0].Text
-	if strings.Contains(got, "Demo-Bot") || !strings.Contains(got, "正文") || !strings.Contains(got, "runner failed") {
-		t.Fatalf("terminal answer = %q, want body + error without signature", got)
+	if strings.Contains(terminal.Segments[0].Text, "Demo-Bot") || !strings.Contains(terminal.Segments[0].Text, "正文") || !strings.Contains(terminal.Segments[1].Text, "runner failed") {
+		t.Fatalf("terminal timeline = %#v, want body then error without signature", terminal.Segments)
 	}
 }
 

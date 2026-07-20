@@ -1396,7 +1396,10 @@ func TestServiceStreamsRunnerUpdatesIntoSameCard(t *testing.T) {
 	if last.Meta.RunTokens != 3 || last.Meta.TotalTokens != 3 {
 		t.Fatalf("last meta = %#v, want run and total tokens", last.Meta)
 	}
-	if !containsAll(last.Segments[0].Text, "answer") || !containsAll(last.Segments[1].Text, "plan") || !containsAll(last.Segments[2].Text, "Bash(ls)") {
+	if !last.OrderedLayout || len(last.Segments) != 3 ||
+		last.Segments[0].Kind != card.SegmentThought || !containsAll(last.Segments[0].Text, "plan") ||
+		last.Segments[1].Kind != card.SegmentTool || !containsAll(last.Segments[1].Text, "Bash(ls)") ||
+		last.Segments[2].Kind != card.SegmentText || !containsAll(last.Segments[2].Text, "answer") {
 		t.Fatalf("final segments = %#v", last.Segments)
 	}
 }

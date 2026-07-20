@@ -462,9 +462,13 @@ func (s *agentCardStream) mergeAppendFinalSegmentsLocked(result AgentRunResult) 
 	if len(result.OrderedSegments) > 0 {
 		s.ordered = append([]card.Segment(nil), result.OrderedSegments...)
 	} else if hasVisibleOrderedSegments(result.Segments) {
-		s.ordered = nil
-		for _, segment := range result.Segments {
-			s.ordered = appendOrderedSegment(s.ordered, segment, false)
+		if len(s.ordered) == 0 || !containsOrderedKind(s.ordered, card.SegmentTool) {
+			s.ordered = nil
+			for _, segment := range result.Segments {
+				s.ordered = appendOrderedSegment(s.ordered, segment, false)
+			}
+		} else {
+			s.mergeLegacyAppendAnswerLocked(result.Segments)
 		}
 	}
 	for _, segment := range result.Segments {
@@ -479,6 +483,34 @@ func (s *agentCardStream) mergeAppendFinalSegmentsLocked(result AgentRunResult) 
 			s.ordered = appendOrderedSegment(s.ordered, segment, false)
 		}
 	}
+}
+
+func (s *agentCardStream) mergeLegacyAppendAnswerLocked(segments []card.Segment) {
+	finalAnswer := ""
+	for _, segment := range segments {
+		if segment.Kind == card.SegmentText && strings.TrimSpace(segment.Text) != "" {
+			finalAnswer = segment.Text
+		}
+	}
+	if finalAnswer == "" {
+		return
+	}
+	for i := len(s.ordered) - 1; i >= 0; i-- {
+		if s.ordered[i].Kind == card.SegmentText {
+			s.ordered[i].Text = finalAnswer
+			return
+		}
+	}
+	s.ordered = append(s.ordered, card.Segment{Kind: card.SegmentText, Text: finalAnswer})
+}
+
+func containsOrderedKind(segments []card.Segment, kind card.SegmentKind) bool {
+	for _, segment := range segments {
+		if segment.Kind == kind && strings.TrimSpace(segment.Text) != "" {
+			return true
+		}
+	}
+	return false
 }
 
 func hasVisibleOrderedSegments(segments []card.Segment) bool {
