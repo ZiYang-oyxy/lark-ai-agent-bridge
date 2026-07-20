@@ -1,6 +1,9 @@
 package feishu
 
-import "context"
+import (
+	"context"
+	"io"
+)
 
 type ReactionType string
 
@@ -47,6 +50,18 @@ type Sender interface {
 	ReactionSink
 }
 
+type ImageReply struct {
+	ReplyToMessageID string
+	ReplyInThread    bool
+	ImageKey         string
+	UUID             string
+}
+
+type ImageSender interface {
+	UploadImage(context.Context, io.Reader) (string, error)
+	ReplyImage(context.Context, ImageReply) (SendResult, error)
+}
+
 type NoopSender struct{}
 
 func (NoopSender) SendReply(context.Context, Reply) (SendResult, error) {
@@ -59,4 +74,12 @@ func (NoopSender) AddReaction(context.Context, string, ReactionType) (string, er
 
 func (NoopSender) DeleteReaction(context.Context, string, string) error {
 	return nil
+}
+
+func (NoopSender) UploadImage(context.Context, io.Reader) (string, error) {
+	return "", nil
+}
+
+func (NoopSender) ReplyImage(context.Context, ImageReply) (SendResult, error) {
+	return SendResult{}, nil
 }

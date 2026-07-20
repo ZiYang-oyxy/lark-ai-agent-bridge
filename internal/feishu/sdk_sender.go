@@ -5,6 +5,7 @@ import (
 	"crypto/sha1"
 	"encoding/json"
 	"fmt"
+	"io"
 	"regexp"
 
 	lark "github.com/larksuite/oapi-sdk-go/v3"
@@ -21,9 +22,14 @@ type MessageReactionAPI interface {
 	Delete(ctx context.Context, req *larkim.DeleteMessageReactionReq, options ...larkcore.RequestOptionFunc) (*larkim.DeleteMessageReactionResp, error)
 }
 
+type ImageAPI interface {
+	Create(context.Context, *larkim.CreateImageReq, ...larkcore.RequestOptionFunc) (*larkim.CreateImageResp, error)
+}
+
 type SDKSender struct {
 	api         ReplyAPI
 	reactionAPI MessageReactionAPI
+	imageAPI    ImageAPI
 }
 
 func NewSDKSender(appID, appSecret string) *SDKSender {
@@ -31,7 +37,88 @@ func NewSDKSender(appID, appSecret string) *SDKSender {
 	return &SDKSender{
 		api:         client.Im.V1.Message,
 		reactionAPI: client.Im.V1.MessageReaction,
+		imageAPI:    client.Im.V1.Image,
 	}
+}
+
+func (s *SDKSender) UploadImage(ctx context.Context, reader io.Reader) (string, error) {
+	if reader == nil {
+		return "", fmt.Errorf("upload feishu image: missing reader")
+	}
+	if s == nil || s.imageAPI == nil {
+		return "", fmt.Errorf("upload feishu image: image API unavailable")
+	}
+	body := larkim.NewCreateImageReqBodyBuilder().
+		ImageType(larkim.ImageTypeMessage).
+		Image(reader).
+		Build()
+	req := larkim.NewCreateImageReqBuilder().Body(body).Build()
+	req.Body = body
+	resp, err := s.imageAPI.Create(ctx, req)
+	if err != nil {
+		return "", fmt.Errorf("upload feishu image: %w", err)
+	}
+	if resp == nil {
+		return "", fmt.Errorf("upload feishu image failed: empty response")
+	}
+	if !resp.Success() {
+		return "", fmt.Errorf("upload feishu image failed: code=%d msg=%s", resp.Code, resp.Msg)
+	}
+	if resp.Data == nil || resp.Data.ImageKey == nil || *resp.Data.ImageKey == "" {
+		return "", fmt.Errorf("upload feishu image failed: empty image key")
+	}
+	return *resp.Data.ImageKey, nil
+}
+
+func (s *SDKSender) ReplyImage(ctx context.Context, reply ImageReply) (SendResult, error) {
+	if reply.ReplyToMessageID == "" {
+		return SendResult{}, fmt.Errorf("reply feishu image: missing reply target message id")
+	}
+	if reply.ImageKey == "" {
+		return SendResult{}, fmt.Errorf("reply feishu image: missing image key")
+	}
+	if s == nil || s.api == nil {
+		return SendResult{}, fmt.Errorf("reply feishu image: message API unavailable")
+	}
+	content, err := json.Marshal(map[string]string{"image_key": reply.ImageKey})
+	if err != nil {
+		return SendResult{}, fmt.Errorf("reply feishu image: marshal content: %w", err)
+	}
+	uuid := reply.UUID
+	if uuid == "" {
+		uuid = buildImageReplyUUID(reply.ReplyToMessageID, reply.ImageKey)
+	}
+	body := larkim.NewReplyMessageReqBodyBuilder().
+		MsgType("image").
+		Content(string(content)).
+		ReplyInThread(reply.ReplyInThread).
+		Uuid(uuid).
+		Build()
+	req := larkim.NewReplyMessageReqBuilder().MessageId(reply.ReplyToMessageID).Body(body).Build()
+	req.Body = body
+	resp, err := s.api.Reply(ctx, req)
+	if err != nil {
+		return SendResult{}, fmt.Errorf("reply feishu image: %w", err)
+	}
+	if resp == nil {
+		return SendResult{}, fmt.Errorf("reply feishu image failed: empty response")
+	}
+	if !resp.Success() {
+		return SendResult{}, fmt.Errorf("reply feishu image failed: code=%d msg=%s", resp.Code, resp.Msg)
+	}
+	result := SendResult{}
+	if resp.Data != nil {
+		if resp.Data.MessageId != nil {
+			result.MessageID = *resp.Data.MessageId
+		}
+		if resp.Data.ThreadId != nil {
+			result.ThreadID = *resp.Data.ThreadId
+		}
+		if resp.Data.ChatId != nil {
+			result.ChatID = *resp.Data.ChatId
+		}
+	}
+	return result, nil
 }
 
 func (s *SDKSender) SendReply(ctx context.Context, reply Reply) (SendResult, error) {
@@ -189,4 +276,12 @@ func buildReplyUUID(reply Reply) string {
 		uuid[8], uuid[9],
 		uuid[10], uuid[11], uuid[12], uuid[13], uuid[14], uuid[15],
 	)
+}
+
+func buildImageReplyUUID(replyToMessageID, imageKey string) string {
+	return buildReplyUUID(Reply{
+		Kind:             ReplyKindFinal,
+		ReplyToMessageID: replyToMessageID,
+		Message:          "image:" + imageKey,
+	})
 }
