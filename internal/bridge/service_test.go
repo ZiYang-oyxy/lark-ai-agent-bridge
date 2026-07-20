@@ -717,7 +717,8 @@ func TestServiceFreezesReplyModeBeforeQueuedBatchStarts(t *testing.T) {
 	runner := newFakeRunner()
 	runner.block = make(chan struct{})
 	target := &bridgeReplyTarget{}
-	svc := NewService(cfg, card.NewFakeRenderer(), runner, audit.NewRecorder())
+	renderer := card.NewFakeRenderer()
+	svc := NewService(cfg, renderer, runner, audit.NewRecorder())
 	svc.Preferences = preferences
 	svc.Replies = replies
 	svc.CardTarget = target
@@ -1066,7 +1067,7 @@ func TestServiceNewRunsClaudeOneShotAndRendersResult(t *testing.T) {
 	cfg := testConfig(t)
 	renderer := card.NewFakeRenderer()
 	runner := newFakeRunner()
-	runner.results = []AgentRunResult{{Model: "claude-sonnet", Tokens: 42, ClaudeSessionID: "sess-1", Segments: []card.Segment{
+	runner.results = []AgentRunResult{{Model: "claude-sonnet", Tokens: 42, AgentSessionID: "sess-1", Segments: []card.Segment{
 		{Kind: card.SegmentText, Text: "answer"},
 		{Kind: card.SegmentThought, Text: "thinking"},
 		{Kind: card.SegmentTool, Text: "Bash(ls)"},
@@ -1085,7 +1086,7 @@ func TestServiceNewRunsClaudeOneShotAndRendersResult(t *testing.T) {
 	if len(calls) != 1 {
 		t.Fatalf("calls len = %d, want 1", len(calls))
 	}
-	if calls[0].Kind != agent.Claude || calls[0].Prompt != "hello" || calls[0].ClaudeSessionID != "" {
+	if calls[0].Kind != agent.Claude || calls[0].Prompt != "hello" || calls[0].AgentSessionID != "" {
 		t.Fatalf("runner call = %#v", calls[0])
 	}
 	events := renderer.Events()
@@ -1104,7 +1105,7 @@ func TestServiceNewRunsClaudeOneShotAndRendersResult(t *testing.T) {
 		t.Fatalf("completed event should show disabled stop button: %#v", last.StopButton)
 	}
 	status := svc.statusText(agent.Claude, Message{ChatID: "chat"})
-	if !containsAll(status, "claude_session=sess-1", "state=idle") {
+	if !containsAll(status, "agent_session=sess-1", "state=idle") {
 		t.Fatalf("status = %q, want stored claude session", status)
 	}
 }
@@ -1453,8 +1454,8 @@ func TestPlainTextAfterReadySessionKeepsWorkDir(t *testing.T) {
 	if calls[0].WorkDir != workDir {
 		t.Fatalf("runner workdir = %q, want %q", calls[0].WorkDir, workDir)
 	}
-	if calls[0].ClaudeSessionID != "" {
-		t.Fatalf("ready scope has no stored Claude session yet, got %q", calls[0].ClaudeSessionID)
+	if calls[0].AgentSessionID != "" {
+		t.Fatalf("ready scope has no stored Claude session yet, got %q", calls[0].AgentSessionID)
 	}
 	waitForEvents(t, renderer, 3)
 	events := renderer.Events()
@@ -1469,8 +1470,8 @@ func TestTopicPlainTextContinuesStoredClaudeSession(t *testing.T) {
 	renderer := card.NewFakeRenderer()
 	runner := newFakeRunner()
 	runner.results = []AgentRunResult{
-		{ClaudeSessionID: "sess-topic", Tokens: 2, Segments: []card.Segment{{Kind: card.SegmentText, Text: "first"}}},
-		{ClaudeSessionID: "sess-topic", Tokens: 3, Segments: []card.Segment{{Kind: card.SegmentText, Text: "second"}}},
+		{AgentSessionID: "sess-topic", Tokens: 2, Segments: []card.Segment{{Kind: card.SegmentText, Text: "first"}}},
+		{AgentSessionID: "sess-topic", Tokens: 3, Segments: []card.Segment{{Kind: card.SegmentText, Text: "second"}}},
 	}
 	svc := NewService(cfg, renderer, runner, audit.NewRecorder())
 	msg1 := Message{ID: "msg-1", ChatID: "chat", ThreadID: "topic-a", Sender: "u1", Text: "/new first", Time: time.Now()}
@@ -1491,8 +1492,8 @@ func TestTopicPlainTextContinuesStoredClaudeSession(t *testing.T) {
 	}
 	waitForCalls(t, runner, 2)
 	calls := runner.Calls()
-	if calls[1].ClaudeSessionID != "sess-topic" {
-		t.Fatalf("second call session id = %q, want sess-topic", calls[1].ClaudeSessionID)
+	if calls[1].AgentSessionID != "sess-topic" {
+		t.Fatalf("second call session id = %q, want sess-topic", calls[1].AgentSessionID)
 	}
 	waitForEvents(t, renderer, 4)
 	events := renderer.Events()
@@ -1502,13 +1503,82 @@ func TestTopicPlainTextContinuesStoredClaudeSession(t *testing.T) {
 	}
 }
 
+func TestServiceRunsConfiguredCodexPresetWithImagesAndResumesThread(t *testing.T) {
+	cfg := testConfig(t)
+	cfg.DefaultAgent = "claude"
+	cfg.ConversationMode = config.ConversationModeChat
+	agents := config.AgentsConfig{
+		SchemaVersion: config.AgentsSchemaVersion,
+		Agents: []config.AgentDef{{
+			Kind:  "codex",
+			Label: "Codex CLI",
+			Homes: []config.AgentHome{{Label: config.DefaultHomeLabel}, {Label: "workspace", Path: "/h/codex"}},
+			Bins:  []config.AgentBin{{Label: config.DefaultBinLabelFor("codex")}, {Label: "cx3", Path: "/b/cx3"}},
+		}},
+	}
+	defaults := config.RuntimePreference{Model: "default", Effort: "low", ReplyMode: config.ReplyModeAppend, ConversationMode: config.ConversationModeChat, Agent: "codex", AgentHome: "workspace", AgentBin: "cx3"}
+	store, err := config.OpenPreferenceStore(filepath.Join(t.TempDir(), "preferences.json"), defaults, cfg.AllowedModels, agents.Agents...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runner := newFakeRunner()
+	runner.results = []AgentRunResult{
+		{AgentSessionID: "thread-codex", Tokens: 2, Segments: []card.Segment{{Kind: card.SegmentText, Text: "first"}}},
+		{AgentSessionID: "thread-codex", Tokens: 3, Segments: []card.Segment{{Kind: card.SegmentText, Text: "second"}}},
+	}
+	renderer := card.NewFakeRenderer()
+	svc := NewService(cfg, renderer, runner, audit.NewRecorder())
+	svc.Agents = agents
+	svc.Preferences = store
+	configureTestMedia(svc, &resolutionCacheStub{resolution: media.Resolution{Attachments: []media.Attachment{
+		{Path: "/cache/image.png", MIME: "image/png", Size: 1},
+		{Path: "/cache/notes.txt", MIME: "text/plain", Size: 1},
+	}}})
+	now := time.Now()
+	if err := svc.HandleMessage(context.Background(), Message{ID: "codex-1", ChatID: "chat", Sender: "u", Text: "inspect", Time: now, Attachments: []media.Ref{{FileKey: "image", Kind: "image"}, {FileKey: "notes", Kind: "file"}}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.DrainReady(now.Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	waitForCalls(t, runner, 1)
+	waitForSessionNoActiveBatch(t, svc, session.Key{Agent: agent.Codex, ChatID: "chat"})
+	first := runner.Calls()[0]
+	if first.Kind != agent.Codex || first.Bin != "/b/cx3" || first.Home != "/h/codex" || len(first.Images) != 1 || first.Images[0] != "/cache/image.png" {
+		t.Fatalf("first Codex call = %#v", first)
+	}
+	if !strings.Contains(first.Prompt, "/cache/notes.txt") {
+		t.Fatalf("prompt = %q", first.Prompt)
+	}
+	events := renderer.Events()
+	if got := events[len(events)-1].Meta.ModelInfo; got != (card.ModelInfo{}) {
+		t.Fatalf("Codex model provenance = %#v, want executable-owned empty metadata", got)
+	}
+
+	secondAt := now.Add(2 * time.Second)
+	if err := svc.HandleMessage(context.Background(), Message{ID: "codex-2", ChatID: "chat", Sender: "u", Text: "continue", Time: secondAt}); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.DrainReady(secondAt.Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	waitForCalls(t, runner, 2)
+	if got := runner.Calls()[1].AgentSessionID; got != "thread-codex" {
+		t.Fatalf("resumed thread = %q", got)
+	}
+	status := svc.statusTextWithPreference(agent.Codex, Message{ChatID: "chat"}, store.Get())
+	if !containsAll(status, "mode=codex_oneshot", "agent=codex", "agent_session=thread-codex", "model=由 Codex 配置决定") || strings.Contains(status, "claude_session=") {
+		t.Fatalf("Codex status = %q", status)
+	}
+}
+
 func TestNewInTopicResetsStoredClaudeSession(t *testing.T) {
 	cfg := testConfig(t)
 	renderer := card.NewFakeRenderer()
 	runner := newFakeRunner()
 	runner.results = []AgentRunResult{
-		{ClaudeSessionID: "sess-old", Segments: []card.Segment{{Kind: card.SegmentText, Text: "old"}}},
-		{ClaudeSessionID: "sess-new", Segments: []card.Segment{{Kind: card.SegmentText, Text: "new"}}},
+		{AgentSessionID: "sess-old", Segments: []card.Segment{{Kind: card.SegmentText, Text: "old"}}},
+		{AgentSessionID: "sess-new", Segments: []card.Segment{{Kind: card.SegmentText, Text: "new"}}},
 	}
 	svc := NewService(cfg, renderer, runner, audit.NewRecorder())
 	msg1 := Message{ID: "msg-1", ChatID: "chat", ThreadID: "topic-a", Sender: "u1", Text: "/new first", Time: time.Now()}
@@ -1529,8 +1599,8 @@ func TestNewInTopicResetsStoredClaudeSession(t *testing.T) {
 	}
 	waitForCalls(t, runner, 2)
 	calls := runner.Calls()
-	if calls[1].ClaudeSessionID != "" {
-		t.Fatalf("new call session id = %q, want reset", calls[1].ClaudeSessionID)
+	if calls[1].AgentSessionID != "" {
+		t.Fatalf("new call session id = %q, want reset", calls[1].AgentSessionID)
 	}
 }
 
@@ -2928,7 +2998,7 @@ func TestServiceStopKeepsLaterQueue(t *testing.T) {
 func TestServiceNewPromptIsBatchBoundaryAndResetsNextContext(t *testing.T) {
 	cfg := testConfig(t)
 	runner := newFakeRunner()
-	runner.results = []AgentRunResult{{ClaudeSessionID: "old"}, {ClaudeSessionID: "new"}, {ClaudeSessionID: "new"}}
+	runner.results = []AgentRunResult{{AgentSessionID: "old"}, {AgentSessionID: "new"}, {AgentSessionID: "new"}}
 	svc := NewService(cfg, card.NewFakeRenderer(), runner, audit.NewRecorder())
 	now := time.Now()
 	inputs := []Message{{ID: "before", ChatID: "chat", ThreadID: "topic", Sender: "u", Text: "before", Time: now}, {ID: "new", ChatID: "chat", ThreadID: "topic", Sender: "u", Text: "/new reset", Time: now}, {ID: "after", ChatID: "chat", ThreadID: "topic", Sender: "u", Text: "after", Time: now}}
@@ -2951,14 +3021,14 @@ func TestServiceNewPromptIsBatchBoundaryAndResetsNextContext(t *testing.T) {
 	}
 	waitForCalls(t, runner, 2)
 	waitForSessionNoActiveBatch(t, svc, key)
-	if call := runner.Calls()[1]; call.Prompt != "reset" || call.ClaudeSessionID != "" {
+	if call := runner.Calls()[1]; call.Prompt != "reset" || call.AgentSessionID != "" {
 		t.Fatalf("reset call = %#v", call)
 	}
 	if err := svc.DrainReady(now.Add(3 * time.Second)); err != nil {
 		t.Fatal(err)
 	}
 	waitForCalls(t, runner, 3)
-	if call := runner.Calls()[2]; call.Prompt != "after" || call.ClaudeSessionID != "new" {
+	if call := runner.Calls()[2]; call.Prompt != "after" || call.AgentSessionID != "new" {
 		t.Fatalf("after call = %#v", call)
 	}
 }
@@ -3188,7 +3258,7 @@ func TestParseClaudeStreamOutputDoesNotDuplicateFinalResult(t *testing.T) {
 		`{"type":"result","result":"E2E_ONESHOT","usage":{"input_tokens":2}}`,
 	}, "\n"))
 	result := ParseClaudeStreamOutput(data)
-	if result.ClaudeSessionID != "sess-1" || result.Model != "claude-opus" || result.Tokens != 5 {
+	if result.AgentSessionID != "sess-1" || result.Model != "claude-opus" || result.Tokens != 5 {
 		t.Fatalf("metadata = %#v", result)
 	}
 	if len(result.Segments) != 1 || result.Segments[0].Text != "E2E_ONESHOT" {
@@ -3221,6 +3291,53 @@ printf '{"type":"assistant","message":{"model":"fake-claude","content":[{"type":
 	got := result.Segments[0].Text
 	if !containsAll(got, "pwd="+workDir, "envpwd="+workDir) {
 		t.Fatalf("runner cwd output = %q, want pwd and envpwd %s", got, workDir)
+	}
+}
+
+func TestCLIExecRunnerRunsCodexWithStdinImagesAndConfiguredWorkDir(t *testing.T) {
+	binDir := t.TempDir()
+	fakeCodex := filepath.Join(binDir, "cx3")
+	logPath := filepath.Join(t.TempDir(), "codex.log")
+	script := `#!/bin/sh
+printf 'args=%s\npwd=%s\n' "$*" "$PWD" >"$FAKE_CODEX_LOG"
+IFS= read -r prompt || true
+printf 'stdin=%s\nhome=%s\n' "$prompt" "${CODEX_HOME:-}" >>"$FAKE_CODEX_LOG"
+printf '%s\n' '{"type":"thread.started","thread_id":"thread-1"}'
+printf '%s\n' '{"type":"item.completed","item":{"id":"msg-1","type":"agent_message","text":"codex answer"}}'
+printf '%s\n' '{"type":"turn.completed","usage":{"input_tokens":2,"output_tokens":3}}'
+`
+	if err := os.WriteFile(fakeCodex, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("FAKE_CODEX_LOG", logPath)
+	workDir := t.TempDir()
+	result, err := CLIExecRunner{}.Run(context.Background(), AgentRunRequest{
+		Kind:           agent.Codex,
+		Bin:            fakeCodex,
+		Prompt:         "inspect repo",
+		WorkDir:        workDir,
+		Home:           "/isolated/codex-home",
+		Images:         []string{"/cache/a.png", "/cache/b.jpg"},
+		AgentSessionID: "",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.AgentSessionID != "thread-1" || result.Tokens != 5 || len(result.Segments) != 1 || result.Segments[0].Text != "codex answer" {
+		t.Fatalf("result = %#v", result)
+	}
+	data, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	log := string(data)
+	if !containsAll(log, "args=exec --json --image /cache/a.png --image /cache/b.jpg -- -", "pwd="+workDir, "stdin=inspect repo", "home=/isolated/codex-home") {
+		t.Fatalf("fake codex log = %q", log)
+	}
+	for _, forbidden := range []string{"--sandbox", "approval_policy", "--model", "--profile", "--ignore-rules", "--skip-git-repo-check"} {
+		if strings.Contains(log, forbidden) {
+			t.Fatalf("unexpected %q in log %q", forbidden, log)
+		}
 	}
 }
 
@@ -3263,10 +3380,10 @@ func TestStreamUpdateUnwrapsClaudePartialStreamEvents(t *testing.T) {
 	if len(got) != 2 {
 		t.Fatalf("updates = %#v, want two unwrapped partial updates", got)
 	}
-	if got[0].ClaudeSessionID != "sess-partial" || !got[0].PartialMessage || got[0].Segments[0].Kind != card.SegmentThought || got[0].Segments[0].Text != "hidden partial" {
+	if got[0].AgentSessionID != "sess-partial" || !got[0].PartialMessage || got[0].Segments[0].Kind != card.SegmentThought || got[0].Segments[0].Text != "hidden partial" {
 		t.Fatalf("thinking update = %#v", got[0])
 	}
-	if got[1].ClaudeSessionID != "sess-partial" || !got[1].PartialMessage || got[1].Segments[0].Kind != card.SegmentText || got[1].Segments[0].Text != "visible partial" {
+	if got[1].AgentSessionID != "sess-partial" || !got[1].PartialMessage || got[1].Segments[0].Kind != card.SegmentText || got[1].Segments[0].Text != "visible partial" {
 		t.Fatalf("text update = %#v", got[1])
 	}
 }

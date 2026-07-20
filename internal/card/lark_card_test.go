@@ -286,8 +286,13 @@ func TestBuildLarkCardRendersRuntimeConfigForm(t *testing.T) {
 	controls := form["elements"].([]any)
 	selects := map[string]map[string]any{}
 	var submit map[string]any
+	var copy strings.Builder
 	for _, raw := range controls {
 		control := raw.(map[string]any)
+		if control["tag"] == "markdown" {
+			copy.WriteString(control["content"].(string))
+			copy.WriteByte('\n')
+		}
 		if control["tag"] == "select_static" {
 			selects[control["name"].(string)] = control
 		}
@@ -315,6 +320,9 @@ func TestBuildLarkCardRendersRuntimeConfigForm(t *testing.T) {
 	}
 	if submit == nil || submit["form_action_type"] != "submit" {
 		t.Fatalf("submit button = %#v", submit)
+	}
+	if !containsAll(copy.String(), "`claude`", "`codex`", "Codex", "executable") {
+		t.Fatalf("config guidance = %q", copy.String())
 	}
 	behaviors := submit["behaviors"].([]any)
 	value := behaviors[0].(map[string]any)["value"].(map[string]any)

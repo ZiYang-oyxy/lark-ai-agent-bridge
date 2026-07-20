@@ -71,6 +71,22 @@ func TestRunChecksRuntimeConfig(t *testing.T) {
 	}
 }
 
+func TestAgentsConfigCheckReportsCodexConfigurationOwnership(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, ".lark-agent-bridge", "agents.json")
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	doc := `{"schema_version":1,"agents":[{"kind":"claude"},{"kind":"codex","bins":[{"label":"cx3","path":"bin/cx3"}]}]}`
+	if err := os.WriteFile(path, []byte(doc), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	check := agentsConfigCheck(config.Config{AgentsConfigPath: path})
+	if !check.OK || check.Warning || !strings.Contains(check.Detail, "claude,codex") || !strings.Contains(check.Detail, "executable configuration") {
+		t.Fatalf("check = %#v", check)
+	}
+}
+
 func TestReplyStoreWritableRejectsMalformedMappingWithoutLeakingContents(t *testing.T) {
 	workDir := canonicalTempDir(t)
 	storeDir := filepath.Join(workDir, ".lark-agent-bridge")

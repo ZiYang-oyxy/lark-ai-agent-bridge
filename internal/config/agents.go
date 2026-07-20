@@ -67,10 +67,18 @@ type AgentsConfig struct {
 	WorkDir string `json:"-"`
 }
 
-// knownAgentKinds gates which kinds are accepted from agents.json. Codex is
-// reserved for a future iteration; only claude is exposed today.
 var knownAgentKinds = map[string]struct{}{
 	"claude": {},
+	"codex":  {},
+}
+
+// DefaultBinLabelFor returns the implicit host executable label for an agent
+// kind. DefaultBinLabel remains the Claude-compatible legacy constant.
+func DefaultBinLabelFor(kind string) string {
+	if strings.EqualFold(strings.TrimSpace(kind), "codex") {
+		return "主机 codex"
+	}
+	return DefaultBinLabel
 }
 
 // DefaultAgentsConfig returns the built-in catalogue used when agents.json is
@@ -202,15 +210,16 @@ func normalizeHomes(kind string, homes []AgentHome) ([]AgentHome, error) {
 func normalizeBins(kind string, bins []AgentBin) ([]AgentBin, error) {
 	out := make([]AgentBin, 0, len(bins)+1)
 	seen := make(map[string]struct{}, len(bins)+1)
-	out = append(out, AgentBin{Label: DefaultBinLabel, Path: "", Desc: "bridge 默认可执行"})
-	seen[DefaultBinLabel] = struct{}{}
+	defaultLabel := DefaultBinLabelFor(kind)
+	out = append(out, AgentBin{Label: defaultLabel, Path: "", Desc: "bridge 默认可执行"})
+	seen[defaultLabel] = struct{}{}
 	for _, bin := range bins {
 		label := strings.TrimSpace(bin.Label)
 		path := cleanPath(bin.Path)
 		if label == "" {
 			return nil, fmt.Errorf("agent %q has a bin with an empty label", kind)
 		}
-		if label == DefaultBinLabel {
+		if label == defaultLabel {
 			continue
 		}
 		if _, dup := seen[label]; dup {
@@ -335,7 +344,7 @@ func (c AgentsConfig) BinPath(kind, label string) (path string, ok bool) {
 	label = strings.TrimSpace(label)
 	def, found := c.Find(kind)
 	if !found {
-		return "", label == "" || label == DefaultBinLabel
+		return "", label == "" || label == DefaultBinLabelFor(kind)
 	}
 	if label == "" {
 		return "", true

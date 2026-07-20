@@ -9,10 +9,7 @@ type Kind string
 
 const (
 	Claude Kind = "claude"
-	// Codex is reserved for a future iteration. It is a recognized kind so the
-	// env/command plumbing can be built ahead of time, but BuildOneShotCommand
-	// does not yet know how to run it and the /config UI does not expose it.
-	Codex Kind = "codex"
+	Codex  Kind = "codex"
 )
 
 type ApprovalMode string
@@ -20,22 +17,27 @@ type ApprovalMode string
 const ApprovalFull ApprovalMode = "full"
 
 type OneShotConfig struct {
-	Kind            Kind
-	Bin             string
-	WorkDir         string
-	Prompt          string
-	ClaudeSessionID string
-	Model           string
-	Effort          string
+	Kind           Kind
+	Bin            string
+	WorkDir        string
+	Prompt         string
+	AgentSessionID string
+	Model          string
+	Effort         string
 	// Home is the resolved agent home / config directory. Empty means "use the
 	// agent's default home" (no config-dir environment variable is injected).
 	Home string
+	// Images are validated local image paths. Only Codex consumes them as
+	// repeated --image flags; Claude continues to receive paths in the prompt.
+	Images []string
 }
 
 func ParseKind(raw string) (Kind, bool) {
 	switch strings.ToLower(strings.TrimSpace(raw)) {
 	case "", string(Claude):
 		return Claude, true
+	case string(Codex):
+		return Codex, true
 	default:
 		return "", false
 	}
@@ -46,11 +48,44 @@ func BuildOneShotCommand(cfg OneShotConfig) ([]string, error) {
 	case Claude:
 		return buildClaudeOneShotCommand(cfg)
 	case Codex:
-		return nil, fmt.Errorf("agent %q is reserved and not yet implemented", cfg.Kind)
+		return buildCodexOneShotCommand(cfg)
 	default:
 		return nil, fmt.Errorf("agent %q is not supported", cfg.Kind)
 	}
 }
+
+func buildCodexOneShotCommand(cfg OneShotConfig) ([]string, error) {
+	prompt := strings.TrimSpace(cfg.Prompt)
+	if prompt == "" {
+		return nil, fmt.Errorf("codex prompt is empty")
+	}
+	bin := strings.TrimSpace(cfg.Bin)
+	if bin == "" {
+		bin = "codex"
+	}
+	images := make([]string, 0, len(cfg.Images)*2)
+	for _, path := range cfg.Images {
+		if path = strings.TrimSpace(path); path != "" {
+			images = append(images, "--image", path)
+		}
+	}
+	if sessionID := strings.TrimSpace(cfg.AgentSessionID); sessionID != "" {
+		args := []string{bin, "exec", "resume", "--json"}
+		args = append(args, images...)
+		args = append(args, sessionID, "-")
+		return args, nil
+	}
+	args := []string{bin, "exec", "--json"}
+	args = append(args, images...)
+	if len(images) > 0 {
+		args = append(args, "--")
+	}
+	return append(args, "-"), nil
+}
+
+// PromptOnStdin reports whether the agent protocol reads the prompt from
+// stdin rather than from argv.
+func PromptOnStdin(kind Kind) bool { return kind == Codex }
 
 // AgentEnv returns the environment variables that select the agent's home /
 // config directory for a child process. It returns nil when home is empty,
@@ -92,7 +127,7 @@ func buildClaudeOneShotCommand(cfg OneShotConfig) ([]string, error) {
 	if model := strings.TrimSpace(cfg.Model); model != "" && !strings.EqualFold(model, "default") {
 		args = append(args, "--model", model)
 	}
-	if sessionID := strings.TrimSpace(cfg.ClaudeSessionID); sessionID != "" {
+	if sessionID := strings.TrimSpace(cfg.AgentSessionID); sessionID != "" {
 		args = append(args, "--resume", sessionID)
 	}
 	args = append(args, prompt)

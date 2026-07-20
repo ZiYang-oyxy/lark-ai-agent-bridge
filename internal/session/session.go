@@ -56,6 +56,8 @@ type Input struct {
 	WorkDir          string
 	RequestedModel   string
 	RequestedEffort  string
+	AgentBin         string
+	AgentHome        string
 	ReplyMode        config.ReplyMode
 	ConversationMode config.ConversationMode
 	Time             time.Time
@@ -84,11 +86,11 @@ type Batch struct {
 
 // BatchCompletion records the durable terminal result for one active batch.
 type BatchCompletion struct {
-	Status          InputState
-	ClaudeSessionID string
-	Model           string
-	Tokens          int
-	At              time.Time
+	Status         InputState
+	AgentSessionID string
+	Model          string
+	Tokens         int
+	At             time.Time
 }
 
 type RenderRef struct {
@@ -127,18 +129,18 @@ const (
 )
 
 type Session struct {
-	Key             Key
-	ID              string
-	WorkDir         string
-	ClaudeSessionID string
-	Model           string
-	Tokens          int
-	State           State
-	History         []Prompt
-	Queue           []Input
-	ActiveBatch     *Batch
-	CreatedAt       time.Time
-	LastActive      time.Time
+	Key            Key
+	ID             string
+	WorkDir        string
+	AgentSessionID string
+	Model          string
+	Tokens         int
+	State          State
+	History        []Prompt
+	Queue          []Input
+	ActiveBatch    *Batch
+	CreatedAt      time.Time
+	LastActive     time.Time
 }
 
 type Manager struct {
@@ -443,7 +445,7 @@ func (m *Manager) MarkBatchRunning(key Key, batchID string, renderRef *RenderRef
 	if len(batch.Inputs) > 0 {
 		first := batch.Inputs[0]
 		if first.Reset {
-			s.ClaudeSessionID = ""
+			s.AgentSessionID = ""
 			s.Model = ""
 			s.Tokens = 0
 			s.History = nil
@@ -520,8 +522,8 @@ func (m *Manager) FinishBatch(key Key, batchID string, completion BatchCompletio
 		s.ActiveBatch.Inputs[i].State = completion.Status
 	}
 	s.ActiveBatch.State = completion.Status
-	if completion.ClaudeSessionID != "" {
-		s.ClaudeSessionID = completion.ClaudeSessionID
+	if completion.AgentSessionID != "" {
+		s.AgentSessionID = completion.AgentSessionID
 	}
 	if completion.Model != "" {
 		s.Model = completion.Model
@@ -663,7 +665,7 @@ func (m *Manager) UpdateRunResult(id, claudeSessionID, model string, tokens int)
 		return Session{}
 	}
 	if claudeSessionID != "" {
-		s.ClaudeSessionID = claudeSessionID
+		s.AgentSessionID = claudeSessionID
 	}
 	if model != "" {
 		s.Model = model
@@ -740,7 +742,7 @@ func resetSessionLocked(s *Session, workDir string, now time.Time) {
 	if workDir != "" {
 		s.WorkDir = workDir
 	}
-	s.ClaudeSessionID = ""
+	s.AgentSessionID = ""
 	s.Model = ""
 	s.Tokens = 0
 	s.History = nil
@@ -904,6 +906,8 @@ func compatibleBatchInput(first, next Input) bool {
 	return first.WorkDir == next.WorkDir &&
 		first.RequestedModel == next.RequestedModel &&
 		first.RequestedEffort == next.RequestedEffort &&
+		first.AgentBin == next.AgentBin &&
+		first.AgentHome == next.AgentHome &&
 		first.EffectiveReplyMode() == next.EffectiveReplyMode() &&
 		first.ConversationMode == next.ConversationMode
 }

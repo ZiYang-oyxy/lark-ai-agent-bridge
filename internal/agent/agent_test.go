@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -18,7 +19,7 @@ func TestBuildClaudeOneShotCommand(t *testing.T) {
 }
 
 func TestBuildClaudeOneShotCommandResumesInternalSession(t *testing.T) {
-	cmd, err := BuildOneShotCommand(OneShotConfig{Kind: Claude, Prompt: "next", ClaudeSessionID: "sess-123"})
+	cmd, err := BuildOneShotCommand(OneShotConfig{Kind: Claude, Prompt: "next", AgentSessionID: "sess-123"})
 	if err != nil {
 		t.Fatalf("one-shot command error: %v", err)
 	}
@@ -65,10 +66,54 @@ func TestBuildOneShotRejectsUnsupportedAgent(t *testing.T) {
 	}
 }
 
-func TestBuildOneShotCodexReserved(t *testing.T) {
-	_, err := BuildOneShotCommand(OneShotConfig{Kind: Codex, Prompt: "hello"})
-	if err == nil || !strings.Contains(err.Error(), "reserved") {
-		t.Fatalf("codex error = %v, want reserved", err)
+func TestBuildCodexOneShotCommandUsesOnlyProtocolArguments(t *testing.T) {
+	cmd, err := BuildOneShotCommand(OneShotConfig{Kind: Codex, Bin: "/w/bin/cx3", Prompt: "inspect"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"/w/bin/cx3", "exec", "--json", "-"}
+	if !reflect.DeepEqual(cmd, want) {
+		t.Fatalf("command = %#v, want %#v", cmd, want)
+	}
+	joined := strings.Join(cmd, " ")
+	for _, forbidden := range []string{"--sandbox", "approval_policy", "--model", "--profile", "--ignore-rules", "--skip-git-repo-check"} {
+		if strings.Contains(joined, forbidden) {
+			t.Fatalf("unexpected %q in %#v", forbidden, cmd)
+		}
+	}
+}
+
+func TestParseKindAcceptsCodex(t *testing.T) {
+	got, ok := ParseKind(" CODEX ")
+	if !ok || got != Codex {
+		t.Fatalf("ParseKind(CODEX) = %q/%v, want codex/true", got, ok)
+	}
+}
+
+func TestBuildCodexOneShotCommandResumesAndAddsImages(t *testing.T) {
+	cmd, err := BuildOneShotCommand(OneShotConfig{
+		Kind:           Codex,
+		Prompt:         "next",
+		AgentSessionID: "thread-1",
+		Images:         []string{"/cache/a.png", "/cache/b.jpg"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"codex", "exec", "resume", "--json", "--image", "/cache/a.png", "--image", "/cache/b.jpg", "thread-1", "-"}
+	if !reflect.DeepEqual(cmd, want) {
+		t.Fatalf("command = %#v, want %#v", cmd, want)
+	}
+}
+
+func TestBuildCodexOneShotCommandSeparatesFreshImagesFromPromptMarker(t *testing.T) {
+	cmd, err := BuildOneShotCommand(OneShotConfig{Kind: Codex, Prompt: "inspect", Images: []string{"/cache/a.png"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"codex", "exec", "--json", "--image", "/cache/a.png", "--", "-"}
+	if !reflect.DeepEqual(cmd, want) {
+		t.Fatalf("command = %#v, want %#v", cmd, want)
 	}
 }
 

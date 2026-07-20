@@ -110,13 +110,13 @@ func splitCommand(raw string) (string, string) {
 func HelpText() string {
 	return strings.Join([]string{
 		"Feishu AI Agent Bridge commands:",
-		"/new [--workdir <path>] [prompt] - start a new Claude session in this chat/topic",
+		"/new [--workdir <path>] [prompt] - start a new configured agent session in this chat/topic",
 		"/status - show the current chat/topic session status",
-		"/config - configure model, effort, reply mode, and chat/topic mode",
+		"/config - configure agent, home, executable, Claude model/effort, reply mode, and chat/topic mode",
 		"/invite user|admin @user, /invite group, /invite all group - grant access",
 		"/remove user|admin @user, /remove group - revoke access",
 		"/help - show this help",
 		"",
-		"Plain text continues the current configured conversation scope. Use /new to start a new Claude session.",
+		"Plain text continues the current configured agent conversation. Use /new to start a new session.",
 	}, "\n")
 }

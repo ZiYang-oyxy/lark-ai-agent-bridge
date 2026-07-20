@@ -11,7 +11,7 @@ import (
 	"time"
 )
 
-const SnapshotVersion = 1
+const SnapshotVersion = 2
 
 type Snapshot struct {
 	SchemaVersion int       `json:"schema_version"`
@@ -80,14 +80,48 @@ func LoadSnapshot(path string) (Snapshot, error) {
 		return Snapshot{}, fmt.Errorf("read session snapshot: %w", err)
 	}
 
+	var header struct {
+		SchemaVersion int `json:"schema_version"`
+	}
+	if err := json.Unmarshal(data, &header); err != nil {
+		return Snapshot{}, fmt.Errorf("decode session snapshot: %w", err)
+	}
+	if header.SchemaVersion == 1 {
+		migrated, err := migrateSnapshotV1(data)
+		if err != nil {
+			return Snapshot{}, fmt.Errorf("migrate session snapshot: %w", err)
+		}
+		data = migrated
+	} else if header.SchemaVersion != SnapshotVersion {
+		return Snapshot{}, fmt.Errorf("unsupported session snapshot schema %d", header.SchemaVersion)
+	}
 	var snapshot Snapshot
 	if err := json.Unmarshal(data, &snapshot); err != nil {
 		return Snapshot{}, fmt.Errorf("decode session snapshot: %w", err)
 	}
-	if snapshot.SchemaVersion != SnapshotVersion {
-		return Snapshot{}, fmt.Errorf("unsupported session snapshot schema %d", snapshot.SchemaVersion)
-	}
 	return snapshot, nil
+}
+
+func migrateSnapshotV1(data []byte) ([]byte, error) {
+	var raw map[string]any
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return nil, err
+	}
+	sessions, _ := raw["sessions"].([]any)
+	for _, value := range sessions {
+		session, _ := value.(map[string]any)
+		if session == nil {
+			continue
+		}
+		if _, exists := session["AgentSessionID"]; !exists {
+			if legacy, ok := session["ClaudeSessionID"]; ok {
+				session["AgentSessionID"] = legacy
+			}
+		}
+		delete(session, "ClaudeSessionID")
+	}
+	raw["schema_version"] = SnapshotVersion
+	return json.Marshal(raw)
 }
 
 // AcceptMessage records a successfully handled non-run command message. A

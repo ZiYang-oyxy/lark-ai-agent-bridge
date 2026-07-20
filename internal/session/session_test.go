@@ -164,6 +164,8 @@ func TestFreezeReadyBatchStopsAtRuntimePreferenceBoundaries(t *testing.T) {
 	}{
 		{name: "model", second: Input{ID: "model", Text: "two", RequestedModel: "opus"}},
 		{name: "effort", second: Input{ID: "effort", Text: "two", RequestedEffort: "high"}},
+		{name: "agent_bin", second: Input{ID: "bin", Text: "two", RequestedModel: "sonnet", RequestedEffort: "low", AgentBin: "/w/bin/cx3"}},
+		{name: "agent_home", second: Input{ID: "home", Text: "two", RequestedModel: "sonnet", RequestedEffort: "low", AgentHome: "/w/.codex-home"}},
 		{name: "conversation_mode", second: Input{ID: "conversation", Text: "two", RequestedModel: "sonnet", RequestedEffort: "low", ConversationMode: config.ConversationModeTopic}},
 		{name: "reply_mode", second: Input{ID: "reply", Text: "two", RequestedModel: "sonnet", RequestedEffort: "low", ConversationMode: config.ConversationModeChat, ReplyMode: config.ReplyModeAppendCleanCard}},
 	} {
@@ -360,7 +362,7 @@ func TestFreezeReadyBatchUsesUniqueIDsToRejectLateCompletionAtSameTime(t *testin
 	if _, _, err := m.EnqueueDurable(key, Input{ID: "b", Text: "second", State: InputQueued, Time: now}, "/w", BatchLimits{}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := m.FinishBatch(key, first.ID, BatchCompletion{Status: InputCompleted, ClaudeSessionID: "session-a", Model: "model-a", Tokens: 5, At: now}); err != nil {
+	if _, err := m.FinishBatch(key, first.ID, BatchCompletion{Status: InputCompleted, AgentSessionID: "session-a", Model: "model-a", Tokens: 5, At: now}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -383,11 +385,11 @@ func TestFreezeReadyBatchUsesUniqueIDsToRejectLateCompletionAtSameTime(t *testin
 	}
 	revision := m.revision
 
-	if _, err := m.FinishBatch(key, first.ID, BatchCompletion{Status: InputCompleted, ClaudeSessionID: "stale", Model: "stale", Tokens: 99, At: now.Add(time.Second)}); err == nil || !strings.Contains(err.Error(), "mismatch") {
+	if _, err := m.FinishBatch(key, first.ID, BatchCompletion{Status: InputCompleted, AgentSessionID: "stale", Model: "stale", Tokens: 99, At: now.Add(time.Second)}); err == nil || !strings.Contains(err.Error(), "mismatch") {
 		t.Fatalf("late completion error = %v, want batch mismatch", err)
 	}
 	after, ok := m.Get(key)
-	if !ok || after.ActiveBatch == nil || after.ActiveBatch.ID != second.ID || after.State != StateRunning || len(after.Queue) != 1 || after.Queue[0].ID != "later" || after.ClaudeSessionID != before.ClaudeSessionID || after.Model != before.Model || after.Tokens != before.Tokens || after.LastActive != before.LastActive || m.revision != revision {
+	if !ok || after.ActiveBatch == nil || after.ActiveBatch.ID != second.ID || after.State != StateRunning || len(after.Queue) != 1 || after.Queue[0].ID != "later" || after.AgentSessionID != before.AgentSessionID || after.Model != before.Model || after.Tokens != before.Tokens || after.LastActive != before.LastActive || m.revision != revision {
 		t.Fatalf("late completion changed new batch: before=%#v after=%#v revision=%d want=%d", before, after, m.revision, revision)
 	}
 }
@@ -695,7 +697,7 @@ func TestMarkBatchRunningResetClearsContextAndPreservesLaterQueue(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if sess.ClaudeSessionID != "" || sess.Model != "" || sess.Tokens != 0 || sess.WorkDir != "/new" {
+	if sess.AgentSessionID != "" || sess.Model != "" || sess.Tokens != 0 || sess.WorkDir != "/new" {
 		t.Fatalf("reset context = %#v", sess)
 	}
 	if len(sess.History) != 1 || sess.History[0].Text != "fresh prompt" {
@@ -728,14 +730,14 @@ func TestFinishBatchReleasesEveryTerminalStatusAndPreservesQueue(t *testing.T) {
 			}
 
 			finishedAt := now.Add(2 * time.Second)
-			sess, err := m.FinishBatch(key, frozen.ID, BatchCompletion{Status: status, ClaudeSessionID: "new-session", Model: "new-model", Tokens: 7, At: finishedAt})
+			sess, err := m.FinishBatch(key, frozen.ID, BatchCompletion{Status: status, AgentSessionID: "new-session", Model: "new-model", Tokens: 7, At: finishedAt})
 			if err != nil {
 				t.Fatal(err)
 			}
 			if sess.State != StateIdle || sess.ActiveBatch != nil || len(sess.Queue) != 1 || sess.Queue[0].ID != "later" {
 				t.Fatalf("finished scheduling state = %#v", sess)
 			}
-			if sess.ClaudeSessionID != "new-session" || sess.Model != "new-model" || sess.Tokens != 11 || !sess.LastActive.Equal(finishedAt) {
+			if sess.AgentSessionID != "new-session" || sess.Model != "new-model" || sess.Tokens != 11 || !sess.LastActive.Equal(finishedAt) {
 				t.Fatalf("finished context = %#v", sess)
 			}
 		})
@@ -845,7 +847,7 @@ func TestResetClearsClaudeSessionAndHistory(t *testing.T) {
 	m.UpdateRunResult(started.ID, "claude-session-1", "sonnet", 12)
 	m.Complete(key, "/tmp/work")
 	reset := m.Reset(key, "/tmp/next")
-	if reset.ClaudeSessionID != "" || reset.Model != "" || reset.Tokens != 0 {
+	if reset.AgentSessionID != "" || reset.Model != "" || reset.Tokens != 0 {
 		t.Fatalf("reset metadata = %#v, want cleared", reset)
 	}
 	if len(reset.History) != 0 {
@@ -900,8 +902,8 @@ func TestQueuedResetClearsBeforeNextInput(t *testing.T) {
 	if next == nil || next.Text != "second" {
 		t.Fatalf("next = %#v, want reset input", next)
 	}
-	if after.ClaudeSessionID != "" {
-		t.Fatalf("claude session = %q, want reset before next run", after.ClaudeSessionID)
+	if after.AgentSessionID != "" {
+		t.Fatalf("claude session = %q, want reset before next run", after.AgentSessionID)
 	}
 	if len(after.History) != 1 || after.History[0].Text != "second" {
 		t.Fatalf("history = %#v, want only reset prompt", after.History)

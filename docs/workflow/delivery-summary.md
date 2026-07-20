@@ -2,13 +2,13 @@
 
 ## 当前结论
 
-本仓库已从交互式终端 bridge 收敛为 Claude one-shot CardKit bridge：
+本仓库已从交互式终端 bridge 收敛为 Claude/Codex one-shot CardKit bridge：
 
 - 飞书消息通过长连接进入 bridge。
-- bridge 启动一次 Claude CLI 子进程处理请求。
+- bridge 启动一次所选 Claude 或 Codex CLI 子进程处理请求。
 - 执行中、流式输出、结果、停止和错误使用同一张 CardKit 卡片展示。
 - 卡片按钮生产路径使用长连接 `card.action.trigger`，同步返回终态卡片并保留异步 CardKit update 兜底，不依赖公网 HTTP callback。
-- 第一版只适配 `claude`，`codex` 暂缓。
+- `/config` 可从 `agents.json` 选择 `claude` / `codex` 及 `cx*` wrapper presets。
 - 群聊默认只响应 @bot；单聊默认全量响应，真实 P2P delivery、debounce、配置、文件输入和回复模式已纳入命名 E2E profile。
 - 个人版 P0/P1 已完成：重启只恢复上下文、不重放 pending；支持图片/文本附件、运行偏好、三种回复模式、预览节流和 reaction 生命周期。
 
@@ -19,8 +19,10 @@
 - `/new`、`/help`、`/status` 命令面。
 - `/resume`、`/codex` 等撤回入口不再开放。
 - Claude one-shot 命令构造，保留 `--dangerously-skip-permissions`；model/effort 由入队时冻结的个人偏好决定。
+- Codex one-shot 与 resume 命令构造；只传 JSONL/会话/图片/stdin 协议参数，model、effort、sandbox、approval 和 profile 交由 executable/environment。
 - Claude stream-json 输出解析：正文、思考、工具调用、model、tokens、session id，并支持增量更新卡片。
-- topic 内普通文本续接保存的 Claude session id。
+- Codex JSONL 输出解析：thread、turn、agent message、reasoning、command、tokens 和 error，并支持协议漂移 audit。
+- topic/chat 内普通文本续接对应 Agent 保存的 session/thread id。
 - `/new` 重置当前 chat/topic 会话。
 - 同一 chat/topic 串行排队，不同 topic 并行。
 - 工作目录不存在时的创建/取消确认；create/cancel 后确认卡片进入绿色/灰色终态并禁用按钮，create 后 Claude 执行另起运行卡片。
@@ -34,6 +36,7 @@
 
 ## 真实环境验证状态
 
+- Codex backend 已通过无网络 fake executable 黑盒验证；本轮未部署，也未执行真实飞书 + 真实 `codex`/`cx*` E2E。
 - 已验证真实 Feishu 群聊 @bot 后，bridge 通过长连接接收消息并回复执行中/结果卡片。
 - 已验证真实卡片流式更新：audit 中出现 `cardkit_update event=stream`，最终同一卡片更新为 `event=result`。
 - 已验证真实点击“停止”按钮后，长连接收到 `card.action.trigger`，Claude 子进程被取消，卡片更新为灰色终态且按钮 disabled。

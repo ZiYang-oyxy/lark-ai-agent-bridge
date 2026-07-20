@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"lark-agent-bridge/internal/agent"
 	"lark-agent-bridge/internal/bridge"
 	"lark-agent-bridge/internal/card"
 	"lark-agent-bridge/internal/config"
@@ -22,6 +23,16 @@ import (
 type serveCardKitClientFake struct {
 	fullUpdates    int
 	elementUpdates int
+}
+
+func TestSimulateRunnerReportsSelectedAgent(t *testing.T) {
+	result, err := (simulateRunner{}).Run(context.Background(), bridge.AgentRunRequest{Kind: agent.Codex, Prompt: "inspect"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Model != "simulate-codex" || result.AgentSessionID != "simulate-thread" {
+		t.Fatalf("result = %#v", result)
+	}
 }
 
 func (f *serveCardKitClientFake) CreateCard(context.Context, feishu.CardKitCreateRequest) (feishu.CardKitCreateResult, error) {
