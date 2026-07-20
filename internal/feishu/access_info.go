@@ -15,6 +15,14 @@ type KnownChat struct {
 	Name string
 }
 
+type ScopeState string
+
+const (
+	ScopePresent ScopeState = "present"
+	ScopeMissing ScopeState = "missing"
+	ScopeUnknown ScopeState = "unknown"
+)
+
 type AccessInfoClient struct {
 	BaseURL string
 	Client  HTTPDoer
@@ -44,6 +52,36 @@ func (c *AccessInfoClient) GetOwner(ctx context.Context, appID string) (string, 
 		return "", &FeishuAPIError{Code: out.Code, Message: out.Msg}
 	}
 	return out.Data.App.Owner.OwnerID, nil
+}
+
+func (c *AccessInfoClient) InspectTenantScope(ctx context.Context, appID, scope string) (ScopeState, error) {
+	if c == nil || c.Tokens == nil || strings.TrimSpace(appID) == "" || strings.TrimSpace(scope) == "" {
+		return ScopeUnknown, fmt.Errorf("feishu access info client unavailable")
+	}
+	endpoint := c.baseURL() + "/open-apis/application/v6/applications/" + url.PathEscape(appID) + "?lang=zh_cn&user_id_type=open_id"
+	var out struct {
+		Code int    `json:"code"`
+		Msg  string `json:"msg"`
+		Data struct {
+			App struct {
+				Scopes []struct {
+					Scope string `json:"scope"`
+				} `json:"scopes"`
+			} `json:"app"`
+		} `json:"data"`
+	}
+	if err := c.getJSON(ctx, endpoint, &out); err != nil {
+		return ScopeUnknown, err
+	}
+	if out.Code != 0 {
+		return ScopeUnknown, &FeishuAPIError{Code: out.Code, Message: out.Msg}
+	}
+	for _, granted := range out.Data.App.Scopes {
+		if granted.Scope == scope {
+			return ScopePresent, nil
+		}
+	}
+	return ScopeMissing, nil
 }
 
 func (c *AccessInfoClient) ListChats(ctx context.Context) ([]KnownChat, error) {
