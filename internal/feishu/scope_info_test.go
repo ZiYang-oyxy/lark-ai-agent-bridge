@@ -29,7 +29,10 @@ func TestAccessInfoClientInspectsTenantScope(t *testing.T) {
 		wantErr bool
 	}{
 		{name: "present", body: `{"code":0,"data":{"app":{"scopes":[{"scope":"im:message:send_as_bot"},{"scope":"im:message.group_msg"}]}}}`, want: ScopePresent},
+		{name: "present string", body: `{"code":0,"data":{"app":{"scopes":["im:message.group_msg"]}}}`, want: ScopePresent},
+		{name: "present name", body: `{"code":0,"data":{"app":{"scopes":[{"name":"im:message.group_msg"}]}}}`, want: ScopePresent},
 		{name: "missing", body: `{"code":0,"data":{"app":{"scopes":[{"scope":"im:message:send_as_bot"}]}}}`, want: ScopeMissing},
+		{name: "scope collection absent", body: `{"code":0,"data":{"app":{}}}`, want: ScopeUnknown, wantErr: true},
 		{name: "api failure", body: `{"code":999,"msg":"denied"}`, want: ScopeUnknown, wantErr: true},
 		{name: "malformed", body: `{`, want: ScopeUnknown, wantErr: true},
 	} {

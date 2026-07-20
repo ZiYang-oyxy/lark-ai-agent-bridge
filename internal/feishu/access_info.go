@@ -64,9 +64,7 @@ func (c *AccessInfoClient) InspectTenantScope(ctx context.Context, appID, scope 
 		Msg  string `json:"msg"`
 		Data struct {
 			App struct {
-				Scopes []struct {
-					Scope string `json:"scope"`
-				} `json:"scopes"`
+				Scopes json.RawMessage `json:"scopes"`
 			} `json:"app"`
 		} `json:"data"`
 	}
@@ -76,12 +74,44 @@ func (c *AccessInfoClient) InspectTenantScope(ctx context.Context, appID, scope 
 	if out.Code != 0 {
 		return ScopeUnknown, &FeishuAPIError{Code: out.Code, Message: out.Msg}
 	}
-	for _, granted := range out.Data.App.Scopes {
-		if granted.Scope == scope {
+	if len(out.Data.App.Scopes) == 0 || string(out.Data.App.Scopes) == "null" {
+		return ScopeUnknown, fmt.Errorf("feishu application response omitted tenant scopes")
+	}
+	var scopes []tenantScope
+	if err := json.Unmarshal(out.Data.App.Scopes, &scopes); err != nil {
+		return ScopeUnknown, fmt.Errorf("decode feishu tenant scopes: %w", err)
+	}
+	for _, granted := range scopes {
+		if granted.Name == scope {
 			return ScopePresent, nil
 		}
 	}
 	return ScopeMissing, nil
+}
+
+type tenantScope struct {
+	Name string
+}
+
+func (s *tenantScope) UnmarshalJSON(data []byte) error {
+	var name string
+	if err := json.Unmarshal(data, &name); err == nil {
+		s.Name = name
+		return nil
+	}
+	var object struct {
+		Scope string `json:"scope"`
+		Name  string `json:"name"`
+	}
+	if err := json.Unmarshal(data, &object); err != nil {
+		return err
+	}
+	if object.Scope != "" {
+		s.Name = object.Scope
+	} else {
+		s.Name = object.Name
+	}
+	return nil
 }
 
 func (c *AccessInfoClient) ListChats(ctx context.Context) ([]KnownChat, error) {
