@@ -1,15 +1,16 @@
 # Lark AI Agent Bridge
 
-独立的 Feishu/Lark AI agent bridge，用于让用户在飞书里触发 Claude 单次任务，并用 CardKit 卡片同步展示执行中、结果、停止和工作目录确认状态。
+独立的 Feishu/Lark AI agent bridge，用于让用户在飞书里触发 Claude Code 或 Codex 任务，并用 CardKit 卡片同步展示执行中、结果、停止和工作目录确认状态。
 
-当前实现聚焦 Claude one-shot 模式：
+当前实现聚焦 CLI one-shot 模式：
 
 - 飞书消息通过 SDK 长连接进入 bridge。
-- 第一版只适配 `claude`，暂不适配 `codex`。
+- `/config` 可从 `agents.json` 选择 `claude` / `codex` 及其 wrapper presets（包括 `cx1`～`cx4`）。
 - Claude 以 `claude -p --output-format stream-json --dangerously-skip-permissions --effort low` 启动。
-- 默认使用普通聊天模式：回复进入聊天主消息流，同一 chat 共用 Claude session 并串行执行。
+- Codex 以 `codex exec --json ... -` 启动，prompt 通过 stdin 传入；Bridge 不额外传 model、effort、sandbox、approval 或 profile 参数。
+- 默认使用普通聊天模式：回复进入聊天主消息流，同一 chat 按 Agent 共用 session 并串行执行。
 - `/config` 可切换为话题模式：回复进入话题，有 `ThreadID` 时每个 topic 独立 session，不同 topic 可并行执行。
-- `/new` 重置当前 conversation scope；普通文本继续该 scope 已保存的 Claude session。
+- `/new` 重置当前 conversation scope；普通文本继续该 scope 已保存的 Agent session。
 - CardKit 卡片流式展示正文、折叠思考过程、折叠工具调用、分栏底部状态栏和一次性停止按钮。
 - 执行中标题使用蓝色 `正在推理/正在执行工具/正在回复 · ⏱ Ns`，完成绿色，停止灰色，失败红色。
 - 底部状态栏使用分割线和两行分栏：agent/model/tokens，以及 user/ip/workdir。
@@ -46,9 +47,9 @@ GOCACHE=$PWD/.cache/go-build go run ./cmd/lark-agent-bridge serve --default-work
 
 `/config` 卡片新增三个下拉，用于选择运行所用的 agent：
 
-- **Agent**：agent 类型。目前仅暴露 `claude`；`codex` 已在内部预留（`agent.Codex`、`CODEX_HOME` env 映射、agents.json schema），但 argv/流式解析尚未实现，暂不进 UI。
-- **Agent home**：agent 的配置目录。选 `默认` 表示不注入 config-dir 环境变量（沿用宿主默认，与本功能之前的行为一致）；选预设则对 Claude 注入 `CLAUDE_CONFIG_DIR=<path>`。
-- **Agent bin**：可执行路径。选 `主机 claude` 回退到 bridge 配置的默认可执行（`E2E_CLAUDE_BIN`，默认 `claude`）；选预设则使用其绝对路径。
+- **Agent**：从 `agents.json` 中选择 `claude` 或 `codex`。
+- **Agent home**：选 `默认` 时完整继承 executable 的环境；选显式预设时，Claude 注入 `CLAUDE_CONFIG_DIR=<path>`，Codex 注入 `CODEX_HOME=<path>`。
+- **Agent bin**：Claude 的主机默认为 `E2E_CLAUDE_BIN`（默认 `claude`），Codex 的主机默认为 `codex`；其他选项直接使用预设路径。
 
 可选项来自工作目录下的 `.lark-agent-bridge/agents.json`（**不引入任何新的 `E2E_*` 环境变量**）。该文件缺失或非法时回退到内置默认（单个 claude、只有「默认」home 和「主机 claude」bin），不阻断启动，`doctor` 的 `agents_config` 项会给出软告警。用户选择随其它偏好一起持久化到 `preferences.json`，`/config reset` 一并恢复默认。
 
@@ -60,7 +61,7 @@ GOCACHE=$PWD/.cache/go-build go run ./cmd/lark-agent-bridge serve --default-work
 - **`~/...`**：展开为 `$HOME/...`，跨机器只要用户名对上就好。
 - **相对路径**（`bin/ark4`、`./state/claude-home`）：以 agents.json 所在的 workdir（即 `--default-workdir` 或进程 CWD）为基。**推荐用这种**——只要整个 workspace 目录整体搬到别的机器，agents.json 无需改动。
 
-`agents.json` 示例（列全 workspace 里 claude 系的 wrapper bin）：
+`agents.json` 示例（同时配置 Claude 和 Codex wrapper）：
 
 ```json
 {
@@ -78,12 +79,25 @@ GOCACHE=$PWD/.cache/go-build go run ./cmd/lark-agent-bridge serve --default-work
         { "label": "cc4", "path": "bin/cc4", "desc": "claude-opus-4-8" },
         { "label": "cc5", "path": "bin/cc5", "desc": "claude-fable-5[1m]" }
       ]
+    },
+    {
+      "kind": "codex",
+      "label": "Codex CLI",
+      "homes": [
+        { "label": "workspace .codex-home", "path": ".codex-home", "desc": "workspace 配置目录" }
+      ],
+      "bins": [
+        { "label": "cx1", "path": "bin/cx1", "desc": "Codex profile 1" },
+        { "label": "cx2", "path": "bin/cx2", "desc": "Codex profile 2" },
+        { "label": "cx3", "path": "bin/cx3", "desc": "Codex profile 3" },
+        { "label": "cx4", "path": "bin/cx4", "desc": "Codex profile 4" }
+      ]
     }
   ]
 }
 ```
 
-> `codex` agent 类型在 schema、常量与 env 映射（`CODEX_HOME`）层已预留，但 argv/流式解析未实现，UI 暂不暴露；因此 `cx*` 系 wrapper 目前不建议放入 claude agent 的 bins。
+> Codex 的 model、reasoning effort、sandbox、approval、profile、plugins、MCP 和 rules 均由所选 `codex` / `cx*` executable 及其环境决定。Bridge 只传 JSONL、resume、image 和 stdin 协议所需参数。Claude 仍保持现有 Bridge 参数策略。
 
 > 借此可绕开 workspace 的 `bin/cc` wrapper：把 bin 指向裸 `claude` 并配独立 home，即可让 bridge 直接掌控可执行与配置目录，而不受 wrapper profile 静默影响。
 

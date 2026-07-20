@@ -29,6 +29,7 @@ GOCACHE=$PWD/.cache/go-build go test ./...
 - 普通文本在根 chat 和 topic 中都续接当前 scope，并可在 DM `250ms` / group `600ms` cohort 内合并
 - 只有 `/new` 重置当前会话并形成独占 batch boundary
 - Claude one-shot 命令构造和 stream-json 解析
+- Codex `exec --json`/resume 精确 argv、stdin prompt、`cx*` executable/`CODEX_HOME` 冻结、JSONL 解析、图片 `--image` 和协议漂移 audit
 - CardKit 流式更新、标题颜色和 `⏱` 耗时、分栏底部状态栏、折叠面板、停止按钮、工作目录确认按钮
 - CardKit 最终 JSON 的 28 KiB / 200-component 容量闸门、UTF-8 多字节测量、分级压缩、静态 emergency fallback，以及 Create/Update 和两种 callback transport 的 prepared-card 边界
 - 工作目录创建、取消和超时

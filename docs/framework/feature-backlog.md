@@ -12,7 +12,7 @@
 
 ## 结论先行
 
-主线已具备个人使用所需的完整 P0/P1 能力:单 agent(claude)、JSON 会话快照、按 chat/topic 串行、one-shot + `--resume` 续接、附件输入、持久化运行偏好、三种回复展示模式、预览节流和 reaction 生命周期。P0/P1 个人版已于 2026-07-18 收敛。
+主线已具备个人使用所需的完整 P0/P1 能力，并于 2026-07-20 补齐 Claude/Codex 双 backend：JSON 会话快照、按 chat/topic 串行、one-shot + resume 续接、附件输入、持久化运行偏好、三种回复展示模式、预览节流和 reaction 生命周期均已接线。
 
 gist 的企业级方案对当前体量**严重过度设计**,近期一律不进主清单,只作远期备注(见文末)。近期该做的绝大多数能从 **lcab 近乎平移**(模型同构),cc-connect 提供几个轻量补充小件。
 
@@ -20,8 +20,8 @@ gist 的企业级方案对当前体量**严重过度设计**,近期一律不进�
 
 | 维度 | 现状 | 关键位置 |
 |---|---|---|
-| Agent | 仅 claude,one-shot 子进程(非常驻) | `internal/agent/agent.go:42-56`,`ParseKind` 不识别 codex `agent.go:24-30` |
-| 会话 | JSON 原子快照保存上下文;重启恢复 `ClaudeSessionID/history`,但 queued/running 不自动重跑 | `internal/session/store.go`,`internal/bridge/service.go` |
+| Agent | Claude/Codex one-shot 子进程（非常驻），`/config` 选择 `agents.json` preset | `internal/agent/agent.go`,`internal/bridge/codex_stream.go` |
+| 会话 | JSON v2 原子快照保存 agent context；兼容迁移 v1 `ClaudeSessionID` | `internal/session/store.go`,`internal/bridge/service.go` |
 | session key | `/config` 选择 `chat` 时为 `{Agent, ChatID}`；选择 `topic` 时为 `{Agent, ChatID, Thread?}` | `internal/config/preferences.go`,`internal/bridge/service.go` |
 | 鉴权 | **完全无鉴权** + 硬编码 `--dangerously-skip-permissions` | `internal/agent/agent.go:51` |
 | 去重 | 与 session snapshot 一起持久化,带 TTL/容量上限与启动 watermark | `internal/session/store.go`,`internal/bridge/service.go` |
@@ -98,9 +98,9 @@ gist 的企业级方案对当前体量**严重过度设计**,近期一律不进�
 
 ### P2-1 · Codex 适配
 
-- lcab `agent/codex/adapter.ts` 全套:`buildCodexArgs`(`exec --json --sandbox … resume <threadId> --image …`)+ `CodexJsonlTranslator`(codex jsonl → 统一 AgentEvent)+ `CODEX_HOME` 处理。
-- 主线当前 `ParseKind` 不识别 codex(`agent.go:24-38`)。
-- **成本中,优先级取决于是否真要用 codex。**
+- **状态（2026-07-20）**：✅ 已完成。`/config` 可解析和选择 `codex` 及 `cx1`～`cx4` presets，支持 JSONL 流式卡片、thread resume、`CODEX_HOME`、图片 `--image` 与文本附件路径。
+- **参数边界**：Bridge 只传 `exec`、`--json`、`resume`、`--image`、stdin marker/分隔符。model、effort、sandbox、approval、profile、plugins、MCP、rules 和 git checks 均由所选 executable 及环境决定。
+- **会话边界**：Claude/Codex 在 session key 上隔离，resolved bin/home 在入队时冻结，snapshot v1 可迁移到 agent-neutral v2。
 
 ### P2-2 · 人机审批闭环(收紧 skip-permissions)
 
