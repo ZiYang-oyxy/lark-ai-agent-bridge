@@ -55,7 +55,8 @@ flowchart TD
 | `/status` 解析 | L1 | ✅ | `TestParseStatusCommand`(新增) |
 | `/stop` 解析与 help | L1 | ✅ | `TestParseStopCommand` / `TestHelpTextIncludesStopQueueSemantics` |
 | `/help` 解析 | L1 | ✅ | `TestParseHelpCommand`(新增) |
-| `/resume` 降级文案 | L1 | ✅ | `TestParseResumeReturnsNotImplementedDegradation`(新增) |
+| `/resume` 列最近 10 个 Session | L1 | ✅ | `TestParseResumeCommand` / `TestServiceResumeListsTenRecentSessionsForCurrentIdentity` |
+| `/resume <session-id>` 精确恢复 | L1 | ✅ | `TestServiceResumeSwitchesBindingAndNextMessageUsesTarget` |
 | 未知命令文案 | L1 | ✅ | `TestParseUnknownCommandReturnsFormattedMessage`(新增) |
 | 纯文本续接 scope | L1 | ✅ | `TestParsePlainText*` |
 | 群未 @ 过滤 | L1 | ✅ | `TestParseCommandIgnoresGroupWithoutMention` |
@@ -69,6 +70,8 @@ flowchart TD
 | queue 满拒绝 | L1 | ✅ | `TestServiceRejectsTwentyFirstPendingInput` / `TestEnqueueDurableRejectsFullQueue` |
 | 多 topic 并行隔离 | L1 | ✅ | `TestDifferentTopicsRunInParallel` |
 | 同 ID 并发去重恰好一次 | L1 | ✅ | `TestAcceptMessageConcurrentSameIDAcceptsExactlyOnce` |
+| resume 在 active/queued scope 拒绝且不改绑定 | L1 | ✅ | `TestManagerResumeRejectsUnavailableMissingAndBusyScopes` / `TestServiceResumeRejectsUnknownAndBusyWithoutChangingBinding` |
+| Claude/Codex + workdir catalog 隔离 | L1 | ✅ | `TestCatalogRecentIsolatedSortedAndLimited` |
 
 ### 域 3 · Action 与 Stop
 | 用例 | 层 | 状态 | 证据 |
@@ -130,6 +133,7 @@ flowchart TD
 | session 跨重启恢复 + 去重 | L1 | ✅ | `TestAcceptAndEnqueuePersistsReceiptAtomicallyAndRejectsAfterRestart` |
 | snapshot 损坏/未知版本降级 | L1 | ✅ | `TestLoadSnapshotRejectsMalformedData` / `RejectsUnknownVersion` |
 | 持久化失败不发布脏状态 | L1 | ✅ | `store_test.go` 一组 rollback 测试 |
+| Session catalog 原子写、strict load、重启恢复 | L1 | ✅ | `catalog_test.go` / `TestOpenSessionStateAttachesCatalogAndRejectsCorruption` |
 | preference / reply store 全生命周期 | L1 | ✅ | `preferences_test.go` / `reply/store_test.go` |
 | ProcessRecoveryNotices 渲染侧 | L1 | ✅ | `service_test.go` 8 个 `TestServiceRecovery*` |
 | 真实跨进程重启恢复 | **L2** | ✅ | e2e `session_restart_context` / `restart_*` |

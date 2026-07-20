@@ -19,6 +19,10 @@ import (
 
 const catalogSchemaVersion = 1
 
+func CatalogPath(sessionStorePath string) string {
+	return filepath.Join(filepath.Dir(sessionStorePath), "session-catalog.json")
+}
+
 type CatalogIdentity struct {
 	Agent   agent.Kind
 	WorkDir string

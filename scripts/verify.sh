@@ -51,6 +51,7 @@ echo "$doctor_output"
 require_contains "$doctor_output" "ok claude:" "doctor"
 require_contains "$doctor_output" "ok default_workdir:" "doctor"
 require_contains "$doctor_output" "ok audit_log:" "doctor"
+require_contains "$doctor_output" "ok session_catalog:" "doctor"
 require_contains "$doctor_output" "ok card_update_every:" "doctor"
 require_contains "$doctor_output" "ok interaction_timeout:" "doctor"
 require_contains "$doctor_output" "ok card_max_chars:" "doctor"
@@ -63,7 +64,8 @@ echo "== command surface simulation =="
 help_output="$(go run ./cmd/lark-agent-bridge simulate -text "/help")"
 require_contains "$help_output" "/new [--workdir" "help simulation"
 require_contains "$help_output" "/status - show the current chat/topic session status" "help simulation"
-require_not_contains "$help_output" "/resume" "help simulation"
+require_contains "$help_output" "/resume - list the 10 most recent sessions" "help simulation"
+require_contains "$help_output" '/resume \u003csession-id\u003e' "help simulation"
 require_not_contains "$help_output" "/codex" "help simulation"
 
 plain_output="$(go run ./cmd/lark-agent-bridge simulate -text "hello")"
@@ -71,7 +73,7 @@ require_contains "$plain_output" '"SessionID": "claude:chat-demo:message:' "plai
 require_contains "$plain_output" "simulated answer: hello" "plain text simulation"
 
 resume_output="$(go run ./cmd/lark-agent-bridge simulate -text "/resume")"
-require_contains "$resume_output" "/resume 暂未实现" "resume disabled simulation"
+require_contains "$resume_output" "Session 历史存储不可用" "resume simulation without durable catalog"
 
 codex_output="$(go run ./cmd/lark-agent-bridge simulate -text "/codex inspect")"
 require_contains "$codex_output" "unknown command /codex" "codex disabled simulation"
@@ -99,8 +101,8 @@ rm -f "$topics_store"
 echo "group intake modes ok"
 
 echo "== session behavior tests =="
-go test ./internal/bridge -run 'TestServiceQueuesSecondInputUntilFirstCompletes|TestDifferentTopicsRunInParallel|TestTopicPlainTextContinuesStoredClaudeSession|TestNewInTopicResetsStoredClaudeSession|TestServiceNewWithoutPromptCreatesReadySession|TestQueuedRunPreservesInputWorkDir|TestServiceSkipsDuplicateRunAndOldDelivery|TestServiceRejectsTwentyFirstPendingInput|TestServiceRestoreDoesNotRunClearedQueue|TestServiceMergesBusyTopicInputsIntoNextBatch|TestServiceStopKeepsLaterQueue|TestMessageRecallRemovesQueuedInput'
-go test ./internal/session -run 'TestEnqueueQueuesWhileRunning|TestResetClearsClaudeSessionAndHistory|TestQueuedResetClearsBeforeNextInput|TestRestoreKeepsContextButClearsPending|TestRestoreDebouncingInputIsCancelled|TestRestoreQueuedInputIsCancelled|TestRestoreStartingInputIsCancelled|TestRestoreRunningInputIsInterrupted|TestAcceptAndEnqueueDuplicateDoesNotAdvanceRevision|TestAcceptAndEnqueueQueueFullDoesNotRecordReceipt|TestAcceptAndEnqueueExtendsCompatibleDebounceCohort'
+go test ./internal/bridge -run 'TestServiceResume|TestServiceRecordsCompletedSession|TestServiceQueuesSecondInputUntilFirstCompletes|TestDifferentTopicsRunInParallel|TestTopicPlainTextContinuesStoredClaudeSession|TestNewInTopicResetsStoredClaudeSession|TestServiceNewWithoutPromptCreatesReadySession|TestQueuedRunPreservesInputWorkDir|TestServiceSkipsDuplicateRunAndOldDelivery|TestServiceRejectsTwentyFirstPendingInput|TestServiceRestoreDoesNotRunClearedQueue|TestServiceMergesBusyTopicInputsIntoNextBatch|TestServiceStopKeepsLaterQueue|TestMessageRecallRemovesQueuedInput'
+go test ./internal/session -run 'TestCatalog|TestCanonicalWorkDir|TestManagerResume|TestEnqueueQueuesWhileRunning|TestResetClearsClaudeSessionAndHistory|TestQueuedResetClearsBeforeNextInput|TestRestoreKeepsContextButClearsPending|TestRestoreDebouncingInputIsCancelled|TestRestoreQueuedInputIsCancelled|TestRestoreStartingInputIsCancelled|TestRestoreRunningInputIsInterrupted|TestAcceptAndEnqueueDuplicateDoesNotAdvanceRevision|TestAcceptAndEnqueueQueueFullDoesNotRecordReceipt|TestAcceptAndEnqueueExtendsCompatibleDebounceCohort'
 echo "session behavior ok"
 
 echo "== agent one-shot runner tests =="

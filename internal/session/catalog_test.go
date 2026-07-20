@@ -29,6 +29,12 @@ func TestCanonicalWorkDirResolvesSymlink(t *testing.T) {
 	}
 }
 
+func TestCatalogPathUsesSessionStoreDirectory(t *testing.T) {
+	if got, want := CatalogPath(filepath.Join("/state", "sessions.json")), filepath.Join("/state", "session-catalog.json"); got != want {
+		t.Fatalf("catalog path = %q, want %q", got, want)
+	}
+}
+
 func TestCatalogRecentIsolatedSortedAndLimited(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "state", "session-catalog.json")
 	catalog, err := OpenCatalog(path)

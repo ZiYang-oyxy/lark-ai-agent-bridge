@@ -18,6 +18,7 @@ import (
 	"lark-agent-bridge/internal/card"
 	"lark-agent-bridge/internal/config"
 	"lark-agent-bridge/internal/feishu"
+	"lark-agent-bridge/internal/session"
 )
 
 type serveCardKitClientFake struct {
@@ -32,6 +33,28 @@ func TestSimulateRunnerReportsSelectedAgent(t *testing.T) {
 	}
 	if result.Model != "simulate-codex" || result.AgentSessionID != "simulate-thread" {
 		t.Fatalf("result = %#v", result)
+	}
+}
+
+func TestOpenSessionStateAttachesCatalogAndRejectsCorruption(t *testing.T) {
+	root := t.TempDir()
+	cfg := config.Config{SessionStorePath: filepath.Join(root, "sessions.json")}
+	manager, _, err := openSessionState(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	workDir, err := session.CanonicalWorkDir(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.RecordSession(session.CatalogEntry{SessionID: "session", Agent: agent.Claude, WorkDir: workDir, UpdatedAt: time.Now()}); err != nil {
+		t.Fatalf("catalog was not attached: %v", err)
+	}
+	if err := os.WriteFile(session.CatalogPath(cfg.SessionStorePath), []byte(`{"schema_version":99,"entries":[]}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := openSessionState(cfg); err == nil || !strings.Contains(err.Error(), "open session catalog") {
+		t.Fatalf("corrupt catalog error = %v", err)
 	}
 }
 

@@ -285,10 +285,9 @@ func runServe(args []string) error {
 		return fmt.Errorf("initialize bridge instructions: %w", err)
 	}
 	defer instructions.Close()
-	sessions := session.NewManagerWithStoreVersion(cfg.SessionStorePath, bridgeinstructions.CurrentVersion)
-	notices, err := sessions.Restore()
+	sessions, notices, err := openSessionState(cfg)
 	if err != nil {
-		return fmt.Errorf("restore session store: %w", err)
+		return err
 	}
 	agents, agentsErr := config.LoadAgentsConfig(cfg.AgentsConfigPath)
 	if agentsErr != nil {
@@ -389,6 +388,20 @@ func runServe(args []string) error {
 		return longConnErr
 	}
 	return shutdownErr
+}
+
+func openSessionState(cfg config.Config) (*session.Manager, []session.RecoveryNotice, error) {
+	sessions := session.NewManagerWithStoreVersion(cfg.SessionStorePath, bridgeinstructions.CurrentVersion)
+	notices, err := sessions.Restore()
+	if err != nil {
+		return nil, nil, fmt.Errorf("restore session store: %w", err)
+	}
+	catalog, err := session.OpenCatalog(session.CatalogPath(cfg.SessionStorePath))
+	if err != nil {
+		return nil, nil, fmt.Errorf("open session catalog: %w", err)
+	}
+	sessions.AttachCatalog(catalog)
+	return sessions, notices, nil
 }
 
 func runtimePreferenceDefaults(cfg config.Config) config.RuntimePreference {

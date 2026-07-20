@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"lark-agent-bridge/internal/agent"
 	"lark-agent-bridge/internal/config"
 	"lark-agent-bridge/internal/session"
 )
@@ -581,6 +582,49 @@ func TestSessionStoreRelativePathDoesNotMutateCurrentDirectoryPermissions(t *tes
 	}
 	if after := filePermissions(t, cwd); after != before {
 		t.Errorf("cwd permissions changed from %o to %o", before, after)
+	}
+}
+
+func TestSessionCatalogCheckAcceptsMissingAndValidCatalog(t *testing.T) {
+	root := t.TempDir()
+	if err := os.Chmod(root, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(root, "session-catalog.json")
+	if check := sessionCatalogCheck(path); !check.OK {
+		t.Fatalf("missing catalog check = %#v", check)
+	}
+	catalog, err := session.OpenCatalog(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	workDir := t.TempDir()
+	canonical, err := session.CanonicalWorkDir(workDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := catalog.Upsert(session.CatalogEntry{SessionID: "session", Agent: agent.Claude, WorkDir: canonical, UpdatedAt: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	if check := sessionCatalogCheck(path); !check.OK {
+		t.Fatalf("valid catalog check = %#v", check)
+	}
+}
+
+func TestSessionCatalogCheckRejectsMalformedAndUnsupportedSchema(t *testing.T) {
+	for name, data := range map[string]string{
+		"malformed": `{`,
+		"schema":    `{"schema_version":99,"entries":[]}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "session-catalog.json")
+			if err := os.WriteFile(path, []byte(data), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if check := sessionCatalogCheck(path); check.OK {
+				t.Fatalf("catalog check = %#v, want failure", check)
+			}
+		})
 	}
 }
 

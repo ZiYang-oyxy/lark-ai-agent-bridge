@@ -67,6 +67,7 @@ func runStatic(cfg config.Config) []Check {
 		dirExists("default_workdir", cfg.DefaultWorkDir),
 		auditLogWritable(cfg.AuditLogPath),
 		sessionStoreWritable(cfg.SessionStorePath),
+		sessionCatalogCheck(session.CatalogPath(cfg.SessionStorePath)),
 		preferenceStoreWritable(cfg),
 		replyStoreWritable(cfg.ReplyStorePath),
 		mediaCacheWritable(cfg.MediaCacheDir),
@@ -501,6 +502,59 @@ func sessionStoreWritable(path string) Check {
 		return Check{Name: "session_store", OK: false, Detail: "invalid_snapshot: " + path}
 	}
 	return Check{Name: "session_store", OK: true, Detail: path}
+}
+
+func sessionCatalogCheck(path string) Check {
+	const name = "session_catalog"
+	if path == "" {
+		return Check{Name: name, OK: false, Detail: "empty"}
+	}
+	dir := filepath.Dir(path)
+	info, err := os.Lstat(dir)
+	if os.IsNotExist(err) {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			return Check{Name: name, OK: false, Detail: "parent_create_failed: " + path}
+		}
+		info, err = os.Lstat(dir)
+	}
+	if err != nil {
+		return Check{Name: name, OK: false, Detail: "parent_stat_failed: " + path}
+	}
+	if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+		return Check{Name: name, OK: false, Detail: "parent_not_directory: " + path}
+	}
+	if info.Mode().Perm() != 0o700 {
+		return Check{Name: name, OK: false, Detail: "parent_insecure_permissions: " + path}
+	}
+	probe, err := os.CreateTemp(dir, ".session-catalog-probe-*")
+	if err != nil {
+		return Check{Name: name, OK: false, Detail: "write_probe_failed: " + path}
+	}
+	probePath := probe.Name()
+	if err := probe.Close(); err != nil {
+		_ = os.Remove(probePath)
+		return Check{Name: name, OK: false, Detail: "write_probe_failed: " + path}
+	}
+	if err := os.Remove(probePath); err != nil {
+		return Check{Name: name, OK: false, Detail: "write_probe_cleanup_failed: " + path}
+	}
+	info, err = os.Lstat(path)
+	if os.IsNotExist(err) {
+		return Check{Name: name, OK: true, Detail: path}
+	}
+	if err != nil {
+		return Check{Name: name, OK: false, Detail: "store_stat_failed: " + path}
+	}
+	if !info.Mode().IsRegular() {
+		return Check{Name: name, OK: false, Detail: "not_regular: " + path}
+	}
+	if info.Mode().Perm() != 0o600 {
+		return Check{Name: name, OK: false, Detail: "insecure_permissions: " + path}
+	}
+	if _, err := session.OpenCatalog(path); err != nil {
+		return Check{Name: name, OK: false, Detail: "invalid_catalog: " + path}
+	}
+	return Check{Name: name, OK: true, Detail: path}
 }
 
 func preferenceStoreWritable(cfg config.Config) Check {
