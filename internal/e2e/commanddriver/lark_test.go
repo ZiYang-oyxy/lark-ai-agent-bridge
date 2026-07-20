@@ -67,3 +67,16 @@ func TestContainsVisibleTextClassifiesMalformedJSONAsHarness(t *testing.T) {
 		t.Fatalf("failure = %#v", failure)
 	}
 }
+
+func TestIdentityScriptNeverPlacesAppSecretInProcessArguments(t *testing.T) {
+	for _, forbidden := range []string{`--arg secret "$LARK_APP_SECRET"`, `-d "$(jq`} {
+		if strings.Contains(identityScript, forbidden) {
+			t.Fatalf("identity script exposes App Secret through argv: %s", forbidden)
+		}
+	}
+	for _, required := range []string{`env.LARK_APP_SECRET`, `--data-binary @-`} {
+		if !strings.Contains(identityScript, required) {
+			t.Fatalf("identity script missing stdin credential transport %q", required)
+		}
+	}
+}

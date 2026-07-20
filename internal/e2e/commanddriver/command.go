@@ -62,7 +62,7 @@ func classifyCommandFailure(kind commandKind, err error, stderr []byte, step str
 	if detail == "" {
 		detail = err.Error()
 	}
-	return &e2e.Failure{Class: class, Step: step, Message: fmt.Sprintf("command failed: %s", detail)}
+	return &e2e.Failure{Class: class, Step: step, Message: fmt.Sprintf("%s command failed: %s", step, detail)}
 }
 
 func exitCode(err error) int {

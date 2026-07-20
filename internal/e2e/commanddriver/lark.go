@@ -200,9 +200,9 @@ test "$(stat -c '%a' "$env_file")" = 600
 while IFS= read -r -d '' kv; do export "$kv"; done < "$env_file"
 test "$LARK_APP_ID" = "$expected_app"
 test -n "$LARK_APP_SECRET"
-token=$(curl -fsS -X POST 'https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal' \
-  -H 'Content-Type: application/json' \
-  -d "$(jq -nc --arg id "$LARK_APP_ID" --arg secret "$LARK_APP_SECRET" '{app_id:$id,app_secret:$secret}')" \
+token=$(jq -nc '{app_id:env.LARK_APP_ID,app_secret:env.LARK_APP_SECRET}' \
+  | curl -fsS -X POST 'https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal' \
+  -H 'Content-Type: application/json' --data-binary @- \
   | jq -er '.tenant_access_token')
 curl -fsS 'https://open.feishu.cn/open-apis/bot/v3/info' \
   -H "Authorization: Bearer $token" \

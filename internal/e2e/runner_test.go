@@ -55,6 +55,17 @@ func TestRunnerKeepsPrimaryFailureWhenCleanupFails(t *testing.T) {
 	}
 }
 
+func TestRunnerUsesStableScenarioStepForDriverFailure(t *testing.T) {
+	scenario := Scenario{Name: "stop", Steps: []Step{{Name: "wait_ready_reply", Run: func(context.Context, *RunContext) *Failure {
+		return &Failure{Class: FailureEnvironment, Step: "ssh_wait_reply", Message: "ssh failed"}
+	}}}}
+
+	result := NewRunner().Run(context.Background(), scenario, newRunnerContext(t))
+	if result.Failure == nil || result.Failure.Step != "wait_ready_reply" {
+		t.Fatalf("failure = %#v", result.Failure)
+	}
+}
+
 func TestRunnerTurnsExpiredStepIntoTimeoutWithLastObservation(t *testing.T) {
 	runContext := newRunnerContext(t)
 	runContext.Config.StepTimeoutMS = 20

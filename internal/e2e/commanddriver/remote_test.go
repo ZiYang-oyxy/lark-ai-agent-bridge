@@ -2,6 +2,8 @@ package commanddriver
 
 import (
 	"context"
+	"encoding/base64"
+	"os/exec"
 	"strings"
 	"testing"
 
@@ -36,6 +38,37 @@ func TestRemoteDriverRejectsUnsafeNonceBeforeExecution(t *testing.T) {
 	}
 	if len(executor.Commands) != 0 {
 		t.Fatalf("executed = %#v", executor.Commands)
+	}
+}
+
+func TestRemoteArgumentEncodingPreservesEmptyValues(t *testing.T) {
+	encoded := encodeRemoteArg("")
+	if encoded == "" || encoded[0] != 'x' {
+		t.Fatalf("encoded empty value = %q", encoded)
+	}
+	decoded, err := base64.StdEncoding.DecodeString(strings.TrimPrefix(encoded, "x"))
+	if err != nil || string(decoded) != "" {
+		t.Fatalf("decoded/err = %q/%v", decoded, err)
+	}
+}
+
+func TestEmbeddedRemoteScriptsParseWithSystemBash(t *testing.T) {
+	scripts := map[string]string{
+		"identity":   identityScript,
+		"reply":      waitReplyScript,
+		"audit-mark": auditMarkScript,
+		"audit-wait": auditWaitScript,
+		"arm":        armFixtureScript,
+		"disarm":     disarmFixtureScript,
+	}
+	for name, script := range scripts {
+		t.Run(name, func(t *testing.T) {
+			command := exec.Command("/bin/bash", "-n")
+			command.Stdin = strings.NewReader(script)
+			if output, err := command.CombinedOutput(); err != nil {
+				t.Fatalf("bash -n: %v: %s", err, output)
+			}
+		})
 	}
 }
 

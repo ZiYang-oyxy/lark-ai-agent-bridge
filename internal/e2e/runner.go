@@ -190,12 +190,8 @@ func (r *Runner) appendAction(runContext *RunContext, scenario, step, state, det
 }
 
 func normalizeFailure(failure *Failure, scenario, step, lastObserved string) {
-	if failure.Scenario == "" {
-		failure.Scenario = scenario
-	}
-	if failure.Step == "" {
-		failure.Step = step
-	}
+	failure.Scenario = scenario
+	failure.Step = step
 	if failure.LastObserved == "" {
 		failure.LastObserved = lastObserved
 	}
