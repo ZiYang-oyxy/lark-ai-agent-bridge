@@ -14,6 +14,7 @@
 - `/new` 重置当前 conversation scope；普通文本继续该 scope 已保存的 Agent session。
 - `/stop` 只停止当前 agent/chat/topic scope 的 active batch；后续 queued 输入保留并继续调度，空闲时安全提示无运行任务。
 - `/resume` 列出当前 Agent 与 workdir 最近使用的 10 个 Bridge Session；`/resume <session-id>` 切换后由下一条普通消息继续目标 Session。
+- 自然语言定时同时支持重复任务和一次性任务；Agent 只生成规则提案，用户确认后 Bridge 才持久化并启用。
 - `append` 每轮新建完整 CardKit 状态卡：thinking 位于独立折叠区，assistant 回复与工具安全摘要按事件顺序显示在同一个 Markdown 正文中；工具始终是普通文字，不使用下拉框。
 - `append-clean-card` 与 `latest-card` 使用 CardKit：运行中可展示折叠过程，并支持一次性停止按钮；clean/latest 终态只保留最终答案。
 - 执行中标题使用蓝色 `正在推理/正在执行工具/正在回复 · ⏱ Ns`，完成绿色，停止灰色，失败红色。
@@ -38,6 +39,22 @@ GOCACHE=$PWD/.cache/go-build go run ./cmd/lark-agent-bridge serve --default-work
 ```
 
 `serve` 需要 `LARK_APP_ID` 和 `LARK_APP_SECRET`。本地未配置时会明确失败，用于验证启动前置条件。
+
+## 自然语言定时任务
+
+用户可以直接发送“每天上午 9 点总结昨天进展”或“明天下午 3 点提醒我评审方案”。Bridge 让 Agent 把自然语言转换成标准五段 cron 或带时区的绝对时间，并返回包含自然语言规则、未来执行时间和确认/取消按钮的卡片。只有原请求用户在同一会话中点击“确认”或发送精确文本 `确认` 后任务才会生效；待确认规则 10 分钟后过期。
+
+管理命令：
+
+- `/cron`、`/timer`：列出当前 chat/topic 内对应任务。
+- `/cron add <自然语言>`、`/timer add <自然语言>`：显式发起规则提案。
+- `/cron info <id>`、`/timer info <id>`：查看规则、冻结配置和最近运行状态。
+- `/cron run <id>`、`/timer run <id>`：立即执行一次。
+- `/cron enable|disable|del <id>` 和对应 `/timer` 命令：启停或删除任务。
+
+执行配置在提案时冻结，包括 Agent、model、effort、binary/home、workdir、reply mode、conversation mode 和 chat/topic 目标，后续全局配置变化不会静默改变已有任务。每个 occurrence 先以确定性 run ID 持久化，再进入现有 durable session queue；重复投递会命中 receipt 去重。同一任务不允许重叠执行，队列满时在 5 分钟补偿窗口内重试，单次执行默认 30 分钟超时。重启后只补偿窗口内最近一次 cron occurrence；过期任务会明确记录为 `missed`，不会无界追赶。
+
+状态默认保存在 `<workdir>/.lark-agent-bridge/schedules.json`，文件损坏或 schema 不兼容会阻止 `serve` 启动。可用 `E2E_SCHEDULE_STORE`、`E2E_SCHEDULE_DRAFT_TTL_MIN`、`E2E_SCHEDULE_CATCHUP_MIN`、`E2E_SCHEDULE_TIMEOUT_MIN`、`E2E_SCHEDULE_RETENTION_DAYS` 覆盖。`schedule propose` 及其 Unix socket/token 是 Agent 与 Bridge 的内部协议，不是用户管理入口。
 
 ## 访问控制
 

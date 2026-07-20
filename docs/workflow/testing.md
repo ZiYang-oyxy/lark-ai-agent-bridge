@@ -19,6 +19,7 @@ GOCACHE=$PWD/.cache/go-build go test ./...
 - `go test ./...`
 - `doctor`
 - `/help`、`/new`、`/status`、`/stop` 命令面
+- `/cron`、`/timer` 管理命令、自然语言 proposal、确认/取消和作用域鉴权
 - `/resume`、`/codex` 等撤回命令不再开放
 - 群聊未 @ 过滤
 - durable snapshot restore：只恢复 context，清理 pending；`debouncing`/`queued`/`starting` 变为 `cancelled`，`running` 变为 `interrupted`
@@ -36,12 +37,22 @@ GOCACHE=$PWD/.cache/go-build go test ./...
 - `/new --workdir` 的 Claude 子进程 `pwd` 和 `$PWD`
 - 长连接 `card.action.trigger` action 解析
 - 未设置飞书凭据时 `serve` 明确拒绝启动
+- schedule snapshot 原子持久化、确定性 run ID、重启 catch-up、overlap skip、队列拥塞重试、执行超时和历史清理
 
 若当前环境已经配置飞书应用凭据，可开启严格模式：
 
 ```bash
 REQUIRE_LARK=1 ./scripts/verify.sh
 ```
+
+定时功能的聚焦验证：
+
+```bash
+GOCACHE=$PWD/.cache/go-build go test ./internal/schedule ./internal/bridge -run 'Schedule|Cron|Timer' -count=1
+GOCACHE=$PWD/.cache/go-build go test -race ./internal/schedule ./internal/session ./internal/bridge ./internal/card
+```
+
+Agent-facing proposal CLI 必须由 `serve` 注入 `LAB_SCHEDULE_SOCKET` 和单次 `LAB_SCHEDULE_TOKEN`；不要在 shell 中长期配置这两个变量。端到端测试应从飞书发送自然语言请求，核对确认卡的规则与未来三次时间，确认后用 `/timer run <id>` 验证真实 Agent 输出回到原 chat/topic，再重启 bridge 验证任务和运行历史仍可查询。
 
 ## Doctor
 
