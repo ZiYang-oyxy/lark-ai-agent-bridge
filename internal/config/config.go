@@ -23,6 +23,7 @@ type Config struct {
 	PreferenceStorePath string
 	ReplyStorePath      string
 	AgentsConfigPath    string
+	AccessStorePath     string
 	Model               string
 	Effort              string
 	ReplyMode           ReplyMode
@@ -57,6 +58,7 @@ func LoadFromEnv() Config {
 		PreferenceStorePath: filepath.Join(workDir, ".lark-agent-bridge", "preferences.json"),
 		ReplyStorePath:      filepath.Join(workDir, ".lark-agent-bridge", "replies.json"),
 		AgentsConfigPath:    filepath.Join(workDir, ".lark-agent-bridge", "agents.json"),
+		AccessStorePath:     filepath.Join(workDir, ".lark-agent-bridge", "access.json"),
 		Model:               "default",
 		Effort:              "low",
 		ReplyMode:           ReplyModeAppend,
@@ -87,6 +89,7 @@ func LoadFromEnv() Config {
 		cfg.PreferenceStorePath = filepath.Join(v, ".lark-agent-bridge", "preferences.json")
 		cfg.ReplyStorePath = filepath.Join(v, ".lark-agent-bridge", "replies.json")
 		cfg.AgentsConfigPath = filepath.Join(v, ".lark-agent-bridge", "agents.json")
+		cfg.AccessStorePath = filepath.Join(v, ".lark-agent-bridge", "access.json")
 		cfg.MediaCacheDir = defaultMediaCacheDir(v)
 	}
 	if v := os.Getenv("E2E_CARD_MAX_CHARS"); v != "" {
@@ -125,6 +128,9 @@ func LoadFromEnv() Config {
 	}
 	if v := os.Getenv("E2E_REPLY_STORE"); v != "" {
 		cfg.ReplyStorePath = v
+	}
+	if v := os.Getenv("E2E_ACCESS_STORE"); v != "" {
+		cfg.AccessStorePath = v
 	}
 	if v := os.Getenv("E2E_MODEL"); v != "" {
 		cfg.Model = strings.TrimSpace(v)

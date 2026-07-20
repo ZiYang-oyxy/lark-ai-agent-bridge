@@ -52,7 +52,7 @@ func BuildInboundMessageFromLark(event *larkim.P2MessageReceiveV1, botOpenID str
 		tenantKey = stringValue(event.Event.Sender.TenantKey)
 	}
 
-	parsedMentions := buildMentions(mentions)
+	parsedMentions := buildMentions(mentions, botOpenID)
 	return InboundMessage{
 		AppID:       appID,
 		ChatID:      chatID,
@@ -276,7 +276,7 @@ func collectPostInlineText(v any) string {
 	}
 }
 
-func buildMentions(mentions []*larkim.MentionEvent) []Mention {
+func buildMentions(mentions []*larkim.MentionEvent, botOpenID string) []Mention {
 	result := make([]Mention, 0, len(mentions))
 	for _, mention := range mentions {
 		if mention == nil || mention.Id == nil {
@@ -287,7 +287,7 @@ func buildMentions(mentions []*larkim.MentionEvent) []Mention {
 		if openID == "" || key == "" {
 			continue
 		}
-		result = append(result, Mention{Key: key, OpenID: openID})
+		result = append(result, Mention{Key: key, OpenID: openID, Name: stringValue(mention.Name), IsBot: openID == botOpenID})
 	}
 	return result
 }

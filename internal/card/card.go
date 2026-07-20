@@ -75,6 +75,15 @@ type ConfigForm struct {
 	Efforts           []string
 	ReplyModes        []string
 	ConversationModes []string
+	AllowedUsers      []string
+	AllowedChats      []AccessChat
+	Admins            []string
+	OwnerState        string
+}
+
+type AccessChat struct {
+	ID   string
+	Name string
 }
 
 type Event struct {

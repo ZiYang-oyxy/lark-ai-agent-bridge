@@ -33,6 +33,19 @@ GOCACHE=$PWD/.cache/go-build go run ./cmd/lark-agent-bridge serve --default-work
 
 `serve` 需要 `LARK_APP_ID` 和 `LARK_APP_SECRET`。本地未配置时会明确失败，用于验证启动前置条件。
 
+## 访问控制
+
+真实 `serve` 默认 fail-closed：私聊仅允许应用 owner、`allowed_users` 和管理员；群聊仅允许应用 owner、管理员和 `allowed_chats` 中的群。owner 从 Feishu `application/v6` API 启动时读取并每 30 分钟刷新，刷新失败时保留已缓存 owner。
+
+owner 或管理员可在飞书中管理名单：
+
+- `/invite user @某人`、`/remove user @某人`：管理私聊用户。
+- `/invite admin @某人`、`/remove admin @某人`：管理管理员。
+- `/invite group`、`/remove group`：在当前群授权或撤销。
+- `/invite all group`：授权 bot 当前所在的全部群（最多读取 5 页，每页 100 个）。
+
+名单保存在 `<workdir>/.lark-agent-bridge/access.json`，可用 `E2E_ACCESS_STORE` 覆盖路径。文件不存在表示空名单；文件损坏或 schema 不兼容会阻止 `serve` 启动。`/config reset` 不会清空访问控制，`/config` 的折叠面板只展示名单，修改仍通过上述命令完成。
+
 ## Conversation mode
 
 `/config` 的 **Conversation mode** 控制回复位置和 session scope：

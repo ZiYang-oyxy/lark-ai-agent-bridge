@@ -17,6 +17,7 @@ import (
 	"sync"
 	"time"
 
+	"lark-agent-bridge/internal/access"
 	"lark-agent-bridge/internal/agent"
 	"lark-agent-bridge/internal/audit"
 	"lark-agent-bridge/internal/card"
@@ -45,6 +46,15 @@ type Service struct {
 	Reactions        feishu.ReactionSink
 	SequenceResolver session.RenderRefSequenceResolver
 	RestoreNotices   []session.RecoveryNotice
+	Access           *access.Store
+	AccessControls   *access.RuntimeControls
+	AccessInfo       interface {
+		GetOwner(context.Context, string) (string, error)
+		ListChats(context.Context) ([]feishu.KnownChat, error)
+	}
+	AccessAppID string
+	accessMu    sync.RWMutex
+	knownChats  []feishu.KnownChat
 
 	mu                 sync.Mutex
 	pendingRuns        map[string]pendingRun
@@ -311,6 +321,14 @@ func (s *Service) HandleMessage(ctx context.Context, msg Message) error {
 		s.Audit.Record(msg.Sender, "old_message_skipped", "", msg.ID)
 		return nil
 	}
+	preference := s.runtimePreference()
+	if decision, enforced := s.messageAccessDecision(msg); enforced && !decision.OK {
+		s.Audit.Record(msg.Sender, "access_denied", msg.ChatID, string(decision.Reason))
+		if msg.IsGroup && msg.Mentioned && decision.Reason == access.ReasonDeniedChat {
+			return s.renderTextWithMode("access-denied", msg.ID, card.SegmentError, "当前群尚未加入响应列表，所以 bot 不会处理消息。\nBot owner/管理员可在本群发 /invite group 加入白名单。", preference.ConversationMode)
+		}
+		return nil
+	}
 	defaultKind, ok := agent.ParseKind(s.Config.DefaultAgent)
 	if !ok {
 		defaultKind = agent.Claude
@@ -319,7 +337,10 @@ func (s *Service) HandleMessage(ctx context.Context, msg Message) error {
 	if cmd.Type == CommandIgnored {
 		return nil
 	}
-	preference := s.runtimePreference()
+	if s.adminCommand(cmd.Type) && !s.canRunAdminCommand(msg.Sender) {
+		s.Audit.Record(msg.Sender, "admin_denied", msg.ChatID, string(cmd.Type))
+		return s.renderTextWithMode("admin-denied", msg.ID, card.SegmentError, "❌ 此命令仅管理员可用。", preference.ConversationMode)
+	}
 	if cmd.Type != CommandRun {
 		accepted, err := s.Sessions.AcceptMessage(msg.ID, effectiveMessageTime(msg), s.dedupTTL(), s.dedupMaxEntries())
 		if err != nil {
@@ -338,7 +359,11 @@ func (s *Service) HandleMessage(ctx context.Context, msg Message) error {
 	case CommandStatus:
 		return s.renderTextWithMode("status", msg.ID, card.SegmentText, s.statusTextWithPreference(cmd.Agent, msg, preference), preference.ConversationMode)
 	case CommandConfig:
-		return s.handleConfigCommand(msg, cmd, preference)
+		return s.handleConfigCommand(ctx, msg, cmd, preference)
+	case CommandInvite:
+		return s.handleInviteCommand(ctx, msg, cmd, preference)
+	case CommandRemove:
+		return s.handleRemoveCommand(msg, cmd, preference)
 	case CommandRun:
 		return s.runWithPreference(ctx, cmd, msg, "", preference)
 	default:
@@ -346,34 +371,34 @@ func (s *Service) HandleMessage(ctx context.Context, msg Message) error {
 	}
 }
 
-func (s *Service) handleConfigCommand(msg Message, cmd Command, preference config.RuntimePreference) error {
+func (s *Service) handleConfigCommand(ctx context.Context, msg Message, cmd Command, preference config.RuntimePreference) error {
 	switch strings.ToLower(strings.TrimSpace(cmd.Text)) {
 	case "":
+		if s.AccessInfo != nil {
+			if s.AccessAppID != "" {
+				_ = access.RefreshOwner(ctx, s.AccessControls, s.AccessInfo, s.AccessAppID)
+			}
+			_ = s.refreshKnownChats(ctx)
+		}
 		agentKind := strings.TrimSpace(preference.Agent)
 		if agentKind == "" {
 			agentKind = config.DefaultAgentKind
 		}
+		form := &card.ConfigForm{
+			Agent: agentKind, AgentHome: preference.AgentHome, AgentBin: preference.AgentBin,
+			Model: preference.Model, Effort: preference.Effort, ReplyMode: string(preference.ReplyMode), ConversationMode: string(preference.ConversationMode),
+			Agents: toCardOptions(s.Agents.AgentOptions()), AgentHomes: toCardOptions(s.Agents.HomeOptions(agentKind)), AgentBins: toCardOptions(s.Agents.BinOptions(agentKind)),
+			Models: s.configModelOptions(), Efforts: []string{"default", "low", "medium", "high"},
+			ReplyModes:        []string{string(config.ReplyModeAppend), string(config.ReplyModeAppendCleanCard), string(config.ReplyModeLatestCard)},
+			ConversationModes: []string{string(config.ConversationModeChat), string(config.ConversationModeTopic)},
+		}
+		s.populateAccessConfigForm(form)
 		return s.Cards.Render(card.Event{
 			Type:             "config",
 			SessionID:        runID("config", msg.ID),
 			ReplyToMessageID: msg.ID,
 			ReplyInThread:    preference.ConversationMode == config.ConversationModeTopic,
-			ConfigForm: &card.ConfigForm{
-				Agent:             agentKind,
-				AgentHome:         preference.AgentHome,
-				AgentBin:          preference.AgentBin,
-				Model:             preference.Model,
-				Effort:            preference.Effort,
-				ReplyMode:         string(preference.ReplyMode),
-				ConversationMode:  string(preference.ConversationMode),
-				Agents:            toCardOptions(s.Agents.AgentOptions()),
-				AgentHomes:        toCardOptions(s.Agents.HomeOptions(agentKind)),
-				AgentBins:         toCardOptions(s.Agents.BinOptions(agentKind)),
-				Models:            s.configModelOptions(),
-				Efforts:           []string{"default", "low", "medium", "high"},
-				ReplyModes:        []string{string(config.ReplyModeAppend), string(config.ReplyModeAppendCleanCard), string(config.ReplyModeLatestCard)},
-				ConversationModes: []string{string(config.ConversationModeChat), string(config.ConversationModeTopic)},
-			},
+			ConfigForm:       form,
 		})
 	case "reset":
 		if s.Preferences == nil {
@@ -929,6 +954,10 @@ func (s *Service) HandleAction(ctx context.Context, req ActionRequest) error {
 
 func (s *Service) HandleActionResult(ctx context.Context, req ActionRequest) (ActionResult, error) {
 	s.Audit.Record(req.Actor, "card_action", req.SessionID, req.ActionID+" "+req.Value)
+	if req.ActionID == "config.save" && !s.canRunAdminCommand(req.Actor) {
+		s.Audit.Record(req.Actor, "admin_denied", req.SessionID, req.ActionID)
+		return s.renderActionEvent(card.Event{Type: "error", SessionID: req.SessionID, Segments: []card.Segment{{Kind: card.SegmentError, Text: "❌ 此操作仅管理员可用。"}}})
+	}
 	switch req.ActionID {
 	case "stop":
 		if run, ok := s.cancelActiveRun(req.SessionID); ok {

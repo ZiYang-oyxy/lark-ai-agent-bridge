@@ -13,6 +13,7 @@ import (
 	"syscall"
 	"time"
 
+	"lark-agent-bridge/internal/access"
 	"lark-agent-bridge/internal/audit"
 	"lark-agent-bridge/internal/bridge"
 	"lark-agent-bridge/internal/card"
@@ -277,6 +278,10 @@ func runServe(args []string) error {
 	if err != nil {
 		return fmt.Errorf("open runtime preference store: %w", err)
 	}
+	accessStore, err := access.OpenStore(cfg.AccessStorePath)
+	if err != nil {
+		return fmt.Errorf("open access store: %w", err)
+	}
 	replies, err := reply.OpenStore(cfg.ReplyStorePath)
 	if err != nil {
 		return fmt.Errorf("open reply store: %w", err)
@@ -290,6 +295,13 @@ func runServe(args []string) error {
 	svc := bridge.NewServiceWithSessions(cfg, renderer, nil, recorder, sessions, notices)
 	svc.Agents = agents
 	svc.Preferences = preferences
+	svc.Access = accessStore
+	svc.AccessControls = access.NewRuntimeControls()
+	svc.AccessAppID = appID
+	svc.AccessInfo = &feishu.AccessInfoClient{Tokens: tokens}
+	if err := access.RefreshOwner(ctx, svc.AccessControls, svc.AccessInfo, appID); err != nil {
+		recorder.Record("system", "owner_refresh_failed", "", err.Error())
+	}
 	svc.Replies = replies
 	svc.SequenceResolver = sequenceJournal
 	svc.CardTarget = cardRouter
@@ -302,6 +314,7 @@ func runServe(args []string) error {
 	svc.MediaDownloader = mediaWiring.downloader
 	svc.MediaGC = mediaWiring.gc
 	svc.SweepMediaCacheStartup()
+	go svc.RunAccessRefresh(ctx)
 	client := feishu.NewLongConnClient(feishu.LongConnConfig{
 		AppID:         appID,
 		AppSecret:     appSecret,
@@ -429,6 +442,7 @@ Environment:
   E2E_CARD_PREVIEW_MAX_CHARS defaults to 2000
   E2E_REPLY_MODE         append, append-clean-card, or latest-card
   E2E_REPLY_STORE        defaults to <workdir>/.lark-agent-bridge/replies.json
+  E2E_ACCESS_STORE       defaults to <workdir>/.lark-agent-bridge/access.json
   E2E_INTERACTION_TIMEOUT_SEC defaults to 120
   E2E_AUDIT_LOG          defaults to <workdir>/.lark-agent-bridge/audit.jsonl
   E2E_CALLBACK_ADDR      optional legacy HTTP callback listen address, e.g. :8080
@@ -455,6 +469,9 @@ func applyDefaultWorkDir(cfg *config.Config, workDir string) error {
 		cfg.ReplyStorePath = filepath.Join(workDir, ".lark-agent-bridge", "replies.json")
 	}
 	cfg.AgentsConfigPath = filepath.Join(workDir, ".lark-agent-bridge", "agents.json")
+	if os.Getenv("E2E_ACCESS_STORE") == "" {
+		cfg.AccessStorePath = filepath.Join(workDir, ".lark-agent-bridge", "access.json")
+	}
 	if os.Getenv("E2E_MEDIA_CACHE_DIR") == "" {
 		absoluteWorkDir, err := filepath.Abs(workDir)
 		if err != nil {

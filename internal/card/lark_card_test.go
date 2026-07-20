@@ -1,11 +1,29 @@
 package card
 
 import (
+	"encoding/json"
 	"reflect"
 	"regexp"
 	"strings"
 	"testing"
 )
+
+func TestConfigCardIncludesCollapsedAccessPanel(t *testing.T) {
+	payload := BuildLarkCard(Event{Type: "config", SessionID: "config", ConfigForm: &ConfigForm{
+		AllowedUsers: []string{"ou_user"}, Admins: []string{"ou_admin"},
+		AllowedChats: []AccessChat{{ID: "oc_123456789", Name: "Project"}}, OwnerState: "ok owner=present",
+	}})
+	data, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(data)
+	for _, want := range []string{"访问控制", "collapsible_panel", "ou_user", "ou_admin", "Project", "456789", "ok owner=present"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("card missing %q: %s", want, text)
+		}
+	}
+}
 
 func TestBuildLarkCardRunningEmptyProcessOmitsPanel(t *testing.T) {
 	// v2:运行中若思考/工具都为空,不为占位而显示空面板。

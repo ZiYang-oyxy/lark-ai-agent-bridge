@@ -14,6 +14,8 @@ const (
 	CommandRun     CommandType = "run"
 	CommandStatus  CommandType = "status"
 	CommandConfig  CommandType = "config"
+	CommandInvite  CommandType = "invite"
+	CommandRemove  CommandType = "remove"
 	CommandUnknown CommandType = "unknown"
 	CommandIgnored CommandType = "ignored"
 )
@@ -47,6 +49,10 @@ func ParseCommand(msg Message, defaultAgent agent.Kind) Command {
 		return Command{Type: CommandStatus, Agent: defaultAgent, Raw: raw}
 	case "config":
 		return Command{Type: CommandConfig, Text: strings.TrimSpace(rest), Raw: raw}
+	case "invite":
+		return Command{Type: CommandInvite, Text: strings.TrimSpace(rest), Raw: raw}
+	case "remove":
+		return Command{Type: CommandRemove, Text: strings.TrimSpace(rest), Raw: raw}
 	case "new":
 		cmd := Command{Type: CommandRun, Agent: defaultAgent, Text: strings.TrimSpace(rest), Reset: true, Explicit: true, Raw: raw}
 		parseRunOptions(&cmd)
@@ -107,6 +113,8 @@ func HelpText() string {
 		"/new [--workdir <path>] [prompt] - start a new Claude session in this chat/topic",
 		"/status - show the current chat/topic session status",
 		"/config - configure model, effort, reply mode, and chat/topic mode",
+		"/invite user|admin @user, /invite group, /invite all group - grant access",
+		"/remove user|admin @user, /remove group - revoke access",
 		"/help - show this help",
 		"",
 		"Plain text continues the current configured conversation scope. Use /new to start a new Claude session.",

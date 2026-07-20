@@ -12,6 +12,10 @@ func MessageFromFeishu(in feishu.InboundMessage) Message {
 	if in.MessageType == "image" || in.MessageType == "file" {
 		text = ""
 	}
+	mentions := make([]Mention, 0, len(in.Mentions))
+	for _, mention := range in.Mentions {
+		mentions = append(mentions, Mention{OpenID: mention.OpenID, Name: mention.Name, IsBot: mention.IsBot})
+	}
 	return Message{
 		ID:             in.MessageID,
 		ChatID:         in.ChatID,
@@ -22,6 +26,7 @@ func MessageFromFeishu(in feishu.InboundMessage) Message {
 		IsGroup:        strings.EqualFold(in.ChatType, "group"),
 		HasAttachments: len(in.Attachments) > 0,
 		Mentioned:      in.MentionsBot,
+		Mentions:       mentions,
 		Time:           in.OccurredAt,
 	}
 }

@@ -16,7 +16,14 @@ type Message struct {
 	IsGroup        bool
 	HasAttachments bool
 	Mentioned      bool
+	Mentions       []Mention
 	Time           time.Time
+}
+
+type Mention struct {
+	OpenID string
+	Name   string
+	IsBot  bool
 }
 
 type MessageRecall struct {

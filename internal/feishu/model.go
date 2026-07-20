@@ -16,6 +16,8 @@ const (
 type Mention struct {
 	Key    string
 	OpenID string
+	Name   string
+	IsBot  bool
 }
 
 type InboundMessage struct {

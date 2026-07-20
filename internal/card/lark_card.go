@@ -104,6 +104,7 @@ func buildConfigFormElements(sessionID string, form ConfigForm) []any {
 				configSelect("reply_mode", form.ReplyMode, form.ReplyModes),
 				markdownElement("config_scope_label", "**Conversation mode**\n`chat` 回复到普通聊天并按 chat 共用会话；`topic` 回复到话题并按 thread 隔离会话。"),
 				configSelect("conversation_mode", form.ConversationMode, form.ConversationModes),
+				accessPanelElement(form),
 				map[string]any{
 					"tag":              "button",
 					"name":             "submit_runtime_config",
@@ -115,6 +116,47 @@ func buildConfigFormElements(sessionID string, form ConfigForm) []any {
 			},
 		},
 	}
+}
+
+func accessPanelElement(form ConfigForm) map[string]any {
+	userLine := "_（暂无）_"
+	if len(form.AllowedUsers) > 0 {
+		mentions := make([]string, 0, len(form.AllowedUsers))
+		for _, id := range form.AllowedUsers {
+			mentions = append(mentions, fmt.Sprintf("<at id=\"%s\"></at>", id))
+		}
+		userLine = strings.Join(mentions, "  ")
+	}
+	adminLine := "_（暂无）_"
+	if len(form.Admins) > 0 {
+		mentions := make([]string, 0, len(form.Admins))
+		for _, id := range form.Admins {
+			mentions = append(mentions, fmt.Sprintf("<at id=\"%s\"></at>", id))
+		}
+		adminLine = strings.Join(mentions, "  ")
+	}
+	chatLine := "_（暂无）_"
+	if len(form.AllowedChats) > 0 {
+		lines := make([]string, 0, len(form.AllowedChats))
+		for _, chat := range form.AllowedChats {
+			name := chat.Name
+			if name == "" {
+				name = "(未知群)"
+			}
+			suffix := chat.ID
+			if len(suffix) > 6 {
+				suffix = suffix[len(suffix)-6:]
+			}
+			lines = append(lines, fmt.Sprintf("- **%s**（...%s）", name, suffix))
+		}
+		chatLine = strings.Join(lines, "\n")
+	}
+	ownerState := form.OwnerState
+	if ownerState == "" {
+		ownerState = "unknown owner=missing"
+	}
+	content := fmt.Sprintf("_留空 = 不响应聊天消息。_\n\n**owner API**：`%s`\n\n**允许私聊的用户**（共 %d 人）\n%s\n\n_加 / 删：_ `/invite user @某人`  `/remove user @某人`\n\n**允许响应的群**（共 %d 个）\n%s\n\n_加 / 删：_ `/invite group`  `/remove group`  `/invite all group`\n\n**管理员**（共 %d 人）\n%s\n\n_加 / 删：_ `/invite admin @某人`  `/remove admin @某人`", ownerState, len(form.AllowedUsers), userLine, len(form.AllowedChats), chatLine, len(form.Admins), adminLine)
+	return collapsiblePanelElement("panel_access", "🔒 访问控制", false, []map[string]any{markdownElement("access_summary", content)})
 }
 
 func configSelect(name, initial string, values []string) map[string]any {
