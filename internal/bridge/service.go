@@ -81,13 +81,17 @@ type AgentRunner interface {
 }
 
 type AgentRunRequest struct {
-	Kind           agent.Kind
+	Kind agent.Kind
+	Bin  string
+	// ClaudeBin is retained for source compatibility with existing runners and
+	// tests. New callers populate Bin; CLIExecRunner falls back to ClaudeBin.
 	ClaudeBin      string
 	Prompt         string
 	WorkDir        string
 	AgentSessionID string
 	Model          string
 	Effort         string
+	Images         []string
 	// Home is the resolved agent home / config directory. Empty means default.
 	Home    string
 	OnEvent func(AgentStreamUpdate)
@@ -323,6 +327,9 @@ func (s *Service) HandleMessage(ctx context.Context, msg Message) error {
 		return nil
 	}
 	preference := s.runtimePreference()
+	if selected, ok := agent.ParseKind(preference.Agent); ok && (cmd.Type == CommandRun || cmd.Type == CommandStatus) {
+		cmd.Agent = selected
+	}
 	if cmd.Type != CommandRun {
 		accepted, err := s.Sessions.AcceptMessage(msg.ID, effectiveMessageTime(msg), s.dedupTTL(), s.dedupMaxEntries())
 		if err != nil {
@@ -498,10 +505,10 @@ func (s *Service) runWithPreference(ctx context.Context, cmd Command, msg Messag
 		return s.renderTextWithMode("service-stopping", msg.ID, card.SegmentError, "服务正在停止，暂不接受新的执行请求。", preference.ConversationMode)
 	}
 	if cmd.Agent == "" {
-		cmd.Agent = agent.Claude
-	}
-	if cmd.Agent != agent.Claude {
-		return s.renderTextWithMode("unsupported-agent", msg.ID, card.SegmentError, "当前 bridge 只适配 claude。", preference.ConversationMode)
+		cmd.Agent, _ = agent.ParseKind(preference.Agent)
+		if cmd.Agent == "" {
+			cmd.Agent = agent.Claude
+		}
 	}
 	key := sessionKeyForMode(cmd.Agent, msg, preference.ConversationMode)
 	workDir := s.effectiveWorkDir(key, cmd)
@@ -675,7 +682,7 @@ func (s *Service) executeBatch(ctx context.Context, sess session.Session, batch 
 	prompt := BuildBatchPrompt(batch)
 	if batch.Inputs[0].Reset && strings.TrimSpace(prompt) == "" {
 		if run, ok := s.activeRun(id); ok && run.BatchID == batch.ID && run.Stream != nil {
-			s.finishStreamAndAudit(run.Stream, "completed", metaFromSession(sess), AgentRunResult{Segments: []card.Segment{{Kind: card.SegmentText, Text: "Claude session is ready. Send a message in this chat/topic to continue."}}}, sess.ID)
+			s.finishStreamAndAudit(run.Stream, "completed", metaFromSession(sess), AgentRunResult{Segments: []card.Segment{{Kind: card.SegmentText, Text: "Agent session is ready. Send a message in this chat/topic to continue."}}}, sess.ID)
 		}
 		_, _ = s.finishBatchOrRemember(sess, batch.ID, session.BatchCompletion{Status: session.InputCompleted, At: time.Now()}, "completion_persist_failed")
 		return
@@ -686,7 +693,7 @@ func (s *Service) executeBatch(ctx context.Context, sess session.Session, batch 
 	if strings.TrimSpace(bin) == "" {
 		bin, home = s.resolveAgentBinHome(sess.Key.Agent, s.runtimePreference())
 	}
-	result, err := s.Runner.Run(ctx, AgentRunRequest{Kind: sess.Key.Agent, ClaudeBin: bin, Home: home, Prompt: prompt, WorkDir: sess.WorkDir, AgentSessionID: sess.AgentSessionID, Model: batch.Inputs[0].RequestedModel, Effort: batch.Inputs[0].RequestedEffort, OnEvent: func(update AgentStreamUpdate) {
+	result, err := s.Runner.Run(ctx, AgentRunRequest{Kind: sess.Key.Agent, Bin: bin, Home: home, Prompt: prompt, WorkDir: sess.WorkDir, Images: codexImagePaths(batch), AgentSessionID: sess.AgentSessionID, Model: batch.Inputs[0].RequestedModel, Effort: batch.Inputs[0].RequestedEffort, OnEvent: func(update AgentStreamUpdate) {
 		if model := strings.TrimSpace(update.Model); model != "" {
 			actualModelMu.Lock()
 			streamedActualModel = model
@@ -711,16 +718,31 @@ func (s *Service) executeBatch(ctx context.Context, sess session.Session, batch 
 		result.Segments = append(result.Segments, card.Segment{Kind: card.SegmentError, Text: err.Error()})
 	}
 	if len(result.Segments) == 0 && status == session.InputCompleted {
-		result.Segments = []card.Segment{{Kind: card.SegmentText, Text: "Claude 未返回内容。"}}
+		result.Segments = []card.Segment{{Kind: card.SegmentText, Text: "Agent 未返回内容。"}}
 	}
 	requestedModel := strings.TrimSpace(batch.Inputs[0].RequestedModel)
-	if result.Model != "" && requestedModel != "" && !strings.EqualFold(requestedModel, "default") && result.Model != requestedModel {
+	if sess.Key.Agent == agent.Claude && result.Model != "" && requestedModel != "" && !strings.EqualFold(requestedModel, "default") && result.Model != requestedModel {
 		s.Audit.Record("system", "model_requested_actual_mismatch", sess.ID, fmt.Sprintf("requested=%s actual=%s", requestedModel, result.Model))
+	}
+	if result.ProtocolUnknown > 0 || result.ProtocolAnomalies > 0 {
+		s.Audit.Record("system", "codex_protocol_drift", sess.ID, fmt.Sprintf("unknown=%d anomalies=%d", result.ProtocolUnknown, result.ProtocolAnomalies))
 	}
 	if run, ok := s.activeRun(id); ok && run.BatchID == batch.ID && run.Stream != nil {
 		s.finishStreamAndAudit(run.Stream, cardStatus, metaFromSession(sess), result, sess.ID)
 	}
 	_, _ = s.finishBatchOrRemember(sess, batch.ID, session.BatchCompletion{Status: status, AgentSessionID: result.AgentSessionID, Model: result.Model, Tokens: result.Tokens, At: time.Now()}, "completion_persist_failed")
+}
+
+func codexImagePaths(batch session.Batch) []string {
+	paths := make([]string, 0)
+	for _, input := range batch.Inputs {
+		for _, attachment := range input.Attachments {
+			if strings.HasPrefix(strings.ToLower(strings.TrimSpace(attachment.MIME)), "image/") && strings.TrimSpace(attachment.Path) != "" {
+				paths = append(paths, attachment.Path)
+			}
+		}
+	}
+	return paths
 }
 
 // finishStreamAndAudit 收敛终态卡片,并在渲染失败时记录 audit,而不是静默吞掉错误
@@ -1489,15 +1511,20 @@ func runID(baseSessionID, replyToMessageID string) string {
 type CLIExecRunner struct{}
 
 func (CLIExecRunner) Run(ctx context.Context, req AgentRunRequest) (AgentRunResult, error) {
+	bin := strings.TrimSpace(req.Bin)
+	if bin == "" {
+		bin = req.ClaudeBin
+	}
 	command, err := agent.BuildOneShotCommand(agent.OneShotConfig{
 		Kind:           req.Kind,
-		Bin:            req.ClaudeBin,
+		Bin:            bin,
 		WorkDir:        req.WorkDir,
 		Prompt:         req.Prompt,
 		AgentSessionID: req.AgentSessionID,
 		Model:          req.Model,
 		Effort:         req.Effort,
 		Home:           req.Home,
+		Images:         req.Images,
 	})
 	if err != nil {
 		return AgentRunResult{}, err
@@ -1521,6 +1548,9 @@ func (CLIExecRunner) Run(ctx context.Context, req AgentRunRequest) (AgentRunResu
 		cmd.Env = childEnv("", agentEnv)
 	}
 	cmd.Stderr = &stderr
+	if agent.PromptOnStdin(req.Kind) {
+		cmd.Stdin = strings.NewReader(req.Prompt)
+	}
 	pipe, err := cmd.StdoutPipe()
 	if err != nil {
 		return AgentRunResult{}, err
@@ -1528,7 +1558,13 @@ func (CLIExecRunner) Run(ctx context.Context, req AgentRunRequest) (AgentRunResu
 	if err := cmd.Start(); err != nil {
 		return AgentRunResult{}, err
 	}
-	result, scanErr := parseClaudeStream(pipe, &stdout, req.OnEvent)
+	var result AgentRunResult
+	var scanErr error
+	if req.Kind == agent.Codex {
+		result, scanErr = parseCodexStream(pipe, &stdout, req.OnEvent)
+	} else {
+		result, scanErr = parseClaudeStream(pipe, &stdout, req.OnEvent)
+	}
 	waitErr := cmd.Wait()
 	if scanErr != nil {
 		return result, scanErr

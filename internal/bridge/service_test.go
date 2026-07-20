@@ -1499,6 +1499,66 @@ func TestTopicPlainTextContinuesStoredClaudeSession(t *testing.T) {
 	}
 }
 
+func TestServiceRunsConfiguredCodexPresetWithImagesAndResumesThread(t *testing.T) {
+	cfg := testConfig(t)
+	cfg.DefaultAgent = "claude"
+	cfg.ConversationMode = config.ConversationModeChat
+	agents := config.AgentsConfig{
+		SchemaVersion: config.AgentsSchemaVersion,
+		Agents: []config.AgentDef{{
+			Kind:  "codex",
+			Label: "Codex CLI",
+			Homes: []config.AgentHome{{Label: config.DefaultHomeLabel}, {Label: "workspace", Path: "/h/codex"}},
+			Bins:  []config.AgentBin{{Label: config.DefaultBinLabelFor("codex")}, {Label: "cx3", Path: "/b/cx3"}},
+		}},
+	}
+	defaults := config.RuntimePreference{Model: "default", Effort: "low", ReplyMode: config.ReplyModeAppend, ConversationMode: config.ConversationModeChat, Agent: "codex", AgentHome: "workspace", AgentBin: "cx3"}
+	store, err := config.OpenPreferenceStore(filepath.Join(t.TempDir(), "preferences.json"), defaults, cfg.AllowedModels, agents.Agents...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runner := newFakeRunner()
+	runner.results = []AgentRunResult{
+		{AgentSessionID: "thread-codex", Tokens: 2, Segments: []card.Segment{{Kind: card.SegmentText, Text: "first"}}},
+		{AgentSessionID: "thread-codex", Tokens: 3, Segments: []card.Segment{{Kind: card.SegmentText, Text: "second"}}},
+	}
+	svc := NewService(cfg, card.NewFakeRenderer(), runner, audit.NewRecorder())
+	svc.Agents = agents
+	svc.Preferences = store
+	configureTestMedia(svc, &resolutionCacheStub{resolution: media.Resolution{Attachments: []media.Attachment{
+		{Path: "/cache/image.png", MIME: "image/png", Size: 1},
+		{Path: "/cache/notes.txt", MIME: "text/plain", Size: 1},
+	}}})
+	now := time.Now()
+	if err := svc.HandleMessage(context.Background(), Message{ID: "codex-1", ChatID: "chat", Sender: "u", Text: "inspect", Time: now, Attachments: []media.Ref{{FileKey: "image", Kind: "image"}, {FileKey: "notes", Kind: "file"}}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.DrainReady(now.Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	waitForCalls(t, runner, 1)
+	waitForSessionNoActiveBatch(t, svc, session.Key{Agent: agent.Codex, ChatID: "chat"})
+	first := runner.Calls()[0]
+	if first.Kind != agent.Codex || first.Bin != "/b/cx3" || first.Home != "/h/codex" || len(first.Images) != 1 || first.Images[0] != "/cache/image.png" {
+		t.Fatalf("first Codex call = %#v", first)
+	}
+	if !strings.Contains(first.Prompt, "/cache/notes.txt") {
+		t.Fatalf("prompt = %q", first.Prompt)
+	}
+
+	secondAt := now.Add(2 * time.Second)
+	if err := svc.HandleMessage(context.Background(), Message{ID: "codex-2", ChatID: "chat", Sender: "u", Text: "continue", Time: secondAt}); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.DrainReady(secondAt.Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	waitForCalls(t, runner, 2)
+	if got := runner.Calls()[1].AgentSessionID; got != "thread-codex" {
+		t.Fatalf("resumed thread = %q", got)
+	}
+}
+
 func TestNewInTopicResetsStoredClaudeSession(t *testing.T) {
 	cfg := testConfig(t)
 	renderer := card.NewFakeRenderer()
@@ -3188,6 +3248,53 @@ printf '{"type":"assistant","message":{"model":"fake-claude","content":[{"type":
 	got := result.Segments[0].Text
 	if !containsAll(got, "pwd="+workDir, "envpwd="+workDir) {
 		t.Fatalf("runner cwd output = %q, want pwd and envpwd %s", got, workDir)
+	}
+}
+
+func TestCLIExecRunnerRunsCodexWithStdinImagesAndConfiguredWorkDir(t *testing.T) {
+	binDir := t.TempDir()
+	fakeCodex := filepath.Join(binDir, "cx3")
+	logPath := filepath.Join(t.TempDir(), "codex.log")
+	script := `#!/bin/sh
+printf 'args=%s\npwd=%s\n' "$*" "$PWD" >"$FAKE_CODEX_LOG"
+IFS= read -r prompt || true
+printf 'stdin=%s\nhome=%s\n' "$prompt" "${CODEX_HOME:-}" >>"$FAKE_CODEX_LOG"
+printf '%s\n' '{"type":"thread.started","thread_id":"thread-1"}'
+printf '%s\n' '{"type":"item.completed","item":{"id":"msg-1","type":"agent_message","text":"codex answer"}}'
+printf '%s\n' '{"type":"turn.completed","usage":{"input_tokens":2,"output_tokens":3}}'
+`
+	if err := os.WriteFile(fakeCodex, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("FAKE_CODEX_LOG", logPath)
+	workDir := t.TempDir()
+	result, err := CLIExecRunner{}.Run(context.Background(), AgentRunRequest{
+		Kind:           agent.Codex,
+		Bin:            fakeCodex,
+		Prompt:         "inspect repo",
+		WorkDir:        workDir,
+		Home:           "/isolated/codex-home",
+		Images:         []string{"/cache/a.png", "/cache/b.jpg"},
+		AgentSessionID: "",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.AgentSessionID != "thread-1" || result.Tokens != 5 || len(result.Segments) != 1 || result.Segments[0].Text != "codex answer" {
+		t.Fatalf("result = %#v", result)
+	}
+	data, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	log := string(data)
+	if !containsAll(log, "args=exec --json --image /cache/a.png --image /cache/b.jpg -- -", "pwd="+workDir, "stdin=inspect repo", "home=/isolated/codex-home") {
+		t.Fatalf("fake codex log = %q", log)
+	}
+	for _, forbidden := range []string{"--sandbox", "approval_policy", "--model", "--profile", "--ignore-rules", "--skip-git-repo-check"} {
+		if strings.Contains(log, forbidden) {
+			t.Fatalf("unexpected %q in log %q", forbidden, log)
+		}
 	}
 }
 
