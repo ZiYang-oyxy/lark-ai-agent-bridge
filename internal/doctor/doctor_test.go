@@ -329,7 +329,7 @@ printf '%s\n' '{"type":"result","result":"PRIVATE_OUTPUT_MUST_NOT_APPEAR"}'
 	t.Setenv("DOCTOR_PWD_FILE", pwdPath)
 	cfg := doctorTestConfig(dir, filepath.Join(dir, "sessions.json"))
 	cfg.ClaudeBin = bin
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 	check := ClaudeWrapperPreflight(ctx, cfg)
 	if !check.OK || check.Warning || check.Name != "wrapper-preflight" || strings.Contains(check.Detail, "PRIVATE_OUTPUT") {

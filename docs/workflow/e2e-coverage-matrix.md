@@ -4,40 +4,32 @@
 
 ## 分层策略(决定回归速度的核心)
 
-回归慢的本质原因不是 case 太多,而是把本该在 L1 用 fake SDK 秒级验证的业务逻辑,压在了真实飞书往返上跑。产品化后按三层拆分:
+回归慢的本质原因不是 case 太多,而是把本该在 L0/L1 用 fake SDK 秒级验证的业务逻辑,压在了真实飞书往返上跑。产品化后按四层拆分:
 
 ```mermaid
 flowchart TD
-    subgraph L1["L1 CI Contract · 每次 PR · 秒级"]
-        A1[命令解析全分支]
-        A2[会话/并发/queue]
-        A3[action gateway 业务语义]
-        A4[卡片渲染/截断/重试]
-        A5[持久化恢复]
+    subgraph Local["本地合入门禁"]
+        direction LR
+        L0["L0 Unit<br/>解析/存储/argv"]:::primary
+        L1["L1 Component<br/>真实 Bridge + fake 依赖"]:::primary
+        L0 ==> L1
     end
-    subgraph L2["L2 Remote Staging · 合并前/每日 · 分钟级"]
-        B1[真实消息收发]
-        B2[真实 CardKit 渲染]
-        B3[media 真实上传]
-        B4[recall 事件投递]
-        B5[跨进程重启恢复]
+    subgraph External["外部集成验证"]
+        direction LR
+        L2["L2 Deterministic<br/>真实飞书 + fake Agent"]:::success
+        L3["L3 Canary<br/>真实 Claude/Codex"]:::warning
     end
-    subgraph L3["L3 Platform Canary · SDK 变更时 · 手动"]
-        C1[真实点击 → card.action.trigger]
-    end
-    L1 -->|覆盖 ~90% 逻辑| DONE[产品化交付]
-    L2 -->|只证明平台集成没断| DONE
-    L3 -->|只证明 action transport 没断| DONE
+    L1 ==> MERGE([允许合入]):::success
+    L2 ==> MERGE
+    MERGE --> RELEASE([候选发布]):::primary
+    L3 -. 告警 .-> RELEASE
 
     classDef primary fill:#6C9BD2,stroke:#5B8AC1,color:#fff
     classDef success fill:#7EC699,stroke:#6DB588,color:#fff
     classDef warning fill:#F0C27A,stroke:#DFB169,color:#fff
-    class L1 primary
-    class L2 success
-    class L3 warning
 ```
 
-**决定性差异:** L1 承担完备性与回归速度(依赖 fake SDK + fake Claude,可并发、无网络);L2 只验证「真实飞书平台集成没断」;L3 只验证「真实用户点击到 bridge 的 action transport 没断」。
+**决定性差异:** L0/L1 承担业务完备性与回归速度;L2 只验证真实飞书、CardKit、audit、远端进程与重启集成,并使用 deterministic Agent fixture;L0/L1/L2 均阻塞合入。L3 验证真实 Claude/Codex wrapper、认证与 session canary,只告警而不阻塞普通合入。真实用户点击 `card.action.trigger` 仍作为低频平台 canary 归入 L3。
 
 `internal/feishu` 已提供完整 interface 抽象(`CardKitClientAPI`、`LongConnClient`、`Sender`、`ReplyAPI`、`HTTPDoer` 等),L1 补测直接复用现有 mock 模式,无需新建测试脚手架。
 
@@ -80,6 +72,7 @@ flowchart TD
 | stop 保留后续 queue | L1 | ✅ | `TestServiceStopKeepsLaterQueue` |
 | 文本 `/stop` scope/agent 隔离 | L1 | ✅ | `TestServiceTextStopIsolatesTopics` / `TestServiceTextStopUsesSelectedAgent` |
 | 文本 `/stop` 参数、空闲与 queue | L1 | ✅ | `TestServiceTextStopCancelsCurrentScopeAndRejectsArguments` / `TestServiceTextStopIdleRendersExactResponseWithoutRunningAgent` / `TestServiceTextStopKeepsLaterQueue` |
+| 真实飞书 deterministic `/stop` | **L2** | ⚠️ | Go runner 已实现;等待同一 pending candidate 上与旧 `verify-stop.sh` 完成一次等价验收后切换 merge gate |
 | 重复 stop 幂等 | L1 | ✅ | `TestServiceStopIsIdempotentForAlreadyStoppedRun`(新增) |
 | stop 未知/过期 batch 降级 | L1 | ✅ | `TestServiceStopUnknownSessionDegradesToStoppedCard`(新增) |
 | action 同步卡关闭 streaming_mode | L1 | ✅ | `TestServiceStopSyncCardDisablesStreamingMode`(新增) |

@@ -15,3 +15,11 @@ func TestRedactSecrets(t *testing.T) {
 		t.Fatalf("redaction marker missing in %q", out)
 	}
 }
+
+func TestRedactJSONAuthorizationHeader(t *testing.T) {
+	in := `{"authorization":"Bearer abc.def","action":"cardkit_update"}`
+	out := Redact(in)
+	if strings.Contains(out, "abc.def") {
+		t.Fatalf("JSON authorization leaked in %q", out)
+	}
+}
