@@ -68,7 +68,7 @@ func TestSDKSenderUploadsAndRepliesWithImage(t *testing.T) {
 	if err != nil || key != imageKey {
 		t.Fatalf("key=%q err=%v", key, err)
 	}
-	if len(images.reqs) != 1 || images.reqs[0].Body == nil || images.reqs[0].Body.ImageType == nil || *images.reqs[0].Body.ImageType != larkim.ImageTypeMessage {
+	if len(images.reqs) != 1 || images.reqs[0].Body == nil || images.reqs[0].Body.ImageType == nil || *images.reqs[0].Body.ImageType != larkim.CreateImageImageTypeMessage {
 		t.Fatalf("upload request=%#v", images.reqs)
 	}
 	uploaded, err := io.ReadAll(images.reqs[0].Body.Image)

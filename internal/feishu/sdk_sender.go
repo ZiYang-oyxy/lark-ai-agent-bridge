@@ -49,7 +49,7 @@ func (s *SDKSender) UploadImage(ctx context.Context, reader io.Reader) (string, 
 		return "", fmt.Errorf("upload feishu image: image API unavailable")
 	}
 	body := larkim.NewCreateImageReqBodyBuilder().
-		ImageType(larkim.ImageTypeMessage).
+		ImageType(larkim.CreateImageImageTypeMessage).
 		Image(reader).
 		Build()
 	req := larkim.NewCreateImageReqBuilder().Body(body).Build()

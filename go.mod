@@ -2,7 +2,7 @@ module lark-agent-bridge
 
 go 1.26.3
 
-require github.com/larksuite/oapi-sdk-go/v3 v3.5.3
+require github.com/larksuite/oapi-sdk-go/v3 v3.9.9
 
 require (
 	github.com/gogo/protobuf v1.3.2 // indirect
