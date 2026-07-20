@@ -53,6 +53,8 @@ MEDIA_P2P_CHAT_ID="${E2E_REAL_E2E_P2P_CHAT_ID:-}"
 CONFIG_CUSTOM_MODEL="${E2E_REAL_E2E_CUSTOM_MODEL:-claude-e2e-custom}"
 CONFIG_DEFAULT_MODEL="${E2E_MODEL:-default}"
 CONFIG_DEFAULT_EFFORT="${E2E_EFFORT:-low}"
+SERVER_GROUP_MESSAGE_MODE="mention_only"
+SERVER_RESPOND_TO_BOTS="false"
 FAKE_BIN_DIR=""
 SERVER_PID=""
 FAILURES=0
@@ -193,7 +195,7 @@ configure_callback_for_cases() {
   CALLBACK_ADDR=""
   for case_name in "${RUN_CASES[@]}"; do
     case "$case_name" in
-      native_text_stream|latest_restart_fallback|group_message_intake)
+      native_text_stream|latest_restart_fallback)
         enable_callback
         return
         ;;
@@ -432,7 +434,7 @@ record_static_exclusivity() {
 }
 
 record_static_group_intake_features() {
-  e2e_cap_record group_message_intake PASS local_contract "explicit real-E2E case is available" "run --case group_message_intake with fake Claude"
+  e2e_cap_record group_message_intake SKIPPED explicit_case_not_run "real group intake was not exercised by static doctor" "run --case group_message_intake with fake Claude"
   e2e_cap_record scope_incremental_grant SKIPPED dedicated_profile_required "grant completion needs a profile that initially lacks im:message.group_msg" "use a dedicated missing-scope profile and complete its authorization card"
 }
 
@@ -608,6 +610,8 @@ start_server_if_needed() {
     "E2E_PREFERENCE_STORE=$PREFERENCE_STORE"
     "E2E_REPLY_STORE=$REPLY_STORE"
     "E2E_PARTICIPATED_TOPICS_STORE=$PARTICIPATED_TOPICS_STORE"
+    "E2E_GROUP_MESSAGE_MODE=$SERVER_GROUP_MESSAGE_MODE"
+    "E2E_RESPOND_TO_BOTS=$SERVER_RESPOND_TO_BOTS"
     "E2E_MEDIA_CACHE_DIR=$MEDIA_CACHE_DIR"
     "E2E_ALLOWED_MODELS=${E2E_ALLOWED_MODELS:+$E2E_ALLOWED_MODELS,}$CONFIG_CUSTOM_MODEL"
     "GOCACHE=$GOCACHE"
@@ -1395,19 +1399,11 @@ set_group_message_mode() {
   local case_name="$1"
   local mode="$2"
   local respond_to_bots="${3:-false}"
-  local model="$CONFIG_DEFAULT_MODEL"
-  local effort="$CONFIG_DEFAULT_EFFORT"
-  local reply_mode="append"
-  local conversation_mode="chat"
-  local config_msg
-  if [[ -f "$PREFERENCE_STORE" ]] && jq -e '.override != null' "$PREFERENCE_STORE" >/dev/null 2>&1; then
-    model="$(jq -r '.override.model' "$PREFERENCE_STORE")"
-    effort="$(jq -r '.override.effort' "$PREFERENCE_STORE")"
-    reply_mode="$(jq -r '.override.reply_mode // "append"' "$PREFERENCE_STORE")"
-    conversation_mode="$(jq -r '.override.conversation_mode // "chat"' "$PREFERENCE_STORE")"
-  fi
-  config_msg="$(open_config "${case_name}_${mode}")"
-  submit_config "$case_name" "config:message:${config_msg}" "$model" "$effort" "$reply_mode" "$conversation_mode" "$mode" "$respond_to_bots"
+  stop_server TERM
+  rm -f "$PREFERENCE_STORE"
+  SERVER_GROUP_MESSAGE_MODE="$mode"
+  SERVER_RESPOND_TO_BOTS="$respond_to_bots"
+  start_server_if_needed "$case_name"
 }
 
 audit_card_id_since() {
@@ -1614,9 +1610,11 @@ case_topic_reply_without_at_negative() {
 
 group_message_intake_cleanup() {
   set +e
-  set_group_message_mode group_message_intake_restore mention_only false
   stop_server TERM
+  rm -f "$PREFERENCE_STORE"
   rm -f "$PARTICIPATED_TOPICS_STORE"
+  SERVER_GROUP_MESSAGE_MODE="mention_only"
+  SERVER_RESPOND_TO_BOTS="false"
   start_server_if_needed group_message_intake_restore
 }
 
