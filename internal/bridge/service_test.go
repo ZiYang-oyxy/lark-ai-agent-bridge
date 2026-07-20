@@ -1571,14 +1571,15 @@ func TestServiceStreamsRunnerUpdatesIntoSameCard(t *testing.T) {
 	if err := svc.DrainReady(time.Now().Add(time.Second)); err != nil {
 		t.Fatal(err)
 	}
-	waitForEvents(t, renderer, 5)
+	waitForEvents(t, renderer, 4)
 	events := renderer.Events()
-	// v2:面板固定折叠(ProcessExpanded=false),阶段仍由 Activity 反映。
-	if events[1].Type != "stream" || events[1].Activity != streamActivityReasoning {
-		t.Fatalf("thought stream event = %#v", events[1])
+	// Thinking-only deltas stay in memory; the next tool checkpoint carries the
+	// accumulated thought while updating the visible activity.
+	if events[1].Type != "stream" || events[1].Activity != streamActivityTool || len(events[1].Segments) < 2 || events[1].Segments[0].Kind != card.SegmentThought {
+		t.Fatalf("tool checkpoint event = %#v", events[1])
 	}
-	if events[2].Type != "stream" || events[2].Activity != streamActivityTool {
-		t.Fatalf("tool stream event = %#v", events[2])
+	if events[2].Type != "stream" || events[2].Activity != streamActivityAnswering {
+		t.Fatalf("answer stream event = %#v", events[2])
 	}
 	last := events[len(events)-1]
 	if last.Type != "result" || last.HeaderTemplate != "green" {

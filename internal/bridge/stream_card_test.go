@@ -170,6 +170,69 @@ func TestAppendStreamPreservesTimeline(t *testing.T) {
 	}
 }
 
+func TestAgentCardStreamThinkingOnlyDoesNotSchedulePreviewButCheckpointsIncludeIt(t *testing.T) {
+	clock := &fakeStreamClock{now: time.Unix(55, 0)}
+	renderer := card.NewFakeRenderer()
+	stream := newPreviewTestStream(t, renderer, clock, 1, 2000)
+	if err := stream.Start(); err != nil {
+		t.Fatal(err)
+	}
+	initialRenders := len(renderer.Events())
+
+	stream.Handle(AgentStreamUpdate{
+		Incremental: true,
+		Segments:    []card.Segment{{Kind: card.SegmentThought, Text: "reasoning"}},
+	})
+	clock.Advance(time.Second)
+	if got := len(renderer.Events()); got != initialRenders {
+		t.Fatalf("thinking-only renders = %d, want %d", got, initialRenders)
+	}
+
+	stream.Handle(AgentStreamUpdate{
+		Incremental: true,
+		Activity:    streamActivityAnswering,
+		Segments:    []card.Segment{{Kind: card.SegmentText, Text: "answer"}},
+	})
+	events := renderer.Events()
+	if len(events) != initialRenders+1 {
+		t.Fatalf("answer checkpoint renders = %d, want %d", len(events), initialRenders+1)
+	}
+	preview := events[len(events)-1]
+	assertSegmentKinds(t, preview, card.SegmentThought, card.SegmentText)
+	if preview.Segments[0].Text != "reasoning" || preview.Segments[1].Text != "answer" {
+		t.Fatalf("answer checkpoint segments = %#v", preview.Segments)
+	}
+
+	stream.Handle(AgentStreamUpdate{
+		Incremental: true,
+		Segments:    []card.Segment{{Kind: card.SegmentThought, Text: " more"}},
+	})
+	clock.Advance(time.Second)
+	if got := len(renderer.Events()); got != initialRenders+1 {
+		t.Fatalf("second thinking-only renders = %d, want %d", got, initialRenders+1)
+	}
+
+	stream.Handle(AgentStreamUpdate{
+		Activity: streamActivityTool,
+		Segments: []card.Segment{{Kind: card.SegmentTool, Text: "Bash(status)", Tool: &card.ToolMeta{ID: "t1", Name: "Bash", Summary: "status", Phase: "use"}}},
+	})
+	clock.Advance(time.Second)
+	events = renderer.Events()
+	checkpoint := events[len(events)-1]
+	assertSegmentKinds(t, checkpoint, card.SegmentThought, card.SegmentText, card.SegmentTool)
+	if checkpoint.Activity != streamActivityTool || !strings.Contains(checkpoint.Segments[0].Text, "reasoning more") {
+		t.Fatalf("tool checkpoint = %#v", checkpoint)
+	}
+
+	terminal, err := stream.Finish("completed", card.Meta{}, AgentRunResult{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(terminal.Segments) == 0 || terminal.Segments[0].Kind != card.SegmentThought || !strings.Contains(terminal.Segments[0].Text, "reasoning more") {
+		t.Fatalf("terminal lost accumulated thinking: %#v", terminal.Segments)
+	}
+}
+
 func TestNonAppendStreamsKeepAggregateLayout(t *testing.T) {
 	for _, mode := range []config.ReplyMode{config.ReplyModeAppendCleanCard, config.ReplyModeLatestCard} {
 		t.Run(string(mode), func(t *testing.T) {

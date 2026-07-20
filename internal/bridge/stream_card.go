@@ -155,6 +155,7 @@ func (s *agentCardStream) Handle(update AgentStreamUpdate) {
 		s.mu.Unlock()
 		return
 	}
+	previousActivity := s.activity
 	if update.AgentSessionID != "" {
 		// Session id is applied to the durable session after Run returns; streaming
 		// updates only need model/tokens for display.
@@ -192,8 +193,13 @@ func (s *agentCardStream) Handle(update AgentStreamUpdate) {
 		s.orderedPartialAt = 0
 		s.orderedPartial = false
 	}
-	if update.AnswerSnapshot || len(update.Segments) > 0 {
+	activityChanged := update.Activity != "" && update.Activity != previousActivity
+	if update.AnswerSnapshot || len(update.Segments) > 0 || activityChanged {
 		s.contentRevision++
+	}
+	if !update.AnswerSnapshot && !hasVisibleOrderedSegments(update.Segments) && !activityChanged {
+		s.mu.Unlock()
+		return
 	}
 	immediate, generation := s.requestPreviewLocked(false)
 	s.mu.Unlock()
