@@ -17,6 +17,8 @@ type ReplyMode string
 
 type ConversationMode string
 
+type GroupMessageMode string
+
 const (
 	ReplyModeAppend          ReplyMode = "append"
 	ReplyModeAppendCleanCard ReplyMode = "append-clean-card"
@@ -24,6 +26,10 @@ const (
 
 	ConversationModeChat  ConversationMode = "chat"
 	ConversationModeTopic ConversationMode = "topic"
+
+	GroupMessageModeMentionOnly        GroupMessageMode = "mention_only"
+	GroupMessageModeParticipatedTopics GroupMessageMode = "participated_topics"
+	GroupMessageModeAll                GroupMessageMode = "all_group_messages"
 )
 
 var builtinModels = []string{"default", "sonnet", "opus", "haiku"}
@@ -40,6 +46,8 @@ type RuntimePreference struct {
 	Effort           string           `json:"effort"`
 	ReplyMode        ReplyMode        `json:"reply_mode,omitempty"`
 	ConversationMode ConversationMode `json:"conversation_mode,omitempty"`
+	GroupMessageMode GroupMessageMode `json:"group_message_mode,omitempty"`
+	RespondToBots    bool             `json:"respond_to_bots,omitempty"`
 	// Agent is the selected agent kind (empty = "claude").
 	Agent string `json:"agent,omitempty"`
 	// AgentHome / AgentBin store the selected preset labels (not paths); they
@@ -184,6 +192,11 @@ func validateRuntimePreferenceWith(preference RuntimePreference, allowedModels [
 	default:
 		return fmt.Errorf("conversation mode %q is not allowed", preference.ConversationMode)
 	}
+	switch preference.GroupMessageMode {
+	case GroupMessageModeMentionOnly, GroupMessageModeParticipatedTopics, GroupMessageModeAll:
+	default:
+		return fmt.Errorf("group message mode %q is not allowed", preference.GroupMessageMode)
+	}
 	if err := validateAgentSelection(preference, agents); err != nil {
 		return err
 	}
@@ -223,6 +236,10 @@ func normalizeRuntimePreference(preference RuntimePreference) RuntimePreference 
 	preference.ConversationMode = ConversationMode(strings.ToLower(strings.TrimSpace(string(preference.ConversationMode))))
 	if preference.ConversationMode == "" {
 		preference.ConversationMode = ConversationModeChat
+	}
+	preference.GroupMessageMode = GroupMessageMode(strings.ToLower(strings.TrimSpace(string(preference.GroupMessageMode))))
+	if preference.GroupMessageMode == "" {
+		preference.GroupMessageMode = GroupMessageModeMentionOnly
 	}
 	preference.Agent = strings.ToLower(strings.TrimSpace(preference.Agent))
 	if preference.Agent == "" {

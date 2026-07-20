@@ -275,7 +275,7 @@ func runServe(args []string) error {
 	if agentsErr != nil {
 		recorder.Record("system", "agents_config_fallback", "", agentsErr.Error())
 	}
-	preferences, err := config.OpenPreferenceStore(cfg.PreferenceStorePath, config.RuntimePreference{Model: cfg.Model, Effort: cfg.Effort, ReplyMode: cfg.ReplyMode, ConversationMode: cfg.ConversationMode}, cfg.AllowedModels, agents.Agents...)
+	preferences, err := config.OpenPreferenceStore(cfg.PreferenceStorePath, runtimePreferenceDefaults(cfg), cfg.AllowedModels, agents.Agents...)
 	if err != nil {
 		return fmt.Errorf("open runtime preference store: %w", err)
 	}
@@ -360,6 +360,17 @@ func runServe(args []string) error {
 		return longConnErr
 	}
 	return shutdownErr
+}
+
+func runtimePreferenceDefaults(cfg config.Config) config.RuntimePreference {
+	return config.RuntimePreference{
+		Model:            cfg.Model,
+		Effort:           cfg.Effort,
+		ReplyMode:        cfg.ReplyMode,
+		ConversationMode: cfg.ConversationMode,
+		GroupMessageMode: cfg.GroupMessageMode,
+		RespondToBots:    cfg.RespondToBots,
+	}
 }
 
 func newServeCardRouter(client feishu.CardKitClientAPI, observer feishu.CardKitRenderObserver, journal feishu.NativeSequenceJournal) *feishu.CardKitRouterRenderer {

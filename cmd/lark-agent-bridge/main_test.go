@@ -392,6 +392,21 @@ func TestRunLongConnUntilStoppedReturnsClientError(t *testing.T) {
 	}
 }
 
+func TestRuntimePreferenceDefaultsIncludeGroupMessageSettings(t *testing.T) {
+	cfg := config.Config{
+		Model:            "opus",
+		Effort:           "high",
+		ReplyMode:        config.ReplyModeLatestCard,
+		ConversationMode: config.ConversationModeTopic,
+		GroupMessageMode: config.GroupMessageModeParticipatedTopics,
+		RespondToBots:    true,
+	}
+	got := runtimePreferenceDefaults(cfg)
+	if got.GroupMessageMode != config.GroupMessageModeParticipatedTopics || !got.RespondToBots {
+		t.Fatalf("runtime preference defaults = %#v", got)
+	}
+}
+
 type fakeLongConnClient struct {
 	run func(context.Context, func(context.Context, feishu.InboundMessage) error) error
 }

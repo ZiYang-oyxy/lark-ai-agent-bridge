@@ -150,6 +150,48 @@ func TestLoadFromEnvStrictRejectsInvalidConversationMode(t *testing.T) {
 	}
 }
 
+func TestLoadFromEnvGroupMessageDefaultsAndOverrides(t *testing.T) {
+	workDir := filepath.Join(t.TempDir(), "work")
+	t.Setenv("E2E_DEFAULT_WORKDIR", workDir)
+	cfg := LoadFromEnv()
+	if cfg.GroupMessageMode != GroupMessageModeMentionOnly || cfg.RespondToBots {
+		t.Fatalf("group message defaults = mode %q respond_to_bots=%t", cfg.GroupMessageMode, cfg.RespondToBots)
+	}
+	if want := filepath.Join(workDir, ".lark-agent-bridge", "participated-topics.json"); cfg.ParticipatedTopicsStorePath != want {
+		t.Fatalf("participation store = %q, want %q", cfg.ParticipatedTopicsStorePath, want)
+	}
+
+	customStore := filepath.Join(t.TempDir(), "topics.json")
+	t.Setenv("E2E_GROUP_MESSAGE_MODE", string(GroupMessageModeParticipatedTopics))
+	t.Setenv("E2E_RESPOND_TO_BOTS", "true")
+	t.Setenv("E2E_PARTICIPATED_TOPICS_STORE", customStore)
+	cfg, err := LoadFromEnvStrict()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.GroupMessageMode != GroupMessageModeParticipatedTopics || !cfg.RespondToBots || cfg.ParticipatedTopicsStorePath != customStore {
+		t.Fatalf("group message overrides = %#v", cfg)
+	}
+}
+
+func TestLoadFromEnvStrictRejectsInvalidGroupMessageSettings(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		env   string
+		value string
+	}{
+		{name: "mode", env: "E2E_GROUP_MESSAGE_MODE", value: "everything"},
+		{name: "bot switch", env: "E2E_RESPOND_TO_BOTS", value: "sometimes"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv(tc.env, tc.value)
+			if _, err := LoadFromEnvStrict(); err == nil {
+				t.Fatalf("LoadFromEnvStrict() error = nil for %s=%q", tc.env, tc.value)
+			}
+		})
+	}
+}
+
 func TestLoadFromEnvStrictRejectsInvalidReplyMode(t *testing.T) {
 	t.Setenv("E2E_REPLY_MODE", "replace-everything")
 	if _, err := LoadFromEnvStrict(); err == nil {

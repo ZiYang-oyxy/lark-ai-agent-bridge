@@ -10,69 +10,74 @@ import (
 )
 
 type Config struct {
-	DefaultAgent        string
-	DefaultWorkDir      string
-	ClaudeBin           string
-	CardUpdateEvery     time.Duration
-	CardMaxChars        int
-	CardMinDeltaChars   int
-	CardPreviewMaxChars int
-	InteractionTimeout  time.Duration
-	AuditLogPath        string
-	SessionStorePath    string
-	PreferenceStorePath string
-	ReplyStorePath      string
-	AgentsConfigPath    string
-	AccessStorePath     string
-	Model               string
-	Effort              string
-	ReplyMode           ReplyMode
-	ConversationMode    ConversationMode
-	AllowedModels       []string
-	QueueMaxPending     int
-	BatchMaxInputs      int
-	BatchMaxTextRunes   int
-	DedupTTL            time.Duration
-	DedupMaxEntries     int
-	ShutdownGrace       time.Duration
-	MediaCacheDir       string
-	MediaMaxFileBytes   int64
-	MediaMaxBatchBytes  int64
-	MediaCacheMaxBytes  int64
-	MediaRetention      time.Duration
+	DefaultAgent                string
+	DefaultWorkDir              string
+	ClaudeBin                   string
+	CardUpdateEvery             time.Duration
+	CardMaxChars                int
+	CardMinDeltaChars           int
+	CardPreviewMaxChars         int
+	InteractionTimeout          time.Duration
+	AuditLogPath                string
+	SessionStorePath            string
+	PreferenceStorePath         string
+	ReplyStorePath              string
+	AgentsConfigPath            string
+	AccessStorePath             string
+	ParticipatedTopicsStorePath string
+	Model                       string
+	Effort                      string
+	ReplyMode                   ReplyMode
+	ConversationMode            ConversationMode
+	GroupMessageMode            GroupMessageMode
+	RespondToBots               bool
+	AllowedModels               []string
+	QueueMaxPending             int
+	BatchMaxInputs              int
+	BatchMaxTextRunes           int
+	DedupTTL                    time.Duration
+	DedupMaxEntries             int
+	ShutdownGrace               time.Duration
+	MediaCacheDir               string
+	MediaMaxFileBytes           int64
+	MediaMaxBatchBytes          int64
+	MediaCacheMaxBytes          int64
+	MediaRetention              time.Duration
 }
 
 func LoadFromEnv() Config {
 	workDir := mustGetwd()
 	cfg := Config{
-		DefaultAgent:        "claude",
-		DefaultWorkDir:      workDir,
-		ClaudeBin:           "claude",
-		CardUpdateEvery:     800 * time.Millisecond,
-		CardMaxChars:        12000,
-		CardMinDeltaChars:   30,
-		CardPreviewMaxChars: 2000,
-		InteractionTimeout:  120 * time.Second,
-		AuditLogPath:        filepath.Join(workDir, ".lark-agent-bridge", "audit.jsonl"),
-		SessionStorePath:    filepath.Join(workDir, ".lark-agent-bridge", "sessions.json"),
-		PreferenceStorePath: filepath.Join(workDir, ".lark-agent-bridge", "preferences.json"),
-		ReplyStorePath:      filepath.Join(workDir, ".lark-agent-bridge", "replies.json"),
-		AgentsConfigPath:    filepath.Join(workDir, ".lark-agent-bridge", "agents.json"),
-		AccessStorePath:     filepath.Join(workDir, ".lark-agent-bridge", "access.json"),
-		Model:               "default",
-		Effort:              "low",
-		ReplyMode:           ReplyModeAppend,
-		ConversationMode:    ConversationModeChat,
-		QueueMaxPending:     20,
-		BatchMaxInputs:      10,
-		BatchMaxTextRunes:   64 << 10,
-		DedupTTL:            24 * time.Hour,
-		DedupMaxEntries:     10000,
-		ShutdownGrace:       5 * time.Second,
-		MediaMaxFileBytes:   25 << 20,
-		MediaMaxBatchBytes:  100 << 20,
-		MediaCacheMaxBytes:  500 << 20,
-		MediaRetention:      72 * time.Hour,
+		DefaultAgent:                "claude",
+		DefaultWorkDir:              workDir,
+		ClaudeBin:                   "claude",
+		CardUpdateEvery:             800 * time.Millisecond,
+		CardMaxChars:                12000,
+		CardMinDeltaChars:           30,
+		CardPreviewMaxChars:         2000,
+		InteractionTimeout:          120 * time.Second,
+		AuditLogPath:                filepath.Join(workDir, ".lark-agent-bridge", "audit.jsonl"),
+		SessionStorePath:            filepath.Join(workDir, ".lark-agent-bridge", "sessions.json"),
+		PreferenceStorePath:         filepath.Join(workDir, ".lark-agent-bridge", "preferences.json"),
+		ReplyStorePath:              filepath.Join(workDir, ".lark-agent-bridge", "replies.json"),
+		AgentsConfigPath:            filepath.Join(workDir, ".lark-agent-bridge", "agents.json"),
+		AccessStorePath:             filepath.Join(workDir, ".lark-agent-bridge", "access.json"),
+		ParticipatedTopicsStorePath: filepath.Join(workDir, ".lark-agent-bridge", "participated-topics.json"),
+		Model:                       "default",
+		Effort:                      "low",
+		ReplyMode:                   ReplyModeAppend,
+		ConversationMode:            ConversationModeChat,
+		GroupMessageMode:            GroupMessageModeMentionOnly,
+		QueueMaxPending:             20,
+		BatchMaxInputs:              10,
+		BatchMaxTextRunes:           64 << 10,
+		DedupTTL:                    24 * time.Hour,
+		DedupMaxEntries:             10000,
+		ShutdownGrace:               5 * time.Second,
+		MediaMaxFileBytes:           25 << 20,
+		MediaMaxBatchBytes:          100 << 20,
+		MediaCacheMaxBytes:          500 << 20,
+		MediaRetention:              72 * time.Hour,
 	}
 	cfg.AllowedModels = append([]string(nil), builtinModels...)
 	cfg.MediaCacheDir = defaultMediaCacheDir(cfg.DefaultWorkDir)
@@ -90,6 +95,7 @@ func LoadFromEnv() Config {
 		cfg.ReplyStorePath = filepath.Join(v, ".lark-agent-bridge", "replies.json")
 		cfg.AgentsConfigPath = filepath.Join(v, ".lark-agent-bridge", "agents.json")
 		cfg.AccessStorePath = filepath.Join(v, ".lark-agent-bridge", "access.json")
+		cfg.ParticipatedTopicsStorePath = filepath.Join(v, ".lark-agent-bridge", "participated-topics.json")
 		cfg.MediaCacheDir = defaultMediaCacheDir(v)
 	}
 	if v := os.Getenv("E2E_CARD_MAX_CHARS"); v != "" {
@@ -132,6 +138,9 @@ func LoadFromEnv() Config {
 	if v := os.Getenv("E2E_ACCESS_STORE"); v != "" {
 		cfg.AccessStorePath = v
 	}
+	if v := os.Getenv("E2E_PARTICIPATED_TOPICS_STORE"); v != "" {
+		cfg.ParticipatedTopicsStorePath = v
+	}
 	if v := os.Getenv("E2E_MODEL"); v != "" {
 		cfg.Model = strings.TrimSpace(v)
 	}
@@ -143,6 +152,12 @@ func LoadFromEnv() Config {
 	}
 	if v := os.Getenv("E2E_CONVERSATION_MODE"); v != "" {
 		cfg.ConversationMode = ConversationMode(strings.ToLower(strings.TrimSpace(v)))
+	}
+	if v := os.Getenv("E2E_GROUP_MESSAGE_MODE"); v != "" {
+		cfg.GroupMessageMode = GroupMessageMode(strings.ToLower(strings.TrimSpace(v)))
+	}
+	if v := os.Getenv("E2E_RESPOND_TO_BOTS"); strings.EqualFold(strings.TrimSpace(v), "true") {
+		cfg.RespondToBots = true
 	}
 	if v := os.Getenv("E2E_ALLOWED_MODELS"); v != "" {
 		additions := strings.Split(v, ",")
@@ -194,8 +209,18 @@ func LoadFromEnvStrict() (Config, error) {
 			return Config{}, fmt.Errorf("parse E2E_ALLOWED_MODELS: %w", err)
 		}
 	}
-	if err := ValidateRuntimePreference(RuntimePreference{Model: cfg.Model, Effort: cfg.Effort, ReplyMode: cfg.ReplyMode, ConversationMode: cfg.ConversationMode}, cfg.AllowedModels...); err != nil {
+	if err := ValidateRuntimePreference(RuntimePreference{Model: cfg.Model, Effort: cfg.Effort, ReplyMode: cfg.ReplyMode, ConversationMode: cfg.ConversationMode, GroupMessageMode: cfg.GroupMessageMode, RespondToBots: cfg.RespondToBots}, cfg.AllowedModels...); err != nil {
 		return Config{}, fmt.Errorf("validate runtime preference defaults: %w", err)
+	}
+	if raw, ok := os.LookupEnv("E2E_RESPOND_TO_BOTS"); ok {
+		switch strings.ToLower(strings.TrimSpace(raw)) {
+		case "true":
+			cfg.RespondToBots = true
+		case "false":
+			cfg.RespondToBots = false
+		default:
+			return Config{}, fmt.Errorf("E2E_RESPOND_TO_BOTS must be true or false")
+		}
 	}
 	if cfg.CardMinDeltaChars, err = explicitPositiveInt("E2E_CARD_MIN_DELTA_CHARS", cfg.CardMinDeltaChars); err != nil {
 		return Config{}, err
