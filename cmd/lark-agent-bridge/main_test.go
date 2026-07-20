@@ -19,6 +19,7 @@ import (
 	"lark-agent-bridge/internal/card"
 	"lark-agent-bridge/internal/config"
 	"lark-agent-bridge/internal/feishu"
+	"lark-agent-bridge/internal/schedule"
 	"lark-agent-bridge/internal/session"
 )
 
@@ -34,6 +35,50 @@ func TestSimulateRunnerReportsSelectedAgent(t *testing.T) {
 	}
 	if result.Model != "simulate-codex" || result.AgentSessionID != "simulate-thread" {
 		t.Fatalf("result = %#v", result)
+	}
+}
+
+func TestRunScheduleProposeValidatesRequiredEnvironment(t *testing.T) {
+	t.Setenv("LAB_SCHEDULE_SOCKET", "")
+	t.Setenv("LAB_SCHEDULE_TOKEN", "")
+	err := runSchedulePropose([]string{"--kind", "cron", "--cron", "0 9 * * *", "--timezone", "Asia/Shanghai", "--prompt", "总结日报"})
+	if err == nil || !strings.Contains(err.Error(), "LAB_SCHEDULE_SOCKET") {
+		t.Fatalf("error = %v", err)
+	}
+}
+
+func TestRunScheduleProposeCreatesDraft(t *testing.T) {
+	now := time.Now()
+	store, err := schedule.NewStore(filepath.Join(t.TempDir(), "schedules.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	registry := schedule.NewContextRegistry(time.Minute)
+	token, err := registry.Issue(schedule.ProposalContext{
+		OriginRunID: "run", Creator: "ou", Target: schedule.Target{ChatID: "oc"},
+		Execution: schedule.FrozenExecution{Agent: "claude", WorkDir: t.TempDir()},
+	}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	socketDir, err := os.MkdirTemp("/tmp", "lab-main-schedule-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(socketDir) })
+	socketPath := filepath.Join(socketDir, "control.sock")
+	server := schedule.NewControlServer(socketPath, store, registry, schedule.ControlConfig{Now: func() time.Time { return now }})
+	if err := server.Start(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	defer server.Close()
+	t.Setenv("LAB_SCHEDULE_SOCKET", socketPath)
+	t.Setenv("LAB_SCHEDULE_TOKEN", token)
+	if err := runSchedulePropose([]string{"--kind", "cron", "--cron", "0 9 * * *", "--timezone", "Asia/Shanghai", "--description", "日报", "--prompt", "总结日报"}); err != nil {
+		t.Fatal(err)
+	}
+	if got := len(store.Drafts()); got != 1 {
+		t.Fatalf("draft count = %d", got)
 	}
 }
 
@@ -304,6 +349,21 @@ func TestApplyDefaultWorkDirRebasesImplicitSessionStore(t *testing.T) {
 	}
 	if cfg.SessionStorePath != filepath.Join("/tmp/work", ".lark-agent-bridge", "sessions.json") {
 		t.Fatalf("session store = %q", cfg.SessionStorePath)
+	}
+}
+
+func TestApplyDefaultWorkDirRebasesImplicitSchedulePaths(t *testing.T) {
+	t.Setenv("E2E_SCHEDULE_STORE", "")
+	t.Setenv("E2E_SCHEDULE_SOCKET", "")
+	cfg := config.Config{}
+	if err := applyDefaultWorkDir(&cfg, "/tmp/work"); err != nil {
+		t.Fatal(err)
+	}
+	if cfg.ScheduleStorePath != filepath.Join("/tmp/work", ".lark-agent-bridge", "schedules.json") {
+		t.Fatalf("schedule store = %q", cfg.ScheduleStorePath)
+	}
+	if cfg.ScheduleSocketPath == "" || !strings.Contains(cfg.ScheduleSocketPath, "schedule.sock") {
+		t.Fatalf("schedule socket = %q", cfg.ScheduleSocketPath)
 	}
 }
 

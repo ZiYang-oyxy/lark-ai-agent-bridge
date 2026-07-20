@@ -4,11 +4,13 @@ import (
 	"context"
 	"errors"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 )
 
 type recordingDispatcher struct {
+	mu        sync.Mutex
 	store     *Store
 	calls     int
 	duplicate bool
@@ -17,6 +19,8 @@ type recordingDispatcher struct {
 }
 
 func (d *recordingDispatcher) Enqueue(_ context.Context, _ Task, run Run) (EnqueueResult, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
 	d.calls++
 	if d.store != nil {
 		persisted, ok := d.store.Run(run.ID)
@@ -26,6 +30,12 @@ func (d *recordingDispatcher) Enqueue(_ context.Context, _ Task, run Run) (Enque
 	}
 	d.seen = append(d.seen, run)
 	return EnqueueResult{Duplicate: d.duplicate}, d.err
+}
+
+func (d *recordingDispatcher) callCount() int {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.calls
 }
 
 type recordingNotifier struct{ messages []string }
@@ -122,7 +132,7 @@ func TestEngineSkipsOverlappingOccurrence(t *testing.T) {
 	}
 }
 
-func TestEngineMarksDispatchFailure(t *testing.T) {
+func TestEngineLeavesQueueFullRunPendingForRetry(t *testing.T) {
 	now := time.Date(2026, 7, 21, 8, 0, 0, 0, time.UTC)
 	store, task := confirmedTask(t, now, KindTimer, now.Add(time.Minute))
 	dispatch := &recordingDispatcher{store: store, err: ErrQueueFull}
@@ -132,8 +142,61 @@ func TestEngineMarksDispatchFailure(t *testing.T) {
 		t.Fatalf("fire error = %v", err)
 	}
 	run, _ := store.Run(RunID(task.Kind, task.ID, task.NextRun))
-	if run.State != RunFailed || run.LastError == "" {
-		t.Fatalf("failed run = %#v", run)
+	if run.State != RunPending || run.LastError == "" {
+		t.Fatalf("pending run = %#v", run)
+	}
+}
+
+func TestEngineRetriesQueueFullRunUntilAccepted(t *testing.T) {
+	now := time.Now()
+	store, task := confirmedTask(t, now, KindTimer, now.Add(time.Minute))
+	dispatch := &recordingDispatcher{store: store, err: ErrQueueFull}
+	engine := NewEngine(store, dispatch, &recordingNotifier{}, EngineConfig{CatchUpWindow: time.Minute, RetryInterval: 10 * time.Millisecond})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if err := engine.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	defer engine.Stop()
+	if err := engine.fire(ctx, task, task.NextRun, false); !errors.Is(err, ErrQueueFull) {
+		t.Fatalf("fire error = %v", err)
+	}
+	dispatch.mu.Lock()
+	dispatch.err = nil
+	dispatch.mu.Unlock()
+	deadline := time.Now().Add(time.Second)
+	for {
+		run, _ := store.Run(RunID(task.Kind, task.ID, task.NextRun))
+		if run.State == RunQueued {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("run was not retried: %#v calls=%d", run, dispatch.callCount())
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+func TestEngineRecoveryPrunesExpiredTimerHistory(t *testing.T) {
+	completed := time.Date(2026, 6, 1, 8, 0, 0, 0, time.UTC)
+	now := completed.Add(31 * 24 * time.Hour)
+	store, task := confirmedTask(t, completed.Add(-time.Hour), KindTimer, completed.Add(-time.Minute))
+	run := Run{ID: RunID(task.Kind, task.ID, task.NextRun), TaskID: task.ID, ScheduledAt: task.NextRun, State: RunPending, ClaimedAt: completed.Add(-time.Minute)}
+	if created, err := store.ClaimRun(run); err != nil || !created {
+		t.Fatalf("claim: created=%v err=%v", created, err)
+	}
+	if err := store.UpdateRun(run.ID, RunDelivered, "", completed); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.UpdateTaskSchedule(task.ID, time.Time{}, true); err != nil {
+		t.Fatal(err)
+	}
+	engine := NewEngine(store, &recordingDispatcher{}, &recordingNotifier{}, EngineConfig{Now: func() time.Time { return now }, HistoryRetention: 30 * 24 * time.Hour})
+	if err := engine.Recover(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := store.Task(task.ID); ok || len(store.Runs()) != 0 {
+		t.Fatalf("expired history remains: tasks=%#v runs=%#v", store.Tasks(), store.Runs())
 	}
 }
 

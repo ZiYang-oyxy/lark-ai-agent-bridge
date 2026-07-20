@@ -82,6 +82,33 @@ func TestLoadFromEnvDurableSchedulerDefaultsAndOverrides(t *testing.T) {
 	}
 }
 
+func TestLoadFromEnvScheduleDefaults(t *testing.T) {
+	t.Setenv("E2E_DEFAULT_WORKDIR", "/tmp/lab-work")
+	t.Setenv("E2E_SCHEDULE_STORE", "")
+	t.Setenv("E2E_SCHEDULE_SOCKET", "")
+	cfg := LoadFromEnv()
+	if cfg.ScheduleStorePath != filepath.Join("/tmp/lab-work", ".lark-agent-bridge", "schedules.json") {
+		t.Fatalf("schedule store = %q", cfg.ScheduleStorePath)
+	}
+	if cfg.ScheduleSocketPath == "" || len(cfg.ScheduleSocketPath) > 100 {
+		t.Fatalf("schedule socket = %q", cfg.ScheduleSocketPath)
+	}
+	if cfg.ScheduleDraftTTL != 10*time.Minute || cfg.ScheduleCatchUp != 5*time.Minute || cfg.ScheduleTimeout != 30*time.Minute || cfg.ScheduleRetention != 30*24*time.Hour {
+		t.Fatalf("schedule defaults = %#v", cfg)
+	}
+}
+
+func TestLoadFromEnvStrictRejectsInvalidScheduleDurations(t *testing.T) {
+	for _, name := range []string{"E2E_SCHEDULE_DRAFT_TTL_MIN", "E2E_SCHEDULE_CATCHUP_MIN", "E2E_SCHEDULE_TIMEOUT_MIN", "E2E_SCHEDULE_RETENTION_DAYS"} {
+		t.Run(name, func(t *testing.T) {
+			t.Setenv(name, "0")
+			if _, err := LoadFromEnvStrict(); err == nil {
+				t.Fatalf("LoadFromEnvStrict accepted %s=0", name)
+			}
+		})
+	}
+}
+
 func TestLoadFromEnvRuntimePreferenceDefaultsAndOverrides(t *testing.T) {
 	workDir := filepath.Join(t.TempDir(), "work")
 	t.Setenv("E2E_DEFAULT_WORKDIR", workDir)

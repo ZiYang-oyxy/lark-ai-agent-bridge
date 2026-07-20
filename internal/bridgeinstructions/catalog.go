@@ -13,7 +13,7 @@ import (
 )
 
 const (
-	CurrentVersion   = "v1"
+	CurrentVersion   = "v2"
 	runtimeDirPrefix = "lark-bridge-instructions-"
 )
 
@@ -22,6 +22,7 @@ var resources embed.FS
 
 var files = map[string]string{
 	"v1": "bridge-instructions/feishu-runtime-v1.md",
+	"v2": "bridge-instructions/feishu-runtime-v2.md",
 }
 
 // Content returns the immutable embedded instructions for version.

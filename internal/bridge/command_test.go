@@ -95,6 +95,31 @@ func TestHelpTextIncludesConfigCommand(t *testing.T) {
 	}
 }
 
+func TestParseScheduleCommands(t *testing.T) {
+	tests := []struct {
+		text     string
+		typeWant CommandType
+		body     string
+	}{
+		{text: "/cron", typeWant: CommandCron, body: ""},
+		{text: "/cron add 每天九点总结", typeWant: CommandCron, body: "add 每天九点总结"},
+		{text: "/timer del abcd1234", typeWant: CommandTimer, body: "del abcd1234"},
+	}
+	for _, test := range tests {
+		cmd := ParseCommand(Message{Text: test.text}, agent.Claude)
+		if cmd.Type != test.typeWant || cmd.Text != test.body {
+			t.Fatalf("ParseCommand(%q) = %#v", test.text, cmd)
+		}
+	}
+}
+
+func TestHelpTextIncludesScheduleCommands(t *testing.T) {
+	text := HelpText()
+	if !strings.Contains(text, "/cron") || !strings.Contains(text, "/timer") {
+		t.Fatalf("help text = %q", text)
+	}
+}
+
 func TestRemovedCommandsAreUnknown(t *testing.T) {
 	for _, text := range []string{"/codex inspect repo", "/claude inspect repo", "/sessions", "/history", "/topic off", "/attach"} {
 		cmd := ParseCommand(Message{Text: text}, agent.Claude)

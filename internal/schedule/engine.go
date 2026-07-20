@@ -27,6 +27,7 @@ type EngineConfig struct {
 	CatchUpWindow    time.Duration
 	ExecutionTimeout time.Duration
 	HistoryRetention time.Duration
+	RetryInterval    time.Duration
 }
 
 type Engine struct {
@@ -68,10 +69,16 @@ func NewEngine(store *Store, dispatch Dispatcher, notify Notifier, cfg EngineCon
 	if cfg.HistoryRetention <= 0 {
 		cfg.HistoryRetention = 30 * 24 * time.Hour
 	}
+	if cfg.RetryInterval <= 0 {
+		cfg.RetryInterval = time.Second
+	}
 	return &Engine{store: store, dispatch: dispatch, notify: notify, config: cfg, timers: map[string]*scheduledTimer{}}
 }
 
 func (e *Engine) Store() *Store { return e.store }
+
+// ExecutionTimeout is the maximum wall time for one scheduled Agent run.
+func (e *Engine) ExecutionTimeout() time.Duration { return e.config.ExecutionTimeout }
 
 func (e *Engine) Start(ctx context.Context) error {
 	e.mu.Lock()
@@ -87,6 +94,8 @@ func (e *Engine) Start(ctx context.Context) error {
 		e.Stop()
 		return err
 	}
+	e.wg.Add(1)
+	go e.retryLoop(e.ctx)
 	for _, task := range e.store.Tasks() {
 		if task.Enabled && !task.Archived && task.NextRun.After(e.now()) {
 			e.register(task)
@@ -138,7 +147,7 @@ func (e *Engine) Recover(ctx context.Context) error {
 			}
 			continue
 		}
-		if err := e.dispatchPending(ctx, task, run); err != nil {
+		if err := e.dispatchPending(ctx, task, run); err != nil && !errors.Is(err, ErrQueueFull) {
 			return err
 		}
 	}
@@ -150,6 +159,9 @@ func (e *Engine) Recover(ctx context.Context) error {
 		switch task.Kind {
 		case KindTimer:
 			if _, exists := e.store.Run(RunID(task.Kind, task.ID, task.NextRun)); exists {
+				if _, err := e.store.UpdateTaskSchedule(task.ID, time.Time{}, true); err != nil {
+					return err
+				}
 				continue
 			}
 			if now.Sub(task.NextRun) <= e.config.CatchUpWindow {
@@ -181,7 +193,8 @@ func (e *Engine) Recover(ctx context.Context) error {
 			}
 		}
 	}
-	return nil
+	_, err := e.store.PruneHistory(now.Add(-e.config.HistoryRetention))
+	return err
 }
 
 func (e *Engine) fire(ctx context.Context, task Task, scheduledAt time.Time, manual bool) error {
@@ -212,12 +225,54 @@ func (e *Engine) dispatchPending(ctx context.Context, task Task, run Run) error 
 	}
 	_, err := e.dispatch.Enqueue(ctx, task, run)
 	if err != nil {
+		if errors.Is(err, ErrQueueFull) {
+			if updateErr := e.store.UpdateRun(run.ID, RunPending, err.Error(), e.now()); updateErr != nil {
+				return errors.Join(err, updateErr)
+			}
+			return err
+		}
 		if updateErr := e.store.UpdateRun(run.ID, RunFailed, err.Error(), e.now()); updateErr != nil {
 			return errors.Join(err, updateErr)
 		}
 		return err
 	}
 	return e.store.UpdateRun(run.ID, RunQueued, "", e.now())
+}
+
+func (e *Engine) retryLoop(ctx context.Context) {
+	defer e.wg.Done()
+	ticker := time.NewTicker(e.config.RetryInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			e.retryPending(ctx)
+		}
+	}
+}
+
+func (e *Engine) retryPending(ctx context.Context) {
+	now := e.now()
+	for _, run := range e.store.Runs() {
+		if run.State != RunPending {
+			continue
+		}
+		task, ok := e.store.Task(run.TaskID)
+		if !ok {
+			_ = e.store.UpdateRun(run.ID, RunFailed, "task no longer exists", now)
+			continue
+		}
+		if now.Sub(run.ScheduledAt) > e.config.CatchUpWindow {
+			_ = e.store.UpdateRun(run.ID, RunMissed, "queue remained full past catch-up window", now)
+			if e.notify != nil {
+				_ = e.notify.Notify(ctx, task, fmt.Sprintf("定时任务 %s 未执行：队列拥塞超过补偿窗口", task.ID))
+			}
+			continue
+		}
+		_ = e.dispatchPending(ctx, task, run)
+	}
 }
 
 func (e *Engine) markMissed(ctx context.Context, task Task, scheduledAt time.Time, reason string) error {

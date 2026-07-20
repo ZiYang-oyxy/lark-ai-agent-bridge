@@ -25,7 +25,8 @@ bridge 不托管交互式终端，也不通过 tmux/PTY 捕获输出。每个已
 - `cmd/lark-agent-bridge`：CLI 入口，包含 `doctor`、`simulate`、`simulate-action`、`serve`
 - `internal/agent`：Claude/Codex one-shot 命令构造
 - `internal/session`：会话 key、状态、队列、agent session id、prompt 历史
-- `internal/bridge`：消息命令解析、工作目录确认、队列、Agent runner/JSONL parser、CardStream 状态聚合、action 处理
+- `internal/bridge`：消息命令解析、工作目录确认、队列、Agent runner/JSONL parser、CardStream 状态聚合、action 与定时任务桥接
+- `internal/schedule`：自然语言规则提案的受限控制面、原子持久化、cron/timer 调度、恢复与运行状态机
 - `internal/card`：卡片事件抽象、富文本 segment、fake renderer、长度控制、CardKit 2.0 JSON builder
 - `internal/feishu`：飞书消息模型、SDK 长连接、sender/reaction 接口、消息归一化、CardKit HTTP client、CardKit renderer、`card.action.trigger` action 解析
 - `internal/audit`：审计事件记录
@@ -36,7 +37,7 @@ bridge 不托管交互式终端，也不通过 tmux/PTY 捕获输出。每个已
 
 ## 命令面
 
-当前飞书命令只保留：
+当前飞书命令包括：
 
 - `/new [--workdir <path>] [prompt]`：重置当前 chat/topic 的 Agent 会话；有 prompt 时立即执行，没有 prompt 时只创建 ready 状态。
 - `/status`：查看当前 chat/topic 会话状态；群聊中会额外显示当前群内已知会话数量。
@@ -44,7 +45,13 @@ bridge 不托管交互式终端，也不通过 tmux/PTY 捕获输出。每个已
 - `/config`：配置 agent、agent home、agent bin、model、effort、Reply mode 和 Conversation mode；`/config reset` 恢复环境默认。
 - `/help`：显示帮助。
 
-暂不实现 `/resume`。`/sessions`、`/history`、`/topic`、`/attach`、`/interrupt` 文本命令以及 `/claude`、`/codex` 旧入口均不属于当前范围。
+定时任务使用 `/cron`、`/timer` 及其 `add/info/run/enable/disable/del` 子命令；自然语言消息也可直接触发 Agent 提案。`/sessions`、`/history`、`/topic`、`/attach`、`/interrupt` 文本命令以及 `/claude`、`/codex` 旧入口均不属于当前范围。
+
+## 定时任务边界
+
+Agent 只通过单次 token 和私有 Unix socket 提交 `cron`/`timer` 规则字段，不能覆盖用户、chat/topic 或执行配置。Bridge 校验规则并生成草稿，用户确认后才形成 enabled task。到期 occurrence 先原子写入 schedule snapshot，再以确定性 synthetic message ID 投递给现有 session queue，因此复用队列容量、receipt 去重、CardKit 输出和停机收敛能力。
+
+调度准确性采用 at-least-once claim + durable receipt reconciliation，而不是假设进程或网络永不失败。重启只补偿 5 分钟窗口内的最近 occurrence；同任务已有 pending/queued/running run 时，新 occurrence 标记为 `skipped_overlap`；队列拥塞在窗口内重试，执行超过 30 分钟失败退出。结果发送阶段无法判定是否到达时记录 `delivery_unknown`，避免伪报成功。
 
 群聊默认只处理 @ 机器人的消息；单聊默认处理全部文本。
 

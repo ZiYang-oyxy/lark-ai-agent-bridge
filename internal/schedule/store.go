@@ -208,6 +208,17 @@ func (s *Store) Draft(id string) (Draft, bool) {
 	return cloneDraft(s.snapshot.Drafts[idx]), true
 }
 
+func (s *Store) DraftByOrigin(originRunID string) (Draft, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, draft := range s.snapshot.Drafts {
+		if draft.OriginRunID == originRunID {
+			return cloneDraft(draft), true
+		}
+	}
+	return Draft{}, false
+}
+
 func (s *Store) Task(id string) (Task, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -314,6 +325,41 @@ func (s *Store) ExpireDrafts(now time.Time) (int, error) {
 		return 0, err
 	}
 	return expired, nil
+}
+
+// PruneHistory removes terminal runs and their archived one-shot tasks after
+// the retention cutoff. Active and recurring tasks are never removed.
+func (s *Store) PruneHistory(cutoff time.Time) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	candidate := cloneSnapshot(s.snapshot)
+	removedRunIDs := make(map[string]struct{})
+	keptRuns := candidate.Runs[:0]
+	for _, run := range candidate.Runs {
+		if terminalRunState(run.State) && !run.CompletedAt.IsZero() && run.CompletedAt.Before(cutoff) {
+			removedRunIDs[run.ID] = struct{}{}
+			continue
+		}
+		keptRuns = append(keptRuns, run)
+	}
+	candidate.Runs = keptRuns
+	keptTasks := candidate.Tasks[:0]
+	for _, task := range candidate.Tasks {
+		_, lastRunRemoved := removedRunIDs[task.LastRunID]
+		if task.Kind == KindTimer && task.Archived && lastRunRemoved {
+			continue
+		}
+		keptTasks = append(keptTasks, task)
+	}
+	candidate.Tasks = keptTasks
+	removed := len(s.snapshot.Runs) - len(candidate.Runs) + len(s.snapshot.Tasks) - len(candidate.Tasks)
+	if removed == 0 {
+		return 0, nil
+	}
+	if err := s.publishLocked(candidate); err != nil {
+		return 0, err
+	}
+	return removed, nil
 }
 
 func (s *Store) DeleteTask(id string) error {
