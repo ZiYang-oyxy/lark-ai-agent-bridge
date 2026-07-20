@@ -89,6 +89,9 @@ func prepareLarkCard(event Event, nativeReady bool) (PreparedLarkCard, error) {
 		return PreparedLarkCard{}, err
 	}
 	answer, _, _ := splitCardSections(event.Segments)
+	if event.MarkdownLayout {
+		answer = event.Markdown
+	}
 	prepared := PreparedLarkCard{
 		event:       event,
 		payload:     clonePayload(payload),
