@@ -173,6 +173,69 @@ func TestHelpOpenConfigCallbackRendersConfigForm(t *testing.T) {
 	}
 }
 
+func TestHelpCommandCarriesOnlyGroupChatContext(t *testing.T) {
+	for _, tt := range []struct {
+		name   string
+		group  bool
+		chatID string
+		want   string
+	}{
+		{name: "group", group: true, chatID: "oc-a", want: "oc-a"},
+		{name: "direct", group: false, chatID: "dm-a", want: ""},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			renderer := card.NewFakeRenderer()
+			svc := NewService(testConfig(t), renderer, newFakeRunner(), audit.NewRecorder())
+			err := svc.HandleMessage(context.Background(), Message{
+				ID: "help-" + tt.name, ChatID: tt.chatID, Sender: "user-1", Text: "/help",
+				IsGroup: tt.group, Mentioned: tt.group,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			event := lastEvent(t, renderer)
+			if event.HelpCard == nil || event.HelpCard.ChatID != tt.want {
+				t.Fatalf("HelpCard = %#v, want ChatID %q", event.HelpCard, tt.want)
+			}
+		})
+	}
+}
+
+func TestHelpOpenLocalConfigCallbackRendersReadOnlyOverview(t *testing.T) {
+	svc, store := localConfigService(t)
+	result, err := svc.HandleActionResult(context.Background(), ActionRequest{
+		SessionID: "help-card", ActionID: "help.open_local_config", Value: "oc-a", Actor: "user-1",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Event == nil || result.Event.Type != "local_config_overview" {
+		t.Fatalf("result = %#v, want local_config_overview", result)
+	}
+	if result.Event.LocalConfigOverview == nil || result.Event.LocalConfigOverview.ChatID != "oc-a" {
+		t.Fatalf("overview = %#v, want chat oc-a", result.Event.LocalConfigOverview)
+	}
+	if _, ok := store.ChatOverride("oc-a"); ok {
+		t.Fatal("opening local config from help must not write an override")
+	}
+}
+
+func TestHelpOpenLocalConfigCallbackRequiresChatID(t *testing.T) {
+	svc, store := localConfigService(t)
+	result, err := svc.HandleActionResult(context.Background(), ActionRequest{
+		SessionID: "help-card", ActionID: "help.open_local_config", Actor: "user-1",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Event == nil || result.Event.Type != "error" {
+		t.Fatalf("result = %#v, want error event", result)
+	}
+	if _, ok := store.ChatOverride(""); ok {
+		t.Fatal("missing chat id must not write an override")
+	}
+}
+
 func TestHelpStatusCallbackRendersStatusNotUnknown(t *testing.T) {
 	cfg := testConfig(t)
 	store, _ := testPreferenceStore(t, config.RuntimePreference{Model: "default", Effort: "low"}, cfg.AllowedModels)

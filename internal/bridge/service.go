@@ -441,6 +441,9 @@ func (s *Service) HandleMessage(ctx context.Context, msg Message) error {
 	switch cmd.Type {
 	case CommandHelp:
 		hc := HelpCardData()
+		if msg.IsGroup {
+			hc.ChatID = strings.TrimSpace(msg.ChatID)
+		}
 		return s.Cards.Render(card.Event{
 			Type:             "help",
 			SessionID:        runID("help", msg.ID),
@@ -1534,6 +1537,16 @@ func (s *Service) HandleActionResult(ctx context.Context, req ActionRequest) (Ac
 		}
 		preference := s.Preferences.Get()
 		return s.renderActionEvent(card.Event{Type: "config", SessionID: req.SessionID, ConfigForm: s.configForm(preference)})
+	case "help.open_local_config":
+		chatID := strings.TrimSpace(req.Value)
+		if chatID == "" {
+			return s.renderActionEvent(card.Event{Type: "error", SessionID: req.SessionID, Segments: []card.Segment{{Kind: card.SegmentError, Text: "无法确定当前群，请在群里重新发送 `/help`。"}}})
+		}
+		return s.renderActionEvent(card.Event{
+			Type:                "local_config_overview",
+			SessionID:           req.SessionID,
+			LocalConfigOverview: s.localConfigOverview(chatID),
+		})
 	case "help.status":
 		// Equivalent to /status. The callback (ActionRequest) carries no ChatID
 		// or full Message, so we cannot compute the exact per-topic session key
