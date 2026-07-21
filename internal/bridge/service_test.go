@@ -1276,6 +1276,11 @@ func eventsContainText(events []card.Event, want string) bool {
 
 func TestServiceNewRunsClaudeOneShotAndRendersResult(t *testing.T) {
 	cfg := testConfig(t)
+	ctxDir := t.TempDir()
+	cfg.ClaudeContextUsageDir = ctxDir
+	if err := os.WriteFile(filepath.Join(ctxDir, "sess-1.json"), []byte(`{"session_id":"sess-1","used_percentage":85,"total_tokens":170000,"context_window_size":200000}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	renderer := card.NewFakeRenderer()
 	runner := newFakeRunner()
 	runner.results = []AgentRunResult{{Model: "claude-sonnet", Tokens: 42, AgentSessionID: "sess-1", Segments: []card.Segment{
@@ -1297,7 +1302,7 @@ func TestServiceNewRunsClaudeOneShotAndRendersResult(t *testing.T) {
 	if len(calls) != 1 {
 		t.Fatalf("calls len = %d, want 1", len(calls))
 	}
-	if calls[0].Kind != agent.Claude || calls[0].Prompt != "hello" || calls[0].AgentSessionID != "" {
+	if calls[0].Kind != agent.Claude || calls[0].Prompt != "hello" || calls[0].AgentSessionID != "" || calls[0].ContextUsageDir != ctxDir {
 		t.Fatalf("runner call = %#v", calls[0])
 	}
 	events := renderer.Events()
@@ -1309,7 +1314,7 @@ func TestServiceNewRunsClaudeOneShotAndRendersResult(t *testing.T) {
 		t.Fatalf("initial header = %q/%q", initial.HeaderTemplate, initial.HeaderTitle)
 	}
 	last := events[len(events)-1]
-	if last.Type != "result" || last.Meta.Model != "claude-sonnet" || last.Meta.RunTokens != 42 || last.Meta.TotalTokens != 42 || last.HeaderTemplate != "green" {
+	if last.Type != "result" || last.Meta.Model != "claude-sonnet" || last.Meta.RunTokens != 42 || last.Meta.TotalTokens != 42 || last.HeaderTemplate != "green" || !last.Meta.CtxOK || last.Meta.CtxUsedPercent != 85 || last.Meta.CtxTokens != 170000 || last.Meta.CtxWindow != 200000 {
 		t.Fatalf("result event = %#v", last)
 	}
 	if !last.StopButton.Visible || !last.StopButton.Disabled {
@@ -1318,6 +1323,56 @@ func TestServiceNewRunsClaudeOneShotAndRendersResult(t *testing.T) {
 	status := svc.statusText(agent.Claude, Message{ChatID: "chat"})
 	if !containsAll(status, "agent_session=sess-1", "state=idle") {
 		t.Fatalf("status = %q, want stored claude session", status)
+	}
+}
+
+func TestServiceAuditsUnavailablePostRunContextWithoutSensitiveDetail(t *testing.T) {
+	cfg := testConfig(t)
+	cfg.ClaudeContextUsageDir = t.TempDir()
+	renderer := card.NewFakeRenderer()
+	runner := newFakeRunner()
+	runner.results = []AgentRunResult{{AgentSessionID: "sensitive-session-id", Tokens: 7, Segments: []card.Segment{{Kind: card.SegmentText, Text: "answer"}}}}
+	recorder := audit.NewRecorder()
+	svc := NewService(cfg, renderer, runner, recorder)
+	now := time.Now()
+	if err := svc.HandleMessage(context.Background(), Message{ID: "ctx-missing", ChatID: "chat", Sender: "user", Text: "hello", Time: now}); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.DrainReady(now.Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	waitForCalls(t, runner, 1)
+	waitForEvents(t, renderer, 2)
+	waitForAuditAction(t, recorder, "context_usage_unavailable")
+	for _, event := range recorder.Events() {
+		if event.Action != "context_usage_unavailable" {
+			continue
+		}
+		if event.Detail != "agent=claude reason=missing" {
+			t.Fatalf("context audit detail = %q", event.Detail)
+		}
+		if strings.Contains(event.Detail, cfg.ClaudeContextUsageDir) || strings.Contains(event.Detail, "sensitive-session-id") {
+			t.Fatalf("context audit leaked path or session id: %q", event.Detail)
+		}
+		return
+	}
+	t.Fatal("context_usage_unavailable audit missing")
+}
+
+func TestContextUsageDirForRunPrefersConfiguredDirThenAgentHome(t *testing.T) {
+	svc := &Service{Config: config.Config{ClaudeContextUsageDir: "/configured/claude", CodexContextUsageDir: "/configured/codex"}}
+	if got := svc.contextUsageDirForRun(agent.Claude, "/home/<USER>"); got != "/configured/claude" {
+		t.Fatalf("configured Claude dir = %q", got)
+	}
+	if got := svc.contextUsageDirForRun(agent.Codex, "/home/<USER>"); got != "/configured/codex" {
+		t.Fatalf("configured Codex dir = %q", got)
+	}
+	svc.Config = config.Config{}
+	if got := svc.contextUsageDirForRun(agent.Claude, "/home/<USER>"); got != "/home/<USER>/context-usage" {
+		t.Fatalf("derived Claude dir = %q", got)
+	}
+	if got := svc.contextUsageDirForRun(agent.Codex, ""); got != "" {
+		t.Fatalf("blank home context dir = %q", got)
 	}
 }
 
@@ -1857,7 +1912,7 @@ func TestServiceRunsConfiguredCodexPresetWithImagesAndResumesThread(t *testing.T
 	waitForCalls(t, runner, 1)
 	waitForSessionNoActiveBatch(t, svc, session.Key{Agent: agent.Codex, ChatID: "chat"})
 	first := runner.Calls()[0]
-	if first.Kind != agent.Codex || first.Bin != "/b/cx3" || first.Home != "/h/codex" || len(first.Images) != 1 || first.Images[0] != "/cache/image.png" {
+	if first.Kind != agent.Codex || first.Bin != "/b/cx3" || first.Home != "/h/codex" || first.ContextUsageDir != "/h/codex/context-usage" || len(first.Images) != 1 || first.Images[0] != "/cache/image.png" {
 		t.Fatalf("first Codex call = %#v", first)
 	}
 	if !strings.Contains(first.Prompt, "/cache/notes.txt") {
@@ -3875,7 +3930,7 @@ func TestCLIExecRunnerRunsCodexWithStdinImagesAndConfiguredWorkDir(t *testing.T)
 	script := `#!/bin/sh
 printf 'args=%s\npwd=%s\n' "$*" "$PWD" >"$FAKE_CODEX_LOG"
 IFS= read -r prompt || true
-printf 'stdin=%s\nhome=%s\n' "$prompt" "${CODEX_HOME:-}" >>"$FAKE_CODEX_LOG"
+printf 'stdin=%s\nhome=%s\ncache=%s\n' "$prompt" "${CODEX_HOME:-}" "${CODEX_CONTEXT_CACHE_DIR:-}" >>"$FAKE_CODEX_LOG"
 printf '%s\n' '{"type":"thread.started","thread_id":"thread-1"}'
 printf '%s\n' '{"type":"item.completed","item":{"id":"msg-1","type":"agent_message","text":"codex answer"}}'
 printf '%s\n' '{"type":"turn.completed","usage":{"input_tokens":2,"output_tokens":3}}'
@@ -3891,6 +3946,7 @@ printf '%s\n' '{"type":"turn.completed","usage":{"input_tokens":2,"output_tokens
 		Prompt:                    "inspect repo",
 		WorkDir:                   workDir,
 		Home:                      "/isolated/codex-home",
+		ContextUsageDir:           "/ctx/codex",
 		Images:                    []string{"/cache/a.png", "/cache/b.jpg"},
 		AgentSessionID:            "",
 		BridgeInstructionsVersion: bridgeinstructions.CurrentVersion,
@@ -3906,7 +3962,7 @@ printf '%s\n' '{"type":"turn.completed","usage":{"input_tokens":2,"output_tokens
 		t.Fatal(err)
 	}
 	log := string(data)
-	if !containsAll(log, "args=exec -c developer_instructions=", " --json --image /cache/a.png --image /cache/b.jpg -- -", "pwd="+workDir, "stdin=inspect repo", "home=/isolated/codex-home") {
+	if !containsAll(log, "args=exec -c developer_instructions=", " --json --image /cache/a.png --image /cache/b.jpg -- -", "pwd="+workDir, "stdin=inspect repo", "home=/isolated/codex-home", "cache=/ctx/codex") {
 		t.Fatalf("fake codex log = %q", log)
 	}
 	for _, forbidden := range []string{"--sandbox", "approval_policy", "--model", "--profile", "--ignore-rules", "--skip-git-repo-check"} {

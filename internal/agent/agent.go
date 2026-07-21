@@ -135,6 +135,23 @@ func AgentEnv(kind Kind, home string) []string {
 	}
 }
 
+// ContextCacheEnv pins the workspace exporter and Bridge reader to the same
+// per-agent sidecar directory. A blank directory leaves export disabled.
+func ContextCacheEnv(kind Kind, dir string) []string {
+	dir = strings.TrimSpace(dir)
+	if dir == "" {
+		return nil
+	}
+	switch kind {
+	case Claude:
+		return []string{"CLAUDE_CONTEXT_CACHE_DIR=" + dir}
+	case Codex:
+		return []string{"CODEX_CONTEXT_CACHE_DIR=" + dir}
+	default:
+		return nil
+	}
+}
+
 func buildClaudeOneShotCommand(cfg OneShotConfig) ([]string, error) {
 	prompt := strings.TrimSpace(cfg.Prompt)
 	if prompt == "" {
