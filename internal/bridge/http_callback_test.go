@@ -43,9 +43,17 @@ func TestCallbackHTTPHandlerDispatchesAction(t *testing.T) {
 	if !strings.Contains(rec.Body.String(), stopRequestedNotice) {
 		t.Fatalf("response body = %s, want in-place stop notice", rec.Body.String())
 	}
-	events := renderer.Events()
-	if got := events[len(events)-1]; got.Type != "stopped" || !got.StopButton.Disabled || got.HeaderTemplate != "grey" {
-		t.Fatalf("last event = %#v, want disabled stop", got)
+	deadline := time.Now().Add(time.Second)
+	for {
+		events := renderer.Events()
+		got := events[len(events)-1]
+		if got.Type == "stopped" && got.StopButton.Disabled && got.HeaderTemplate == "grey" {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("last event = %#v, want disabled stop", got)
+		}
+		time.Sleep(time.Millisecond)
 	}
 }
 
