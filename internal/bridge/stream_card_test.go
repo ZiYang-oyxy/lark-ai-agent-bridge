@@ -350,6 +350,41 @@ func TestStreamMarkStoppingBlocksRunningRenders(t *testing.T) {
 	}
 }
 
+func TestAgentCardStreamUserStopAppendsNoticeAfterExistingOutput(t *testing.T) {
+	clock := &fakeStreamClock{now: time.Unix(70, 0)}
+	renderer := card.NewFakeRenderer()
+	stream := newPreviewTestStream(t, renderer, clock, 1, 2000)
+	stream.Handle(AgentStreamUpdate{Segments: []card.Segment{{Kind: card.SegmentText, Text: "已有输出"}}})
+
+	snapshot := stream.requestStop()
+	if snapshot.Type != "stopped" || snapshot.Streaming || !snapshot.StopButton.Disabled {
+		t.Fatalf("stop snapshot = %#v", snapshot)
+	}
+	if got := snapshot.Segments[len(snapshot.Segments)-1].Text; got != stopRequestedNotice {
+		t.Fatalf("snapshot tail = %q", got)
+	}
+
+	terminal, err := stream.Finish("stopped", card.Meta{}, AgentRunResult{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(terminal.Segments) != 2 || terminal.Segments[0].Text != "已有输出" || terminal.Segments[1].Text != stopRequestedNotice {
+		t.Fatalf("terminal segments = %#v", terminal.Segments)
+	}
+}
+
+func TestAgentCardStreamInternalStopDoesNotAppendUserNotice(t *testing.T) {
+	stream := newPreviewTestStream(t, card.NewFakeRenderer(), &fakeStreamClock{now: time.Unix(71, 0)}, 1, 2000)
+	stream.markStopping()
+	terminal, err := stream.Finish("stopped", card.Meta{}, AgentRunResult{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if eventsContainText([]card.Event{terminal}, stopRequestedNotice) {
+		t.Fatalf("internal stop event = %#v", terminal)
+	}
+}
+
 func TestStreamPreviewUsesDeltaAndDeadlineThresholds(t *testing.T) {
 	clock := &fakeStreamClock{now: time.Unix(100, 0)}
 	renderer := card.NewFakeRenderer()

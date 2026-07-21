@@ -17,6 +17,7 @@ const (
 	streamActivityReasoning = "reasoning"
 	streamActivityTool      = "tool"
 	streamActivityAnswering = "answering"
+	stopRequestedNotice     = "已请求停止当前任务；排队输入将继续执行。"
 )
 
 type PreviewPolicy struct {
@@ -75,6 +76,7 @@ type agentCardStream struct {
 	orderedPartial   bool
 	toolCallCount    int
 	stopping         bool
+	stopRequested    bool
 }
 
 func newAgentCardStream(service *Service, sessionID string, sess session.Session, input session.Input) *agentCardStream {
@@ -293,6 +295,11 @@ func terminalStreamEvent(eventType string) bool {
 // 避免停止卡发出后被排队的 preview 覆盖成"运行中"造成闪烁。终态 Finish 仍可正常收敛。
 func (s *agentCardStream) markStopping() {
 	s.mu.Lock()
+	s.markStoppingLocked()
+	s.mu.Unlock()
+}
+
+func (s *agentCardStream) markStoppingLocked() {
 	s.stopping = true
 	s.previewGen++
 	if s.previewTimer != nil {
@@ -300,7 +307,18 @@ func (s *agentCardStream) markStopping() {
 		s.previewTimer = nil
 	}
 	s.previewPending = false
+}
+
+func (s *agentCardStream) requestStop() card.Event {
+	s.mu.Lock()
+	s.stopRequested = true
+	s.markStoppingLocked()
+	previousStatus := s.status
+	s.status = "stopped"
+	event := s.eventLocked(false)
+	s.status = previousStatus
 	s.mu.Unlock()
+	return event
 }
 
 func metaForRun(sess session.Session, input session.Input) card.Meta {
@@ -695,7 +713,7 @@ func (s *agentCardStream) eventLocked(initial bool) card.Event {
 
 func (s *agentCardStream) segmentsLocked() []card.Segment {
 	if s.replyMode == config.ReplyModeAppend {
-		return s.orderedSegmentsLocked()
+		return s.withStopRequestedNoticeLocked(s.orderedSegmentsLocked())
 	}
 	var segments []card.Segment
 	if text := stripTrailingBotSignature(s.answer.String()); strings.TrimSpace(text) != "" {
@@ -707,7 +725,19 @@ func (s *agentCardStream) segmentsLocked() []card.Segment {
 	if text := strings.TrimSpace(s.tools.String()); text != "" {
 		segments = append(segments, card.Segment{Kind: card.SegmentTool, Text: text})
 	}
-	return segments
+	return s.withStopRequestedNoticeLocked(segments)
+}
+
+func (s *agentCardStream) withStopRequestedNoticeLocked(segments []card.Segment) []card.Segment {
+	if !s.stopRequested || s.status != "stopped" {
+		return segments
+	}
+	for _, segment := range segments {
+		if segment.Kind == card.SegmentText && strings.TrimSpace(segment.Text) == stopRequestedNotice {
+			return segments
+		}
+	}
+	return append(segments, card.Segment{Kind: card.SegmentText, Text: stopRequestedNotice})
 }
 
 func (s *agentCardStream) orderedSegmentsLocked() []card.Segment {
