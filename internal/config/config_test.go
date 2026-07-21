@@ -100,6 +100,22 @@ func TestLoadFromEnvDurableSchedulerDefaultsAndOverrides(t *testing.T) {
 	}
 }
 
+func TestLoadFromEnvWorkspaceStoreDefaultsAndOverrides(t *testing.T) {
+	workDir := filepath.Join(t.TempDir(), "work")
+	t.Setenv("E2E_DEFAULT_WORKDIR", workDir)
+	t.Setenv("E2E_WORKSPACE_STORE", "")
+	cfg := LoadFromEnv()
+	if want := filepath.Join(workDir, ".lark-agent-bridge", "workspaces.json"); cfg.WorkspaceStorePath != want {
+		t.Fatalf("workspace store path = %q, want %q", cfg.WorkspaceStorePath, want)
+	}
+
+	customPath := filepath.Join(t.TempDir(), "custom-workspaces.json")
+	t.Setenv("E2E_WORKSPACE_STORE", customPath)
+	if got := LoadFromEnv().WorkspaceStorePath; got != customPath {
+		t.Fatalf("workspace store override = %q, want %q", got, customPath)
+	}
+}
+
 func TestLoadFromEnvScheduleDefaults(t *testing.T) {
 	t.Setenv("E2E_DEFAULT_WORKDIR", "/tmp/lab-work")
 	t.Setenv("E2E_SCHEDULE_STORE", "")
