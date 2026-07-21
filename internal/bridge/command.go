@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"lark-agent-bridge/internal/agent"
+	"lark-agent-bridge/internal/card"
 )
 
 type CommandType string
@@ -123,6 +124,46 @@ func splitCommand(raw string) (string, string) {
 	name := strings.ToLower(fields[0])
 	rest := strings.TrimSpace(strings.TrimPrefix(raw, fields[0]))
 	return name, rest
+}
+
+// HelpCardData is the sectioned model rendered by the /help CardKit card: four
+// titled command groups plus a one-line footer. Commands are wrapped in
+// markdown code, arguments are de-emphasised, and descriptions are in Chinese.
+func HelpCardData() card.HelpCard {
+	return card.HelpCard{
+		Groups: []card.HelpGroup{
+			{
+				Title: "💬 会话",
+				Lines: []string{
+					"`/new` `[--workdir path] [prompt]` 开新会话",
+					"`/status` 当前会话状态 · `/stop` 停止当前任务",
+					"`/resume` `[session-id]` 恢复历史会话",
+					"`/agent-mode` 切换 claude / codex",
+				},
+			},
+			{
+				Title: "⚙️ 配置",
+				Lines: []string{
+					"`/config` 全局运行偏好",
+					"`/local-config` `[reset]` 本群覆盖 / 重置",
+				},
+			},
+			{
+				Title: "⏰ 定时",
+				Lines: []string{
+					"`/cron` 周期任务 · `/timer` 一次性任务",
+				},
+			},
+			{
+				Title: "🔒 权限",
+				Lines: []string{
+					"`/invite` user|admin @人 · group · all group",
+					"`/remove` user|admin @人 · group",
+				},
+			},
+		},
+		Footer: "直接发文字 = 继续当前会话 · 群里默认需 @bot",
+	}
 }
 
 func HelpText() string {

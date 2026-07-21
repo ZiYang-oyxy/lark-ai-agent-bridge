@@ -440,7 +440,14 @@ func (s *Service) HandleMessage(ctx context.Context, msg Message) error {
 	}
 	switch cmd.Type {
 	case CommandHelp:
-		return s.renderTextWithMode("help", msg.ID, card.SegmentText, HelpText(), preference.ConversationMode)
+		hc := HelpCardData()
+		return s.Cards.Render(card.Event{
+			Type:             "help",
+			SessionID:        runID("help", msg.ID),
+			ReplyToMessageID: msg.ID,
+			ReplyInThread:    preference.ConversationMode == config.ConversationModeTopic,
+			HelpCard:         &hc,
+		})
 	case CommandUnknown:
 		return s.renderTextWithMode("command", msg.ID, card.SegmentError, cmd.Text, preference.ConversationMode)
 	case CommandStatus:

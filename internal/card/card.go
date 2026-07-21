@@ -103,6 +103,21 @@ type AgentModeForm struct {
 	Agents []SelectOption
 }
 
+// HelpCard is the sectioned /help card model: a set of titled command groups
+// plus a small footer note rendered under a divider. Buttons are attached by
+// the renderer.
+type HelpCard struct {
+	Groups []HelpGroup
+	Footer string
+}
+
+// HelpGroup is one titled section of the /help card; each Line is a single
+// markdown row inside the section body.
+type HelpGroup struct {
+	Title string
+	Lines []string
+}
+
 type AccessChat struct {
 	ID   string
 	Name string
@@ -133,6 +148,7 @@ type Event struct {
 	Markdown             string
 	ConfigForm           *ConfigForm
 	AgentModeForm        *AgentModeForm
+	HelpCard             *HelpCard
 }
 
 func WorkDirCreateActions(path string) []Action {

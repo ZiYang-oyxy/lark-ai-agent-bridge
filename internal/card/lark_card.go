@@ -8,7 +8,10 @@ import (
 func BuildLarkCard(e Event) map[string]any {
 	e = normalizeTerminalEvent(e)
 	var elements []any
-	if e.AgentModeForm != nil {
+	if e.HelpCard != nil {
+		e.Streaming = false
+		elements = buildHelpElements(e.SessionID, *e.HelpCard)
+	} else if e.AgentModeForm != nil {
 		e.Streaming = false
 		elements = buildAgentModeFormElements(e.SessionID, *e.AgentModeForm)
 	} else if e.ConfigForm != nil {
@@ -229,6 +232,38 @@ func buildAgentModeFormElements(sessionID string, form AgentModeForm) []any {
 			},
 		},
 	}
+}
+
+// buildHelpElements renders the sectioned /help card: one bordered section per
+// command group, a divider, a small grey footer note, then a row of three
+// buttons (status / open config / refresh).
+//
+// The buttons carry callback behaviors but their handlers are wired in Task 2
+// (/help button callbacks); until that lands, clicking them dispatches
+// help.status / help.open_config / help.refresh action ids that fall through to
+// the callback router's default branch (no-op). This card only renders them.
+func buildHelpElements(sessionID string, help HelpCard) []any {
+	elements := make([]any, 0, len(help.Groups)+3)
+	for groupIdx, group := range help.Groups {
+		body := make([]map[string]any, 0, len(group.Lines))
+		for lineIdx, line := range group.Lines {
+			body = append(body, markdownElement(fmt.Sprintf("help_%d_%d", groupIdx, lineIdx), line))
+		}
+		elements = append(elements, sectionElement(group.Title, body))
+	}
+	elements = append(elements, map[string]any{"tag": "hr"})
+	if strings.TrimSpace(help.Footer) != "" {
+		elements = append(elements, noteElement("help_footer", help.Footer))
+	}
+	buttons := []Action{
+		{ID: "help.status", Label: "📊 状态"},
+		{ID: "help.open_config", Label: "⚙️ 配置"},
+		{ID: "help.refresh", Label: "🔁 刷新"},
+	}
+	if row := buttonRowElements(buttons, sessionID); row != nil {
+		elements = append(elements, row)
+	}
+	return elements
 }
 
 func accessPanelElement(form ConfigForm) map[string]any {
@@ -614,6 +649,8 @@ func titleForEvent(eventType string) string {
 		return "Agent 错误"
 	case "interrupted":
 		return "服务重启，任务已中断"
+	case "help":
+		return "💡 命令帮助"
 	case "config":
 		return "个人运行偏好"
 	case "local_config":
@@ -637,7 +674,7 @@ func templateForEvent(eventType string) string {
 		return "red"
 	case "interrupted":
 		return "orange"
-	case "config", "local_config":
+	case "help", "config", "local_config":
 		return "blue"
 	default:
 		return "green"

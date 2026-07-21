@@ -844,3 +844,102 @@ func TestBuildLarkCardKeepsLegacyAggregateLayout(t *testing.T) {
 		t.Fatalf("legacy process panel = %#v", process)
 	}
 }
+
+func TestBuildLarkCardRendersHelpCard(t *testing.T) {
+	payload := BuildLarkCard(Event{
+		Type:      "help",
+		SessionID: "help:msg",
+		HelpCard: &HelpCard{
+			Groups: []HelpGroup{
+				{Title: "💬 会话", Lines: []string{"`/new` 开新会话", "`/status` 当前会话状态"}},
+				{Title: "⚙️ 配置", Lines: []string{"`/config` 全局运行偏好"}},
+				{Title: "⏰ 定时", Lines: []string{"`/cron` 周期任务"}},
+				{Title: "🔒 权限", Lines: []string{"`/invite` user|admin @人"}},
+			},
+			Footer: "直接发文字 = 继续当前会话 · 群里默认需 @bot",
+		},
+	})
+
+	header := payload["header"].(map[string]any)
+	if header["template"] != "blue" {
+		t.Fatalf("help template = %#v, want blue", header["template"])
+	}
+	if title := header["title"].(map[string]any)["content"]; title != "💡 命令帮助" {
+		t.Fatalf("help title = %#v, want 💡 命令帮助", title)
+	}
+
+	if payload["config"].(map[string]any)["streaming_mode"] != false {
+		t.Fatalf("help card must be non-streaming: %#v", payload["config"])
+	}
+
+	elements := payload["body"].(map[string]any)["elements"].([]any)
+	data, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(data)
+	for _, want := range []string{"💬 会话", "⚙️ 配置", "⏰ 定时", "🔒 权限", "直接发文字 = 继续当前会话"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("help card missing %q: %s", want, text)
+		}
+	}
+
+	// Section containers: one collapsible_panel per group.
+	var sections int
+	for _, raw := range elements {
+		if m, _ := raw.(map[string]any); m["tag"] == "collapsible_panel" {
+			sections++
+		}
+	}
+	if sections != 4 {
+		t.Fatalf("help sections = %d, want 4", sections)
+	}
+
+	// Exactly one hr divider before the footer note.
+	var hrs int
+	for _, raw := range elements {
+		if m, _ := raw.(map[string]any); m["tag"] == "hr" {
+			hrs++
+		}
+	}
+	if hrs != 1 {
+		t.Fatalf("help hr count = %d, want 1", hrs)
+	}
+
+	// Exactly three help.* buttons.
+	var buttonIDs []string
+	collectHelpButtons(elements, &buttonIDs)
+	want := []string{"help.status", "help.open_config", "help.refresh"}
+	if !reflect.DeepEqual(buttonIDs, want) {
+		t.Fatalf("help buttons = %#v, want %#v", buttonIDs, want)
+	}
+}
+
+func collectHelpButtons(elements []any, out *[]string) {
+	for _, raw := range elements {
+		m, ok := raw.(map[string]any)
+		if !ok {
+			continue
+		}
+		if m["tag"] == "button" {
+			if behaviors, ok := m["behaviors"].([]any); ok {
+				for _, b := range behaviors {
+					bm, _ := b.(map[string]any)
+					if bm["type"] != "callback" {
+						continue
+					}
+					value, _ := bm["value"].(map[string]any)
+					if id, _ := value["action_id"].(string); id != "" {
+						*out = append(*out, id)
+					}
+				}
+			}
+		}
+		if nested, ok := m["elements"].([]any); ok {
+			collectHelpButtons(nested, out)
+		}
+		if columns, ok := m["columns"].([]any); ok {
+			collectHelpButtons(columns, out)
+		}
+	}
+}

@@ -44,7 +44,7 @@ func TestServiceAcceptsParticipatedTopicFollowupAndTouchesStore(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if topics.touches != 1 || len(renderer.Events()) != 1 || len(renderer.Events()[0].Segments) == 0 || renderer.Events()[0].Segments[0].Text == "" {
+	if topics.touches != 1 || len(renderer.Events()) != 1 || renderer.Events()[0].HelpCard == nil {
 		t.Fatalf("touches=%d events=%#v", topics.touches, renderer.Events())
 	}
 }

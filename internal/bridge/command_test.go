@@ -1,6 +1,7 @@
 package bridge
 
 import (
+	"regexp"
 	"strings"
 	"testing"
 
@@ -225,5 +226,36 @@ func TestParseUnknownCommandReturnsFormattedMessage(t *testing.T) {
 	}
 	if cmd.Text != "unknown command /bogus" {
 		t.Fatalf("unknown text = %q, want \"unknown command /bogus\"", cmd.Text)
+	}
+}
+
+// TestHelpCardDataMatchesHelpText is a two-source drift gate: every slash
+// command that appears in the sectioned /help card (HelpCardData, Chinese) must
+// also appear in the legacy plain-text help (HelpText, English). It compares
+// only the slash-command tokens, not the surrounding descriptions, so the two
+// surfaces can keep their own wording while staying in sync on command coverage.
+func TestHelpCardDataMatchesHelpText(t *testing.T) {
+	helpText := HelpText()
+	tokenRE := regexp.MustCompile(`/[a-z][a-z-]*`)
+	seen := map[string]bool{}
+	for _, group := range HelpCardData().Groups {
+		for _, line := range group.Lines {
+			for _, token := range tokenRE.FindAllString(line, -1) {
+				if seen[token] {
+					continue
+				}
+				seen[token] = true
+				if !strings.Contains(helpText, token) {
+					t.Fatalf("command %q is in HelpCardData but missing from HelpText; keep the two in sync", token)
+				}
+			}
+		}
+	}
+	// Sanity: the card should surface the core commands, so the gate is not
+	// vacuously passing on an empty token set.
+	for _, want := range []string{"/new", "/status", "/stop", "/resume", "/agent-mode", "/config", "/local-config", "/cron", "/timer", "/invite", "/remove"} {
+		if !seen[want] {
+			t.Fatalf("HelpCardData missing expected command %q", want)
+		}
 	}
 }
