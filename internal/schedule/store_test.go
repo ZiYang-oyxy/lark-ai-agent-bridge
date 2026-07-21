@@ -18,7 +18,7 @@ func TestStorePersistsConfirmedTaskWithPrivatePermissions(t *testing.T) {
 	if err := store.CreateDraft(draft); err != nil {
 		t.Fatal(err)
 	}
-	task, err := store.ConfirmDraft(draft.ID, draft.Creator, time.Now())
+	task, err := store.ConfirmDraft(draft.ID, draft.Creator, draft.CreatedAt.Add(time.Minute))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -93,7 +93,7 @@ func TestStoreClaimsRunOnceAndTracksTransitions(t *testing.T) {
 	if err := store.CreateDraft(draft); err != nil {
 		t.Fatal(err)
 	}
-	task, err := store.ConfirmDraft(draft.ID, draft.Creator, time.Now())
+	task, err := store.ConfirmDraft(draft.ID, draft.Creator, draft.CreatedAt.Add(time.Minute))
 	if err != nil {
 		t.Fatal(err)
 	}
