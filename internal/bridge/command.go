@@ -23,6 +23,8 @@ const (
 	CommandTimer       CommandType = "timer"
 	CommandInvite      CommandType = "invite"
 	CommandRemove      CommandType = "remove"
+	CommandCd          CommandType = "cd"
+	CommandWs          CommandType = "ws"
 	CommandUnknown     CommandType = "unknown"
 	CommandIgnored     CommandType = "ignored"
 )
@@ -36,6 +38,8 @@ type Command struct {
 	Explicit     bool
 	Raw          string
 	ScheduleKind string
+	WsSub        string
+	WsName       string
 }
 
 func ParseCommand(msg Message, defaultAgent agent.Kind) Command {
@@ -68,6 +72,19 @@ func ParseCommand(msg Message, defaultAgent agent.Kind) Command {
 		return Command{Type: CommandInvite, Text: strings.TrimSpace(rest), Raw: raw}
 	case "remove":
 		return Command{Type: CommandRemove, Text: strings.TrimSpace(rest), Raw: raw}
+	case "cd":
+		return Command{Type: CommandCd, Agent: defaultAgent, WorkDir: strings.TrimSpace(rest), Raw: raw}
+	case "ws":
+		fields := strings.Fields(rest)
+		sub := "list"
+		if len(fields) > 0 {
+			sub = strings.ToLower(fields[0])
+		}
+		wsName := ""
+		if len(fields) > 1 {
+			wsName = fields[1]
+		}
+		return Command{Type: CommandWs, WsSub: sub, WsName: wsName, Raw: raw}
 	case "new":
 		cmd := Command{Type: CommandRun, Agent: defaultAgent, Text: strings.TrimSpace(rest), Reset: true, Explicit: true, Raw: raw}
 		parseRunOptions(&cmd)
@@ -139,6 +156,8 @@ func HelpCardData() card.HelpCard {
 					"**`/status`** 当前会话状态 · **`/stop`** 停止当前任务",
 					"**`/resume`** `[session-id]` 恢复历史会话",
 					"**`/agent-mode`** 切换 claude / codex",
+					"**`/cd`** `[path]` 切换本 topic 工作目录",
+					"**`/ws`** `list|save|use|remove [name]` 命名工作区",
 				},
 			},
 			{
@@ -176,6 +195,8 @@ func HelpText() string {
 		"/resume <session-id> - resume that session on the next message",
 		"/stop - stop the active task in this chat/topic; queued inputs are preserved",
 		"/agent-mode - choose claude or codex for subsequent messages",
+		"/cd [path] - switch the working directory for this chat/topic",
+		"/ws list|save|use|remove [name] - manage named workspaces",
 		"/cron, /timer - manage recurring and one-shot Agent tasks",
 		"/config - configure global defaults",
 		"/local-config [reset] - override or reset this group's inherited defaults",
