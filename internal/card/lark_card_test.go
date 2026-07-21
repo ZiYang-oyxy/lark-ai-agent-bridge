@@ -1222,3 +1222,158 @@ func TestBuildLarkCardRendersLocalConfigOverview(t *testing.T) {
 		t.Fatalf("local config overview buttons = %#v, want %#v", buttonIDs, want)
 	}
 }
+
+// collectCallbackIDs walks a fully-marshalled card payload (so both []any and
+// []map[string]any element slices normalise to []any) and returns every button
+// callback action_id in document order.
+func collectCallbackIDs(t *testing.T, payload map[string]any) []string {
+	t.Helper()
+	data, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var normalised map[string]any
+	if err := json.Unmarshal(data, &normalised); err != nil {
+		t.Fatal(err)
+	}
+	elements := normalised["body"].(map[string]any)["elements"].([]any)
+	var buttons []map[string]any
+	collectHelpButtonData(elements, &buttons)
+	var ids []string
+	for _, button := range buttons {
+		behaviors, ok := button["behaviors"].([]any)
+		if !ok {
+			// A disabled button (e.g. the current session's 恢复) carries no
+			// callback behaviors; skip it rather than panic.
+			continue
+		}
+		for _, raw := range behaviors {
+			behavior, _ := raw.(map[string]any)
+			if behavior["type"] != "callback" {
+				continue
+			}
+			if value, _ := behavior["value"].(map[string]any); value != nil {
+				if id, _ := value["action_id"].(string); id != "" {
+					ids = append(ids, id)
+				}
+			}
+		}
+	}
+	return ids
+}
+
+func TestBuildLarkCardRendersStatusCard(t *testing.T) {
+	payload := BuildLarkCard(Event{
+		Type:      "status",
+		SessionID: "status:msg",
+		StatusCard: &StatusCard{
+			Sections: []StatusSection{
+				{Title: "📋 会话概览", Fields: []StatusField{
+					{Label: "运行模式", Value: "claude_oneshot", Code: true},
+					{Label: "会话隔离", Value: "按群共用（chat）"},
+				}},
+				{Title: "🧠 运行时", Fields: []StatusField{
+					{Label: "状态", Value: "ready", Code: true},
+					{Label: "工作目录", Value: "/tmp/work", Code: true},
+				}},
+			},
+		},
+	})
+
+	header := payload["header"].(map[string]any)
+	if header["template"] != "indigo" {
+		t.Fatalf("status template = %#v, want indigo", header["template"])
+	}
+	if title := header["title"].(map[string]any)["content"]; title != "📊 会话状态" {
+		t.Fatalf("status title = %#v, want 📊 会话状态", title)
+	}
+	if payload["config"].(map[string]any)["streaming_mode"] != false {
+		t.Fatalf("status card must be non-streaming: %#v", payload["config"])
+	}
+
+	data, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(data)
+	for _, want := range []string{"📋 会话概览", "🧠 运行时", "运行模式", "`claude_oneshot`", "按群共用（chat）", "`/tmp/work`"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("status card missing %q: %s", want, text)
+		}
+	}
+
+	if ids := collectCallbackIDs(t, payload); !reflect.DeepEqual(ids, []string{"status.refresh", "help.open_config"}) {
+		t.Fatalf("status buttons = %#v, want [status.refresh help.open_config]", ids)
+	}
+}
+
+func TestBuildLarkCardStatusNotStartedShowsHint(t *testing.T) {
+	payload := BuildLarkCard(Event{
+		Type:       "status",
+		SessionID:  "status:msg",
+		StatusCard: &StatusCard{Sections: []StatusSection{{Title: "📋 会话概览", Fields: []StatusField{{Label: "Agent", Value: "claude", Code: true}}}}, NotStarted: true},
+	})
+	data, _ := json.Marshal(payload)
+	if !strings.Contains(string(data), "本会话尚未开始运行") {
+		t.Fatalf("not-started status card missing hint: %s", data)
+	}
+}
+
+func TestBuildLarkCardRendersResumeCard(t *testing.T) {
+	payload := BuildLarkCard(Event{
+		Type:      "resume",
+		SessionID: "resume:msg",
+		ResumeCard: &ResumeCard{
+			Agent:   "claude",
+			WorkDir: "/tmp/work",
+			Items: []ResumeItem{
+				{Index: 1, SessionID: "s-current", UpdatedAt: "2026-07-21 10:00:00", Summary: "最新一轮", Current: true},
+				{Index: 2, SessionID: "s-older", UpdatedAt: "2026-07-20 09:00:00", Summary: "上一轮"},
+			},
+		},
+	})
+
+	header := payload["header"].(map[string]any)
+	if header["template"] != "wathet" {
+		t.Fatalf("resume template = %#v, want wathet", header["template"])
+	}
+	if title := header["title"].(map[string]any)["content"]; title != "🕘 恢复历史会话" {
+		t.Fatalf("resume title = %#v, want 🕘 恢复历史会话", title)
+	}
+
+	data, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(data)
+	for _, want := range []string{"`s-current`", "`s-older`", "当前", "最新一轮", "工作目录 `/tmp/work`"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("resume card missing %q: %s", want, text)
+		}
+	}
+
+	// Both rows carry a resume.select button; the current session's button is
+	// disabled but the callback id is still present.
+	ids := collectCallbackIDs(t, payload)
+	var selects int
+	for _, id := range ids {
+		if id == "resume.select" {
+			selects++
+		}
+	}
+	if selects != 1 {
+		t.Fatalf("resume.select callbacks = %d, want 1 (current row's button is disabled and carries no callback)", selects)
+	}
+}
+
+func TestBuildLarkCardResumeEmptyShowsHint(t *testing.T) {
+	payload := BuildLarkCard(Event{
+		Type:       "resume",
+		SessionID:  "resume:msg",
+		ResumeCard: &ResumeCard{Agent: "claude", WorkDir: "/tmp/work"},
+	})
+	data, _ := json.Marshal(payload)
+	if !strings.Contains(string(data), "没有可恢复的历史会话") {
+		t.Fatalf("empty resume card missing hint: %s", data)
+	}
+}

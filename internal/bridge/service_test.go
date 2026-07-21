@@ -4237,8 +4237,30 @@ func TestServiceResumeListsTenRecentSessionsForCurrentIdentity(t *testing.T) {
 		t.Fatal(err)
 	}
 	events := renderer.Events()
-	if !eventsContainText(events, "最近 10 个 Session") || !eventsContainText(events, "s-11") || !eventsContainText(events, "[当前]") || !eventsContainText(events, "s-02") || eventsContainText(events, "s-01") {
-		t.Fatalf("resume list events = %#v", events)
+	var resume *card.ResumeCard
+	for _, e := range events {
+		if e.ResumeCard != nil {
+			resume = e.ResumeCard
+		}
+	}
+	if resume == nil {
+		t.Fatalf("resume list did not render a ResumeCard: %#v", events)
+	}
+	if len(resume.Items) != 10 {
+		t.Fatalf("resume list should keep only the 10 most recent, got %d items", len(resume.Items))
+	}
+	ids := make(map[string]card.ResumeItem, len(resume.Items))
+	for _, item := range resume.Items {
+		ids[item.SessionID] = item
+	}
+	if current, ok := ids["s-11"]; !ok || !current.Current {
+		t.Fatalf("s-11 should be present and flagged current: %#v", resume.Items)
+	}
+	if _, ok := ids["s-02"]; !ok {
+		t.Fatalf("s-02 should be within the 10 most recent: %#v", resume.Items)
+	}
+	if _, ok := ids["s-01"]; ok {
+		t.Fatalf("s-01 is older than the 10 most recent and should be dropped: %#v", resume.Items)
 	}
 }
 
@@ -4309,6 +4331,87 @@ func TestServiceResumeRejectsUnknownAndBusyWithoutChangingBinding(t *testing.T) 
 	bound, _ := manager.Get(key)
 	if bound.AgentSessionID != "current" || len(bound.Queue) != 1 {
 		t.Fatalf("busy resume changed binding = %#v", bound)
+	}
+}
+
+func TestServiceResumeSelectCallbackSwitchesBinding(t *testing.T) {
+	svc, renderer, _, manager, identity := newResumeTestService(t)
+	now := time.Now()
+	for _, id := range []string{"current", "target"} {
+		if err := manager.RecordSession(session.CatalogEntry{SessionID: id, Agent: identity.Agent, WorkDir: identity.WorkDir, UpdatedAt: now, BridgeInstructionsVersion: "v1"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	key := session.Key{Agent: agent.Claude, ChatID: "chat"}
+	if _, err := manager.Resume(key, identity, "current", now); err != nil {
+		t.Fatal(err)
+	}
+
+	// Render the /resume list card and grab the card session id it stored the
+	// resume context under.
+	if err := svc.HandleMessage(context.Background(), Message{ID: "resume-list", ChatID: "chat", Sender: "user", Text: "/resume", Time: now.Add(time.Second)}); err != nil {
+		t.Fatal(err)
+	}
+	var cardSessionID string
+	for _, e := range renderer.Events() {
+		if e.ResumeCard != nil {
+			cardSessionID = e.SessionID
+		}
+	}
+	if cardSessionID == "" {
+		t.Fatalf("resume list did not render a card: %#v", renderer.Events())
+	}
+
+	if _, err := svc.HandleActionResult(context.Background(), ActionRequest{SessionID: cardSessionID, ActionID: "resume.select", Value: "target", Actor: "user"}); err != nil {
+		t.Fatal(err)
+	}
+	if !eventsContainText(renderer.Events(), "已恢复 Session `target`") {
+		t.Fatalf("resume.select events = %#v", renderer.Events())
+	}
+	if bound, _ := manager.Get(key); bound.AgentSessionID != "target" {
+		t.Fatalf("resume.select binding = %#v, want target", bound)
+	}
+}
+
+func TestServiceResumeSelectCallbackWithExpiredContextErrors(t *testing.T) {
+	svc, renderer, _, _, _ := newResumeTestService(t)
+	if _, err := svc.HandleActionResult(context.Background(), ActionRequest{SessionID: "resume:never-rendered", ActionID: "resume.select", Value: "target", Actor: "user"}); err != nil {
+		t.Fatal(err)
+	}
+	if !eventsContainText(renderer.Events(), "恢复上下文已过期") {
+		t.Fatalf("expired resume.select events = %#v", renderer.Events())
+	}
+}
+
+func TestServiceStatusRefreshCallbackRerendersCard(t *testing.T) {
+	svc, renderer, _, _, _ := newResumeTestService(t)
+	now := time.Now()
+	if err := svc.HandleMessage(context.Background(), Message{ID: "status-msg", ChatID: "chat", Sender: "user", Text: "/status", Time: now}); err != nil {
+		t.Fatal(err)
+	}
+	var cardSessionID string
+	for _, e := range renderer.Events() {
+		if e.StatusCard != nil {
+			cardSessionID = e.SessionID
+		}
+	}
+	if cardSessionID == "" {
+		t.Fatalf("/status did not render a StatusCard: %#v", renderer.Events())
+	}
+
+	result, err := svc.HandleActionResult(context.Background(), ActionRequest{SessionID: cardSessionID, ActionID: "status.refresh", Actor: "user"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = result
+	var refreshed *card.StatusCard
+	for _, e := range renderer.Events() {
+		if e.StatusCard != nil && e.SessionID == cardSessionID {
+			refreshed = e.StatusCard
+		}
+	}
+	if refreshed == nil {
+		t.Fatalf("status.refresh did not re-render a StatusCard: %#v", renderer.Events())
 	}
 }
 

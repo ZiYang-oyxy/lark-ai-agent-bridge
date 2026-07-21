@@ -136,6 +136,54 @@ type HelpCard struct {
 	ChatID string
 }
 
+// StatusField is one labelled row in a /status section: a Chinese Label and its
+// effective Value. Code marks whether the value should render as inline code
+// (paths, ids, mode keys) rather than plain text.
+type StatusField struct {
+	Label string
+	Value string
+	Code  bool
+}
+
+// StatusSection is a titled group of status fields, rendered as one bordered
+// section by the /status card renderer.
+type StatusSection struct {
+	Title  string
+	Fields []StatusField
+}
+
+// StatusCard is the sectioned /status card model: an intro note plus a set of
+// titled sections (会话概览 / 运行偏好 / 运行时). NotStarted flags the "no active
+// session yet" state so the renderer can show a friendly hint instead of an
+// empty 运行时 section. Buttons (refresh / open config) are attached by the
+// renderer.
+type StatusCard struct {
+	Sections   []StatusSection
+	NotStarted bool
+}
+
+// ResumeItem is one row of the /resume list: an ordered index, the agent
+// session id used both as the display value and the resume callback value, a
+// localised timestamp, an optional summary, and whether it is the currently
+// active session in this chat/topic.
+type ResumeItem struct {
+	Index     int
+	SessionID string
+	UpdatedAt string
+	Summary   string
+	Current   bool
+}
+
+// ResumeCard is the /resume list card model: the catalog identity (agent +
+// workdir, shown in the intro) and up to ten recent sessions, each rendered as
+// a bordered row with a one-click 恢复 button. Empty Items renders a friendly
+// "no resumable sessions" note.
+type ResumeCard struct {
+	Agent   string
+	WorkDir string
+	Items   []ResumeItem
+}
+
 // HelpGroup is one titled section of the /help card; each Line is a single
 // markdown row inside the section body.
 type HelpGroup struct {
@@ -175,6 +223,8 @@ type Event struct {
 	AgentModeForm        *AgentModeForm
 	HelpCard             *HelpCard
 	LocalConfigOverview  *LocalConfigOverview
+	StatusCard           *StatusCard
+	ResumeCard           *ResumeCard
 }
 
 func WorkDirCreateActions(path string) []Action {

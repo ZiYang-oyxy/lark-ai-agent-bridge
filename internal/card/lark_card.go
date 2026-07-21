@@ -18,6 +18,12 @@ func BuildLarkCard(e Event) map[string]any {
 		for _, action := range buildButtonActions(e) {
 			elements = append(elements, action)
 		}
+	} else if e.StatusCard != nil {
+		e.Streaming = false
+		elements = buildStatusElements(e.SessionID, *e.StatusCard)
+	} else if e.ResumeCard != nil {
+		e.Streaming = false
+		elements = buildResumeElements(e.SessionID, *e.ResumeCard)
 	} else if e.LocalConfigOverview != nil {
 		e.Streaming = false
 		elements = buildLocalConfigOverviewElements(e.SessionID, *e.LocalConfigOverview)
@@ -318,6 +324,80 @@ func buildLocalConfigOverviewElements(sessionID string, overview LocalConfigOver
 	}
 	if row := buttonRowElements(buttons, sessionID); row != nil {
 		elements = append(elements, row)
+	}
+	return elements
+}
+
+// statusFieldLine renders one status row as a single compact markdown line:
+// **标签**：值. Values flagged Code are wrapped in inline code (paths, ids, mode
+// keys) so raw technical values stay readable and un-translated. Empty values
+// fall back to a grey placeholder.
+func statusFieldLine(id string, field StatusField) map[string]any {
+	value := strings.TrimSpace(field.Value)
+	if value == "" {
+		value = "_（无）_"
+	} else if field.Code {
+		value = "`" + value + "`"
+	}
+	return markdownElement(id, fmt.Sprintf("**%s**：%s", field.Label, value))
+}
+
+// buildStatusElements renders the /status card as bordered sections — 会话概览 /
+// 运行偏好 / 运行时 — mirroring the /config and /local-config visual language.
+// Chinese labels front every row; technical values (mode keys, ids, workdir)
+// stay verbatim as inline code. A refresh + open-config button row closes the
+// card. NotStarted sessions render only the sections that have fields plus a
+// friendly hint that no session has started yet.
+func buildStatusElements(sessionID string, status StatusCard) []any {
+	elements := make([]any, 0, len(status.Sections)+3)
+	elements = append(elements, noteElement("status_intro", "当前会话与运行偏好一览。技术取值（模式键、Session、工作目录）保留原文。"))
+	for sectionIdx, section := range status.Sections {
+		body := make([]map[string]any, 0, len(section.Fields))
+		for fieldIdx, field := range section.Fields {
+			body = append(body, statusFieldLine(fmt.Sprintf("status_%d_%d", sectionIdx, fieldIdx), field))
+		}
+		elements = append(elements, sectionElement(section.Title, body))
+	}
+	if status.NotStarted {
+		elements = append(elements, noteElement("status_not_started", "本会话尚未开始运行。直接发送消息即可开启第一轮任务。"))
+	}
+	buttons := []Action{
+		{ID: "status.refresh", Label: "🔄 刷新"},
+		{ID: "help.open_config", Label: "⚙️ 全局配置"},
+	}
+	if row := buttonRowElements(buttons, sessionID); row != nil {
+		elements = append(elements, row)
+	}
+	return elements
+}
+
+// buildResumeElements renders the /resume list: an intro note naming the agent
+// and workdir the sessions belong to, then one bordered section per recent
+// session (index · time · [当前] badge, optional summary) with a one-click 恢复
+// button whose callback carries the session id. Empty Items renders a friendly
+// note pointing back at plain messaging.
+func buildResumeElements(sessionID string, resume ResumeCard) []any {
+	elements := make([]any, 0, len(resume.Items)+2)
+	elements = append(elements, noteElement("resume_intro", fmt.Sprintf("最近的历史会话（Agent `%s` · 工作目录 `%s`）。点「恢复」即可继续该会话，下一条普通消息将接着它跑。", resume.Agent, resume.WorkDir)))
+	if len(resume.Items) == 0 {
+		elements = append(elements, noteElement("resume_empty", "当前 Agent 与工作目录下没有可恢复的历史会话。直接发送消息开始新会话即可。"))
+		return elements
+	}
+	for i, item := range resume.Items {
+		title := fmt.Sprintf("%d · %s", item.Index, item.UpdatedAt)
+		if item.Current {
+			title += "  ·  当前"
+		}
+		body := []map[string]any{
+			markdownElement(fmt.Sprintf("resume_%d_id", i), "`"+item.SessionID+"`"),
+		}
+		if summary := strings.TrimSpace(item.Summary); summary != "" {
+			body = append(body, noteElement(fmt.Sprintf("resume_%d_summary", i), summary))
+		}
+		if row := buttonRowElements([]Action{{ID: "resume.select", Label: "恢复", Value: item.SessionID, Disabled: item.Current}}, sessionID); row != nil {
+			body = append(body, row)
+		}
+		elements = append(elements, sectionElement(title, body))
 	}
 	return elements
 }
@@ -713,6 +793,10 @@ func titleForEvent(eventType string) string {
 		return "服务重启，任务已中断"
 	case "help":
 		return "💡 命令帮助"
+	case "status":
+		return "📊 会话状态"
+	case "resume":
+		return "🕘 恢复历史会话"
 	case "config":
 		return "⚙️ 全局运行偏好"
 	case "local_config":
@@ -742,6 +826,10 @@ func templateForEvent(eventType string) string {
 		return "grey"
 	case "local_config_overview":
 		return "turquoise"
+	case "status":
+		return "indigo"
+	case "resume":
+		return "wathet"
 	case "help", "local_config":
 		return "blue"
 	default:

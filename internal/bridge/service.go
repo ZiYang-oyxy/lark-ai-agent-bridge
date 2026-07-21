@@ -41,6 +41,16 @@ type helpContext struct {
 	ExpiresAt time.Time
 }
 
+// resumeContext remembers the session key and catalog identity behind a /resume
+// card so the resume.select button callback — which carries no ChatID/Message —
+// can rebuild the exact key and resume the chosen session. Keyed by the card's
+// SessionID (runID), mirroring helpContext.
+type resumeContext struct {
+	Key       session.Key
+	Identity  session.CatalogIdentity
+	ExpiresAt time.Time
+}
+
 type Service struct {
 	Config           config.Config
 	Sessions         *session.Manager
@@ -84,6 +94,7 @@ type Service struct {
 	pendingCompletions map[string]pendingCompletion
 	waitingReactions   map[string]*reactionLifecycle
 	helpContexts       map[string]helpContext
+	resumeContexts     map[string]resumeContext
 	reactionDelay      time.Duration
 	startedAt          time.Time
 	accepting          bool
@@ -279,6 +290,7 @@ func NewServiceWithSessions(cfg config.Config, renderer card.Renderer, runner Ag
 		pendingCompletions: map[string]pendingCompletion{},
 		waitingReactions:   map[string]*reactionLifecycle{},
 		helpContexts:       map[string]helpContext{},
+		resumeContexts:     map[string]resumeContext{},
 		reactionDelay:      defaultWaitingReactionDelay,
 		startedAt:          time.Now(),
 		accepting:          true,
@@ -334,6 +346,28 @@ func (s *Service) helpContextForSession(sessionID, actor string, now time.Time) 
 		return "", false
 	}
 	return context.ChatID, true
+}
+
+func (s *Service) storeResumeContext(sessionID string, key session.Key, identity session.CatalogIdentity, now time.Time) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for id, context := range s.resumeContexts {
+		if !context.ExpiresAt.After(now) {
+			delete(s.resumeContexts, id)
+		}
+	}
+	s.resumeContexts[sessionID] = resumeContext{Key: key, Identity: identity, ExpiresAt: now.Add(helpContextTTL)}
+}
+
+func (s *Service) resumeContextForSession(sessionID string, now time.Time) (resumeContext, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	context, ok := s.resumeContexts[sessionID]
+	if ok && !context.ExpiresAt.After(now) {
+		delete(s.resumeContexts, sessionID)
+		return resumeContext{}, false
+	}
+	return context, ok
 }
 
 // ProcessRecoveryNotices best-effort terminalizes cards that belonged to runs
@@ -495,7 +529,16 @@ func (s *Service) HandleMessage(ctx context.Context, msg Message) error {
 	case CommandUnknown:
 		return s.renderTextWithMode("command", msg.ID, card.SegmentError, cmd.Text, preference.ConversationMode)
 	case CommandStatus:
-		return s.renderTextWithMode("status", msg.ID, card.SegmentText, s.statusTextWithPreference(cmd.Agent, msg, preference), preference.ConversationMode)
+		statusSessionID := runID("status", msg.ID)
+		key := sessionKeyForMode(cmd.Agent, msg, preference.ConversationMode)
+		s.storeResumeContext(statusSessionID, key, session.CatalogIdentity{Agent: cmd.Agent}, effectiveMessageTime(msg))
+		return s.Cards.Render(card.Event{
+			Type:             "status",
+			SessionID:        statusSessionID,
+			ReplyToMessageID: msg.ID,
+			ReplyInThread:    preference.ConversationMode == config.ConversationModeTopic,
+			StatusCard:       s.statusCardData(cmd.Agent, msg, preference),
+		})
 	case CommandStop:
 		return s.handleStopCommand(msg, cmd, preference)
 	case CommandResume:
@@ -556,7 +599,15 @@ func (s *Service) handleResumeCommand(msg Message, cmd Command, preference confi
 			s.Audit.Record(msg.Sender, "session_resume_failed", key.ID(), err.Error())
 			return s.renderTextWithMode("resume", msg.ID, card.SegmentError, "Session 历史存储不可用，请检查服务状态。", preference.ConversationMode)
 		}
-		return s.renderTextWithMode("resume", msg.ID, card.SegmentText, formatResumeList(identity, entries, currentAgentSessionID(s.Sessions, key)), preference.ConversationMode)
+		cardSessionID := runID("resume", msg.ID)
+		s.storeResumeContext(cardSessionID, key, identity, effectiveMessageTime(msg))
+		return s.Cards.Render(card.Event{
+			Type:             "resume",
+			SessionID:        cardSessionID,
+			ReplyToMessageID: msg.ID,
+			ReplyInThread:    preference.ConversationMode == config.ConversationModeTopic,
+			ResumeCard:       resumeCardData(identity, entries, currentAgentSessionID(s.Sessions, key)),
+		})
 	}
 	resumed, err := s.Sessions.Resume(key, identity, target, effectiveMessageTime(msg))
 	if err != nil {
@@ -597,6 +648,24 @@ func formatResumeList(identity session.CatalogIdentity, entries []session.Catalo
 		}
 	}
 	return b.String()
+}
+
+// resumeCardData turns catalog entries into the /resume list card model: agent
+// and workdir for the intro, then each recent session as an ordered row with
+// its localised time, summary, and current-session flag. currentID marks which
+// row is the active session (its 恢复 button is disabled by the renderer).
+func resumeCardData(identity session.CatalogIdentity, entries []session.CatalogEntry, currentID string) *card.ResumeCard {
+	items := make([]card.ResumeItem, 0, len(entries))
+	for i, entry := range entries {
+		items = append(items, card.ResumeItem{
+			Index:     i + 1,
+			SessionID: entry.SessionID,
+			UpdatedAt: entry.UpdatedAt.Local().Format("2006-01-02 15:04:05"),
+			Summary:   strings.TrimSpace(entry.Summary),
+			Current:   entry.SessionID == currentID,
+		})
+	}
+	return &card.ResumeCard{Agent: string(identity.Agent), WorkDir: identity.WorkDir, Items: items}
 }
 
 func (s *Service) handleConfigCommand(ctx context.Context, msg Message, cmd Command, preference config.RuntimePreference) error {
@@ -1607,6 +1676,55 @@ func (s *Service) HandleActionResult(ctx context.Context, req ActionRequest) (Ac
 			SessionID:           req.SessionID,
 			LocalConfigOverview: s.localConfigOverview(chatID),
 		})
+	case "resume.select":
+		// One-click resume from the /resume list card. The callback carries only
+		// the chosen agent session id as Value; the key + catalog identity behind
+		// the card come from the resumeContext we stored when rendering it. This
+		// is why we do not fabricate a Message here: the exact session key must be
+		// the one the /resume command computed, not a guess.
+		target := strings.TrimSpace(req.Value)
+		context, ok := s.resumeContextForSession(req.SessionID, time.Now())
+		if !ok || target == "" {
+			s.Audit.Record(req.Actor, "session_resume_failed", req.SessionID, "resume context expired or missing session id")
+			return s.renderActionEvent(card.Event{Type: "error", SessionID: req.SessionID, Segments: []card.Segment{{Kind: card.SegmentError, Text: "恢复上下文已过期，请重新发送 `/resume` 后再选择。"}}})
+		}
+		resumed, err := s.Sessions.Resume(context.Key, context.Identity, target, time.Now())
+		if err != nil {
+			switch {
+			case errors.Is(err, session.ErrSessionBusy):
+				return s.renderActionEvent(card.Event{Type: "error", SessionID: req.SessionID, Segments: []card.Segment{{Kind: card.SegmentError, Text: "当前会话仍有正在执行或排队的任务；请等待完成或停止任务后再恢复 Session。"}}})
+			case errors.Is(err, session.ErrSessionNotFound):
+				return s.renderActionEvent(card.Event{Type: "error", SessionID: req.SessionID, Segments: []card.Segment{{Kind: card.SegmentError, Text: "找不到该 Session；请重新发送 `/resume` 查看可恢复列表。"}}})
+			default:
+				s.Audit.Record(req.Actor, "session_resume_failed", context.Key.ID(), err.Error())
+				return s.renderActionEvent(card.Event{Type: "error", SessionID: req.SessionID, Segments: []card.Segment{{Kind: card.SegmentError, Text: "Session 恢复持久化失败，当前会话未切换。"}}})
+			}
+		}
+		s.Audit.Record(req.Actor, "session_resumed", context.Key.ID(), "agent_session="+resumed.AgentSessionID+" workdir="+resumed.WorkDir)
+		return s.renderActionEvent(card.Event{
+			Type:        "resume",
+			SessionID:   req.SessionID,
+			HeaderTitle: "✅ 已恢复历史会话",
+			Segments:    []card.Segment{{Kind: card.SegmentText, Text: fmt.Sprintf("已恢复 Session `%s`。下一条普通消息将继续该会话。", resumed.AgentSessionID)}},
+		})
+	case "status.refresh":
+		// Re-render the /status card in place from the key we stored when the card
+		// was first sent. Read-only: no agent run, no admin gate. The callback has
+		// no live Message, so group-only rows (本群覆盖项 / 本群会话数) are omitted —
+		// the session runtime rows come straight from the key and stay accurate.
+		context, ok := s.resumeContextForSession(req.SessionID, time.Now())
+		if !ok {
+			return s.renderActionEvent(card.Event{Type: "error", SessionID: req.SessionID, Segments: []card.Segment{{Kind: card.SegmentError, Text: "状态上下文已过期，请重新发送 `/status`。"}}})
+		}
+		kind := context.Key.Agent
+		if kind == "" {
+			kind = agent.Claude
+		}
+		return s.renderActionEvent(card.Event{
+			Type:       "status",
+			SessionID:  req.SessionID,
+			StatusCard: s.statusCardDataForKey(kind, context.Key, s.runtimePreference(), nil, ""),
+		})
 	case "help.status":
 		// Equivalent to /status. The callback (ActionRequest) carries no ChatID
 		// or full Message, so we cannot compute the exact per-topic session key
@@ -2145,10 +2263,11 @@ func (s *Service) statusText(kind agent.Kind, msg Message) string {
 // effective global preference and points to /status for per-session detail.
 func helpStatusSummary(preference config.RuntimePreference) string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "agent=%s\n", preference.Agent)
-	fmt.Fprintf(&b, "reply_mode=%s\n", preference.ReplyMode)
-	fmt.Fprintf(&b, "conversation_mode=%s\n", preference.ConversationMode)
-	b.WriteString("\n在会话中直接发送 `/status` 查看当前会话的详细状态（workdir、队列、token 等）。")
+	b.WriteString("**全局运行偏好**\n\n")
+	fmt.Fprintf(&b, "**Agent**：`%s`\n", preference.Agent)
+	fmt.Fprintf(&b, "**回复模式**：`%s`\n", preference.ReplyMode)
+	fmt.Fprintf(&b, "**会话模式**：`%s`\n", preference.ConversationMode)
+	b.WriteString("\n在会话中直接发送 `/status` 查看当前会话的详细状态（工作目录、队列、token 等）。")
 	return b.String()
 }
 
@@ -2188,6 +2307,95 @@ func (s *Service) statusTextWithPreference(kind agent.Kind, msg Message, prefere
 		fmt.Fprintf(&b, "chat_sessions=%d\n", s.countChatSessions(msg.ChatID))
 	}
 	return strings.TrimSpace(b.String())
+}
+
+// statusCardData assembles the sectioned /status card from the same session +
+// preference sources as statusTextWithPreference, but organised into Chinese
+// 会话概览 / 运行偏好 / 运行时 sections. Labels are translated; technical values
+// (mode keys, ids, workdir paths) are kept verbatim and flagged Code so the
+// renderer wraps them in inline code. The key=value statusText is left intact
+// for simulate and audit callers.
+func (s *Service) statusCardData(kind agent.Kind, msg Message, preference config.RuntimePreference) *card.StatusCard {
+	key := sessionKeyForMode(kind, msg, preference.ConversationMode)
+	overrideFields := s.localOverrideFields(msg)
+	groupChatID := ""
+	if msg.IsGroup {
+		groupChatID = msg.ChatID
+	}
+	return s.statusCardDataForKey(kind, key, preference, overrideFields, groupChatID)
+}
+
+// statusCardDataForKey builds the /status card from a resolved session key. It
+// is the shared core behind both the /status command (which passes the group's
+// override fields and chat id from the live Message) and the status.refresh
+// callback (which has only the key from resumeContext, so it passes nil/"" and
+// the card honestly omits the group-only rows).
+func (s *Service) statusCardDataForKey(kind agent.Kind, key session.Key, preference config.RuntimePreference, overrideFields []string, groupChatID string) *card.StatusCard {
+	overview := card.StatusSection{
+		Title: "📋 会话概览",
+		Fields: []card.StatusField{
+			{Label: "运行模式", Value: fmt.Sprintf("%s_oneshot", kind), Code: true},
+			{Label: "Agent", Value: string(kind), Code: true},
+			{Label: "会话隔离", Value: conversationModeLabel(preference.ConversationMode)},
+			{Label: "当前会话", Value: key.ID(), Code: true},
+			{Label: "默认工作目录", Value: s.Config.DefaultWorkDir, Code: true},
+		},
+	}
+
+	pref := card.StatusSection{
+		Title: "⚙️ 运行偏好",
+		Fields: []card.StatusField{
+			{Label: "回复模式", Value: string(preference.ReplyMode), Code: true},
+			{Label: "会话模式", Value: string(preference.ConversationMode), Code: true},
+		},
+	}
+	if len(overrideFields) > 0 {
+		pref.Fields = append(pref.Fields, card.StatusField{Label: "本群覆盖项", Value: strings.Join(overrideFields, "、"), Code: true})
+	}
+
+	sections := []card.StatusSection{overview, pref}
+
+	sess := s.findSession(key.ID())
+	if sess == nil {
+		return &card.StatusCard{Sections: sections, NotStarted: true}
+	}
+
+	runtime := card.StatusSection{
+		Title: "🧠 运行时",
+		Fields: []card.StatusField{
+			{Label: "状态", Value: string(sess.State), Code: true},
+			{Label: "工作目录", Value: sess.WorkDir, Code: true},
+			{Label: "排队消息", Value: fmt.Sprintf("%d", len(sess.Queue))},
+			{Label: "历史轮次", Value: fmt.Sprintf("%d", len(sess.History))},
+		},
+	}
+	if sess.AgentSessionID != "" {
+		runtime.Fields = append(runtime.Fields, card.StatusField{Label: "Agent Session", Value: sess.AgentSessionID, Code: true})
+	}
+	if sess.Model != "" {
+		runtime.Fields = append(runtime.Fields, card.StatusField{Label: "模型", Value: sess.Model, Code: true})
+	} else if kind == agent.Codex {
+		runtime.Fields = append(runtime.Fields, card.StatusField{Label: "模型", Value: "由 Codex 配置决定"})
+	}
+	if sess.Tokens > 0 {
+		runtime.Fields = append(runtime.Fields, card.StatusField{Label: "Tokens", Value: fmt.Sprintf("%d", sess.Tokens)})
+	}
+	if groupChatID != "" {
+		runtime.Fields = append(runtime.Fields, card.StatusField{Label: "本群会话数", Value: fmt.Sprintf("%d", s.countChatSessions(groupChatID))})
+	}
+	sections = append(sections, runtime)
+	return &card.StatusCard{Sections: sections}
+}
+
+// conversationModeLabel gives a Chinese one-liner for the conversation mode used
+// in the /status 会话概览 section (the raw key is still shown under 运行偏好).
+func conversationModeLabel(mode config.ConversationMode) string {
+	switch mode {
+	case config.ConversationModeTopic:
+		return "按话题隔离（topic）"
+	default:
+		return "按群共用（chat）"
+	}
 }
 
 // localOverrideFields lists the names of preference fields this group overrides
