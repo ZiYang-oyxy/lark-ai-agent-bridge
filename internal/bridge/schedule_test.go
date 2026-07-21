@@ -106,17 +106,21 @@ func TestCronListIsScopedToCurrentConversation(t *testing.T) {
 func TestTimerAddIsNotDeduplicatedBeforeAgentEnqueue(t *testing.T) {
 	service, _, _ := scheduleTestService(t)
 	now := time.Now()
-	msg := Message{ID: "om_timer_add", ChatID: "oc_chat", Sender: "ou_creator", Text: "/timer add 明天下午三点提醒我评审", Time: now}
+	msg := Message{ID: "om_timer_add", ChatID: "oc_chat", ThreadID: "omt_topic", Sender: "ou_creator", Text: "/timer add 明天下午三点提醒我评审", Time: now}
 	if err := service.HandleMessage(context.Background(), msg); err != nil {
 		t.Fatal(err)
 	}
-	key := session.Key{Agent: agent.Claude, ChatID: msg.ChatID}
+	key := session.Key{Agent: agent.Claude, ChatID: msg.ChatID, Thread: "schedule-proposal:" + msg.ThreadID}
 	sess, ok := service.Sessions.Get(key)
 	if !ok || len(sess.Queue) != 1 {
 		t.Fatalf("timer add was not queued: session=%#v ok=%v", sess, ok)
 	}
-	if sess.Queue[0].ID != msg.ID || sess.Queue[0].ScheduleKind != string(schedule.KindTimer) {
+	if sess.Queue[0].ID != msg.ID || sess.Queue[0].ScheduleKind != string(schedule.KindTimer) || !sess.Queue[0].Reset {
 		t.Fatalf("queued schedule input = %#v", sess.Queue[0])
+	}
+	conversationKey := session.Key{Agent: agent.Claude, ChatID: msg.ChatID, Thread: msg.ThreadID}
+	if _, ok := service.Sessions.Get(conversationKey); ok {
+		t.Fatalf("schedule proposal leaked into conversation session %s", conversationKey.ID())
 	}
 }
 
@@ -129,6 +133,21 @@ func TestScheduleDispatchUsesFrozenConfiguration(t *testing.T) {
 		Execution: schedule.FrozenExecution{Agent: "codex", Model: "frozen-model", Effort: "high", AgentHome: "/tmp/codex-home", AgentBin: "/opt/codex", WorkDir: workDir, ReplyMode: "append-clean-card", ConversationMode: "topic"},
 	}
 	run := schedule.Run{ID: "cron:task1234:2026-07-21T09:00:00Z", TaskID: task.ID, ScheduledAt: time.Now(), State: schedule.RunPending}
+	conversationKey := session.Key{Agent: agent.Codex, ChatID: task.Target.ChatID, Thread: task.Target.ThreadID}
+	now := time.Now()
+	if _, _, err := service.Sessions.EnqueueDurable(conversationKey, session.Input{ID: "ordinary", Text: "ordinary chat", WorkDir: workDir, Time: now, State: session.InputQueued}, workDir, session.BatchLimits{}); err != nil {
+		t.Fatal(err)
+	}
+	_, ordinaryBatch, err := service.Sessions.FreezeReadyBatch(conversationKey, now, session.BatchLimits{})
+	if err != nil || ordinaryBatch == nil {
+		t.Fatalf("freeze ordinary batch: batch=%#v err=%v", ordinaryBatch, err)
+	}
+	if _, _, err := service.Sessions.MarkBatchRunning(conversationKey, ordinaryBatch.ID, nil, now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.Sessions.FinishBatch(conversationKey, ordinaryBatch.ID, session.BatchCompletion{Status: session.InputCompleted, AgentSessionID: "E2E_AGENT_FIXTURE_invalid", At: now}); err != nil {
+		t.Fatal(err)
+	}
 	result, err := service.Enqueue(context.Background(), task, run)
 	if err != nil {
 		t.Fatal(err)
@@ -136,10 +155,14 @@ func TestScheduleDispatchUsesFrozenConfiguration(t *testing.T) {
 	if result.Duplicate {
 		t.Fatal("first enqueue reported duplicate")
 	}
-	key := session.Key{Agent: agent.Codex, ChatID: task.Target.ChatID, Thread: task.Target.ThreadID}
+	key := session.Key{Agent: agent.Codex, ChatID: task.Target.ChatID, Thread: "schedule:" + task.ID}
 	sess, ok := service.Sessions.Get(key)
 	if !ok || len(sess.Queue) != 1 {
 		t.Fatalf("session = %#v ok=%v", sess, ok)
+	}
+	conversation, ok := service.Sessions.Get(conversationKey)
+	if !ok || conversation.AgentSessionID != "E2E_AGENT_FIXTURE_invalid" || len(conversation.Queue) != 0 {
+		t.Fatalf("scheduled run mutated conversation session: %#v ok=%v", conversation, ok)
 	}
 	input := sess.Queue[0]
 	if input.ID != run.ID || input.Text != task.Prompt || input.WorkDir != workDir || input.RequestedModel != "frozen-model" || input.RequestedEffort != "high" || input.AgentHome != "/tmp/codex-home" || input.AgentBin != "/opt/codex" {
@@ -250,7 +273,7 @@ func TestAgentProposalGetsScopedTokenAndReplacesTerminalCard(t *testing.T) {
 	service.ScheduleContexts = registry
 	service.ScheduleSocket = socketPath
 
-	msg := Message{ID: "om_schedule", ChatID: "oc_chat", Sender: "ou_creator", Text: "每个工作日九点总结项目进展", Time: now}
+	msg := Message{ID: "om_schedule", ChatID: "oc_chat", ThreadID: "omt_topic", Sender: "ou_creator", Text: "/cron add 每个工作日九点总结项目进展", Time: now}
 	if err := service.HandleMessage(context.Background(), msg); err != nil {
 		t.Fatal(err)
 	}
@@ -275,6 +298,9 @@ func TestAgentProposalGetsScopedTokenAndReplacesTerminalCard(t *testing.T) {
 	}
 	if got := len(store.Drafts()); got != 1 {
 		t.Fatalf("draft count = %d", got)
+	}
+	if got := store.Drafts()[0].Target.ThreadID; got != msg.ThreadID {
+		t.Fatalf("draft target thread = %q, want %q", got, msg.ThreadID)
 	}
 	events := renderer.Events()
 	last := events[len(events)-1]

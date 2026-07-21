@@ -29,10 +29,12 @@ func (s *Service) Enqueue(_ context.Context, task schedule.Task, run schedule.Ru
 	if !ok {
 		return schedule.EnqueueResult{}, fmt.Errorf("scheduled task has invalid agent %q", task.Execution.Agent)
 	}
-	key := session.Key{Agent: kind, ChatID: task.Target.ChatID}
-	if config.ConversationMode(task.Execution.ConversationMode) == config.ConversationModeTopic {
-		key.Thread = task.Target.ThreadID
-	}
+	// Scheduled executions own a task-scoped session. Reusing the conversation
+	// key would inherit an unrelated AgentSessionID from ordinary chat (or an
+	// E2E fixture), causing the runner to pass an invalid --resume value. The
+	// task namespace keeps recurring runs continuous without mutating the user's
+	// interactive conversation session.
+	key := session.Key{Agent: kind, ChatID: task.Target.ChatID, Thread: "schedule:" + task.ID}
 	now := time.Now()
 	input := session.Input{
 		ID: run.ID, Sender: task.Creator, Text: task.Prompt, ReplyToMessageID: task.Target.ReplyToMessageID,
@@ -275,11 +277,15 @@ func (s *Service) issueScheduleProposalContext(sess session.Session, batch sessi
 		return "", ""
 	}
 	anchor := batch.Inputs[len(batch.Inputs)-1]
+	targetThreadID := sess.Key.Thread
+	if anchor.ScheduleKind != "" {
+		targetThreadID = anchor.ScheduleTargetThreadID
+	}
 	bound := schedule.ProposalContext{
 		OriginRunID: originRunID,
 		Creator:     anchor.Sender,
 		Target: schedule.Target{
-			ChatID: sess.Key.ChatID, ThreadID: sess.Key.Thread, ReplyToMessageID: anchor.ReplyToMessageID, IsGroup: anchor.IsGroup,
+			ChatID: sess.Key.ChatID, ThreadID: targetThreadID, ReplyToMessageID: anchor.ReplyToMessageID, IsGroup: anchor.IsGroup,
 		},
 		Execution: schedule.FrozenExecution{
 			Agent: string(sess.Key.Agent), Model: anchor.RequestedModel, Effort: anchor.RequestedEffort,
