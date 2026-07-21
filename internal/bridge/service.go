@@ -2661,11 +2661,13 @@ func (r CLIExecRunner) Run(ctx context.Context, req AgentRunRequest) (AgentRunRe
 	}
 	if waitErr != nil {
 		detail := strings.TrimSpace(stderr.String())
+		source := agentFailureSourceStderr
 		if detail == "" {
 			detail = strings.TrimSpace(stdout.String())
+			source = agentFailureSourceResult
 		}
 		if detail != "" {
-			return result, fmt.Errorf("%w: %s", waitErr, detail)
+			return result, newAgentProcessError(waitErr, source, detail)
 		}
 		return result, waitErr
 	}
