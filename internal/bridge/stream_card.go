@@ -121,7 +121,7 @@ func newAgentCardStreamWithClock(service *Service, sessionID string, sess sessio
 		startedAt:     startedAt,
 		status:        "running",
 		activity:      streamActivityReasoning,
-		meta:          metaForRun(sess, input),
+		meta:          service.metaForRun(sess, input),
 		totalBefore:   sess.Tokens,
 		stopVisible:   true,
 	}
@@ -321,8 +321,8 @@ func (s *agentCardStream) requestStop() card.Event {
 	return event
 }
 
-func metaForRun(sess session.Session, input session.Input) card.Meta {
-	meta := metaFromSession(sess)
+func (s *Service) metaForRun(sess session.Session, input session.Input) card.Meta {
+	meta := s.metaFromSession(sess)
 	meta.Model = ""
 	if sess.Key.Agent == agent.Codex {
 		// Bridge deliberately does not select Codex model or reasoning effort.

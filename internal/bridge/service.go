@@ -20,6 +20,7 @@ import (
 
 	"lark-agent-bridge/internal/access"
 	"lark-agent-bridge/internal/agent"
+	"lark-agent-bridge/internal/agent/contextusage"
 	"lark-agent-bridge/internal/audit"
 	"lark-agent-bridge/internal/bridgeinstructions"
 	"lark-agent-bridge/internal/card"
@@ -1071,7 +1072,7 @@ func batchKey(sess session.Session, _ session.Batch) session.Key { return sess.K
 
 func (s *Service) finishStartingBatch(sess session.Session, batch session.Batch, id string, status session.InputState, cardStatus string, result AgentRunResult) {
 	if run, ok := s.activeRun(id); ok && run.BatchID == batch.ID && run.Stream != nil {
-		s.finishStreamAndAudit(run.Stream, cardStatus, metaFromSession(sess), result, sess.ID)
+		s.finishStreamAndAudit(run.Stream, cardStatus, s.metaFromSession(sess), result, sess.ID)
 	}
 	_, finishErr := s.finishBatchOrRemember(sess, batch.ID, session.BatchCompletion{Status: status, At: time.Now()}, "batch_finish_failed")
 	s.completeScheduleBatch(batch, status, finishErr, time.Now())
@@ -1085,7 +1086,7 @@ func (s *Service) executeBatch(ctx context.Context, sess session.Session, batch 
 	prompt := BuildBatchPrompt(batch)
 	if batch.Inputs[0].Reset && strings.TrimSpace(prompt) == "" {
 		if run, ok := s.activeRun(id); ok && run.BatchID == batch.ID && run.Stream != nil {
-			s.finishStreamAndAudit(run.Stream, "completed", metaFromSession(sess), AgentRunResult{Segments: []card.Segment{{Kind: card.SegmentText, Text: "Agent session is ready. Send a message in this chat/topic to continue."}}}, sess.ID)
+			s.finishStreamAndAudit(run.Stream, "completed", s.metaFromSession(sess), AgentRunResult{Segments: []card.Segment{{Kind: card.SegmentText, Text: "Agent session is ready. Send a message in this chat/topic to continue."}}}, sess.ID)
 		}
 		_, _ = s.finishBatchOrRemember(sess, batch.ID, session.BatchCompletion{Status: session.InputCompleted, At: time.Now()}, "completion_persist_failed")
 		return
@@ -1137,11 +1138,11 @@ func (s *Service) executeBatch(ctx context.Context, sess session.Session, batch 
 	}
 	if run, ok := s.activeRun(id); ok && run.BatchID == batch.ID && run.Stream != nil {
 		if draft, hasDraft := s.scheduleDraftForOrigin(id); status == session.InputCompleted && hasDraft {
-			s.finishScheduleConfirmation(run.Stream, cardStatus, metaFromSession(sess), result, draft, sess.ID)
+			s.finishScheduleConfirmation(run.Stream, cardStatus, s.metaFromSession(sess), result, draft, sess.ID)
 		} else if status == session.InputCompleted {
-			s.finishStreamWithOutputImages(ctx, run.Stream, cardStatus, metaFromSession(sess), result, sess, batch)
+			s.finishStreamWithOutputImages(ctx, run.Stream, cardStatus, s.metaFromSession(sess), result, sess, batch)
 		} else {
-			s.finishStreamAndAudit(run.Stream, cardStatus, metaFromSession(sess), result, sess.ID)
+			s.finishStreamAndAudit(run.Stream, cardStatus, s.metaFromSession(sess), result, sess.ID)
 		}
 	}
 	_, finishErr := s.finishBatchOrRemember(sess, batch.ID, session.BatchCompletion{Status: status, AgentSessionID: result.AgentSessionID, Model: result.Model, Tokens: result.Tokens, At: time.Now()}, "completion_persist_failed")
@@ -2472,9 +2473,19 @@ func sessionKeyForMode(kind agent.Kind, msg Message, mode config.ConversationMod
 	return key
 }
 
-func metaFromSession(sess session.Session) card.Meta {
+func (s *Service) metaFromSession(sess session.Session) card.Meta {
 	userName, ip := runtimeIdentity()
-	return card.Meta{Agent: string(sess.Key.Agent), Model: sess.Model, Tokens: sess.Tokens, TotalTokens: sess.Tokens, User: userName, IP: ip, WorkDir: sess.WorkDir, Status: string(sess.State)}
+	meta := card.Meta{Agent: string(sess.Key.Agent), Model: sess.Model, Tokens: sess.Tokens, TotalTokens: sess.Tokens, User: userName, IP: ip, WorkDir: sess.WorkDir, Status: string(sess.State)}
+	dir := s.Config.ClaudeContextUsageDir
+	if sess.Key.Agent == agent.Codex {
+		dir = s.Config.CodexContextUsageDir
+	}
+	if u := contextusage.Read(dir, sess.AgentSessionID); u.OK {
+		meta.CtxUsedPercent = u.UsedPercent
+		meta.CtxTokens = u.TotalTokens
+		meta.CtxWindow = u.ContextWindow
+	}
+	return meta
 }
 
 var (

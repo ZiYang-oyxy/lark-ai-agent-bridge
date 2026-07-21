@@ -375,3 +375,31 @@ func unsetEnv(t *testing.T, name string) {
 		_ = os.Unsetenv(name)
 	})
 }
+
+func TestLoadFromEnvContextUsageDirsExplicit(t *testing.T) {
+	t.Setenv("LAB_CLAUDE_CONTEXT_USAGE_DIR", "/tmp/claude-ctx")
+	t.Setenv("LAB_CODEX_CONTEXT_USAGE_DIR", "/tmp/codex-ctx")
+	cfg := LoadFromEnv()
+	if cfg.ClaudeContextUsageDir != "/tmp/claude-ctx" {
+		t.Fatalf("claude dir = %q", cfg.ClaudeContextUsageDir)
+	}
+	if cfg.CodexContextUsageDir != "/tmp/codex-ctx" {
+		t.Fatalf("codex dir = %q", cfg.CodexContextUsageDir)
+	}
+}
+
+func TestLoadFromEnvContextUsageDirsDerived(t *testing.T) {
+	t.Setenv("LAB_CLAUDE_CONTEXT_USAGE_DIR", "")
+	t.Setenv("LAB_CODEX_CONTEXT_USAGE_DIR", "")
+	t.Setenv("E2E_CLAUDE_CONTEXT_USAGE_DIR", "")
+	t.Setenv("E2E_CODEX_CONTEXT_USAGE_DIR", "")
+	t.Setenv("CLAUDE_CONFIG_DIR", "/home/<USER>/.claude-home")
+	t.Setenv("CODEX_HOME", "/home/<USER>/.codex-home")
+	cfg := LoadFromEnv()
+	if cfg.ClaudeContextUsageDir != "/home/<USER>/.claude-home/context-usage" {
+		t.Fatalf("derived claude dir = %q", cfg.ClaudeContextUsageDir)
+	}
+	if cfg.CodexContextUsageDir != "/home/<USER>/.codex-home/context-usage" {
+		t.Fatalf("derived codex dir = %q", cfg.CodexContextUsageDir)
+	}
+}
