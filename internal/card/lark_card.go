@@ -189,6 +189,23 @@ func buildConfigFormElements(sessionID string, form ConfigForm) []any {
 		{Value: "false", Label: "忽略（默认）"},
 		{Value: "true", Label: "响应"},
 	}))...)
+	saveButton := map[string]any{
+		"tag":              "button",
+		"name":             "submit_runtime_config",
+		"text":             map[string]any{"tag": "plain_text", "content": "保存"},
+		"type":             "primary",
+		"width":            "fill",
+		"form_action_type": "submit",
+		"behaviors":        callbackBehavior(sessionID, saveAction, saveValue),
+	}
+	closeButton := map[string]any{
+		"tag":       "button",
+		"name":      "close_runtime_config",
+		"text":      map[string]any{"tag": "plain_text", "content": "关闭"},
+		"type":      "default",
+		"width":     "fill",
+		"behaviors": callbackBehavior(sessionID, "config.close", ""),
+	}
 
 	return []any{
 		markdownElement("config_intro", intro),
@@ -201,19 +218,12 @@ func buildConfigFormElements(sessionID string, form ConfigForm) []any {
 				sectionElement("👥 群消息", group),
 				accessPanelElement(form),
 				map[string]any{
-					"tag":              "button",
-					"name":             "submit_runtime_config",
-					"text":             map[string]any{"tag": "plain_text", "content": "保存"},
-					"type":             "primary",
-					"form_action_type": "submit",
-					"behaviors":        callbackBehavior(sessionID, saveAction, saveValue),
-				},
-				map[string]any{
-					"tag":       "button",
-					"name":      "close_runtime_config",
-					"text":      map[string]any{"tag": "plain_text", "content": "关闭"},
-					"type":      "default",
-					"behaviors": callbackBehavior(sessionID, "config.close", ""),
+					"tag":                "column_set",
+					"horizontal_spacing": "8px",
+					"columns": []any{
+						map[string]any{"tag": "column", "width": "weighted", "weight": 1, "elements": []any{saveButton}},
+						map[string]any{"tag": "column", "width": "weighted", "weight": 1, "elements": []any{closeButton}},
+					},
 				},
 			},
 		},

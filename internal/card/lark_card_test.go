@@ -369,10 +369,29 @@ func TestBuildLarkCardRendersRuntimeConfigForm(t *testing.T) {
 	if form == nil || form["name"] != "runtime_config" {
 		t.Fatalf("config form = %#v", form)
 	}
+	formElements := form["elements"].([]any)
+	actionRow := formElements[len(formElements)-1].(map[string]any)
+	if actionRow["tag"] != "column_set" {
+		t.Fatalf("config action row = %#v, want column_set", actionRow)
+	}
+	columns := actionRow["columns"].([]any)
+	if len(columns) != 2 {
+		t.Fatalf("config action columns = %d, want 2", len(columns))
+	}
+	for i, raw := range columns {
+		column := raw.(map[string]any)
+		if column["width"] != "weighted" || column["weight"] != 1 {
+			t.Fatalf("config action column %d = %#v", i, column)
+		}
+		button := column["elements"].([]any)[0].(map[string]any)
+		if button["width"] != "fill" {
+			t.Fatalf("config action button %d width = %#v", i, button["width"])
+		}
+	}
 	selects := map[string]map[string]any{}
 	buttons := map[string]map[string]any{}
 	var copy strings.Builder
-	collectConfigControls(form["elements"].([]any), selects, buttons, &copy)
+	collectConfigControls(formElements, selects, buttons, &copy)
 	submit := buttons["submit_runtime_config"]
 	closeButton := buttons["close_runtime_config"]
 	// Model/Effort dropped from the UI (Task 3); six selects remain.
@@ -986,6 +1005,9 @@ func collectConfigControls(elements []any, selects, buttons map[string]map[strin
 			}
 			collectConfigControls(generic, selects, buttons, copy)
 		}
+		if columns, ok := control["columns"].([]any); ok {
+			collectConfigControls(columns, selects, buttons, copy)
+		}
 	}
 }
 
@@ -994,9 +1016,9 @@ func TestBuildConfigFormElementsGroupsFourSectionsAndDropsModelEffort(t *testing
 		Agent: "claude", AgentHome: "默认", AgentBin: "主机 claude",
 		ReplyMode: "append", ConversationMode: "chat",
 		GroupMessageMode: "mention_only", RespondToBots: "false",
-		AgentHomes: []SelectOption{{Value: "默认", Label: "默认"}},
-		AgentBins:  []SelectOption{{Value: "主机 claude", Label: "主机 claude"}},
-		ReplyModes: []string{"append", "append-clean-card", "latest-card"},
+		AgentHomes:        []SelectOption{{Value: "默认", Label: "默认"}},
+		AgentBins:         []SelectOption{{Value: "主机 claude", Label: "主机 claude"}},
+		ReplyModes:        []string{"append", "append-clean-card", "latest-card"},
 		ConversationModes: []string{"chat", "topic"},
 	})
 	blob, err := json.Marshal(elements)
