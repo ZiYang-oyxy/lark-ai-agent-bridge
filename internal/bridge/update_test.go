@@ -14,6 +14,7 @@ import (
 	"lark-agent-bridge/internal/audit"
 	"lark-agent-bridge/internal/buildinfo"
 	"lark-agent-bridge/internal/card"
+	"lark-agent-bridge/internal/config"
 	"lark-agent-bridge/internal/schedule"
 	"lark-agent-bridge/internal/session"
 	bridgeupdate "lark-agent-bridge/internal/update"
@@ -92,11 +93,59 @@ func TestHelpShowsCurrentVersionAndUpdateDetailsAction(t *testing.T) {
 	if event.Type != "help" || event.HelpCard == nil {
 		t.Fatalf("help must keep the sectioned command card: %#v", event)
 	}
-	if !strings.Contains(event.Segments[0].Text, "当前版本：v1.0.0") || !strings.Contains(event.Segments[0].Text, "发现新版本 v1.2.0") {
-		t.Fatalf("help event = %#v", event)
+	status := event.HelpCard.VersionStatus
+	if status == nil {
+		t.Fatal("help must include structured version status")
 	}
-	if len(event.Actions) != 1 || event.Actions[0].ID != "update.details" || event.Actions[0].Value != "1.2.0" {
-		t.Fatalf("help actions = %#v", event.Actions)
+	if status.CurrentVersion != "v1.0.0" || status.LatestVersion != "v1.2.0" || !status.UpdateAvailable {
+		t.Fatalf("help version status = %#v", status)
+	}
+	if status.DetailsAction.ID != "update.details" || status.DetailsAction.Label != "查看更新 →" || status.DetailsAction.Value != "1.2.0" {
+		t.Fatalf("help details action = %#v", status.DetailsAction)
+	}
+	if len(event.Actions) != 0 {
+		t.Fatalf("update action must be owned by help version status: %#v", event.Actions)
+	}
+}
+
+func TestHelpMapsPassiveUpdateStatesWithoutDetailsAction(t *testing.T) {
+	setUpdateTestVersion(t)
+	tests := []struct {
+		name    string
+		updates UpdateManager
+		status  string
+	}{
+		{name: "updates disabled", status: ""},
+		{name: "latest", updates: &fakeUpdateManager{}, status: "已是最新版本"},
+		{name: "unsupported platform", updates: &fakeUpdateManager{checkResult: bridgeupdate.CheckResult{UnsupportedPlatform: true}}, status: "不支持当前平台"},
+		{name: "check failed", updates: &fakeUpdateManager{checkErr: errors.New("offline")}, status: "暂时无法检查更新"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			svc := NewService(testConfig(t), card.NewFakeRenderer(), newFakeRunner(), audit.NewRecorder())
+			svc.Updates = tt.updates
+			event := svc.helpUpdateEvent(t.Context(), "help", "message", config.ConversationModeChat, HelpCardData())
+			status := event.HelpCard.VersionStatus
+			if status == nil || status.CurrentVersion != "v1.0.0" || status.Status != tt.status {
+				t.Fatalf("version status = %#v, want status %q", status, tt.status)
+			}
+			if status.UpdateAvailable || status.DetailsAction.ID != "" || len(event.Actions) != 0 {
+				t.Fatalf("passive state must not expose update action: status=%#v actions=%#v", status, event.Actions)
+			}
+		})
+	}
+}
+
+func TestHelpMapsDevelopmentBuildWithoutDetailsAction(t *testing.T) {
+	old := buildinfo.Version
+	t.Cleanup(func() { buildinfo.Version = old })
+	buildinfo.Version = "dev"
+	svc := NewService(testConfig(t), card.NewFakeRenderer(), newFakeRunner(), audit.NewRecorder())
+	svc.Updates = &fakeUpdateManager{checkResult: updateAvailableResult()}
+	event := svc.helpUpdateEvent(t.Context(), "help", "message", config.ConversationModeChat, HelpCardData())
+	status := event.HelpCard.VersionStatus
+	if status == nil || status.CurrentVersion != "dev" || status.Status != "开发构建不可自升级" || status.UpdateAvailable || status.DetailsAction.ID != "" {
+		t.Fatalf("development version status = %#v", status)
 	}
 }
 

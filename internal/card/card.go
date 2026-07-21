@@ -135,9 +135,21 @@ type LocalConfigOverview struct {
 // plus a small footer note rendered under a divider. Buttons are attached by
 // the renderer.
 type HelpCard struct {
-	Groups []HelpGroup
-	Footer string
-	ChatID string
+	Groups        []HelpGroup
+	Footer        string
+	ChatID        string
+	VersionStatus *HelpVersionStatus
+}
+
+// HelpVersionStatus is the structured version/update state shown at the top
+// of /help. Available updates carry their own details action so the renderer
+// can keep the CTA next to the version comparison instead of at card bottom.
+type HelpVersionStatus struct {
+	CurrentVersion  string
+	Status          string
+	LatestVersion   string
+	UpdateAvailable bool
+	DetailsAction   Action
 }
 
 // StatusField is one labelled row in a /status section: a Chinese Label and its

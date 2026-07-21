@@ -11,13 +11,6 @@ func BuildLarkCard(e Event) map[string]any {
 	if e.HelpCard != nil {
 		e.Streaming = false
 		elements = buildHelpElements(e.SessionID, *e.HelpCard)
-		answer, _, _ := splitCardSections(e.Segments)
-		if strings.TrimSpace(answer) != "" {
-			elements = append([]any{noteElement("help_update_status", answer)}, elements...)
-		}
-		for _, action := range buildButtonActions(e) {
-			elements = append(elements, action)
-		}
 	} else if e.StatusCard != nil {
 		e.Streaming = false
 		elements = buildStatusElements(e.SessionID, *e.StatusCard)
@@ -269,7 +262,8 @@ func buildAgentModeFormElements(sessionID string, form AgentModeForm) []any {
 // command group, a divider, a small grey footer note, then status and config
 // shortcuts. Group help adds the current chat's local-config shortcut.
 func buildHelpElements(sessionID string, help HelpCard) []any {
-	elements := make([]any, 0, len(help.Groups)+3)
+	elements := make([]any, 0, len(help.Groups)+4)
+	elements = append(elements, buildHelpVersionElements(sessionID, help.VersionStatus)...)
 	for groupIdx, group := range help.Groups {
 		body := make([]map[string]any, 0, len(group.Lines))
 		for lineIdx, line := range group.Lines {
@@ -292,6 +286,33 @@ func buildHelpElements(sessionID string, help HelpCard) []any {
 		elements = append(elements, row)
 	}
 	return elements
+}
+
+// buildHelpVersionElements keeps version information at the top of /help.
+// Available updates get a bordered callout with the details CTA inside it;
+// passive states stay compact so they do not compete with command help.
+func buildHelpVersionElements(sessionID string, status *HelpVersionStatus) []any {
+	if status == nil || strings.TrimSpace(status.CurrentVersion) == "" {
+		return nil
+	}
+	if !status.UpdateAvailable {
+		content := fmt.Sprintf("当前版本：`%s`", status.CurrentVersion)
+		if detail := strings.TrimSpace(status.Status); detail != "" {
+			content += " · " + detail
+		}
+		return []any{noteElement("help_version_status", content)}
+	}
+
+	body := []map[string]any{
+		markdownElement("help_update_versions", fmt.Sprintf("**%s → %s**", status.CurrentVersion, status.LatestVersion)),
+		noteElement("help_update_guidance", "查看本次更新内容，确认后可升级"),
+	}
+	if actionRow := buttonRowElements([]Action{status.DetailsAction}, sessionID); actionRow != nil {
+		body = append(body, actionRow)
+	}
+	panel := sectionElement("✨ 发现新版本", body)
+	panel["border"] = map[string]string{"color": "blue", "corner_radius": "5px"}
+	return []any{panel}
 }
 
 // buildLocalConfigOverviewElements renders the read-only /local-config summary:

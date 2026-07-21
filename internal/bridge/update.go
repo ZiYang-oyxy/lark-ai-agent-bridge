@@ -56,34 +56,34 @@ func (s *Service) helpUpdateEvent(ctx context.Context, sessionID, replyToMessage
 	if buildinfo.IsRelease() {
 		display = "v" + version
 	}
-	summary := "当前版本：" + display
+	status := &card.HelpVersionStatus{CurrentVersion: display}
+	help.VersionStatus = status
 	event := card.Event{
 		Type: "help", SessionID: sessionID, ReplyToMessageID: replyToMessageID,
 		ReplyInThread: mode == config.ConversationModeTopic,
 		HelpCard:      &help,
 	}
 	if s.Updates == nil {
-		event.Segments = []card.Segment{{Kind: card.SegmentText, Text: summary}}
 		return event
 	}
 	if !buildinfo.IsRelease() {
-		summary += "\n更新状态：开发构建不可自升级"
-		event.Segments = []card.Segment{{Kind: card.SegmentText, Text: summary}}
+		status.Status = "开发构建不可自升级"
 		return event
 	}
 	result, err := s.Updates.Check(ctx, version)
 	if err != nil {
 		s.Audit.Record("system", "update_check_failed", sessionID, err.Error())
-		summary += "\n更新状态：暂时无法检查更新"
+		status.Status = "暂时无法检查更新"
 	} else if result.UnsupportedPlatform {
-		summary += "\n更新状态：不支持当前平台"
+		status.Status = "不支持当前平台"
 	} else if result.UpdateAvailable {
-		summary += "\n发现新版本 v" + result.Manifest.Version
-		event.Actions = []card.Action{{ID: "update.details", Label: "查看更新", Value: result.Manifest.Version}}
+		status.Status = "发现新版本"
+		status.LatestVersion = "v" + result.Manifest.Version
+		status.UpdateAvailable = true
+		status.DetailsAction = card.Action{ID: "update.details", Label: "查看更新 →", Value: result.Manifest.Version}
 	} else {
-		summary += "\n更新状态：已是最新版本"
+		status.Status = "已是最新版本"
 	}
-	event.Segments = []card.Segment{{Kind: card.SegmentText, Text: summary}}
 	return event
 }
 

@@ -1002,17 +1002,88 @@ func TestBuildLarkCardRendersUpdateStatusWithSectionedHelp(t *testing.T) {
 		SessionID: "help:update",
 		HelpCard: &HelpCard{Groups: []HelpGroup{
 			{Title: "💬 会话", Lines: []string{"**`/new`** 开新会话"}},
+		}, VersionStatus: &HelpVersionStatus{
+			CurrentVersion:  "v1.0.0",
+			Status:          "发现新版本",
+			LatestVersion:   "v1.2.0",
+			UpdateAvailable: true,
+			DetailsAction:   Action{ID: "update.details", Label: "查看更新 →", Value: "1.2.0"},
 		}},
-		Segments: []Segment{{Kind: SegmentText, Text: "当前版本：v1.0.0\n发现新版本 v1.2.0"}},
-		Actions:  []Action{{ID: "update.details", Label: "查看更新", Value: "1.2.0"}},
 	})
+	elements := payload["body"].(map[string]any)["elements"].([]any)
+	if len(elements) < 2 {
+		t.Fatalf("help elements = %#v", elements)
+	}
+	updatePanel := elements[0].(map[string]any)
+	if updatePanel["tag"] != "collapsible_panel" {
+		t.Fatalf("first help element must be update panel: %#v", updatePanel)
+	}
+	header := updatePanel["header"].(map[string]any)
+	title := header["title"].(map[string]string)["content"]
+	if title != "✨ 发现新版本" {
+		t.Fatalf("update panel title = %q", title)
+	}
 	data, err := json.Marshal(payload)
 	if err != nil {
 		t.Fatal(err)
 	}
 	text := string(data)
-	if !containsAll(text, "当前版本：v1.0.0", "发现新版本 v1.2.0", "update.details", "**`/new`**") {
+	if !containsAll(text, "**v1.0.0 → v1.2.0**", "查看本次更新内容，确认后可升级", "update.details", "查看更新 →", "**`/new`**") {
 		t.Fatalf("sectioned update help missing content: %s", text)
+	}
+	var buttons []map[string]any
+	collectHelpButtonData(elements, &buttons)
+	updateButtons := 0
+	for _, button := range buttons {
+		behavior := button["behaviors"].([]any)[0].(map[string]any)
+		value := behavior["value"].(map[string]any)
+		if value["action_id"] == "update.details" {
+			updateButtons++
+			if button["type"] != "primary" || value["value"] != "1.2.0" {
+				t.Fatalf("update button = %#v", button)
+			}
+		}
+	}
+	if updateButtons != 1 {
+		t.Fatalf("update button count = %d, want 1", updateButtons)
+	}
+}
+
+func TestBuildLarkCardRendersInactiveVersionStatusWithoutUpdateAction(t *testing.T) {
+	tests := []struct {
+		name    string
+		current string
+		status  string
+	}{
+		{name: "latest", current: "v1.2.0", status: "已是最新版本"},
+		{name: "development", current: "dev", status: "开发构建不可自升级"},
+		{name: "unsupported", current: "v1.2.0", status: "不支持当前平台"},
+		{name: "check failed", current: "v1.2.0", status: "暂时无法检查更新"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			payload := BuildLarkCard(Event{
+				Type:      "help",
+				SessionID: "help:" + tt.name,
+				HelpCard: &HelpCard{
+					VersionStatus: &HelpVersionStatus{CurrentVersion: tt.current, Status: tt.status},
+					Groups:        []HelpGroup{{Title: "💬 会话", Lines: []string{"**`/new`** 开新会话"}}},
+				},
+			})
+			elements := payload["body"].(map[string]any)["elements"].([]any)
+			first := elements[0].(map[string]any)
+			want := fmt.Sprintf("当前版本：`%s` · %s", tt.current, tt.status)
+			if first["tag"] != "markdown" || first["content"] != want || first["text_size"] != "notation" {
+				t.Fatalf("inactive version status = %#v", first)
+			}
+			var buttonIDs []string
+			collectHelpButtons(elements, &buttonIDs)
+			for _, id := range buttonIDs {
+				if id == "update.details" {
+					t.Fatalf("inactive version status must not render update action: %#v", buttonIDs)
+				}
+			}
+		})
 	}
 }
 
@@ -1044,6 +1115,13 @@ func collectHelpButtonData(elements []any, out *[]map[string]any) {
 		}
 		if nested, ok := m["elements"].([]any); ok {
 			collectHelpButtonData(nested, out)
+		}
+		if nested, ok := m["elements"].([]map[string]any); ok {
+			items := make([]any, len(nested))
+			for i := range nested {
+				items[i] = nested[i]
+			}
+			collectHelpButtonData(items, out)
 		}
 		if columns, ok := m["columns"].([]any); ok {
 			collectHelpButtonData(columns, out)
