@@ -14,11 +14,12 @@ import (
 var evidenceNamePattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$`)
 
 type Evidence struct {
-	mu          sync.Mutex
-	dir         string
-	cardsDir    string
-	actionsPath string
-	auditPath   string
+	mu              sync.Mutex
+	dir             string
+	cardsDir        string
+	actionsPath     string
+	auditPath       string
+	invocationsPath string
 }
 
 func NewEvidence(root, runID string, deployment Deployment, scenario string) (*Evidence, error) {
@@ -43,10 +44,11 @@ func NewEvidence(root, runID string, deployment Deployment, scenario string) (*E
 		return nil, fmt.Errorf("create evidence cards: %w", err)
 	}
 	evidence := &Evidence{
-		dir:         dir,
-		cardsDir:    cardsDir,
-		actionsPath: filepath.Join(dir, "actions.jsonl"),
-		auditPath:   filepath.Join(dir, "audit.jsonl"),
+		dir:             dir,
+		cardsDir:        cardsDir,
+		actionsPath:     filepath.Join(dir, "actions.jsonl"),
+		auditPath:       filepath.Join(dir, "audit.jsonl"),
+		invocationsPath: filepath.Join(dir, "fixture-invocations.jsonl"),
 	}
 	if err := evidence.writeJSON("deployment.json", deployment); err != nil {
 		return nil, fmt.Errorf("write deployment evidence: %w", err)
@@ -59,6 +61,13 @@ func NewEvidence(root, runID string, deployment Deployment, scenario string) (*E
 		return nil, fmt.Errorf("write scenario evidence: %w", err)
 	}
 	return evidence, nil
+}
+
+func (e *Evidence) AppendInvocation(raw json.RawMessage) error {
+	if !json.Valid(raw) {
+		return fmt.Errorf("fixture invocation evidence is not valid JSON")
+	}
+	return e.appendJSONL(e.invocationsPath, raw)
 }
 
 func (e *Evidence) Dir() string {

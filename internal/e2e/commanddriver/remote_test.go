@@ -54,12 +54,16 @@ func TestRemoteArgumentEncodingPreservesEmptyValues(t *testing.T) {
 
 func TestEmbeddedRemoteScriptsParseWithSystemBash(t *testing.T) {
 	scripts := map[string]string{
-		"identity":   identityScript,
-		"reply":      waitReplyScript,
-		"audit-mark": auditMarkScript,
-		"audit-wait": auditWaitScript,
-		"arm":        armFixtureScript,
-		"disarm":     disarmFixtureScript,
+		"identity":     identityScript,
+		"reply":        waitReplyScript,
+		"audit-mark":   auditMarkScript,
+		"audit-wait":   auditWaitScript,
+		"arm":          armFixtureScript,
+		"disarm":       disarmFixtureScript,
+		"arm-agent":    armAgentFixtureScript,
+		"wait-agent":   waitAgentInvocationScript,
+		"disarm-agent": disarmAgentFixtureScript,
+		"find-agent":   findAgentInvocationScript,
 	}
 	for name, script := range scripts {
 		t.Run(name, func(t *testing.T) {
@@ -69,6 +73,42 @@ func TestEmbeddedRemoteScriptsParseWithSystemBash(t *testing.T) {
 				t.Fatalf("bash -n: %v: %s", err, output)
 			}
 		})
+	}
+}
+
+func TestAgentFixtureAndRestartUseStructuredArguments(t *testing.T) {
+	invocation := `{"schema_version":1,"event":"started","run_id":"e2e_resume_12345678","session_id":"session-a","argv":["--resume","session-a","continue"]}`
+	executor := &recordingExecutor{Results: []executorResult{
+		{},
+		{output: Output{Stdout: []byte(invocation)}},
+		{output: Output{Stdout: []byte("candidate pid=84\n")}},
+	}}
+	driver := New(executor, validConfig(), validDeployment())
+	plan := e2e.AgentFixturePlan{SchemaVersion: 1, RunID: "e2e_resume_12345678", Nonce: "E2E_AGENT_FIXTURE_resume_12345678", Prompt: "continue E2E_AGENT_FIXTURE_resume_12345678", SessionID: "session-a", Text: "ready", Block: false}
+	if failure := driver.ArmAgent(context.Background(), plan); failure != nil {
+		t.Fatal(failure)
+	}
+	got, failure := driver.WaitAgentInvocation(context.Background(), plan.RunID, "started")
+	if failure != nil || got.RunID != plan.RunID || len(got.Argv) != 3 {
+		t.Fatalf("invocation/failure = %#v/%#v", got, failure)
+	}
+	pid, failure := driver.RestartCandidate(context.Background())
+	if failure != nil || pid != 84 {
+		t.Fatalf("pid/failure = %d/%#v", pid, failure)
+	}
+	restart := executor.Commands[2]
+	if restart.Name != validConfig().ControllerPath || !contains(restart.Args, "restart") || !contains(restart.Args, validDeployment().Transaction) {
+		t.Fatalf("restart command = %#v", restart)
+	}
+}
+
+func TestAgentFixtureRejectsUnsafePlanBeforeExecution(t *testing.T) {
+	executor := &recordingExecutor{}
+	driver := New(executor, validConfig(), validDeployment())
+	plan := e2e.AgentFixturePlan{SchemaVersion: 1, RunID: "bad/run", Nonce: "E2E_AGENT_FIXTURE_safe_12345678", Prompt: "x E2E_AGENT_FIXTURE_safe_12345678", SessionID: "s", Text: "x"}
+	failure := driver.ArmAgent(context.Background(), plan)
+	if failure == nil || failure.Class != e2e.FailureHarness || len(executor.Commands) != 0 {
+		t.Fatalf("failure/commands = %#v/%#v", failure, executor.Commands)
 	}
 }
 

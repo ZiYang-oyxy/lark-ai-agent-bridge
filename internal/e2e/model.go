@@ -1,6 +1,9 @@
 package e2e
 
-import "time"
+import (
+	"encoding/json"
+	"time"
+)
 
 type FailureClass string
 
@@ -35,6 +38,29 @@ type Config struct {
 	AuditPath       string `json:"audit_path"`
 	PollIntervalMS  int    `json:"poll_interval_ms"`
 	StepTimeoutMS   int    `json:"step_timeout_ms"`
+	ControllerPath  string `json:"controller_path,omitempty"`
+}
+
+type AgentFixturePlan struct {
+	SchemaVersion int    `json:"schema_version"`
+	RunID         string `json:"run_id"`
+	Nonce         string `json:"nonce"`
+	Prompt        string `json:"prompt"`
+	SessionID     string `json:"session_id"`
+	Text          string `json:"text"`
+	Block         bool   `json:"block"`
+}
+
+type AgentInvocation struct {
+	SchemaVersion int             `json:"schema_version"`
+	Event         string          `json:"event"`
+	RunID         string          `json:"run_id"`
+	SessionID     string          `json:"session_id"`
+	Argv          []string        `json:"argv,omitempty"`
+	Cancelled     bool            `json:"cancelled,omitempty"`
+	StartedAt     string          `json:"started_at,omitempty"`
+	FinishedAt    string          `json:"finished_at,omitempty"`
+	Raw           json.RawMessage `json:"-"`
 }
 
 type Failure struct {

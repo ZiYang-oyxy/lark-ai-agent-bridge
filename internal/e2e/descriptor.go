@@ -113,6 +113,9 @@ func validateConfig(config Config) error {
 	if !filepath.IsAbs(config.AuditPath) || filepath.Clean(config.AuditPath) != config.AuditPath {
 		return fmt.Errorf("audit_path must be a clean absolute path")
 	}
+	if config.ControllerPath != "" && (!filepath.IsAbs(config.ControllerPath) || filepath.Clean(config.ControllerPath) != config.ControllerPath) {
+		return fmt.Errorf("controller_path must be a clean absolute path")
+	}
 	if config.PollIntervalMS < 10 || config.PollIntervalMS > 5000 {
 		return fmt.Errorf("poll_interval_ms must be between 10 and 5000")
 	}
