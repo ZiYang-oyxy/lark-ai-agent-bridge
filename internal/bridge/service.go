@@ -1306,7 +1306,7 @@ func (s *Service) HandleAction(ctx context.Context, req ActionRequest) error {
 
 func (s *Service) HandleActionResult(ctx context.Context, req ActionRequest) (ActionResult, error) {
 	s.Audit.Record(req.Actor, "card_action", req.SessionID, req.ActionID+" "+req.Value)
-	if (req.ActionID == "config.save" || req.ActionID == "config.close" || req.ActionID == "local_config.save" || req.ActionID == "agent_mode.save") && !s.canRunAdminCommand(req.Actor) {
+	if (req.ActionID == "config.save" || req.ActionID == "config.close" || req.ActionID == "local_config.save" || req.ActionID == "local_config.reset" || req.ActionID == "agent_mode.save") && !s.canRunAdminCommand(req.Actor) {
 		s.Audit.Record(req.Actor, "admin_denied", req.SessionID, req.ActionID)
 		return s.renderActionEvent(card.Event{Type: "error", SessionID: req.SessionID, Segments: []card.Segment{{Kind: card.SegmentError, Text: "❌ 此操作仅管理员可用。"}}})
 	}
@@ -1455,7 +1455,45 @@ func (s *Service) HandleActionResult(ctx context.Context, req ActionRequest) (Ac
 		return s.renderActionEvent(card.Event{
 			Type:      "local_config_saved",
 			SessionID: req.SessionID,
-			Segments:  []card.Segment{{Kind: card.SegmentText, Text: fmt.Sprintf("本群覆盖已保存（未修改的项继承全局）。\n\nagent=`%s`\nmodel=`%s`\neffort=`%s`\nreply mode=`%s`\nconversation mode=`%s`\ngroup message mode=`%s`\nrespond to bots=`%t`\n\n下一条新消息开始生效。", effective.Agent, effective.Model, effective.Effort, effective.ReplyMode, effective.ConversationMode, effective.GroupMessageMode, effective.RespondToBots)}},
+			Segments:  []card.Segment{{Kind: card.SegmentText, Text: fmt.Sprintf("本群覆盖已保存 —— 仅本群生效，未改全局；未修改的项继承全局 `/config`。\n\nagent=`%s`\nmodel=`%s`\neffort=`%s`\nreply mode=`%s`\nconversation mode=`%s`\ngroup message mode=`%s`\nrespond to bots=`%t`\n\n下一条新消息开始生效。", effective.Agent, effective.Model, effective.Effort, effective.ReplyMode, effective.ConversationMode, effective.GroupMessageMode, effective.RespondToBots)}},
+		})
+	case "local_config.edit":
+		if s.Preferences == nil {
+			err := errors.New("preference store is not configured")
+			s.Audit.Record(req.Actor, "local_config_edit_failed", req.SessionID, err.Error())
+			return s.renderActionEvent(configSaveErrorEvent(req.SessionID))
+		}
+		chatID := strings.TrimSpace(req.Value)
+		if chatID == "" {
+			s.Audit.Record(req.Actor, "local_config_edit_failed", req.SessionID, "missing chat id")
+			return s.renderActionEvent(configSaveErrorEvent(req.SessionID))
+		}
+		// Open the per-chat override editor pre-filled with the group's current
+		// effective values. Display-only: the local_config.save callback carries
+		// the admin gate for the actual write.
+		preference := s.Preferences.GetForChat(chatID)
+		return s.renderActionEvent(card.Event{Type: "local_config", SessionID: req.SessionID, ConfigForm: s.localConfigForm(preference, chatID)})
+	case "local_config.reset":
+		if s.Preferences == nil {
+			err := errors.New("preference store is not configured")
+			s.Audit.Record(req.Actor, "local_config_reset_failed", req.SessionID, err.Error())
+			return s.renderActionEvent(configSaveErrorEvent(req.SessionID))
+		}
+		chatID := strings.TrimSpace(req.Value)
+		if chatID == "" {
+			s.Audit.Record(req.Actor, "local_config_reset_failed", req.SessionID, "missing chat id")
+			return s.renderActionEvent(configSaveErrorEvent(req.SessionID))
+		}
+		if err := s.Preferences.ResetChat(chatID); err != nil {
+			s.Audit.Record(req.Actor, "local_config_reset_failed", chatID, err.Error())
+			return s.renderActionEvent(configSaveErrorEvent(req.SessionID))
+		}
+		s.Audit.Record(req.Actor, "local_config_reset", chatID, "chat overrides cleared via card")
+		return s.renderActionEvent(card.Event{
+			Type:        "local_config_saved",
+			SessionID:   req.SessionID,
+			HeaderTitle: "本群覆盖已清空",
+			Segments:    []card.Segment{{Kind: card.SegmentText, Text: "已清空本群覆盖，全部回到继承全局 `/config`。下一条新消息开始生效。"}},
 		})
 	case "agent_mode.save":
 		if s.Preferences == nil {

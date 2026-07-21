@@ -3,9 +3,11 @@ package bridge
 import (
 	"context"
 	"fmt"
+	"path/filepath"
 	"strings"
 	"testing"
 
+	"lark-agent-bridge/internal/access"
 	"lark-agent-bridge/internal/audit"
 	"lark-agent-bridge/internal/card"
 	"lark-agent-bridge/internal/config"
@@ -193,6 +195,131 @@ func TestHelpStatusCallbackRendersStatusNotUnknown(t *testing.T) {
 	}
 	if strings.TrimSpace(text) == "" {
 		t.Fatalf("help.status produced no status text: %#v", event)
+	}
+}
+
+func TestLocalConfigEditCallback(t *testing.T) {
+	cfg := testConfig(t)
+	store, _ := testPreferenceStore(t, config.RuntimePreference{Model: "default", Effort: "low"}, cfg.AllowedModels)
+	renderer := card.NewFakeRenderer()
+	svc := NewService(cfg, renderer, newFakeRunner(), audit.NewRecorder())
+	svc.Preferences = store
+	result, err := svc.HandleActionResult(context.Background(), ActionRequest{
+		SessionID: "claude:chat", ActionID: "local_config.edit", Value: "oc-a", Actor: "user-1",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	event := lastEvent(t, renderer)
+	if event.Type != "local_config" {
+		t.Fatalf("event type = %q, want local_config", event.Type)
+	}
+	if event.ConfigForm == nil {
+		t.Fatalf("local_config.edit must carry a ConfigForm: %#v", event)
+	}
+	if event.ConfigForm.ChatID != "oc-a" {
+		t.Fatalf("ConfigForm.ChatID = %q, want oc-a", event.ConfigForm.ChatID)
+	}
+	if result.Event == nil || result.Event.Type != "local_config" {
+		t.Fatalf("result = %#v, want local_config event", result)
+	}
+}
+
+func TestLocalConfigResetCallback(t *testing.T) {
+	cfg := testConfig(t)
+	store, _ := testPreferenceStore(t, config.RuntimePreference{Model: "default", Effort: "low", ReplyMode: config.ReplyModeAppend}, cfg.AllowedModels)
+	renderer := card.NewFakeRenderer()
+	recorder := audit.NewRecorder()
+	svc := NewService(cfg, renderer, newFakeRunner(), recorder)
+	svc.Preferences = store
+
+	latest := config.ReplyModeLatestCard
+	if err := store.SetChat("oc-a", config.ChatOverride{ReplyMode: &latest}); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := store.ChatOverride("oc-a"); !ok {
+		t.Fatalf("precondition: chat override not set")
+	}
+
+	_, err := svc.HandleActionResult(context.Background(), ActionRequest{
+		SessionID: "claude:chat", ActionID: "local_config.reset", Value: "oc-a", Actor: "user-1",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := store.ChatOverride("oc-a"); ok {
+		t.Fatalf("local_config.reset must clear the chat override")
+	}
+	if got := store.GetForChat("oc-a").ReplyMode; got != config.ReplyModeAppend {
+		t.Fatalf("GetForChat reply mode = %q, want inherited append", got)
+	}
+	event := lastEvent(t, renderer)
+	if event.Type == "error" {
+		t.Fatalf("local_config.reset must not render an error card: %#v", event)
+	}
+	text := segmentText(event)
+	if !strings.Contains(text, "清空") || !strings.Contains(text, "继承") {
+		t.Fatalf("reset result text missing 清空/继承: %q", text)
+	}
+	if !auditContainsAction(recorder.Events(), "local_config_reset") {
+		t.Fatalf("audit = %#v", recorder.Events())
+	}
+}
+
+func TestLocalConfigResetRequiresAdmin(t *testing.T) {
+	cfg := testConfig(t)
+	accessStore, err := access.OpenStore(filepath.Join(t.TempDir(), "access.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	controls := access.NewRuntimeControls()
+	controls.OwnerRefreshSucceeded("ou_owner")
+	store, _ := testPreferenceStore(t, config.RuntimePreference{Model: "default", Effort: "low"}, cfg.AllowedModels)
+	renderer := card.NewFakeRenderer()
+	recorder := audit.NewRecorder()
+	svc := NewService(cfg, renderer, newFakeRunner(), recorder)
+	svc.Preferences = store
+	svc.Access, svc.AccessControls, svc.AccessAppID = accessStore, controls, "cli_app"
+
+	latest := config.ReplyModeLatestCard
+	if err := store.SetChat("oc-a", config.ChatOverride{ReplyMode: &latest}); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := svc.HandleActionResult(context.Background(), ActionRequest{
+		SessionID: "claude:chat", ActionID: "local_config.reset", Value: "oc-a", Actor: "ou_stranger",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := store.ChatOverride("oc-a"); !ok {
+		t.Fatalf("denied local_config.reset must not clear the chat override")
+	}
+	if !auditContainsAction(recorder.Events(), "admin_denied") {
+		t.Fatalf("audit = %#v", recorder.Events())
+	}
+}
+
+func TestLocalConfigSaveCallbackScopedConfirmation(t *testing.T) {
+	cfg := testConfig(t)
+	store, _ := testPreferenceStore(t, config.RuntimePreference{Model: "default", Effort: "low", ReplyMode: config.ReplyModeAppend}, cfg.AllowedModels)
+	renderer := card.NewFakeRenderer()
+	svc := NewService(cfg, renderer, newFakeRunner(), audit.NewRecorder())
+	svc.Preferences = store
+
+	_, err := svc.HandleActionResult(context.Background(), ActionRequest{
+		SessionID: "claude:chat", ActionID: "local_config.save", Value: "oc-a", Actor: "user-1",
+		FormValues: map[string]string{"reply_mode": string(config.ReplyModeLatestCard)},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	event := lastEvent(t, renderer)
+	if event.Type != "local_config_saved" {
+		t.Fatalf("event type = %q, want local_config_saved", event.Type)
+	}
+	text := segmentText(event)
+	if !strings.Contains(text, "仅本群生效") {
+		t.Fatalf("save result text missing 仅本群生效: %q", text)
 	}
 }
 
