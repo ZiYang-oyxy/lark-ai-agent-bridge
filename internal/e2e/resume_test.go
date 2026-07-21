@@ -173,7 +173,7 @@ func (f *fakeResumeDrivers) WaitReply(_ context.Context, _ int64, source string)
 		text = plan.Text
 		if !plan.Block {
 			f.completed = append(f.completed, plan.SessionID)
-			f.summaries[plan.SessionID] = plan.Text
+			f.summaries[plan.SessionID] = plan.Prompt
 			f.selected = plan.SessionID
 		}
 	}

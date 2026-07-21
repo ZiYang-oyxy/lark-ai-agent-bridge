@@ -74,7 +74,8 @@ func selectResumeAgent(ctx context.Context, rc *RunContext) *Failure {
 }
 
 func createResumeSession(ctx context.Context, rc *RunContext, index int) *Failure {
-	plan := resumePlan(rc, fmt.Sprintf("session_%02d", index), fmt.Sprintf("建立可恢复会话 %02d", index), false)
+	label := fmt.Sprintf("建立可恢复会话 %02d", index)
+	plan := resumePlan(rc, fmt.Sprintf("session_%02d", index), label, false)
 	if failure := armAgentPlan(ctx, rc, plan); failure != nil {
 		return failure
 	}
@@ -92,7 +93,7 @@ func createResumeSession(ctx context.Context, rc *RunContext, index int) *Failur
 		return failure
 	}
 	rc.SetValue(fmt.Sprintf("resume_session_%02d", index), plan.SessionID)
-	rc.SetValue(fmt.Sprintf("resume_summary_%02d", index), plan.Text)
+	rc.SetValue(fmt.Sprintf("resume_label_%02d", index), label)
 	rc.SetValue("agent_fixture_armed", "")
 	return nil
 }
@@ -108,14 +109,14 @@ func assertRecentResumeSessions(ctx context.Context, rc *RunContext) *Failure {
 	raw := string(reply.Raw)
 	last := -1
 	for i := 10; i >= 1; i-- {
-		summary := rc.Value(fmt.Sprintf("resume_summary_%02d", i))
-		position := strings.Index(raw, summary)
+		label := rc.Value(fmt.Sprintf("resume_label_%02d", i))
+		position := strings.Index(raw, label)
 		if position < 0 || position <= last {
 			return &Failure{Class: FailureAssertion, Assertion: "recent_10_order", Expected: "visible sessions 10..1 in descending recency", Actual: truncate(raw), Message: "resume list is missing or misorders a recent session"}
 		}
 		last = position
 	}
-	oldest := rc.Value("resume_summary_00")
+	oldest := rc.Value("resume_label_00")
 	if strings.Contains(raw, oldest) {
 		return &Failure{Class: FailureAssertion, Assertion: "recent_10_limit", Expected: "oldest session omitted", Actual: oldest, Message: "resume list contains more than the newest ten sessions"}
 	}
@@ -125,7 +126,7 @@ func assertRecentResumeSessions(ctx context.Context, rc *RunContext) *Failure {
 func selectResumeTarget(ctx context.Context, rc *RunContext) *Failure {
 	target := rc.Value("resume_session_05")
 	rc.SetValue("resume_target", target)
-	rc.SetValue("resume_target_summary", rc.Value("resume_summary_05"))
+	rc.SetValue("resume_target_label", rc.Value("resume_label_05"))
 	reply, failure := sendAndWaitReply(ctx, rc, "/resume "+target)
 	if failure != nil {
 		return failure
@@ -151,7 +152,7 @@ func assertResumeAfterRestart(ctx context.Context, rc *RunContext) *Failure {
 	if failure != nil {
 		return failure
 	}
-	if failure := assertReplyContains(rc, reply, rc.Value("resume_target_summary"), "catalog_survives_restart"); failure != nil {
+	if failure := assertReplyContains(rc, reply, rc.Value("resume_target_label"), "catalog_survives_restart"); failure != nil {
 		return failure
 	}
 	return assertReplyContains(rc, reply, "当前", "binding_survives_restart")
