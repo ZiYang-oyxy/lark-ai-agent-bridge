@@ -127,6 +127,7 @@ type LocalConfigOverview struct {
 type HelpCard struct {
 	Groups []HelpGroup
 	Footer string
+	ChatID string
 }
 
 // HelpGroup is one titled section of the /help card; each Line is a single

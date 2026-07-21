@@ -873,18 +873,20 @@ func TestBuildLarkCardKeepsLegacyAggregateLayout(t *testing.T) {
 }
 
 func TestBuildLarkCardRendersHelpCard(t *testing.T) {
+	help := &HelpCard{
+		Groups: []HelpGroup{
+			{Title: "💬 会话", Lines: []string{"**`/new`** 开新会话", "**`/status`** 当前会话状态"}},
+			{Title: "⚙️ 配置", Lines: []string{"**`/config`** 全局运行偏好"}},
+			{Title: "⏰ 定时", Lines: []string{"**`/cron`** 周期任务", "**`/timer`** 一次性任务"}},
+			{Title: "🔒 权限", Lines: []string{"**`/invite`** user|admin @人"}},
+		},
+		Footer: "直接发文字 = 继续当前会话 · 群里默认需 @bot",
+		ChatID: "oc-a",
+	}
 	payload := BuildLarkCard(Event{
 		Type:      "help",
 		SessionID: "help:msg",
-		HelpCard: &HelpCard{
-			Groups: []HelpGroup{
-				{Title: "💬 会话", Lines: []string{"`/new` 开新会话", "`/status` 当前会话状态"}},
-				{Title: "⚙️ 配置", Lines: []string{"`/config` 全局运行偏好"}},
-				{Title: "⏰ 定时", Lines: []string{"`/cron` 周期任务"}},
-				{Title: "🔒 权限", Lines: []string{"`/invite` user|admin @人"}},
-			},
-			Footer: "直接发文字 = 继续当前会话 · 群里默认需 @bot",
-		},
+		HelpCard:  help,
 	})
 
 	header := payload["header"].(map[string]any)
@@ -933,40 +935,72 @@ func TestBuildLarkCardRendersHelpCard(t *testing.T) {
 		t.Fatalf("help hr count = %d, want 1", hrs)
 	}
 
-	// Exactly three help.* buttons.
-	var buttonIDs []string
-	collectHelpButtons(elements, &buttonIDs)
-	want := []string{"help.status", "help.open_config", "help.refresh"}
-	if !reflect.DeepEqual(buttonIDs, want) {
+	var buttons []map[string]any
+	collectHelpButtonData(elements, &buttons)
+	var buttonIDs, buttonLabels []string
+	for _, button := range buttons {
+		buttonLabels = append(buttonLabels, button["text"].(map[string]any)["content"].(string))
+		behavior := button["behaviors"].([]any)[0].(map[string]any)
+		value := behavior["value"].(map[string]any)
+		buttonIDs = append(buttonIDs, value["action_id"].(string))
+	}
+	if want := []string{"help.status", "help.open_config", "help.open_local_config"}; !reflect.DeepEqual(buttonIDs, want) {
 		t.Fatalf("help buttons = %#v, want %#v", buttonIDs, want)
+	}
+	if want := []string{"📊 状态", "⚙️ 全局配置", "🏘️ 本群配置"}; !reflect.DeepEqual(buttonLabels, want) {
+		t.Fatalf("help button labels = %#v, want %#v", buttonLabels, want)
+	}
+	localValue := buttons[2]["behaviors"].([]any)[0].(map[string]any)["value"].(map[string]any)
+	if localValue["value"] != "oc-a" {
+		t.Fatalf("local config callback value = %#v, want oc-a", localValue)
+	}
+}
+
+func TestBuildLarkCardOmitsLocalConfigFromDirectMessageHelp(t *testing.T) {
+	payload := BuildLarkCard(Event{Type: "help", SessionID: "help:dm", HelpCard: &HelpCard{}})
+	var buttons []map[string]any
+	collectHelpButtonData(payload["body"].(map[string]any)["elements"].([]any), &buttons)
+	var buttonIDs []string
+	for _, button := range buttons {
+		value := button["behaviors"].([]any)[0].(map[string]any)["value"].(map[string]any)
+		buttonIDs = append(buttonIDs, value["action_id"].(string))
+	}
+	if want := []string{"help.status", "help.open_config"}; !reflect.DeepEqual(buttonIDs, want) {
+		t.Fatalf("direct-message help buttons = %#v, want %#v", buttonIDs, want)
 	}
 }
 
 func collectHelpButtons(elements []any, out *[]string) {
+	var buttons []map[string]any
+	collectHelpButtonData(elements, &buttons)
+	for _, button := range buttons {
+		for _, raw := range button["behaviors"].([]any) {
+			behavior := raw.(map[string]any)
+			if behavior["type"] != "callback" {
+				continue
+			}
+			value := behavior["value"].(map[string]any)
+			if id, _ := value["action_id"].(string); id != "" {
+				*out = append(*out, id)
+			}
+		}
+	}
+}
+
+func collectHelpButtonData(elements []any, out *[]map[string]any) {
 	for _, raw := range elements {
 		m, ok := raw.(map[string]any)
 		if !ok {
 			continue
 		}
 		if m["tag"] == "button" {
-			if behaviors, ok := m["behaviors"].([]any); ok {
-				for _, b := range behaviors {
-					bm, _ := b.(map[string]any)
-					if bm["type"] != "callback" {
-						continue
-					}
-					value, _ := bm["value"].(map[string]any)
-					if id, _ := value["action_id"].(string); id != "" {
-						*out = append(*out, id)
-					}
-				}
-			}
+			*out = append(*out, m)
 		}
 		if nested, ok := m["elements"].([]any); ok {
-			collectHelpButtons(nested, out)
+			collectHelpButtonData(nested, out)
 		}
 		if columns, ok := m["columns"].([]any); ok {
-			collectHelpButtons(columns, out)
+			collectHelpButtonData(columns, out)
 		}
 	}
 }

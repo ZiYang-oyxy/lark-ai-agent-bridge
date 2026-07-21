@@ -1,6 +1,7 @@
 package bridge
 
 import (
+	"reflect"
 	"regexp"
 	"strings"
 	"testing"
@@ -238,9 +239,16 @@ func TestHelpCardDataMatchesHelpText(t *testing.T) {
 	helpText := HelpText()
 	tokenRE := regexp.MustCompile(`/[a-z][a-z-]*`)
 	seen := map[string]bool{}
+	var scheduleLines []string
 	for _, group := range HelpCardData().Groups {
+		if group.Title == "⏰ 定时" {
+			scheduleLines = group.Lines
+		}
 		for _, line := range group.Lines {
 			for _, token := range tokenRE.FindAllString(line, -1) {
+				if !strings.Contains(line, "**`"+token+"`**") {
+					t.Fatalf("help command %q is not bold in line %q", token, line)
+				}
 				if seen[token] {
 					continue
 				}
@@ -250,6 +258,9 @@ func TestHelpCardDataMatchesHelpText(t *testing.T) {
 				}
 			}
 		}
+	}
+	if want := []string{"**`/cron`** 周期任务", "**`/timer`** 一次性任务"}; !reflect.DeepEqual(scheduleLines, want) {
+		t.Fatalf("schedule help lines = %#v, want %#v", scheduleLines, want)
 	}
 	// Sanity: the card should surface the core commands, so the gate is not
 	// vacuously passing on an empty token set.

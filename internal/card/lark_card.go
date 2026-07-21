@@ -253,13 +253,8 @@ func buildAgentModeFormElements(sessionID string, form AgentModeForm) []any {
 }
 
 // buildHelpElements renders the sectioned /help card: one bordered section per
-// command group, a divider, a small grey footer note, then a row of three
-// buttons (status / open config / refresh).
-//
-// The buttons carry callback behaviors but their handlers are wired in Task 2
-// (/help button callbacks); until that lands, clicking them dispatches
-// help.status / help.open_config / help.refresh action ids that fall through to
-// the callback router's default branch (no-op). This card only renders them.
+// command group, a divider, a small grey footer note, then status and config
+// shortcuts. Group help adds the current chat's local-config shortcut.
 func buildHelpElements(sessionID string, help HelpCard) []any {
 	elements := make([]any, 0, len(help.Groups)+3)
 	for groupIdx, group := range help.Groups {
@@ -275,8 +270,10 @@ func buildHelpElements(sessionID string, help HelpCard) []any {
 	}
 	buttons := []Action{
 		{ID: "help.status", Label: "📊 状态"},
-		{ID: "help.open_config", Label: "⚙️ 配置"},
-		{ID: "help.refresh", Label: "🔁 刷新"},
+		{ID: "help.open_config", Label: "⚙️ 全局配置"},
+	}
+	if chatID := strings.TrimSpace(help.ChatID); chatID != "" {
+		buttons = append(buttons, Action{ID: "help.open_local_config", Label: "🏘️ 本群配置", Value: chatID})
 	}
 	if row := buttonRowElements(buttons, sessionID); row != nil {
 		elements = append(elements, row)

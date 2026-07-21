@@ -135,30 +135,31 @@ func HelpCardData() card.HelpCard {
 			{
 				Title: "💬 会话",
 				Lines: []string{
-					"`/new` `[--workdir path] [prompt]` 开新会话",
-					"`/status` 当前会话状态 · `/stop` 停止当前任务",
-					"`/resume` `[session-id]` 恢复历史会话",
-					"`/agent-mode` 切换 claude / codex",
+					"**`/new`** `[--workdir path] [prompt]` 开新会话",
+					"**`/status`** 当前会话状态 · **`/stop`** 停止当前任务",
+					"**`/resume`** `[session-id]` 恢复历史会话",
+					"**`/agent-mode`** 切换 claude / codex",
 				},
 			},
 			{
 				Title: "⚙️ 配置",
 				Lines: []string{
-					"`/config` 全局运行偏好",
-					"`/local-config` `[reset]` 本群覆盖 / 重置",
+					"**`/config`** 全局运行偏好",
+					"**`/local-config`** `[reset]` 本群覆盖 / 重置",
 				},
 			},
 			{
 				Title: "⏰ 定时",
 				Lines: []string{
-					"`/cron` 周期任务 · `/timer` 一次性任务",
+					"**`/cron`** 周期任务",
+					"**`/timer`** 一次性任务",
 				},
 			},
 			{
 				Title: "🔒 权限",
 				Lines: []string{
-					"`/invite` user|admin @人 · group · all group",
-					"`/remove` user|admin @人 · group",
+					"**`/invite`** user|admin @人 · group · all group",
+					"**`/remove`** user|admin @人 · group",
 				},
 			},
 		},
