@@ -1146,6 +1146,7 @@ func (s *Service) executeBatch(ctx context.Context, sess session.Session, batch 
 		status, cardStatus = session.InputCancelled, "stopped"
 	} else if err != nil {
 		status, cardStatus = session.InputFailed, "failed"
+		s.Audit.Record("system", "agent_run_failed", sess.ID, agentFailureAuditDetail(sess.Key.Agent, err))
 		result.Segments = append(result.Segments, card.Segment{Kind: card.SegmentError, Text: err.Error()})
 	}
 	if len(result.Segments) == 0 && status == session.InputCompleted {

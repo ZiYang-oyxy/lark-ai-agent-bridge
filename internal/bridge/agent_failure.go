@@ -47,7 +47,7 @@ func agentFailureAuditDetail(kind agent.Kind, runErr error) string {
 	}
 	redacted := security.Redact(strings.TrimSpace(diagnostic))
 	tail, truncated := utf8SafeTail(redacted, agentFailureAuditTailBytes)
-	return fmt.Sprintf("agent=%s source=%s truncated=%t tail=%q", kind, source, truncated, tail)
+	return fmt.Sprintf("agent=%s source=%s truncated=%t tail=%s", kind, source, truncated, tail)
 }
 
 func utf8SafeTail(value string, limit int) (string, bool) {

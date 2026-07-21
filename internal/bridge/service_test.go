@@ -501,6 +501,91 @@ func TestServicePassesFrozenModelAndEffortToRunner(t *testing.T) {
 	}
 }
 
+func TestServiceAuditsOnlyFailedAgentRunTail(t *testing.T) {
+	now := time.Now()
+	runner := newFakeRunner()
+	runner.errs = []error{newAgentProcessError(errors.New("exit status 1"), agentFailureSourceStderr, "password=hunter2\nSTDERR_TAIL")}
+	recorder := audit.NewRecorder()
+	svc := NewService(testConfig(t), card.NewFakeRenderer(), runner, recorder)
+	key := session.Key{Agent: agent.Claude, ChatID: "audit-failure"}
+	_, _, err := svc.Sessions.EnqueueDurable(key, session.Input{
+		ID: "failed-input", Text: "run", WorkDir: svc.Config.DefaultWorkDir,
+		Time: now, DebounceUntil: now, State: session.InputQueued,
+	}, svc.Config.DefaultWorkDir, session.BatchLimits{MaxPending: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.DrainReady(now.Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	waitForSessionNoActiveBatch(t, svc, key)
+
+	var failures []audit.Event
+	for _, event := range recorder.Events() {
+		if event.Action == "agent_run_failed" {
+			failures = append(failures, event)
+		}
+	}
+	if len(failures) != 1 || failures[0].SessionID != key.ID() {
+		t.Fatalf("failure audits = %#v", failures)
+	}
+	if !containsAll(failures[0].Detail, "source=stderr", "STDERR_TAIL", "password=[REDACTED]") {
+		t.Fatalf("failure detail = %q", failures[0].Detail)
+	}
+}
+
+func TestServiceDoesNotAuditSuccessfulAgentRun(t *testing.T) {
+	now := time.Now()
+	runner := newFakeRunner()
+	runner.results = []AgentRunResult{{Segments: []card.Segment{{Kind: card.SegmentText, Text: "ok"}}}}
+	recorder := audit.NewRecorder()
+	svc := NewService(testConfig(t), card.NewFakeRenderer(), runner, recorder)
+	key := session.Key{Agent: agent.Claude, ChatID: "audit-success"}
+	_, _, err := svc.Sessions.EnqueueDurable(key, session.Input{
+		ID: "successful-input", Text: "run", WorkDir: svc.Config.DefaultWorkDir,
+		Time: now, DebounceUntil: now, State: session.InputQueued,
+	}, svc.Config.DefaultWorkDir, session.BatchLimits{MaxPending: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.DrainReady(now.Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	waitForSessionNoActiveBatch(t, svc, key)
+	for _, event := range recorder.Events() {
+		if event.Action == "agent_run_failed" {
+			t.Fatalf("unexpected failure audit: %#v", event)
+		}
+	}
+}
+
+func TestServiceDoesNotAuditCancelledAgentRun(t *testing.T) {
+	runner := newFakeRunner()
+	runner.block = make(chan struct{})
+	recorder := audit.NewRecorder()
+	svc := NewService(testConfig(t), card.NewFakeRenderer(), runner, recorder)
+	now := time.Now()
+	if err := svc.HandleMessage(context.Background(), Message{ID: "cancelled", ChatID: "audit-cancel", Sender: "u", Text: "/new work", Time: now}); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.DrainReady(now.Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	<-runner.started
+	shutdownCtx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- svc.Shutdown(shutdownCtx) }()
+	cancel()
+	if err := <-done; !errors.Is(err, context.Canceled) {
+		t.Fatalf("shutdown error = %v", err)
+	}
+	for _, event := range recorder.Events() {
+		if event.Action == "agent_run_failed" {
+			t.Fatalf("unexpected failure audit: %#v", event)
+		}
+	}
+}
+
 func TestServiceSnapshotsBridgeInstructionsVersionWithoutChangingUserPrompt(t *testing.T) {
 	now := time.Now()
 	runner := newFakeRunner()
