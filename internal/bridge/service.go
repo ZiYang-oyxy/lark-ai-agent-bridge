@@ -969,12 +969,21 @@ func (s *Service) runWithPreference(ctx context.Context, cmd Command, msg Messag
 	return nil
 }
 
+// effectiveWorkDir resolves the workdir to run a command in. Authority is a
+// three-layer chain: a one-shot cmd.WorkDir override, then the topic workspace
+// cwd (the sole persistent authority — set/switched via /cd and /ws), then the
+// global DefaultWorkDir fallback. Sessions still record the workdir they ran in
+// (RecordSession / catalog resume grouping), but that recorded value is not a
+// decision source here — record and decide are decoupled. When Workspaces is
+// nil (simulate mode) the middle layer is skipped and we fall back to default.
 func (s *Service) effectiveWorkDir(key session.Key, cmd Command) string {
 	if cmd.WorkDir != "" {
 		return cmd.WorkDir
 	}
-	if existing, ok := s.Sessions.Get(key); ok && existing.WorkDir != "" {
-		return existing.WorkDir
+	if s.Workspaces != nil {
+		if cwd, ok := s.Workspaces.CwdFor(s.workspaceScope(key)); ok {
+			return cwd
+		}
 	}
 	return s.Config.DefaultWorkDir
 }

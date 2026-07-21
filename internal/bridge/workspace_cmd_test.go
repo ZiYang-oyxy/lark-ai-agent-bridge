@@ -128,11 +128,13 @@ func TestWorkspaceCmdWsSaveUseList(t *testing.T) {
 	key := sessionKeyForMode(agent.Claude, msg, config.ConversationModeTopic)
 	scope := s.workspaceScope(key)
 
-	// Point the effective cwd at proj first so /ws save captures it. We seed the
-	// session workdir (which effectiveWorkDir consults today) so this test does
-	// not depend on the Task 6 authority reordering.
+	// Point the effective cwd at proj first so /ws save captures it. Under the
+	// Task 6 authority model the scope cwd (workspace store) is the sole workdir
+	// authority effectiveWorkDir consults, so we seed it there.
 	want, _ := filepath.EvalSymlinks(proj)
-	s.Sessions.Reset(key, want)
+	if err := ws.SetCwd(scope, want); err != nil {
+		t.Fatal(err)
+	}
 
 	// save
 	saveCmd := Command{Type: CommandWs, Agent: agent.Claude, WsSub: "save", WsName: "foo"}
@@ -235,6 +237,39 @@ func TestWorkspaceCmdCdNonexistentTriggersConfirmAndDoesNotStore(t *testing.T) {
 	s.mu.Unlock()
 	if stillPending {
 		t.Fatal("pending should have been popped by create_workdir")
+	}
+}
+
+// TestEffectiveWorkDirScopeCwdBeatsSession locks the Task 6 authority model:
+// the topic workspace cwd is the sole workdir authority. Even when a session
+// records a (stale) run workdir, effectiveWorkDir must return the scope cwd,
+// not the session's value. Record and decide are decoupled.
+func TestEffectiveWorkDirScopeCwdBeatsSession(t *testing.T) {
+	dir := t.TempDir()
+	scopeDir := filepath.Join(dir, "scope")
+	sessDir := filepath.Join(dir, "sess")
+	for _, d := range []string{scopeDir, sessDir} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	ws, err := workspace.OpenWorkspaceStore(filepath.Join(dir, "workspaces.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := newTestServiceWithWorkspace(t, ws)
+	msg := Message{ID: "m1", Sender: "admin", ChatID: "c1", ThreadID: "t1", IsGroup: true}
+	key := sessionKeyForMode(agent.Claude, msg, config.ConversationModeTopic)
+
+	// session records a stale run workdir (record, not decide)...
+	s.Sessions.Reset(key, sessDir)
+	// ...but the scope cwd is the authority.
+	if err := ws.SetCwd(s.workspaceScope(key), scopeDir); err != nil {
+		t.Fatal(err)
+	}
+
+	if got := s.effectiveWorkDir(key, Command{}); got != scopeDir {
+		t.Fatalf("effectiveWorkDir = %q, want scope cwd %q (session must not win)", got, scopeDir)
 	}
 }
 

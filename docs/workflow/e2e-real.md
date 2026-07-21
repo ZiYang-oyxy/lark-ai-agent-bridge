@@ -377,12 +377,26 @@ Observed failure mode:
 
 1. User sends `/new --workdir <path>`.
 2. Confirmation card shows `<path>` correctly.
-3. Later run card or follow-up query still runs in the bridge startup default workdir.
+3. The run for that message still executes in the bridge startup default workdir.
+
+Authority model (topic workspace cwd is the sole persistent workdir authority):
+
+- `--workdir <path>` on a single message is a **one-shot** override for that
+  message only (layer 1). It does **not** stick to later plain messages.
+- Persistence across a chat/topic comes from the **topic workspace cwd**, set
+  and switched via `/cd <path>` and `/ws use <name>` (layer 2, workspace store).
+  Follow-up plain messages resolve to this cwd, not to any session-recorded
+  value — sessions still record the workdir they ran in, but that record is not
+  a decision source.
+- With no one-shot override and no scope cwd, execution falls back to the global
+  `DefaultWorkDir` (layer 3).
 
 Regression target:
 
-- `workdir_existing` verifies direct existing workdir execution.
-- `workdir_persist_followup` verifies created workdir persistence across the same chat/topic.
+- `workdir_existing` verifies direct existing workdir execution for a one-shot
+  `--workdir`.
+- `workdir_persist_followup` verifies that after `/cd <path>` (or `/ws use`),
+  follow-up plain messages in the same chat/topic run in `<path>`.
 - The run card footer `📁` and Claude `pwd`/`$PWD` must both match `<path>`.
 
 ## Triage Checklist
