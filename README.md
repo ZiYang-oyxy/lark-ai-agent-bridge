@@ -12,7 +12,7 @@
 - `/config` 可切换为话题模式：回复进入话题，有 `ThreadID` 时每个 topic 独立 session，不同 topic 可并行执行。
 - `/local-config` 让每个群覆盖全局默认的执行类偏好（逐字段继承），从而不同群可用不同方式（如 A 群 `topic`、B 群 `chat`）；访问控制永远全局。
 - `/new` 重置当前 conversation scope；普通文本继续该 scope 已保存的 Agent session。
-- `/stop` 只停止当前 agent/chat/topic scope 的 active batch；后续 queued 输入保留并继续调度，空闲时安全提示无运行任务。
+- `/stop` 只停止当前 agent/chat/topic scope 的 active batch；命中 active batch 时不回复新卡片，而在原任务 stopped 卡尾部显示 `已请求停止当前任务；排队输入将继续执行。`；后续 queued 输入保留并继续调度，空闲时安全提示无运行任务。
 - `/resume` 列出当前 Agent 与 workdir 最近使用的 10 个 Bridge Session；`/resume <session-id>` 切换后由下一条普通消息继续目标 Session。
 - 自然语言定时同时支持重复任务和一次性任务；Agent 只生成规则提案，用户确认后 Bridge 才持久化并启用。
 - `append` 每轮新建完整 CardKit 状态卡：thinking 位于独立折叠区，assistant 回复与工具安全摘要按事件顺序显示在同一个 Markdown 正文中；工具始终是普通文字，不使用下拉框。

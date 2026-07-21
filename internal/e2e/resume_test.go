@@ -31,6 +31,9 @@ func TestResumeScenarioCoversCatalogRestartAndBackendArgv(t *testing.T) {
 	if fake.resultWaits != 13 {
 		t.Fatalf("terminal result waits = %d, want 13", fake.resultWaits)
 	}
+	if fake.stopReplyWaits != 0 {
+		t.Fatalf("/stop reply waits = %d, want 0", fake.stopReplyWaits)
+	}
 	data, err := os.ReadFile(filepath.Join(rc.Evidence.Dir(), "fixture-invocations.jsonl"))
 	if err != nil {
 		t.Fatal(err)
@@ -66,6 +69,7 @@ type fakeResumeDrivers struct {
 	omitResume      bool
 	backendCommands int
 	resultWaits     int
+	stopReplyWaits  int
 }
 
 func newFakeResumeDrivers() *fakeResumeDrivers {
@@ -121,6 +125,9 @@ func (f *fakeResumeDrivers) SendText(_ context.Context, body string) (string, *F
 
 func (f *fakeResumeDrivers) WaitReply(_ context.Context, _ int64, source string) (Reply, *Failure) {
 	body := f.bodies[source]
+	if body == "/stop" {
+		f.stopReplyWaits++
+	}
 	text := ""
 	switch {
 	case body == "/agent-mode claude":
@@ -134,8 +141,6 @@ func (f *fakeResumeDrivers) WaitReply(_ context.Context, _ int64, source string)
 		if f.selected != "" {
 			text += "\n当前 " + f.selected
 		}
-	case body == "/stop":
-		text = "已请求停止当前任务"
 	case strings.HasPrefix(body, "/resume "):
 		target := strings.TrimPrefix(body, "/resume ")
 		if f.busy {

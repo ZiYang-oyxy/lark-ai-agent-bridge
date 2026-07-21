@@ -220,13 +220,11 @@ func rejectBusyResume(ctx context.Context, rc *RunContext) *Failure {
 }
 
 func stopBusyResumeTask(ctx context.Context, rc *RunContext) *Failure {
-	reply, failure := sendAndWaitReply(ctx, rc, "/stop")
+	source, failure := rc.Drivers.Messenger.SendText(ctx, "/stop")
 	if failure != nil {
 		return failure
 	}
-	if failure := assertReplyContains(rc, reply, "已请求停止当前任务", "busy_stop_ack"); failure != nil {
-		return failure
-	}
+	rc.SetLastObserved("stop_source=" + source)
 	if failure := collectInvocation(ctx, rc, rc.Value("busy_run_id"), "cancelled"); failure != nil {
 		return failure
 	}

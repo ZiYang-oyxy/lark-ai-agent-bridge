@@ -117,6 +117,8 @@ GOCACHE=$PWD/.cache/go-build go run ./cmd/lark-agent-bridge simulate -text "/sto
 
 期望返回 `当前会话没有正在运行的任务。`，且不启动 Agent。active batch 的取消、topic/agent 隔离和 queued 输入保留由 `TestServiceTextStop*` 覆盖。
 
+active batch 存在时，有效 `/stop` 不回复新的命令卡片；原任务卡片进入灰色 stopped 终态，并在已有正文尾部追加 `已请求停止当前任务；排队输入将继续执行。`。带参数的 `/stop` 仍单独回复用法错误。
+
 模拟同一会话排队：
 
 ```bash
@@ -273,6 +275,7 @@ lark-cli im +messages-send --as user \
    - audit 记录 `card_action stop`
    - Claude 子进程被取消
    - 同一卡片标题更新为灰色 `⏹ 已停止 · ⏱ Ns`
+   - 已有正文保持不变，尾部追加 `已请求停止当前任务；排队输入将继续执行。`
    - 卡片按钮置灰为“已停止”，且不会额外发送新的停止结果卡片
 7. 使用不存在的 `--workdir` 发送 `/new`，点击“Create directory”或“Cancel”，预期目录创建/取消行为与卡片状态一致：
    - create 后确认卡绿色、按钮 disabled，随后出现独立运行卡片。

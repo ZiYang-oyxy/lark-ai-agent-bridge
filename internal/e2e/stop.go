@@ -23,10 +23,10 @@ func StopScenario() Scenario {
 			{Name: "wait_ready_reply", Run: waitReadyReply},
 			{Name: "assert_ready", Run: assertReady},
 			{Name: "send_stop", Run: sendStop},
-			{Name: "wait_stop_reply", Run: waitStopReply},
-			{Name: "assert_stop_ack", Run: assertStopAcknowledgement},
 			{Name: "wait_stop_audit", Run: waitStopAudit},
 			{Name: "wait_stopped", Run: waitStopped},
+			{Name: "read_stopped_card", Run: readStoppedCard},
+			{Name: "assert_stopped_notice", Run: assertStoppedNotice},
 		},
 		Cleanup: []Cleanup{
 			{Name: "stop_residual_task", Run: stopResidualTask},
@@ -132,27 +132,27 @@ func sendStop(ctx context.Context, rc *RunContext) *Failure {
 	return nil
 }
 
-func waitStopReply(ctx context.Context, rc *RunContext) *Failure {
-	reply, failure := rc.Drivers.Replies.WaitReply(ctx, mustInt64(rc.Value("stop_mark")), rc.Value("stop_source"))
+func readStoppedCard(ctx context.Context, rc *RunContext) *Failure {
+	reply, failure := rc.Drivers.Replies.WaitReply(ctx, mustInt64(rc.Value("start_mark")), rc.Value("start_source"))
 	if failure != nil {
 		return failure
 	}
-	rc.SetValue("stop_reply", reply.MessageID)
-	rc.SetValue("stop_reply_raw", string(reply.Raw))
-	rc.SetLastObserved("stop_reply=" + reply.MessageID)
+	rc.SetValue("stopped_reply", reply.MessageID)
+	rc.SetValue("stopped_reply_raw", string(reply.Raw))
+	rc.SetLastObserved("stopped_reply=" + reply.MessageID)
 	return recordReply(rc, reply)
 }
 
-func assertStopAcknowledgement(_ context.Context, rc *RunContext) *Failure {
-	reply := Reply{MessageID: rc.Value("stop_reply"), Raw: []byte(rc.Value("stop_reply_raw"))}
-	const expected = "已请求停止当前任务"
+func assertStoppedNotice(_ context.Context, rc *RunContext) *Failure {
+	reply := Reply{MessageID: rc.Value("stopped_reply"), Raw: []byte(rc.Value("stopped_reply_raw"))}
+	const expected = "已请求停止当前任务；排队输入将继续执行。"
 	ok, actual, failure := rc.Drivers.Replies.ContainsVisibleText(reply, expected)
 	if failure != nil {
 		return failure
 	}
 	rc.SetLastObserved(actual)
 	if !ok {
-		return &Failure{Class: FailureAssertion, Assertion: "card_contains_stop_ack", Expected: expected, Actual: actual, Message: "stop acknowledgement is not visible"}
+		return &Failure{Class: FailureAssertion, Assertion: "stopped_card_contains_notice", Expected: expected, Actual: actual, Message: "in-place stop notice is not visible on the original task card"}
 	}
 	return nil
 }

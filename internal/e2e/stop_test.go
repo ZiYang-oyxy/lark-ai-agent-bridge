@@ -26,6 +26,12 @@ func TestStopScenarioAssertsUserVisibleBehavior(t *testing.T) {
 	if got := strings.Join(drivers.sent, ","); got != "/agent-mode claude,E2E_STOP_FIXTURE_TESTNONCE,/stop" {
 		t.Fatalf("sent = %q", got)
 	}
+	if strings.Contains(strings.Join(drivers.replySources, ","), "stop-source") {
+		t.Fatalf("reply sources = %#v, /stop must not wait for a new card", drivers.replySources)
+	}
+	if got := countString(drivers.replySources, "start-source"); got != 2 {
+		t.Fatalf("start-source reply reads = %d, want initial and stopped card", got)
+	}
 }
 
 func TestStopScenarioClassifiesEachFailure(t *testing.T) {
@@ -39,9 +45,9 @@ func TestStopScenarioClassifiesEachFailure(t *testing.T) {
 		{"ready missing", func(d *fakeStopDrivers) {
 			d.replies["start-source"] = Reply{MessageID: "start-reply", Raw: []byte(`{"text":"starting"}`)}
 		}, FailureAssertion, "assert_ready"},
-		{"stop ack missing", func(d *fakeStopDrivers) {
-			d.replies["stop-source"] = Reply{MessageID: "stop-reply", Raw: []byte(`{"text":"stopping"}`)}
-		}, FailureAssertion, "assert_stop_ack"},
+		{"stopped notice missing", func(d *fakeStopDrivers) {
+			d.stoppedReply = Reply{MessageID: "start-reply", Raw: []byte(`{"text":"stopping"}`)}
+		}, FailureAssertion, "assert_stopped_notice"},
 		{"audit missing", func(d *fakeStopDrivers) { d.auditFailureAt = "batch_stop_requested" }, FailureTimeout, "wait_stop_audit"},
 		{"terminal missing", func(d *fakeStopDrivers) { d.auditFailureAt = "cardkit_update" }, FailureTimeout, "wait_stopped"},
 	}
@@ -113,10 +119,13 @@ type fakeStopDrivers struct {
 	replyFailureAt string
 	auditFailureAt string
 	auditActions   []string
+	replySources   []string
 	armedNonce     string
 	disarmed       bool
 	disarmErr      error
 	mark           int64
+	stopped        bool
+	stoppedReply   Reply
 }
 
 func passingStopDrivers() *fakeStopDrivers {
@@ -129,8 +138,8 @@ func passingStopDrivers() *fakeStopDrivers {
 		replies: map[string]Reply{
 			"agent-source": {MessageID: "agent-reply", Raw: []byte(`{"text":"Claude"}`)},
 			"start-source": {MessageID: "start-reply", Raw: []byte(`{"content":"READY_E2E_STOP_FIXTURE_TESTNONCE"}`)},
-			"stop-source":  {MessageID: "stop-reply", Raw: []byte(`{"content":"已请求停止当前任务"}`)},
 		},
+		stoppedReply: Reply{MessageID: "start-reply", Raw: []byte(`{"content":"READY_E2E_STOP_FIXTURE_TESTNONCE\n已请求停止当前任务；排队输入将继续执行。"}`)},
 	}
 }
 
@@ -148,8 +157,12 @@ func (d *fakeStopDrivers) SendText(_ context.Context, body string) (string, *Fai
 }
 
 func (d *fakeStopDrivers) WaitReply(_ context.Context, _ int64, source string) (Reply, *Failure) {
+	d.replySources = append(d.replySources, source)
 	if source == d.replyFailureAt {
 		return Reply{}, &Failure{Class: FailureTimeout, Message: "reply timeout", LastObserved: "source=" + source}
+	}
+	if source == "start-source" && d.stopped {
+		return d.stoppedReply, nil
 	}
 	reply, ok := d.replies[source]
 	if !ok {
@@ -181,9 +194,22 @@ func (d *fakeStopDrivers) Wait(_ context.Context, _ int64, match AuditMatch) (Au
 	if match.Action == d.auditFailureAt {
 		return AuditEvent{}, &Failure{Class: FailureTimeout, Message: "audit timeout", LastObserved: last}
 	}
+	if match.Action == "cardkit_update" && match.Detail == "event=stopped" {
+		d.stopped = true
+	}
 	event := AuditEvent{Action: match.Action, SessionID: match.Source, Detail: match.Detail}
 	event.Raw, _ = json.Marshal(event)
 	return event, nil
+}
+
+func countString(values []string, want string) int {
+	count := 0
+	for _, value := range values {
+		if value == want {
+			count++
+		}
+	}
+	return count
 }
 
 func (d *fakeStopDrivers) Arm(_ context.Context, nonce string) *Failure {

@@ -72,10 +72,11 @@ FAIL class=assertion scenario=stop step=assert_ready evidence=/path/to/evidence/
 2. arm 一次性 nonce fixture；
 3. 发送 nonce 并等待关联 reply；
 4. 断言用户可见卡片包含 `READY_<nonce>`；
-5. 发送 `/stop` 并断言确认卡片包含 `已请求停止当前任务`；
+5. 发送 `/stop`，不等待命令回复卡片；
 6. 等待 `batch_stop_requested`；
 7. 等待原任务 `cardkit_update event=stopped`；
-8. cleanup nonce；如果启动消息已发送但 `/stop` 尚未发送，尽力停止残留任务。
+8. 重新读取原任务卡片并断言尾部包含 `已请求停止当前任务；排队输入将继续执行。`；
+9. cleanup nonce；如果启动消息已发送但 `/stop` 尚未发送，尽力停止残留任务。
 
 READY 断言递归检查卡片 JSON 中所有字符串，不要求 `cardkit_text_stream`。native stream 和 full-card fallback 只要产生相同用户可见结果都算成功。
 
