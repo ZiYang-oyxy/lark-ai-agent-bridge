@@ -1480,6 +1480,30 @@ func (s *Service) HandleActionResult(ctx context.Context, req ActionRequest) (Ac
 		preference = s.Preferences.Get()
 		s.Audit.Record(req.Actor, "agent_mode_saved", req.SessionID, fmt.Sprintf("agent=%s", preference.Agent))
 		return s.renderActionEvent(card.Event{Type: "agent_mode_saved", SessionID: req.SessionID, AgentModeForm: &card.AgentModeForm{Agent: preference.Agent, Agents: toCardOptions(s.Agents.AgentOptions())}})
+	case "help.refresh":
+		// Re-render the /help card in place. Harmless: no agent run, no signed
+		// state, no admin gate.
+		hc := HelpCardData()
+		return s.renderActionEvent(card.Event{Type: "help", SessionID: req.SessionID, HelpCard: &hc})
+	case "help.open_config":
+		// Open the /config form, identical to the empty `/config` branch of
+		// handleConfigCommand. The form is display-only here; the actual
+		// config.save callback is what carries the admin gate.
+		if s.Preferences == nil {
+			err := errors.New("preference store is not configured")
+			s.Audit.Record(req.Actor, "config_save_failed", req.SessionID, err.Error())
+			return s.renderActionEvent(configSaveErrorEvent(req.SessionID))
+		}
+		preference := s.Preferences.Get()
+		return s.renderActionEvent(card.Event{Type: "config", SessionID: req.SessionID, ConfigForm: s.configForm(preference)})
+	case "help.status":
+		// Equivalent to /status. The callback (ActionRequest) carries no ChatID
+		// or full Message, so we cannot compute the exact per-topic session key
+		// that statusTextWithPreference needs. Render an honest summary from the
+		// effective global preference plus a pointer to /status for per-session
+		// detail, rather than fabricating a Message that would misreport state.
+		preference := s.runtimePreference()
+		return s.renderActionEvent(card.Event{Type: "status", SessionID: req.SessionID, Segments: []card.Segment{{Kind: card.SegmentText, Text: helpStatusSummary(preference)}}})
 	default:
 		return s.renderActionEvent(card.Event{Type: "error", SessionID: req.SessionID, Segments: []card.Segment{{Kind: card.SegmentError, Text: "unknown action: " + req.ActionID}}})
 	}
@@ -2003,6 +2027,18 @@ func (s *Service) renderStream(event card.Event) error {
 
 func (s *Service) statusText(kind agent.Kind, msg Message) string {
 	return s.statusTextWithPreference(kind, msg, s.runtimePreference())
+}
+
+// helpStatusSummary renders the /status text reachable from the /help card
+// button. The card callback has no chat/message context, so this reports the
+// effective global preference and points to /status for per-session detail.
+func helpStatusSummary(preference config.RuntimePreference) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "agent=%s\n", preference.Agent)
+	fmt.Fprintf(&b, "reply_mode=%s\n", preference.ReplyMode)
+	fmt.Fprintf(&b, "conversation_mode=%s\n", preference.ConversationMode)
+	b.WriteString("\n在会话中直接发送 `/status` 查看当前会话的详细状态（workdir、队列、token 等）。")
+	return b.String()
 }
 
 func (s *Service) statusTextWithPreference(kind agent.Kind, msg Message, preference config.RuntimePreference) string {

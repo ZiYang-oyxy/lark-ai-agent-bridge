@@ -1,9 +1,14 @@
 package bridge
 
 import (
+	"context"
 	"fmt"
 	"strings"
 	"testing"
+
+	"lark-agent-bridge/internal/audit"
+	"lark-agent-bridge/internal/card"
+	"lark-agent-bridge/internal/config"
 )
 
 func TestActionRequestFromCardCallback(t *testing.T) {
@@ -108,4 +113,94 @@ func TestActionRequestFallsBackToActionIDOnAction(t *testing.T) {
 	if req.ActionID != "stop" {
 		t.Fatalf("action id = %q, want stop", req.ActionID)
 	}
+}
+
+// lastEvent returns the most recently rendered event, failing when the renderer
+// produced nothing.
+func lastEvent(t *testing.T, renderer *card.FakeRenderer) card.Event {
+	t.Helper()
+	events := renderer.Events()
+	if len(events) == 0 {
+		t.Fatalf("no events rendered")
+	}
+	return events[len(events)-1]
+}
+
+func TestHelpRefreshCallbackRerendersHelpCard(t *testing.T) {
+	renderer := card.NewFakeRenderer()
+	svc := NewService(testConfig(t), renderer, newFakeRunner(), audit.NewRecorder())
+	result, err := svc.HandleActionResult(context.Background(), ActionRequest{
+		SessionID: "claude:chat", ActionID: "help.refresh", Actor: "user-1",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	event := lastEvent(t, renderer)
+	if event.Type != "help" {
+		t.Fatalf("event type = %q, want help", event.Type)
+	}
+	if event.HelpCard == nil {
+		t.Fatalf("help.refresh must carry a HelpCard: %#v", event)
+	}
+	if result.Event == nil || result.Event.Type != "help" {
+		t.Fatalf("result = %#v, want help event", result)
+	}
+}
+
+func TestHelpOpenConfigCallbackRendersConfigForm(t *testing.T) {
+	cfg := testConfig(t)
+	store, _ := testPreferenceStore(t, config.RuntimePreference{Model: "default", Effort: "low"}, cfg.AllowedModels)
+	renderer := card.NewFakeRenderer()
+	svc := NewService(cfg, renderer, newFakeRunner(), audit.NewRecorder())
+	svc.Preferences = store
+	result, err := svc.HandleActionResult(context.Background(), ActionRequest{
+		SessionID: "claude:chat", ActionID: "help.open_config", Actor: "user-1",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	event := lastEvent(t, renderer)
+	if event.Type != "config" {
+		t.Fatalf("event type = %q, want config", event.Type)
+	}
+	if event.ConfigForm == nil {
+		t.Fatalf("help.open_config must carry a ConfigForm: %#v", event)
+	}
+	if result.Event == nil || result.Event.Type != "config" {
+		t.Fatalf("result = %#v, want config event", result)
+	}
+}
+
+func TestHelpStatusCallbackRendersStatusNotUnknown(t *testing.T) {
+	cfg := testConfig(t)
+	store, _ := testPreferenceStore(t, config.RuntimePreference{Model: "default", Effort: "low"}, cfg.AllowedModels)
+	renderer := card.NewFakeRenderer()
+	svc := NewService(cfg, renderer, newFakeRunner(), audit.NewRecorder())
+	svc.Preferences = store
+	_, err := svc.HandleActionResult(context.Background(), ActionRequest{
+		SessionID: "claude:chat", ActionID: "help.status", Actor: "user-1",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	event := lastEvent(t, renderer)
+	if event.Type == "error" {
+		t.Fatalf("help.status must not render an error card: %#v", event)
+	}
+	text := segmentText(event)
+	if strings.Contains(text, "unknown action") {
+		t.Fatalf("help.status fell through to default: %q", text)
+	}
+	if strings.TrimSpace(text) == "" {
+		t.Fatalf("help.status produced no status text: %#v", event)
+	}
+}
+
+// segmentText concatenates the text of every segment in an event.
+func segmentText(event card.Event) string {
+	var b strings.Builder
+	for _, seg := range event.Segments {
+		b.WriteString(seg.Text)
+	}
+	return b.String()
 }
