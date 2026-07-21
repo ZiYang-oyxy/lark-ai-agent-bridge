@@ -914,8 +914,12 @@ func (s *Service) runWithPreference(ctx context.Context, cmd Command, msg Messag
 			cmd.Agent = agent.Claude
 		}
 	}
-	key := sessionKeyForMode(cmd.Agent, msg, preference.ConversationMode)
-	workDir := s.effectiveWorkDir(key, cmd)
+	conversationKey := sessionKeyForMode(cmd.Agent, msg, preference.ConversationMode)
+	workDir := s.effectiveWorkDir(conversationKey, cmd)
+	key := conversationKey
+	if cmd.ScheduleKind != "" {
+		key.Thread = "schedule-proposal:" + msg.ThreadID
+	}
 	pendingID := runID(key.ID(), msg.ID)
 	asked, err := s.ensureWorkDirOrAsk(workDir, pendingID, msg.ID, preference.ConversationMode)
 	if err != nil {
@@ -945,7 +949,7 @@ func (s *Service) runWithPreference(ctx context.Context, cmd Command, msg Messag
 	bin, home := s.resolveAgentBinHome(cmd.Agent, preference)
 	receivedAt := time.Now()
 	debounceWindow := DebounceFor(msg)
-	input := session.Input{ID: msg.ID, Sender: msg.Sender, Text: text, Attachments: attachments, ReplyToMessageID: msg.ID, CardSessionID: cardSessionID, WorkDir: workDir, RequestedModel: preference.Model, RequestedEffort: preference.Effort, AgentBin: bin, AgentHome: home, ReplyMode: preference.ReplyMode, ConversationMode: preference.ConversationMode, BridgeInstructionsVersion: bridgeinstructions.CurrentVersion, ScheduleKind: cmd.ScheduleKind, IsGroup: msg.IsGroup, Time: effectiveMessageTime(msg), DebounceUntil: receivedAt.Add(debounceWindow), DebounceWindow: debounceWindow, State: session.InputDebouncing, Reset: cmd.Reset}
+	input := session.Input{ID: msg.ID, Sender: msg.Sender, Text: text, Attachments: attachments, ReplyToMessageID: msg.ID, CardSessionID: cardSessionID, WorkDir: workDir, RequestedModel: preference.Model, RequestedEffort: preference.Effort, AgentBin: bin, AgentHome: home, ReplyMode: preference.ReplyMode, ConversationMode: preference.ConversationMode, BridgeInstructionsVersion: bridgeinstructions.CurrentVersion, ScheduleKind: cmd.ScheduleKind, ScheduleTargetThreadID: msg.ThreadID, IsGroup: msg.IsGroup, Time: effectiveMessageTime(msg), DebounceUntil: receivedAt.Add(debounceWindow), DebounceWindow: debounceWindow, State: session.InputDebouncing, Reset: cmd.Reset || cmd.ScheduleKind != ""}
 	accepted, queued, err := s.Sessions.AcceptAndEnqueue(key, input, receivedAt, s.dedupTTL(), s.dedupMaxEntries(), s.batchLimits())
 	if err != nil {
 		action := "queue_rejected"

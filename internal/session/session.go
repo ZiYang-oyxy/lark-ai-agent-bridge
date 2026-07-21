@@ -65,6 +65,7 @@ type Input struct {
 	ScheduleRunID             string `json:",omitempty"`
 	ScheduleTaskID            string `json:",omitempty"`
 	ScheduleKind              string `json:",omitempty"`
+	ScheduleTargetThreadID    string `json:",omitempty"`
 	IsGroup                   bool   `json:",omitempty"`
 	Time                      time.Time
 	DebounceUntil             time.Time

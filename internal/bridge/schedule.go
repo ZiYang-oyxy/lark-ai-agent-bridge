@@ -277,11 +277,15 @@ func (s *Service) issueScheduleProposalContext(sess session.Session, batch sessi
 		return "", ""
 	}
 	anchor := batch.Inputs[len(batch.Inputs)-1]
+	targetThreadID := sess.Key.Thread
+	if anchor.ScheduleKind != "" {
+		targetThreadID = anchor.ScheduleTargetThreadID
+	}
 	bound := schedule.ProposalContext{
 		OriginRunID: originRunID,
 		Creator:     anchor.Sender,
 		Target: schedule.Target{
-			ChatID: sess.Key.ChatID, ThreadID: sess.Key.Thread, ReplyToMessageID: anchor.ReplyToMessageID, IsGroup: anchor.IsGroup,
+			ChatID: sess.Key.ChatID, ThreadID: targetThreadID, ReplyToMessageID: anchor.ReplyToMessageID, IsGroup: anchor.IsGroup,
 		},
 		Execution: schedule.FrozenExecution{
 			Agent: string(sess.Key.Agent), Model: anchor.RequestedModel, Effort: anchor.RequestedEffort,

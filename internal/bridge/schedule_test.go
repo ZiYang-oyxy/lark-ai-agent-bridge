@@ -106,17 +106,21 @@ func TestCronListIsScopedToCurrentConversation(t *testing.T) {
 func TestTimerAddIsNotDeduplicatedBeforeAgentEnqueue(t *testing.T) {
 	service, _, _ := scheduleTestService(t)
 	now := time.Now()
-	msg := Message{ID: "om_timer_add", ChatID: "oc_chat", Sender: "ou_creator", Text: "/timer add 明天下午三点提醒我评审", Time: now}
+	msg := Message{ID: "om_timer_add", ChatID: "oc_chat", ThreadID: "omt_topic", Sender: "ou_creator", Text: "/timer add 明天下午三点提醒我评审", Time: now}
 	if err := service.HandleMessage(context.Background(), msg); err != nil {
 		t.Fatal(err)
 	}
-	key := session.Key{Agent: agent.Claude, ChatID: msg.ChatID}
+	key := session.Key{Agent: agent.Claude, ChatID: msg.ChatID, Thread: "schedule-proposal:" + msg.ThreadID}
 	sess, ok := service.Sessions.Get(key)
 	if !ok || len(sess.Queue) != 1 {
 		t.Fatalf("timer add was not queued: session=%#v ok=%v", sess, ok)
 	}
-	if sess.Queue[0].ID != msg.ID || sess.Queue[0].ScheduleKind != string(schedule.KindTimer) {
+	if sess.Queue[0].ID != msg.ID || sess.Queue[0].ScheduleKind != string(schedule.KindTimer) || !sess.Queue[0].Reset {
 		t.Fatalf("queued schedule input = %#v", sess.Queue[0])
+	}
+	conversationKey := session.Key{Agent: agent.Claude, ChatID: msg.ChatID, Thread: msg.ThreadID}
+	if _, ok := service.Sessions.Get(conversationKey); ok {
+		t.Fatalf("schedule proposal leaked into conversation session %s", conversationKey.ID())
 	}
 }
 
@@ -269,7 +273,7 @@ func TestAgentProposalGetsScopedTokenAndReplacesTerminalCard(t *testing.T) {
 	service.ScheduleContexts = registry
 	service.ScheduleSocket = socketPath
 
-	msg := Message{ID: "om_schedule", ChatID: "oc_chat", Sender: "ou_creator", Text: "每个工作日九点总结项目进展", Time: now}
+	msg := Message{ID: "om_schedule", ChatID: "oc_chat", ThreadID: "omt_topic", Sender: "ou_creator", Text: "/cron add 每个工作日九点总结项目进展", Time: now}
 	if err := service.HandleMessage(context.Background(), msg); err != nil {
 		t.Fatal(err)
 	}
@@ -294,6 +298,9 @@ func TestAgentProposalGetsScopedTokenAndReplacesTerminalCard(t *testing.T) {
 	}
 	if got := len(store.Drafts()); got != 1 {
 		t.Fatalf("draft count = %d", got)
+	}
+	if got := store.Drafts()[0].Target.ThreadID; got != msg.ThreadID {
+		t.Fatalf("draft target thread = %q, want %q", got, msg.ThreadID)
 	}
 	events := renderer.Events()
 	last := events[len(events)-1]
