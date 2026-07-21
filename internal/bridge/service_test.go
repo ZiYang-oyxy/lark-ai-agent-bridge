@@ -4478,7 +4478,7 @@ func TestServiceMetaFromSessionContextUsage(t *testing.T) {
 	s := &Service{Config: config.Config{ClaudeContextUsageDir: dir}}
 	sess := session.Session{Key: session.Key{Agent: agent.Claude}, AgentSessionID: "sess-abc", Tokens: 9999}
 	meta := s.metaFromSession(sess)
-	if meta.CtxUsedPercent != 42 || meta.CtxWindow != 200000 || meta.CtxTokens != 84000 {
+	if !meta.CtxOK || meta.CtxUsedPercent != 42 || meta.CtxWindow != 200000 || meta.CtxTokens != 84000 {
 		t.Fatalf("ctx fields = %+v", meta)
 	}
 }

@@ -2481,6 +2481,7 @@ func (s *Service) metaFromSession(sess session.Session) card.Meta {
 		dir = s.Config.CodexContextUsageDir
 	}
 	if u := contextusage.Read(dir, sess.AgentSessionID); u.OK {
+		meta.CtxOK = true
 		meta.CtxUsedPercent = u.UsedPercent
 		meta.CtxTokens = u.TotalTokens
 		meta.CtxWindow = u.ContextWindow

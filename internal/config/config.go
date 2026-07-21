@@ -233,15 +233,15 @@ func LoadFromEnv() Config {
 	if n, err := strconv.Atoi(strings.TrimSpace(os.Getenv("E2E_SCHEDULE_RETENTION_DAYS"))); err == nil && n > 0 {
 		cfg.ScheduleRetention = time.Duration(n) * 24 * time.Hour
 	}
-	cfg.ClaudeContextUsageDir = resolveContextUsageDir("LAB_CLAUDE_CONTEXT_USAGE_DIR", "E2E_CLAUDE_CONTEXT_USAGE_DIR", "CLAUDE_CONFIG_DIR")
-	cfg.CodexContextUsageDir = resolveContextUsageDir("LAB_CODEX_CONTEXT_USAGE_DIR", "E2E_CODEX_CONTEXT_USAGE_DIR", "CODEX_HOME")
+	cfg.ClaudeContextUsageDir = resolveContextUsageDir("E2E_CLAUDE_CONTEXT_USAGE_DIR", "LAB_CLAUDE_CONTEXT_USAGE_DIR", "CLAUDE_CONFIG_DIR")
+	cfg.CodexContextUsageDir = resolveContextUsageDir("E2E_CODEX_CONTEXT_USAGE_DIR", "LAB_CODEX_CONTEXT_USAGE_DIR", "CODEX_HOME")
 	return cfg
 }
 
 // resolveContextUsageDir picks an explicit context-usage directory from the E2E
 // or LAB override, else derives <home>/context-usage from the agent home env
 // var. Returns "" when nothing is configured (feature disabled for that kind).
-func resolveContextUsageDir(labEnv, e2eEnv, homeEnv string) string {
+func resolveContextUsageDir(e2eEnv, labEnv, homeEnv string) string {
 	if v := strings.TrimSpace(os.Getenv(e2eEnv)); v != "" {
 		return v
 	}

@@ -1384,12 +1384,13 @@ func TestMetaTokenTextContextUsage(t *testing.T) {
 		meta Meta
 		want string
 	}{
-		{"green-with-window", Meta{CtxUsedPercent: 42, CtxTokens: 84000, CtxWindow: 200000}, "🟢 ctx: 42% (84k/200k)"},
-		{"yellow-boundary-60", Meta{CtxUsedPercent: 60, CtxTokens: 120000, CtxWindow: 200000}, "🟡 ctx: 60% (120k/200k)"},
-		{"yellow-boundary-84", Meta{CtxUsedPercent: 84, CtxTokens: 168000, CtxWindow: 200000}, "🟡 ctx: 84% (168k/200k)"},
-		{"red-boundary-85", Meta{CtxUsedPercent: 85, CtxTokens: 170000, CtxWindow: 200000}, "🔴 ctx: 85% (170k/200k)"},
-		{"green-boundary-59", Meta{CtxUsedPercent: 59, CtxTokens: 118000, CtxWindow: 200000}, "🟢 ctx: 59% (118k/200k)"},
-		{"percent-only-no-window", Meta{CtxUsedPercent: 42}, "🟢 ctx: 42%"},
+		{"green-with-window", Meta{CtxOK: true, CtxUsedPercent: 42, CtxTokens: 84000, CtxWindow: 200000}, "🟢 ctx: 42% (84k/200k)"},
+		{"yellow-boundary-60", Meta{CtxOK: true, CtxUsedPercent: 60, CtxTokens: 120000, CtxWindow: 200000}, "🟡 ctx: 60% (120k/200k)"},
+		{"yellow-boundary-84", Meta{CtxOK: true, CtxUsedPercent: 84, CtxTokens: 168000, CtxWindow: 200000}, "🟡 ctx: 84% (168k/200k)"},
+		{"red-boundary-85", Meta{CtxOK: true, CtxUsedPercent: 85, CtxTokens: 170000, CtxWindow: 200000}, "🔴 ctx: 85% (170k/200k)"},
+		{"green-boundary-59", Meta{CtxOK: true, CtxUsedPercent: 59, CtxTokens: 118000, CtxWindow: 200000}, "🟢 ctx: 59% (118k/200k)"},
+		{"percent-only-no-window", Meta{CtxOK: true, CtxUsedPercent: 42}, "🟢 ctx: 42%"},
+		{"ctx-zero-percent", Meta{CtxOK: true, CtxUsedPercent: 0, CtxTokens: 100, CtxWindow: 200000}, "🟢 ctx: 0% (100/200k)"},
 		{"fallback-to-cumulative", Meta{RunTokens: 1200, TotalTokens: 5000}, "🔢 tokens: ▶ 1.2k / ∑ 5k"},
 		{"fallback-run-only", Meta{RunTokens: 800}, "🔢 tokens: ▶ 800"},
 		{"empty", Meta{}, ""},

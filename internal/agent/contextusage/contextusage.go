@@ -35,6 +35,9 @@ func Read(dir, sessionID string) Usage {
 	if dir == "" || sessionID == "" {
 		return Usage{}
 	}
+	if sessionID != filepath.Base(sessionID) || strings.ContainsRune(sessionID, filepath.Separator) {
+		return Usage{}
+	}
 	raw, err := os.ReadFile(filepath.Join(dir, sessionID+".json"))
 	if err != nil {
 		return Usage{}

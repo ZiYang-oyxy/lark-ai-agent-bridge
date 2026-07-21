@@ -735,7 +735,7 @@ func metaModelText(meta Meta) string {
 }
 
 func metaTokenText(meta Meta) string {
-	if meta.CtxUsedPercent > 0 {
+	if meta.CtxOK {
 		dot := "🟢"
 		switch {
 		case meta.CtxUsedPercent >= 85:

@@ -37,6 +37,7 @@ func TestRead(t *testing.T) {
 		{"missing-file", dir, "sess-absent", Usage{OK: false}},
 		{"empty-dir", "", "sess-ok", Usage{OK: false}},
 		{"empty-session", dir, "", Usage{OK: false}},
+		{"path-traversal", dir, "../sess-ok", Usage{OK: false}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
