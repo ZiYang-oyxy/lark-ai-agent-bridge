@@ -57,16 +57,27 @@ func (s *Service) handleCd(ctx context.Context, msg Message, cmd Command, prefer
 		return s.renderTextWithMode("cd", msg.ID, card.SegmentError, "工作区存储不可用。", preference.ConversationMode)
 	}
 
+	// home is best-effort: when empty, ResolveWorkingDirectory rejects ~ paths
+	// with a user-visible error; absolute paths are unaffected.
 	home, _ := os.UserHomeDir()
 	res := workspace.ResolveWorkingDirectory(cmd.WorkDir, home)
 	if !res.OK {
 		return s.renderTextWithMode("cd", msg.ID, card.SegmentError, res.UserVisible, preference.ConversationMode)
 	}
 	if !res.Exists {
-		// hand off to the existing create-confirm card flow; do not touch the
-		// store until the user confirms creation.
-		_, err := s.ensureWorkDirOrAsk(res.Realpath, msg.ID, msg.ID, preference.ConversationMode)
-		return err
+		// Hand off to the existing create-confirm card flow. Store a CdSwitch
+		// pending keyed by the same sessionID the card carries, so the
+		// create_workdir callback switches into the directory once created
+		// (create-and-switch semantics) instead of forcing a second /cd.
+		pendingID := runID(key.ID(), msg.ID)
+		asked, err := s.ensureWorkDirOrAsk(res.Realpath, pendingID, msg.ID, preference.ConversationMode)
+		if err != nil {
+			return err
+		}
+		if asked {
+			s.storePendingRun(pendingID, pendingRun{WorkDir: res.Realpath, CdSwitch: true, CdKey: key, CdScope: scope, Preference: preference})
+		}
+		return nil
 	}
 	if err := s.switchWorkDir(key, scope, res.Realpath); err != nil {
 		return s.renderTextWithMode("cd", msg.ID, card.SegmentError, "切换失败："+err.Error(), preference.ConversationMode)

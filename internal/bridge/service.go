@@ -210,6 +210,13 @@ type pendingRun struct {
 	WorkDir          string
 	Preference       config.RuntimePreference
 	ExpiresAt        time.Time
+	// CdSwitch marks a pending created by /cd on a not-yet-existing directory:
+	// on create_workdir confirmation the callback switches the topic's cwd into
+	// the freshly created directory (via switchWorkDir) instead of running an
+	// agent.
+	CdSwitch bool
+	CdKey    session.Key
+	CdScope  string
 }
 
 type activeRun struct {
@@ -1487,7 +1494,13 @@ func (s *Service) HandleActionResult(ctx context.Context, req ActionRequest) (Ac
 			return result, err
 		}
 		if hasPending {
-			if err := s.runWithPreference(ctx, pending.Command, pending.Message, pending.RunCardSessionID, pending.Preference); err != nil {
+			if pending.CdSwitch {
+				// /cd into a missing directory: it now exists, so switch the
+				// topic's cwd into it (interrupt run + store realpath + reset).
+				if err := s.switchWorkDir(pending.CdKey, pending.CdScope, workDir); err != nil {
+					return result, err
+				}
+			} else if err := s.runWithPreference(ctx, pending.Command, pending.Message, pending.RunCardSessionID, pending.Preference); err != nil {
 				return result, err
 			}
 		}
