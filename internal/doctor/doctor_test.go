@@ -316,6 +316,35 @@ func TestPreferenceStoreWritableValidatesExistingSnapshotWithoutLeakingContents(
 	}
 }
 
+func TestPreferenceStoreWritableAcceptsConfiguredCodexPreference(t *testing.T) {
+	workDir := canonicalTempDir(t)
+	agentsPath := filepath.Join(workDir, ".lark-agent-bridge", "agents.json")
+	if err := os.MkdirAll(filepath.Dir(agentsPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(agentsPath, []byte(`{"schema_version":1,"agents":[{"kind":"claude"},{"kind":"codex"}]}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	agents, err := config.LoadAgentsConfig(agentsPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(workDir, ".lark-agent-bridge", "preferences.json")
+	store, err := config.OpenPreferenceStore(path, config.RuntimePreference{Model: "default", Effort: "low"}, nil, agents.Agents...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Set(config.RuntimePreference{Model: "default", Effort: "low", Agent: "codex"}); err != nil {
+		t.Fatal(err)
+	}
+	cfg := doctorTestConfig(workDir, filepath.Join(workDir, ".lark-agent-bridge", "sessions.json"))
+	cfg.PreferenceStorePath = path
+	cfg.AgentsConfigPath = agentsPath
+	if check := findCheck(t, Run(cfg), "preference_store"); !check.OK {
+		t.Fatalf("preference_store = %#v, want configured codex preference to pass", check)
+	}
+}
+
 func TestClaudeWrapperPreflightUsesBoundedHarmlessInvocation(t *testing.T) {
 	dir := t.TempDir()
 	argsPath := filepath.Join(dir, "args")

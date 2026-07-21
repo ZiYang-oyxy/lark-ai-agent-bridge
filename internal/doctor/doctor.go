@@ -606,7 +606,8 @@ func preferenceStoreWritable(cfg config.Config) Check {
 		return Check{Name: "preference_store", OK: false, Detail: "insecure_permissions: " + path}
 	}
 	defaults := config.RuntimePreference{Model: cfg.Model, Effort: cfg.Effort, ReplyMode: cfg.ReplyMode, ConversationMode: cfg.ConversationMode}
-	if _, err := config.OpenPreferenceStore(path, defaults, cfg.AllowedModels); err != nil {
+	agents, _ := config.LoadAgentsConfig(cfg.AgentsConfigPath)
+	if _, err := config.OpenPreferenceStore(path, defaults, cfg.AllowedModels, agents.Agents...); err != nil {
 		return Check{Name: "preference_store", OK: false, Detail: "invalid_snapshot: " + path}
 	}
 	return Check{Name: "preference_store", OK: true, Detail: path}
