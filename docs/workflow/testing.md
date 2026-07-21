@@ -1,5 +1,10 @@
 # Testing Workflow
 
+> **工作流入口（何时跑什么）见 [`regression.md`](regression.md)：**
+> - 提交后默认：`scripts/smoke-local.sh`（秒级，`SMOKE_LOCAL_OK`）
+> - 可选上机：容器仓 skill 的 `smoke-on-server.sh --rc <已发布RC>`（`SMOKE_OK`）
+> - 发版门禁：`scripts/release-regression.sh --profile <p>`（L0→L3，`RELEASE_REGRESSION_OK`）
+
 ## 本地基础验证
 
 执行单元测试：
