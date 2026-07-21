@@ -1028,8 +1028,11 @@ func TestBuildLarkCardRendersUpdateStatusWithSectionedHelp(t *testing.T) {
 		t.Fatal(err)
 	}
 	text := string(data)
-	if !containsAll(text, "**v1.0.0 → v1.2.0**", "查看本次更新内容，确认后可升级", "update.details", "查看更新 →", "**`/new`**") {
+	if !containsAll(text, "**v1.0.0 → v1.2.0**", "update.details", "查看更新 →", "**`/new`**") {
 		t.Fatalf("sectioned update help missing content: %s", text)
+	}
+	if strings.Contains(text, "查看本次更新内容，确认后可升级") {
+		t.Fatalf("sectioned update help contains redundant guidance: %s", text)
 	}
 	var buttons []map[string]any
 	collectHelpButtonData(elements, &buttons)

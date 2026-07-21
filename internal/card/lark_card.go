@@ -305,7 +305,6 @@ func buildHelpVersionElements(sessionID string, status *HelpVersionStatus) []any
 
 	body := []map[string]any{
 		markdownElement("help_update_versions", fmt.Sprintf("**%s → %s**", status.CurrentVersion, status.LatestVersion)),
-		noteElement("help_update_guidance", "查看本次更新内容，确认后可升级"),
 	}
 	if actionRow := buttonRowElements([]Action{status.DetailsAction}, sessionID); actionRow != nil {
 		body = append(body, actionRow)
