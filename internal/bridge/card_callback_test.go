@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"lark-agent-bridge/internal/access"
 	"lark-agent-bridge/internal/audit"
@@ -203,8 +204,9 @@ func TestHelpCommandCarriesOnlyGroupChatContext(t *testing.T) {
 
 func TestHelpOpenLocalConfigCallbackRendersReadOnlyOverview(t *testing.T) {
 	svc, store := localConfigService(t)
+	sessionID := renderGroupHelpForTest(t, svc, "help-source", "oc-a", "user-1")
 	result, err := svc.HandleActionResult(context.Background(), ActionRequest{
-		SessionID: "help-card", ActionID: "help.open_local_config", Value: "oc-a", Actor: "user-1",
+		SessionID: sessionID, ActionID: "help.open_local_config", Value: "oc-a", Actor: "user-1",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -222,8 +224,9 @@ func TestHelpOpenLocalConfigCallbackRendersReadOnlyOverview(t *testing.T) {
 
 func TestHelpOpenLocalConfigCallbackRequiresChatID(t *testing.T) {
 	svc, store := localConfigService(t)
+	sessionID := renderGroupHelpForTest(t, svc, "help-source", "oc-a", "user-1")
 	result, err := svc.HandleActionResult(context.Background(), ActionRequest{
-		SessionID: "help-card", ActionID: "help.open_local_config", Actor: "user-1",
+		SessionID: sessionID, ActionID: "help.open_local_config", Actor: "user-1",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -234,6 +237,78 @@ func TestHelpOpenLocalConfigCallbackRequiresChatID(t *testing.T) {
 	if _, ok := store.ChatOverride(""); ok {
 		t.Fatal("missing chat id must not write an override")
 	}
+}
+
+func TestHelpOpenLocalConfigRejectsCrossGroupValue(t *testing.T) {
+	svc, store := localConfigService(t)
+	sessionA := renderGroupHelpForTest(t, svc, "help-a", "oc-a", "user-1")
+	_ = renderGroupHelpForTest(t, svc, "help-b", "oc-b", "user-1")
+
+	result, err := svc.HandleActionResult(context.Background(), ActionRequest{
+		SessionID: sessionA, ActionID: "help.open_local_config", Value: "oc-b", Actor: "user-1",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Event == nil || result.Event.Type != "error" {
+		t.Fatalf("cross-group callback result = %#v, want error", result)
+	}
+	if _, ok := store.ChatOverride("oc-b"); ok {
+		t.Fatal("cross-group callback must not write an override")
+	}
+}
+
+func TestHelpOpenLocalConfigRejectsUnauthorizedActor(t *testing.T) {
+	svc, _ := localConfigService(t)
+	accessStore, err := access.OpenStore(filepath.Join(t.TempDir(), "access.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	controls := access.NewRuntimeControls()
+	controls.OwnerRefreshSucceeded("ou_owner")
+	svc.Access = accessStore
+	svc.AccessControls = controls
+	sessionID := renderGroupHelpForTest(t, svc, "help-private", "oc-private", "ou_owner")
+
+	result, err := svc.HandleActionResult(context.Background(), ActionRequest{
+		SessionID: sessionID, ActionID: "help.open_local_config", Value: "oc-private", Actor: "ou_stranger",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Event == nil || result.Event.Type != "error" {
+		t.Fatalf("unauthorized callback result = %#v, want error", result)
+	}
+}
+
+func TestHelpOpenLocalConfigRejectsExpiredSession(t *testing.T) {
+	svc, _ := localConfigService(t)
+	sessionID := renderGroupHelpForTest(t, svc, "help-expired", "oc-a", "user-1")
+	svc.mu.Lock()
+	bound := svc.helpContexts[sessionID]
+	bound.ExpiresAt = time.Now().Add(-time.Second)
+	svc.helpContexts[sessionID] = bound
+	svc.mu.Unlock()
+
+	result, err := svc.HandleActionResult(context.Background(), ActionRequest{
+		SessionID: sessionID, ActionID: "help.open_local_config", Value: "oc-a", Actor: "user-1",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Event == nil || result.Event.Type != "error" {
+		t.Fatalf("expired callback result = %#v, want error", result)
+	}
+}
+
+func renderGroupHelpForTest(t *testing.T, svc *Service, messageID, chatID, actor string) string {
+	t.Helper()
+	if err := svc.HandleMessage(context.Background(), Message{
+		ID: messageID, ChatID: chatID, Sender: actor, Text: "/help", IsGroup: true, Mentioned: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	return runID("help", messageID)
 }
 
 func TestHelpStatusCallbackRendersStatusNotUnknown(t *testing.T) {

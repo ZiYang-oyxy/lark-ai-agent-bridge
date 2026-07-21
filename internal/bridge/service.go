@@ -31,7 +31,15 @@ import (
 	"lark-agent-bridge/internal/session"
 )
 
-const recoveryNoticesTimeout = 5 * time.Second
+const (
+	recoveryNoticesTimeout = 5 * time.Second
+	helpContextTTL         = 24 * time.Hour
+)
+
+type helpContext struct {
+	ChatID    string
+	ExpiresAt time.Time
+}
 
 type Service struct {
 	Config           config.Config
@@ -74,6 +82,7 @@ type Service struct {
 	activeRuns         map[string]activeRun
 	pendingCompletions map[string]pendingCompletion
 	waitingReactions   map[string]*reactionLifecycle
+	helpContexts       map[string]helpContext
 	reactionDelay      time.Duration
 	startedAt          time.Time
 	accepting          bool
@@ -264,6 +273,7 @@ func NewServiceWithSessions(cfg config.Config, renderer card.Renderer, runner Ag
 		activeRuns:         map[string]activeRun{},
 		pendingCompletions: map[string]pendingCompletion{},
 		waitingReactions:   map[string]*reactionLifecycle{},
+		helpContexts:       map[string]helpContext{},
 		reactionDelay:      defaultWaitingReactionDelay,
 		startedAt:          time.Now(),
 		accepting:          true,
@@ -283,6 +293,34 @@ func cloneRecoveryNotices(in []session.RecoveryNotice) []session.RecoveryNotice 
 		}
 	}
 	return out
+}
+
+func (s *Service) storeHelpContext(sessionID, chatID string, now time.Time) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for id, context := range s.helpContexts {
+		if !context.ExpiresAt.After(now) {
+			delete(s.helpContexts, id)
+		}
+	}
+	s.helpContexts[sessionID] = helpContext{ChatID: chatID, ExpiresAt: now.Add(helpContextTTL)}
+}
+
+func (s *Service) resolveHelpContext(sessionID, callbackChatID, actor string, now time.Time) (string, bool) {
+	s.mu.Lock()
+	context, ok := s.helpContexts[sessionID]
+	if ok && !context.ExpiresAt.After(now) {
+		delete(s.helpContexts, sessionID)
+		ok = false
+	}
+	s.mu.Unlock()
+	if !ok || context.ChatID == "" || callbackChatID != context.ChatID {
+		return "", false
+	}
+	if s.Access != nil && !access.CanUseGroup(s.Access.Get(), s.AccessControls, context.ChatID, actor).OK {
+		return "", false
+	}
+	return context.ChatID, true
 }
 
 // ProcessRecoveryNotices best-effort terminalizes cards that belonged to runs
@@ -444,13 +482,18 @@ func (s *Service) HandleMessage(ctx context.Context, msg Message) error {
 		if msg.IsGroup {
 			hc.ChatID = strings.TrimSpace(msg.ChatID)
 		}
-		return s.Cards.Render(card.Event{
+		helpSessionID := runID("help", msg.ID)
+		err := s.Cards.Render(card.Event{
 			Type:             "help",
-			SessionID:        runID("help", msg.ID),
+			SessionID:        helpSessionID,
 			ReplyToMessageID: msg.ID,
 			ReplyInThread:    preference.ConversationMode == config.ConversationModeTopic,
 			HelpCard:         &hc,
 		})
+		if err == nil && hc.ChatID != "" {
+			s.storeHelpContext(helpSessionID, hc.ChatID, time.Now())
+		}
+		return err
 	case CommandUnknown:
 		return s.renderTextWithMode("command", msg.ID, card.SegmentError, cmd.Text, preference.ConversationMode)
 	case CommandStatus:
@@ -1538,8 +1581,9 @@ func (s *Service) HandleActionResult(ctx context.Context, req ActionRequest) (Ac
 		preference := s.Preferences.Get()
 		return s.renderActionEvent(card.Event{Type: "config", SessionID: req.SessionID, ConfigForm: s.configForm(preference)})
 	case "help.open_local_config":
-		chatID := strings.TrimSpace(req.Value)
-		if chatID == "" {
+		chatID, ok := s.resolveHelpContext(req.SessionID, strings.TrimSpace(req.Value), req.Actor, time.Now())
+		if !ok {
+			s.Audit.Record(req.Actor, "help_local_config_denied", req.SessionID, "invalid, expired, or unauthorized help context")
 			return s.renderActionEvent(card.Event{Type: "error", SessionID: req.SessionID, Segments: []card.Segment{{Kind: card.SegmentError, Text: "无法确定当前群，请在群里重新发送 `/help`。"}}})
 		}
 		return s.renderActionEvent(card.Event{

@@ -1076,6 +1076,48 @@ func TestBuildConfigFormElementsGroupsFourSectionsAndDropsModelEffort(t *testing
 	}
 }
 
+func TestBuildConfigFormElementsKeepsLocalActionsInEqualWidthRow(t *testing.T) {
+	elements := buildConfigFormElements("local-config-card", ConfigForm{
+		ChatID: "oc-a", Agent: "claude", AgentHome: "默认", AgentBin: "主机 claude",
+		ReplyMode: "append", ConversationMode: "chat",
+		GroupMessageMode: "mention_only", RespondToBots: "false",
+	})
+	form := elements[1].(map[string]any)
+	formElements := form["elements"].([]any)
+	row := formElements[len(formElements)-1].(map[string]any)
+	if row["tag"] != "column_set" {
+		t.Fatalf("local config action row = %#v, want column_set", row)
+	}
+	columns := row["columns"].([]any)
+	if len(columns) != 2 {
+		t.Fatalf("local config action columns = %d, want 2", len(columns))
+	}
+	for i, raw := range columns {
+		column := raw.(map[string]any)
+		if column["width"] != "weighted" || column["weight"] != 1 {
+			t.Fatalf("local config action column %d = %#v", i, column)
+		}
+	}
+
+	selects := map[string]map[string]any{}
+	buttons := map[string]map[string]any{}
+	var copy strings.Builder
+	collectConfigControls(formElements, selects, buttons, &copy)
+	save := buttons["submit_runtime_config"]
+	if save == nil || save["form_action_type"] != "submit" || save["width"] != "fill" {
+		t.Fatalf("local config save button = %#v", save)
+	}
+	saveValue := save["behaviors"].([]any)[0].(map[string]any)["value"].(map[string]any)
+	if saveValue["action_id"] != "local_config.save" || saveValue["value"] != "oc-a" {
+		t.Fatalf("local config save callback = %#v", saveValue)
+	}
+	closeButton := buttons["close_runtime_config"]
+	closeValue := closeButton["behaviors"].([]any)[0].(map[string]any)["value"].(map[string]any)
+	if closeButton["width"] != "fill" || closeValue["action_id"] != "config.close" {
+		t.Fatalf("local config close button = %#v callback=%#v", closeButton, closeValue)
+	}
+}
+
 func TestConfigEventHeaderIsGreyAndGlobal(t *testing.T) {
 	if got := templateForEvent("config"); got != "grey" {
 		t.Fatalf("config template = %q, want grey", got)
