@@ -64,6 +64,7 @@ func TestLoadConfigRejectsCredentialAndUnsafeFields(t *testing.T) {
 		"huge poll":           strings.Replace(valid, `"poll_interval_ms":200`, `"poll_interval_ms":60000`, 1),
 		"zero timeout":        strings.Replace(valid, `"step_timeout_ms":12000`, `"step_timeout_ms":0`, 1),
 		"short timeout":       strings.Replace(valid, `"step_timeout_ms":12000`, `"step_timeout_ms":100`, 1),
+		"excessive timeout":   strings.Replace(valid, `"step_timeout_ms":12000`, `"step_timeout_ms":300001`, 1),
 		"missing app id":      strings.Replace(valid, `"app_id":"app"`, `"app_id":""`, 1),
 		"trailing config":     valid + `[]`,
 	}
@@ -74,6 +75,17 @@ func TestLoadConfigRejectsCredentialAndUnsafeFields(t *testing.T) {
 				t.Fatal("LoadConfig succeeded")
 			}
 		})
+	}
+}
+
+func TestLoadConfigAllowsLongRealAgentTimeout(t *testing.T) {
+	path := writeInput(t, strings.Replace(validConfigJSON(), `"step_timeout_ms":12000`, `"step_timeout_ms":180000`, 1))
+	config, err := LoadConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if config.StepTimeoutMS != 180000 {
+		t.Fatalf("step timeout = %d, want 180000", config.StepTimeoutMS)
 	}
 }
 

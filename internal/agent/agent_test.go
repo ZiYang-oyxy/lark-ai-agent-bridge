@@ -194,3 +194,18 @@ func TestAgentEnv(t *testing.T) {
 		t.Fatalf("unknown kind must inject no env, got %#v", env)
 	}
 }
+
+func TestContextCacheEnv(t *testing.T) {
+	if env := ContextCacheEnv(Claude, ""); env != nil {
+		t.Fatalf("empty cache dir must inject no env, got %#v", env)
+	}
+	if got := ContextCacheEnv(Claude, "/ctx/claude"); !reflect.DeepEqual(got, []string{"CLAUDE_CONTEXT_CACHE_DIR=/ctx/claude"}) {
+		t.Fatalf("Claude context cache env = %#v", got)
+	}
+	if got := ContextCacheEnv(Codex, "/ctx/codex"); !reflect.DeepEqual(got, []string{"CODEX_CONTEXT_CACHE_DIR=/ctx/codex"}) {
+		t.Fatalf("Codex context cache env = %#v", got)
+	}
+	if env := ContextCacheEnv(Kind("gemini"), "/ctx/unknown"); env != nil {
+		t.Fatalf("unknown kind must inject no context cache env, got %#v", env)
+	}
+}

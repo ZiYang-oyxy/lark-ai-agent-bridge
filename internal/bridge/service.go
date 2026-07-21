@@ -160,10 +160,11 @@ type AgentRunRequest struct {
 	Images                    []string
 	BridgeInstructionsVersion string
 	// Home is the resolved agent home / config directory. Empty means default.
-	Home           string
-	ScheduleSocket string
-	ScheduleToken  string
-	OnEvent        func(AgentStreamUpdate)
+	Home            string
+	ContextUsageDir string
+	ScheduleSocket  string
+	ScheduleToken   string
+	OnEvent         func(AgentStreamUpdate)
 }
 
 type AgentRunResult struct {
@@ -1123,12 +1124,14 @@ func (s *Service) executeBatch(ctx context.Context, sess session.Session, batch 
 	if strings.TrimSpace(bin) == "" {
 		bin, home = s.resolveAgentBinHome(sess.Key.Agent, s.runtimePreference())
 	}
+	contextUsageDir := s.contextUsageDirForRun(sess.Key.Agent, home)
 	s.Audit.Record("system", "bridge_instructions_selected", sess.ID, "version="+sess.BridgeInstructionsVersion+" agent="+string(sess.Key.Agent))
 	scheduleSocket, scheduleToken := s.issueScheduleProposalContext(sess, batch, id)
 	if scheduleToken != "" {
 		defer s.ScheduleContexts.Revoke(scheduleToken)
 	}
-	result, err := s.Runner.Run(ctx, AgentRunRequest{Kind: sess.Key.Agent, Bin: bin, Home: home, Prompt: prompt, WorkDir: sess.WorkDir, Images: codexImagePaths(batch), AgentSessionID: sess.AgentSessionID, Model: batch.Inputs[0].RequestedModel, Effort: batch.Inputs[0].RequestedEffort, BridgeInstructionsVersion: sess.BridgeInstructionsVersion, ScheduleSocket: scheduleSocket, ScheduleToken: scheduleToken, OnEvent: func(update AgentStreamUpdate) {
+	runStartedAt := time.Now()
+	result, err := s.Runner.Run(ctx, AgentRunRequest{Kind: sess.Key.Agent, Bin: bin, Home: home, ContextUsageDir: contextUsageDir, Prompt: prompt, WorkDir: sess.WorkDir, Images: codexImagePaths(batch), AgentSessionID: sess.AgentSessionID, Model: batch.Inputs[0].RequestedModel, Effort: batch.Inputs[0].RequestedEffort, BridgeInstructionsVersion: sess.BridgeInstructionsVersion, ScheduleSocket: scheduleSocket, ScheduleToken: scheduleToken, OnEvent: func(update AgentStreamUpdate) {
 		if model := strings.TrimSpace(update.Model); model != "" {
 			actualModelMu.Lock()
 			streamedActualModel = model
@@ -1163,13 +1166,14 @@ func (s *Service) executeBatch(ctx context.Context, sess session.Session, batch 
 	if result.ProtocolUnknown > 0 || result.ProtocolAnomalies > 0 {
 		s.Audit.Record("system", "codex_protocol_drift", sess.ID, fmt.Sprintf("unknown=%d anomalies=%d", result.ProtocolUnknown, result.ProtocolAnomalies))
 	}
+	terminalMeta := s.postRunMeta(sess, result, contextUsageDir, runStartedAt)
 	if run, ok := s.activeRun(id); ok && run.BatchID == batch.ID && run.Stream != nil {
 		if draft, hasDraft := s.scheduleDraftForOrigin(id); status == session.InputCompleted && hasDraft {
-			s.finishScheduleConfirmation(run.Stream, cardStatus, s.metaFromSession(sess), result, draft, sess.ID)
+			s.finishScheduleConfirmation(run.Stream, cardStatus, terminalMeta, result, draft, sess.ID)
 		} else if status == session.InputCompleted {
-			s.finishStreamWithOutputImages(ctx, run.Stream, cardStatus, s.metaFromSession(sess), result, sess, batch)
+			s.finishStreamWithOutputImages(ctx, run.Stream, cardStatus, terminalMeta, result, sess, batch)
 		} else {
-			s.finishStreamAndAudit(run.Stream, cardStatus, s.metaFromSession(sess), result, sess.ID)
+			s.finishStreamAndAudit(run.Stream, cardStatus, terminalMeta, result, sess.ID)
 		}
 	}
 	_, finishErr := s.finishBatchOrRemember(sess, batch.ID, session.BatchCompletion{Status: status, AgentSessionID: result.AgentSessionID, Model: result.Model, Tokens: result.Tokens, At: time.Now()}, "completion_persist_failed")
@@ -1177,6 +1181,40 @@ func (s *Service) executeBatch(ctx context.Context, sess session.Session, batch 
 		err = finishErr
 	}
 	s.completeScheduleBatch(batch, status, err, time.Now())
+}
+
+func (s *Service) postRunMeta(sess session.Session, result AgentRunResult, contextUsageDir string, runStartedAt time.Time) card.Meta {
+	current := sess
+	current.AgentSessionID = strings.TrimSpace(result.AgentSessionID)
+	if model := strings.TrimSpace(result.Model); model != "" {
+		current.Model = model
+	}
+	current.Tokens = sess.Tokens + result.Tokens
+	meta, usage := s.metaFromSessionWithDirAfter(current, contextUsageDir, runStartedAt)
+	if current.AgentSessionID == "" {
+		usage = contextusage.Usage{Reason: contextusage.ReasonEmpty}
+	}
+	meta.RunTokens = result.Tokens
+	meta.Tokens = result.Tokens
+	meta.TotalTokens = current.Tokens
+	if strings.TrimSpace(contextUsageDir) != "" && !usage.OK && usage.Reason != "" {
+		s.Audit.Record("system", "context_usage_unavailable", sess.ID, fmt.Sprintf("agent=%s reason=%s", sess.Key.Agent, usage.Reason))
+	}
+	return meta
+}
+
+func (s *Service) contextUsageDirForRun(kind agent.Kind, home string) string {
+	dir := s.Config.ClaudeContextUsageDir
+	if kind == agent.Codex {
+		dir = s.Config.CodexContextUsageDir
+	}
+	if dir = strings.TrimSpace(dir); dir != "" {
+		return dir
+	}
+	if home = strings.TrimSpace(home); home != "" {
+		return filepath.Join(home, "context-usage")
+	}
+	return ""
 }
 
 func codexImagePaths(batch session.Batch) []string {
@@ -2488,19 +2526,32 @@ func sessionKeyForMode(kind agent.Kind, msg Message, mode config.ConversationMod
 }
 
 func (s *Service) metaFromSession(sess session.Session) card.Meta {
-	userName, ip := runtimeIdentity()
-	meta := card.Meta{Agent: string(sess.Key.Agent), Model: sess.Model, Tokens: sess.Tokens, TotalTokens: sess.Tokens, User: userName, IP: ip, WorkDir: sess.WorkDir, Status: string(sess.State)}
 	dir := s.Config.ClaudeContextUsageDir
 	if sess.Key.Agent == agent.Codex {
 		dir = s.Config.CodexContextUsageDir
 	}
-	if u := contextusage.Read(dir, sess.AgentSessionID); u.OK {
+	meta, _ := s.metaFromSessionWithDir(sess, dir)
+	return meta
+}
+
+func (s *Service) metaFromSessionWithDir(sess session.Session, dir string) (card.Meta, contextusage.Usage) {
+	return s.metaFromSessionWithDirAfter(sess, dir, time.Time{})
+}
+
+func (s *Service) metaFromSessionWithDirAfter(sess session.Session, dir string, notBefore time.Time) (card.Meta, contextusage.Usage) {
+	userName, ip := runtimeIdentity()
+	meta := card.Meta{Agent: string(sess.Key.Agent), Model: sess.Model, Tokens: sess.Tokens, TotalTokens: sess.Tokens, User: userName, IP: ip, WorkDir: sess.WorkDir, Status: string(sess.State)}
+	u := contextusage.Read(dir, sess.AgentSessionID)
+	if !notBefore.IsZero() {
+		u = contextusage.ReadAfter(dir, sess.AgentSessionID, notBefore)
+	}
+	if u.OK {
 		meta.CtxOK = true
 		meta.CtxUsedPercent = u.UsedPercent
 		meta.CtxTokens = u.TotalTokens
 		meta.CtxWindow = u.ContextWindow
 	}
-	return meta
+	return meta, u
 }
 
 var (
@@ -2620,6 +2671,7 @@ func (r CLIExecRunner) Run(ctx context.Context, req AgentRunRequest) (AgentRunRe
 	var stderr bytes.Buffer
 	cmd := exec.CommandContext(ctx, command[0], command[1:]...)
 	agentEnv := agent.AgentEnv(req.Kind, req.Home)
+	agentEnv = append(agentEnv, agent.ContextCacheEnv(req.Kind, req.ContextUsageDir)...)
 	if req.ScheduleSocket != "" && req.ScheduleToken != "" {
 		scheduleCLI, executableErr := os.Executable()
 		if executableErr != nil {

@@ -237,6 +237,10 @@ func (s *agentCardStream) FinishTransformed(status string, meta card.Meta, resul
 	if meta.TotalTokens > 0 {
 		s.meta.TotalTokens = maxInt(s.meta.TotalTokens, meta.TotalTokens)
 	}
+	s.meta.CtxOK = meta.CtxOK
+	s.meta.CtxUsedPercent = meta.CtxUsedPercent
+	s.meta.CtxTokens = meta.CtxTokens
+	s.meta.CtxWindow = meta.CtxWindow
 	if meta.WorkDir != "" {
 		s.meta.WorkDir = meta.WorkDir
 	}

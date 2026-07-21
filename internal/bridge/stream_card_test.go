@@ -2,6 +2,8 @@ package bridge
 
 import (
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -13,6 +15,29 @@ import (
 	"lark-agent-bridge/internal/config"
 	"lark-agent-bridge/internal/session"
 )
+
+func TestAgentCardStreamFinishClearsStaleContextUsage(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "old-session.json"), []byte(`{"session_id":"old-session","used_percentage":42,"total_tokens":84000,"context_window_size":200000}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := testConfig(t)
+	cfg.ClaudeContextUsageDir = dir
+	renderer := card.NewFakeRenderer()
+	svc := NewService(cfg, renderer, newFakeRunner(), audit.NewRecorder())
+	sess := session.Session{Key: session.Key{Agent: "claude", ChatID: "chat"}, ID: "claude:chat", AgentSessionID: "old-session"}
+	stream := newAgentCardStream(svc, "run", sess, session.Input{ReplyToMessageID: "source", Time: time.Now()})
+	if !stream.meta.CtxOK || stream.meta.CtxUsedPercent != 42 {
+		t.Fatalf("initial context meta = %#v", stream.meta)
+	}
+	terminal, err := stream.Finish("completed", card.Meta{CtxOK: false}, AgentRunResult{Segments: []card.Segment{{Kind: card.SegmentText, Text: "done"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if terminal.Meta.CtxOK || terminal.Meta.CtxUsedPercent != 0 || terminal.Meta.CtxTokens != 0 || terminal.Meta.CtxWindow != 0 {
+		t.Fatalf("terminal retained stale context meta: %#v", terminal.Meta)
+	}
+}
 
 type fakeStreamClock struct {
 	mu     sync.Mutex
