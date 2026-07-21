@@ -31,6 +31,7 @@ import (
 	"lark-agent-bridge/internal/schedule"
 	"lark-agent-bridge/internal/session"
 	bridgeupdate "lark-agent-bridge/internal/update"
+	"lark-agent-bridge/internal/workspace"
 )
 
 func main() {
@@ -383,6 +384,10 @@ func runServe(args []string) error {
 	if err != nil {
 		return fmt.Errorf("open access store: %w", err)
 	}
+	workspaces, err := workspace.OpenWorkspaceStore(cfg.WorkspaceStorePath)
+	if err != nil {
+		return fmt.Errorf("open workspace store: %w", err)
+	}
 	replies, err := reply.OpenStore(cfg.ReplyStorePath)
 	if err != nil {
 		return fmt.Errorf("open reply store: %w", err)
@@ -400,6 +405,7 @@ func runServe(args []string) error {
 	svc.Preferences = preferences
 	svc.TopicParticipation = topicStore
 	svc.Access = accessStore
+	svc.Workspaces = workspaces
 	svc.AccessControls = access.NewRuntimeControls()
 	svc.AccessAppID = appID
 	accessInfo := &feishu.AccessInfoClient{Tokens: tokens}

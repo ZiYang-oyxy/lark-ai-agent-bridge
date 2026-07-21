@@ -30,6 +30,7 @@ import (
 	"lark-agent-bridge/internal/reply"
 	"lark-agent-bridge/internal/schedule"
 	"lark-agent-bridge/internal/session"
+	"lark-agent-bridge/internal/workspace"
 )
 
 const (
@@ -55,6 +56,7 @@ type resumeContext struct {
 type Service struct {
 	Config           config.Config
 	Sessions         *session.Manager
+	Workspaces       *workspace.Store
 	Cards            card.Renderer
 	Runner           AgentRunner
 	Audit            *audit.Recorder
@@ -556,6 +558,10 @@ func (s *Service) HandleMessage(ctx context.Context, msg Message) error {
 		return s.handleInviteCommand(ctx, msg, cmd, preference)
 	case CommandRemove:
 		return s.handleRemoveCommand(msg, cmd, preference)
+	case CommandCd:
+		return s.handleCd(ctx, msg, cmd, preference)
+	case CommandWs:
+		return s.handleWs(ctx, msg, cmd, preference)
 	case CommandRun:
 		return s.runWithPreference(ctx, cmd, msg, "", preference)
 	default:
