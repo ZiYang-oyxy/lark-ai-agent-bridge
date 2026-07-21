@@ -437,6 +437,12 @@ func buildButtonActions(e Event) []any {
 		} else if !action.Disabled {
 			button["behaviors"] = callbackBehavior(e.SessionID, action.ID, action.Value)
 		}
+		if !action.Disabled && action.Confirm != nil {
+			button["confirm"] = map[string]any{
+				"title": map[string]any{"tag": "plain_text", "content": action.Confirm.Title},
+				"text":  map[string]any{"tag": "plain_text", "content": action.Confirm.Text},
+			}
+		}
 		buttons = append(buttons, button)
 	}
 	if e.StopButton.Visible {

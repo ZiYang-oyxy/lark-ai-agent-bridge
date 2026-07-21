@@ -475,6 +475,32 @@ func TestBuildLarkCardStopButtonRequiresConfirmation(t *testing.T) {
 	}
 }
 
+func TestBuildLarkCardSupportsGenericActionConfirmation(t *testing.T) {
+	payload := BuildLarkCard(Event{SessionID: "update", Actions: []Action{{
+		ID: "update.install", Label: "立即升级", Value: "1.2.3",
+		Confirm: &ActionConfirm{Title: "确认升级？", Text: "Bridge 将短暂重启。"},
+	}}})
+	buttons := collectButtons(payload)
+	if len(buttons) != 1 {
+		t.Fatalf("buttons = %#v", buttons)
+	}
+	confirm := buttons[0]["confirm"].(map[string]any)
+	if confirm["title"].(map[string]any)["content"] != "确认升级？" || confirm["text"].(map[string]any)["content"] != "Bridge 将短暂重启。" {
+		t.Fatalf("confirm = %#v", confirm)
+	}
+}
+
+func TestBuildLarkCardOmitsGenericConfirmationWhenDisabled(t *testing.T) {
+	payload := BuildLarkCard(Event{SessionID: "update", Actions: []Action{{
+		ID: "update.install", Label: "立即升级", Disabled: true,
+		Confirm: &ActionConfirm{Title: "确认升级？", Text: "Bridge 将短暂重启。"},
+	}}})
+	button := collectButtons(payload)[0]
+	if _, ok := button["confirm"]; ok {
+		t.Fatalf("disabled button has confirm: %#v", button)
+	}
+}
+
 func TestBuildLarkCardCleanResultOmitsAgentPanels(t *testing.T) {
 	payload := BuildLarkCard(Event{Type: "result", HideAgentPanels: true, Segments: []Segment{{Kind: SegmentText, Text: "answer"}}})
 	elements := payload["body"].(map[string]any)["elements"].([]any)

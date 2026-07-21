@@ -58,6 +58,16 @@ func TestRunVersionHumanPrefixesReleaseVersion(t *testing.T) {
 	}
 }
 
+func TestNewRuntimeUpdateManagerFollowsConfiguration(t *testing.T) {
+	if got := newRuntimeUpdateManager(config.Config{}); got != nil {
+		t.Fatalf("manager without URL = %#v", got)
+	}
+	got := newRuntimeUpdateManager(config.Config{UpdateManifestURL: "https://updates.example/manifest.json"})
+	if got == nil || got.Client == nil || got.Client.ManifestURL != "https://updates.example/manifest.json" {
+		t.Fatalf("configured manager = %#v", got)
+	}
+}
+
 type serveCardKitClientFake struct {
 	fullUpdates    int
 	elementUpdates int

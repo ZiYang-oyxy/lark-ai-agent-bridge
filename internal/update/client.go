@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -55,6 +56,13 @@ func NewClient(manifestURL string, httpClient *http.Client) *Client {
 		GOARCH:      runtime.GOARCH,
 		CacheTTL:    defaultCacheTTL,
 	}
+}
+
+func (c *Client) Invalidate() {
+	c.mu.Lock()
+	c.cached = Manifest{}
+	c.cachedAt = time.Time{}
+	c.mu.Unlock()
 }
 
 func (c *Client) Check(ctx context.Context, currentVersion string) (CheckResult, error) {
@@ -194,7 +202,16 @@ func (c *Client) doGET(ctx context.Context, rawURL string) (*http.Response, erro
 	}
 	response, err := httpClient.Do(request)
 	if err != nil {
-		return nil, err
+		safeURL := rawURL
+		if parsed, parseErr := url.Parse(rawURL); parseErr == nil {
+			parsed.RawQuery = ""
+			parsed.Fragment = ""
+			safeURL = parsed.String()
+		}
+		if ctx.Err() != nil {
+			return nil, fmt.Errorf("GET %s failed: %w", safeURL, ctx.Err())
+		}
+		return nil, fmt.Errorf("GET %s failed", safeURL)
 	}
 	if response.StatusCode != http.StatusOK {
 		_ = response.Body.Close()

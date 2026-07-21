@@ -14,6 +14,12 @@ import (
 	"time"
 )
 
+type errorRoundTripper struct{}
+
+func (errorRoundTripper) RoundTrip(*http.Request) (*http.Response, error) {
+	return nil, fmt.Errorf("transport failed")
+}
+
 func TestClientCheckCachesSuccessfulManifest(t *testing.T) {
 	binary := []byte("new")
 	hash := fmt.Sprintf("%x", sha256.Sum256(binary))
@@ -126,5 +132,13 @@ func TestClientRejectsHTTPSRedirectDowngrade(t *testing.T) {
 	manifest := Manifest{ReleaseNotesURL: tls.URL}
 	if _, err := client.ReleaseNotes(t.Context(), manifest); err == nil {
 		t.Fatal("ReleaseNotes followed an HTTPS-to-HTTP redirect")
+	}
+}
+
+func TestClientTransportErrorDoesNotExposeURLQuery(t *testing.T) {
+	client := NewClient("https://updates.example/manifest?X-Signed-Secret=do-not-log", &http.Client{Transport: errorRoundTripper{}})
+	_, err := client.Check(t.Context(), "1.0.0")
+	if err == nil || strings.Contains(err.Error(), "do-not-log") {
+		t.Fatalf("transport error = %v", err)
 	}
 }

@@ -66,6 +66,7 @@ type Service struct {
 	Scheduler          *schedule.Engine
 	ScheduleContexts   *schedule.ContextRegistry
 	ScheduleSocket     string
+	Updates            UpdateManager
 	accessMu           sync.RWMutex
 	knownChats         []feishu.KnownChat
 
@@ -86,6 +87,10 @@ type Service struct {
 	scopeCancel        context.CancelFunc
 	activeScopeCancel  context.CancelFunc
 	scopeWG            sync.WaitGroup
+	upgradeGate        sync.RWMutex
+	upgradeStateMu     sync.Mutex
+	upgradeInProgress  bool
+	upgradeMaintenance bool
 
 	// Test seam: called after an active starting batch is registered and before
 	// the first cancellation check/card render.
@@ -440,7 +445,7 @@ func (s *Service) HandleMessage(ctx context.Context, msg Message) error {
 	}
 	switch cmd.Type {
 	case CommandHelp:
-		return s.renderTextWithMode("help", msg.ID, card.SegmentText, HelpText(), preference.ConversationMode)
+		return s.handleHelpCommand(ctx, msg, preference)
 	case CommandUnknown:
 		return s.renderTextWithMode("command", msg.ID, card.SegmentError, cmd.Text, preference.ConversationMode)
 	case CommandStatus:
@@ -763,6 +768,14 @@ func (s *Service) HandleMessageRecalled(_ context.Context, recall MessageRecall)
 }
 
 func (s *Service) runWithPreference(ctx context.Context, cmd Command, msg Message, cardSessionID string, preference config.RuntimePreference) error {
+	if s.isUpgradeMaintenance() {
+		return s.renderTextWithMode("update-maintenance", msg.ID, card.SegmentError, "Bridge 正在升级，请稍后重试。", preference.ConversationMode)
+	}
+	s.upgradeGate.RLock()
+	defer s.upgradeGate.RUnlock()
+	if s.isUpgradeMaintenance() {
+		return s.renderTextWithMode("update-maintenance", msg.ID, card.SegmentError, "Bridge 正在升级，请稍后重试。", preference.ConversationMode)
+	}
 	if !s.isAccepting() {
 		return s.renderTextWithMode("service-stopping", msg.ID, card.SegmentError, "服务正在停止，暂不接受新的执行请求。", preference.ConversationMode)
 	}
@@ -1299,11 +1312,17 @@ func (s *Service) HandleAction(ctx context.Context, req ActionRequest) error {
 
 func (s *Service) HandleActionResult(ctx context.Context, req ActionRequest) (ActionResult, error) {
 	s.Audit.Record(req.Actor, "card_action", req.SessionID, req.ActionID+" "+req.Value)
-	if (req.ActionID == "config.save" || req.ActionID == "config.close" || req.ActionID == "local_config.save" || req.ActionID == "agent_mode.save") && !s.canRunAdminCommand(req.Actor) {
+	if (req.ActionID == "config.save" || req.ActionID == "config.close" || req.ActionID == "local_config.save" || req.ActionID == "agent_mode.save" || req.ActionID == "update.install") && !s.canRunAdminCommand(req.Actor) {
 		s.Audit.Record(req.Actor, "admin_denied", req.SessionID, req.ActionID)
 		return s.renderActionEvent(card.Event{Type: "error", SessionID: req.SessionID, Segments: []card.Segment{{Kind: card.SegmentError, Text: "❌ 此操作仅管理员可用。"}}})
 	}
 	switch req.ActionID {
+	case "update.details":
+		return s.handleUpdateDetails(ctx, req)
+	case "update.help":
+		return s.renderActionEvent(s.helpUpdateEvent(ctx, req.SessionID, "", config.ConversationModeChat))
+	case "update.install":
+		return s.handleUpdateInstall(ctx, req)
 	case "schedule.confirm":
 		if s.Schedules == nil {
 			return ActionResult{}, errors.New("schedule store is not configured")

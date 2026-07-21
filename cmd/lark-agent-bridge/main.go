@@ -30,6 +30,7 @@ import (
 	"lark-agent-bridge/internal/reply"
 	"lark-agent-bridge/internal/schedule"
 	"lark-agent-bridge/internal/session"
+	bridgeupdate "lark-agent-bridge/internal/update"
 )
 
 func main() {
@@ -394,6 +395,7 @@ func runServe(args []string) error {
 	renderer := feishu.NewReactionCardRenderer(sender, cardRouter)
 	runner := &bridge.CLIExecRunner{Instructions: instructions}
 	svc := bridge.NewServiceWithSessions(cfg, renderer, runner, recorder, sessions, notices)
+	svc.Updates = newRuntimeUpdateManager(cfg)
 	svc.Agents = agents
 	svc.Preferences = preferences
 	svc.TopicParticipation = topicStore
@@ -482,6 +484,14 @@ func runServe(args []string) error {
 	defer cancel()
 	shutdownErr := svc.Shutdown(shutdownCtx)
 	return errors.Join(longConnErr, controlErr, shutdownErr)
+}
+
+func newRuntimeUpdateManager(cfg config.Config) *bridgeupdate.Manager {
+	if strings.TrimSpace(cfg.UpdateManifestURL) == "" {
+		return nil
+	}
+	client := bridgeupdate.NewClient(cfg.UpdateManifestURL, nil)
+	return &bridgeupdate.Manager{Client: client, Installer: bridgeupdate.Installer{Stage: client.Stage}}
 }
 
 func openSessionState(cfg config.Config) (*session.Manager, []session.RecoveryNotice, error) {
