@@ -1402,7 +1402,10 @@ func (s *Service) HandleActionResult(ctx context.Context, req ActionRequest) (Ac
 			}
 			respondToBots = parsed
 		}
-		preference := config.RuntimePreference{Model: req.FormValues["model"], Effort: req.FormValues["effort"], ReplyMode: config.ReplyMode(req.FormValues["reply_mode"]), ConversationMode: config.ConversationMode(req.FormValues["conversation_mode"]), GroupMessageMode: groupMessageMode, RespondToBots: respondToBots, Agent: selectedAgent, AgentHome: req.FormValues["agent_home"], AgentBin: req.FormValues["agent_bin"]}
+		// Model/Effort are no longer editable from the /config form (the selects
+		// were removed), so preserve the existing preference values instead of
+		// overwriting them with empty form fields.
+		preference := config.RuntimePreference{Model: current.Model, Effort: current.Effort, ReplyMode: config.ReplyMode(req.FormValues["reply_mode"]), ConversationMode: config.ConversationMode(req.FormValues["conversation_mode"]), GroupMessageMode: groupMessageMode, RespondToBots: respondToBots, Agent: selectedAgent, AgentHome: req.FormValues["agent_home"], AgentBin: req.FormValues["agent_bin"]}
 		if !strings.EqualFold(strings.TrimSpace(current.Agent), strings.TrimSpace(preference.Agent)) {
 			if _, ok := s.Agents.HomePath(preference.Agent, preference.AgentHome); !ok {
 				preference.AgentHome = ""
@@ -1526,16 +1529,8 @@ func (s *Service) localConfigForm(preference config.RuntimePreference, chatID st
 // never read here — access is global-only.
 func chatOverrideFromForm(values map[string]string, global config.RuntimePreference) config.ChatOverride {
 	var override config.ChatOverride
-	if raw, ok := values["model"]; ok {
-		if v := strings.TrimSpace(raw); v != "" && v != global.Model {
-			override.Model = &v
-		}
-	}
-	if raw, ok := values["effort"]; ok {
-		if v := strings.ToLower(strings.TrimSpace(raw)); v != "" && v != global.Effort {
-			override.Effort = &v
-		}
-	}
+	// Model/Effort are no longer part of the /config form, so they are never
+	// read here; they keep inheriting from the global preference.
 	if raw, ok := values["reply_mode"]; ok {
 		if v := config.ReplyMode(strings.TrimSpace(raw)); v != "" && v != global.ReplyMode {
 			override.ReplyMode = &v
