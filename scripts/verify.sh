@@ -62,10 +62,10 @@ fi
 
 echo "== command surface simulation =="
 help_output="$(go run ./cmd/lark-agent-bridge simulate -text "/help")"
-require_contains "$help_output" "/new [--workdir" "help simulation"
-require_contains "$help_output" "/status - show the current chat/topic session status" "help simulation"
-require_contains "$help_output" "/resume - list the 10 most recent sessions" "help simulation"
-require_contains "$help_output" '/resume \u003csession-id\u003e' "help simulation"
+require_contains "$help_output" '"Type": "help"' "help simulation"
+require_contains "$help_output" '/new` `[--workdir path]' "help simulation"
+require_contains "$help_output" '/config` 全局运行偏好' "help simulation"
+require_contains "$help_output" '/resume` `[session-id]' "help simulation"
 require_not_contains "$help_output" "/codex" "help simulation"
 
 plain_output="$(go run ./cmd/lark-agent-bridge simulate -text "hello")"
@@ -91,12 +91,12 @@ require_contains "$all_group_output" "simulated answer: hello all" "all group me
 bot_off_output="$(E2E_GROUP_MESSAGE_MODE=all_group_messages go run ./cmd/lark-agent-bridge simulate -group=true -mentioned=true -sender-type bot -text "/help")"
 require_contains "$bot_off_output" '"events": []' "bot sender default off simulation"
 bot_on_output="$(E2E_GROUP_MESSAGE_MODE=all_group_messages E2E_RESPOND_TO_BOTS=true go run ./cmd/lark-agent-bridge simulate -group=true -mentioned=true -sender-type bot -text "/help")"
-require_contains "$bot_on_output" "/new [--workdir" "bot sender enabled simulation"
+require_contains "$bot_on_output" '/new` `[--workdir path]' "bot sender enabled simulation"
 
 topics_store="$ROOT/.cache/verify-participated-topics-$RANDOM.json"
 E2E_GROUP_MESSAGE_MODE=participated_topics E2E_PARTICIPATED_TOPICS_STORE="$topics_store" go run ./cmd/lark-agent-bridge simulate -group=true -thread=topic-verify -mentioned=true -text "/help" >/dev/null
 topic_followup_output="$(E2E_GROUP_MESSAGE_MODE=participated_topics E2E_PARTICIPATED_TOPICS_STORE="$topics_store" go run ./cmd/lark-agent-bridge simulate -group=true -thread=topic-verify -mentioned=false -text "/help")"
-require_contains "$topic_followup_output" "/new [--workdir" "participated topic restart simulation"
+require_contains "$topic_followup_output" '/new` `[--workdir path]' "participated topic restart simulation"
 rm -f "$topics_store"
 echo "group intake modes ok"
 
