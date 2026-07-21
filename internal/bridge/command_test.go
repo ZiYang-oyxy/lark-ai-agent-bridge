@@ -172,8 +172,8 @@ func TestParseCommandCd(t *testing.T) {
 
 func TestParseCommandWs(t *testing.T) {
 	tests := []struct {
-		text    string
-		subWant string
+		text     string
+		subWant  string
 		nameWant string
 	}{
 		{text: "/ws", subWant: "list"},
@@ -298,8 +298,13 @@ func TestHelpCardDataMatchesHelpText(t *testing.T) {
 			}
 		}
 	}
-	if want := []string{"**`/cron`** 周期任务", "**`/timer`** 一次性任务"}; !reflect.DeepEqual(scheduleLines, want) {
+	if want := scheduleHelpLines(); !reflect.DeepEqual(scheduleLines, want) {
 		t.Fatalf("schedule help lines = %#v, want %#v", scheduleLines, want)
+	}
+	for _, want := range []string{"add <自然语言任务>", "info|run|enable|disable|del <id>", "info|del <id>"} {
+		if !strings.Contains(strings.Join(scheduleLines, "\n"), want) {
+			t.Fatalf("schedule help is missing %q: %#v", want, scheduleLines)
+		}
 	}
 	// Sanity: the card should surface the core commands, so the gate is not
 	// vacuously passing on an empty token set.

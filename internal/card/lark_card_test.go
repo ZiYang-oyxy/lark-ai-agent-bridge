@@ -903,7 +903,7 @@ func TestBuildLarkCardRendersHelpCard(t *testing.T) {
 		Groups: []HelpGroup{
 			{Title: "💬 会话", Lines: []string{"**`/new`** 开新会话", "**`/status`** 当前会话状态"}},
 			{Title: "⚙️ 配置", Lines: []string{"**`/config`** 全局运行偏好"}},
-			{Title: "⏰ 定时", Lines: []string{"**`/cron`** 周期任务", "**`/timer`** 一次性任务"}},
+			{Title: "⏰ 定时", Lines: []string{"**`/cron`** `[list [all]]` 查看周期任务", "**`/cron`** `add <自然语言任务>` 创建 · **`info|run|enable|disable|del <id>`** 管理", "**`/timer`** `[list [all]]` 查看一次性任务", "**`/timer`** `add <自然语言任务>` 创建 · **`info|del <id>`** 管理"}},
 			{Title: "🔒 权限", Lines: []string{"**`/invite`** user|admin @人"}},
 		},
 		Footer: "直接发文字 = 继续当前会话 · 群里默认需 @bot",

@@ -124,6 +124,38 @@ func TestTimerAddIsNotDeduplicatedBeforeAgentEnqueue(t *testing.T) {
 	}
 }
 
+func TestInvalidScheduleArgumentsShowCompleteUsage(t *testing.T) {
+	tests := []struct {
+		name string
+		text string
+		want []string
+	}{
+		{name: "cron missing add body", text: "/cron add", want: []string{"缺少自然语言任务描述", "/cron list all", "/cron add <自然语言任务>", "/cron run <id>", "/cron enable|disable <id>", "/cron del <id>"}},
+		{name: "cron invalid list argument", text: "/cron list mine", want: []string{"参数不正确", "/cron list all", "/cron info <id>"}},
+		{name: "cron unknown subcommand", text: "/cron wat", want: []string{"未知子命令", "/cron add <自然语言任务>", "/cron run <id>"}},
+		{name: "timer missing id", text: "/timer del", want: []string{"任务 ID 参数不正确", "/timer list all", "/timer info <id>", "/timer del <id>", "不支持 `run`、`enable` 或 `disable`"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			service, renderer, _ := scheduleTestService(t)
+			msg := Message{ID: "om_invalid", ChatID: "oc_chat", ThreadID: "omt_topic", Sender: "ou_creator", Text: tt.text, Time: time.Now()}
+			if err := service.HandleMessage(context.Background(), msg); err != nil {
+				t.Fatal(err)
+			}
+			events := renderer.Events()
+			if len(events) != 1 || len(events[0].Segments) != 1 {
+				t.Fatalf("events = %#v", events)
+			}
+			got := events[0].Segments[0].Text
+			for _, want := range tt.want {
+				if !strings.Contains(got, want) {
+					t.Fatalf("usage for %q is missing %q:\n%s", tt.text, want, got)
+				}
+			}
+		})
+	}
+}
+
 func TestScheduleDispatchUsesFrozenConfiguration(t *testing.T) {
 	service, _, _ := scheduleTestService(t)
 	workDir := t.TempDir()

@@ -169,10 +169,7 @@ func HelpCardData() card.HelpCard {
 			},
 			{
 				Title: "⏰ 定时",
-				Lines: []string{
-					"**`/cron`** 周期任务",
-					"**`/timer`** 一次性任务",
-				},
+				Lines: scheduleHelpLines(),
 			},
 			{
 				Title: "🔒 权限",
@@ -197,7 +194,12 @@ func HelpText() string {
 		"/agent-mode - choose claude or codex for subsequent messages",
 		"/cd [path] - switch the working directory for this chat/topic",
 		"/ws list|save|use|remove [name] - manage named workspaces",
-		"/cron, /timer - manage recurring and one-shot Agent tasks",
+		"/cron [list [all]] - list recurring Agent tasks in this conversation, or all tasks for admins",
+		"/cron add <natural-language task> - create a recurring task after confirmation",
+		"/cron info|run|enable|disable|del <id> - inspect or manage a recurring task",
+		"/timer [list [all]] - list one-shot Agent tasks in this conversation, or all tasks for admins",
+		"/timer add <natural-language task> - create a one-shot task after confirmation",
+		"/timer info|del <id> - inspect or delete a one-shot task",
 		"/config - configure global defaults",
 		"/local-config [reset] - override or reset this group's inherited defaults",
 		"/invite user|admin @user, /invite group, /invite all group - grant access",

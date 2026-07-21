@@ -125,6 +125,9 @@ func (s *Service) handleScheduleCommand(ctx context.Context, msg Message, cmd Co
 	}
 	switch sub {
 	case "list":
+		if len(args) > 1 || (len(args) == 1 && !strings.EqualFold(args[0], "all")) {
+			return s.renderTextWithMode(label+"-usage", msg.ID, card.SegmentError, "参数不正确。\n\n"+scheduleUsageText(kind), preference.ConversationMode)
+		}
 		all := len(args) == 1 && strings.EqualFold(args[0], "all")
 		if all && !s.canRunAdminCommand(msg.Sender) {
 			return s.renderTextWithMode("schedule-denied", msg.ID, card.SegmentError, "仅管理员可查看全部定时任务。", preference.ConversationMode)
@@ -133,13 +136,13 @@ func (s *Service) handleScheduleCommand(ctx context.Context, msg Message, cmd Co
 	case "add":
 		request := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(cmd.Text), fields[0]))
 		if request == "" {
-			return s.renderTextWithMode(label+"-usage", msg.ID, card.SegmentError, fmt.Sprintf("用法：/%s add <自然语言任务>", label), preference.ConversationMode)
+			return s.renderTextWithMode(label+"-usage", msg.ID, card.SegmentError, "缺少自然语言任务描述。\n\n"+scheduleUsageText(kind), preference.ConversationMode)
 		}
 		run := Command{Type: CommandRun, Agent: cmd.Agent, Text: scheduleAddPrompt(kind, request), Raw: cmd.Raw, ScheduleKind: string(kind)}
 		return s.runWithPreference(ctx, run, msg, "", preference)
 	case "info", "del", "delete", "run", "enable", "disable":
 		if len(args) != 1 {
-			return s.renderTextWithMode(label+"-usage", msg.ID, card.SegmentError, fmt.Sprintf("用法：/%s %s <id>", label, sub), preference.ConversationMode)
+			return s.renderTextWithMode(label+"-usage", msg.ID, card.SegmentError, "任务 ID 参数不正确。\n\n"+scheduleUsageText(kind), preference.ConversationMode)
 		}
 		task, ok := s.Schedules.Task(args[0])
 		if !ok || task.Kind != kind {
@@ -165,7 +168,7 @@ func (s *Service) handleScheduleCommand(ctx context.Context, msg Message, cmd Co
 			return s.renderTextWithMode(label+"-deleted", msg.ID, card.SegmentText, fmt.Sprintf("已删除任务 `%s`。", task.ID), preference.ConversationMode)
 		case "run":
 			if kind != schedule.KindCron {
-				return s.renderTextWithMode(label+"-usage", msg.ID, card.SegmentError, "一次性 timer 不支持手动重复执行。", preference.ConversationMode)
+				return s.renderTextWithMode(label+"-usage", msg.ID, card.SegmentError, "一次性 timer 不支持手动重复执行。\n\n"+scheduleUsageText(kind), preference.ConversationMode)
 			}
 			if s.Scheduler == nil {
 				return errors.New("schedule engine is not configured")
@@ -176,7 +179,7 @@ func (s *Service) handleScheduleCommand(ctx context.Context, msg Message, cmd Co
 			return s.renderTextWithMode(label+"-run", msg.ID, card.SegmentText, fmt.Sprintf("已触发任务 `%s`。", task.ID), preference.ConversationMode)
 		case "enable", "disable":
 			if kind != schedule.KindCron {
-				return s.renderTextWithMode(label+"-usage", msg.ID, card.SegmentError, "一次性 timer 不支持启用或停用。", preference.ConversationMode)
+				return s.renderTextWithMode(label+"-usage", msg.ID, card.SegmentError, "一次性 timer 不支持启用或停用。\n\n"+scheduleUsageText(kind), preference.ConversationMode)
 			}
 			enabled := sub == "enable"
 			var updateErr error
@@ -195,7 +198,40 @@ func (s *Service) handleScheduleCommand(ctx context.Context, msg Message, cmd Co
 			return s.renderTextWithMode(label+"-state", msg.ID, card.SegmentText, fmt.Sprintf("已%s任务 `%s`。", state, task.ID), preference.ConversationMode)
 		}
 	}
-	return s.renderTextWithMode(label+"-usage", msg.ID, card.SegmentError, fmt.Sprintf("未知子命令。使用 /%s 查看任务。", label), preference.ConversationMode)
+	return s.renderTextWithMode(label+"-usage", msg.ID, card.SegmentError, "未知子命令。\n\n"+scheduleUsageText(kind), preference.ConversationMode)
+}
+
+func scheduleHelpLines() []string {
+	return []string{
+		"**`/cron`** `[list [all]]` 查看周期任务",
+		"**`/cron`** `add <自然语言任务>` 创建 · **`info|run|enable|disable|del <id>`** 管理",
+		"**`/timer`** `[list [all]]` 查看一次性任务",
+		"**`/timer`** `add <自然语言任务>` 创建 · **`info|del <id>`** 管理",
+	}
+}
+
+func scheduleUsageText(kind schedule.Kind) string {
+	if kind == schedule.KindTimer {
+		return strings.Join([]string{
+			"**`/timer` / `/timer list`** 查看当前会话的一次性任务",
+			"**`/timer list all`** 查看全部一次性任务（仅管理员）",
+			"**`/timer add <自然语言任务>`** 创建任务，确认后生效",
+			"例如：`/timer add 30分钟后提醒我提交周报`",
+			"**`/timer info <id>`** 查看详情",
+			"**`/timer del <id>`** 删除任务",
+			"timer 到期只执行一次，不支持 `run`、`enable` 或 `disable`。",
+		}, "\n")
+	}
+	return strings.Join([]string{
+		"**`/cron` / `/cron list`** 查看当前会话的周期任务",
+		"**`/cron list all`** 查看全部周期任务（仅管理员）",
+		"**`/cron add <自然语言任务>`** 创建任务，确认后生效",
+		"例如：`/cron add 每个工作日上午9点总结项目进展`",
+		"**`/cron info <id>`** 查看详情",
+		"**`/cron run <id>`** 立即执行一次",
+		"**`/cron enable|disable <id>`** 启用或停用",
+		"**`/cron del <id>`** 删除任务",
+	}, "\n")
 }
 
 func (s *Service) confirmScheduleDraft(id, actor string, now time.Time) (schedule.Task, error) {
