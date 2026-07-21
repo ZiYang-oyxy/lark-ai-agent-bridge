@@ -37,16 +37,20 @@ type ModelInfo struct {
 }
 
 type Meta struct {
-	Agent       string
-	Model       string
-	Tokens      int
-	RunTokens   int
-	TotalTokens int
-	User        string
-	IP          string
-	WorkDir     string
-	Status      string
-	ModelInfo   ModelInfo
+	Agent          string
+	Model          string
+	Tokens         int
+	RunTokens      int
+	TotalTokens    int
+	CtxOK          bool
+	CtxUsedPercent int
+	CtxTokens      int
+	CtxWindow      int
+	User           string
+	IP             string
+	WorkDir        string
+	Status         string
+	ModelInfo      ModelInfo
 }
 
 type StopButton struct {

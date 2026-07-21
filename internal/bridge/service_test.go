@@ -4468,3 +4468,29 @@ func containsAll(text string, parts ...string) bool {
 	}
 	return true
 }
+
+func TestServiceMetaFromSessionContextUsage(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "sess-abc.json"),
+		[]byte(`{"session_id":"sess-abc","used_percentage":42,"total_tokens":84000,"context_window_size":200000}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	s := &Service{Config: config.Config{ClaudeContextUsageDir: dir}}
+	sess := session.Session{Key: session.Key{Agent: agent.Claude}, AgentSessionID: "sess-abc", Tokens: 9999}
+	meta := s.metaFromSession(sess)
+	if !meta.CtxOK || meta.CtxUsedPercent != 42 || meta.CtxWindow != 200000 || meta.CtxTokens != 84000 {
+		t.Fatalf("ctx fields = %+v", meta)
+	}
+}
+
+func TestServiceMetaFromSessionFallback(t *testing.T) {
+	s := &Service{Config: config.Config{ClaudeContextUsageDir: t.TempDir()}}
+	sess := session.Session{Key: session.Key{Agent: agent.Claude}, AgentSessionID: "missing", Tokens: 5000}
+	meta := s.metaFromSession(sess)
+	if meta.CtxUsedPercent != 0 {
+		t.Fatalf("expected no ctx, got %d", meta.CtxUsedPercent)
+	}
+	if meta.TotalTokens != 5000 {
+		t.Fatalf("expected cumulative fallback 5000, got %d", meta.TotalTokens)
+	}
+}
