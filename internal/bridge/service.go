@@ -604,11 +604,11 @@ func (s *Service) handleLocalConfigCommand(ctx context.Context, msg Message, cmd
 			_ = s.refreshKnownChats(ctx)
 		}
 		return s.Cards.Render(card.Event{
-			Type:             "local_config",
-			SessionID:        runID("local-config", msg.ID),
-			ReplyToMessageID: msg.ID,
-			ReplyInThread:    preference.ConversationMode == config.ConversationModeTopic,
-			ConfigForm:       s.localConfigForm(preference, msg.ChatID),
+			Type:                "local_config_overview",
+			SessionID:           runID("local-config", msg.ID),
+			ReplyToMessageID:    msg.ID,
+			ReplyInThread:       preference.ConversationMode == config.ConversationModeTopic,
+			LocalConfigOverview: s.localConfigOverview(msg.ChatID),
 		})
 	case "reset":
 		if s.Preferences == nil {
@@ -1520,6 +1520,65 @@ func (s *Service) localConfigForm(preference config.RuntimePreference, chatID st
 	form.Admins = nil
 	form.OwnerState = ""
 	return form
+}
+
+// localConfigOverview assembles the read-only /local-config summary for a group:
+// each overridable field's effective value (global with this group's override
+// layered on) plus whether the group overrides it, and a count of overrides. It
+// intentionally lists only the fields a group may override in the /config
+// surface (reply/conversation/group-message/respond-to-bots/agent-bin); model
+// and effort are not exposed here, matching /config.
+func (s *Service) localConfigOverview(chatID string) *card.LocalConfigOverview {
+	overview := &card.LocalConfigOverview{ChatID: chatID}
+	if s.Preferences == nil {
+		return overview
+	}
+	effective := s.Preferences.GetForChat(chatID)
+	override, _ := s.Preferences.ChatOverride(chatID)
+
+	agentBin := effective.AgentBin
+	if strings.TrimSpace(agentBin) == "" {
+		agentBin = "主机（当前 Agent 默认）"
+	}
+	items := []card.LocalConfigItem{
+		{Label: "Agent bin", Value: agentBin, Overridden: override.AgentBin != nil},
+		{Label: "Reply mode", Value: string(effective.ReplyMode), Overridden: override.ReplyMode != nil},
+		{Label: "Conversation mode", Value: string(effective.ConversationMode), Overridden: override.ConversationMode != nil},
+		{Label: "群消息接收", Value: groupMessageModeText(effective.GroupMessageMode), Overridden: override.GroupMessageMode != nil},
+		{Label: "响应其他 bot", Value: respondToBotsText(effective.RespondToBots), Overridden: override.RespondToBots != nil},
+	}
+	overview.Items = items
+
+	count := 0
+	for _, item := range items {
+		if item.Overridden {
+			count++
+		}
+	}
+	overview.OverrideCount = count
+	return overview
+}
+
+// groupMessageModeText renders a group-message-mode value as readable Chinese.
+func groupMessageModeText(mode config.GroupMessageMode) string {
+	switch mode {
+	case config.GroupMessageModeMentionOnly:
+		return "仅响应 @bot"
+	case config.GroupMessageModeParticipatedTopics:
+		return "已参与话题的所有消息"
+	case config.GroupMessageModeAll:
+		return "所有群消息"
+	default:
+		return string(mode)
+	}
+}
+
+// respondToBotsText renders the respond-to-bots flag as readable Chinese.
+func respondToBotsText(v bool) string {
+	if v {
+		return "响应"
+	}
+	return "忽略"
 }
 
 // chatOverrideFromForm derives a per-chat override from submitted form values.

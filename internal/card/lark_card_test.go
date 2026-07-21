@@ -1028,3 +1028,53 @@ func TestConfigEventHeaderIsGreyAndGlobal(t *testing.T) {
 		t.Fatalf("config title = %q, want it to mention 全局", got)
 	}
 }
+
+func TestBuildLarkCardRendersLocalConfigOverview(t *testing.T) {
+	payload := BuildLarkCard(Event{
+		Type:      "local_config_overview",
+		SessionID: "local-config:msg",
+		LocalConfigOverview: &LocalConfigOverview{
+			ChatID: "oc-42",
+			Items: []LocalConfigItem{
+				{Label: "Reply mode", Value: "latest-card", Overridden: true},
+				{Label: "Conversation mode", Value: "topic", Overridden: true},
+				{Label: "群消息接收", Value: "仅响应 @bot", Overridden: false},
+				{Label: "响应其他 bot", Value: "忽略", Overridden: false},
+				{Label: "Agent bin", Value: "主机", Overridden: false},
+			},
+			OverrideCount: 2,
+		},
+	})
+
+	header := payload["header"].(map[string]any)
+	if header["template"] != "turquoise" {
+		t.Fatalf("local config overview template = %#v, want turquoise", header["template"])
+	}
+	if title := header["title"].(map[string]any)["content"]; title != "🏠 本群运行偏好覆盖" {
+		t.Fatalf("local config overview title = %#v, want 🏠 本群运行偏好覆盖", title)
+	}
+
+	if payload["config"].(map[string]any)["streaming_mode"] != false {
+		t.Fatalf("local config overview must be non-streaming: %#v", payload["config"])
+	}
+
+	elements := payload["body"].(map[string]any)["elements"].([]any)
+	data, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(data)
+	for _, want := range []string{"本群覆盖了 2 项", "Reply mode", "（本群）", "（继承）", "继承全局"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("local config overview missing %q: %s", want, text)
+		}
+	}
+
+	// Exactly three local config overview buttons in a single button row.
+	var buttonIDs []string
+	collectHelpButtons(elements, &buttonIDs)
+	want := []string{"local_config.edit", "local_config.reset", "config.close"}
+	if !reflect.DeepEqual(buttonIDs, want) {
+		t.Fatalf("local config overview buttons = %#v, want %#v", buttonIDs, want)
+	}
+}

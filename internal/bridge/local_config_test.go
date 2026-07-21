@@ -122,6 +122,62 @@ func TestLocalConfigResetClearsOnlyCurrentGroup(t *testing.T) {
 	}
 }
 
+// localConfigOverview reports the effective per-field values, marks exactly the
+// group's overridden fields, and counts them.
+func TestLocalConfigOverviewMarksOverriddenFields(t *testing.T) {
+	svc, store := localConfigService(t)
+	topic := config.ConversationModeTopic
+	latest := config.ReplyModeLatestCard
+	if err := store.SetChat("oc-a", config.ChatOverride{ConversationMode: &topic, ReplyMode: &latest}); err != nil {
+		t.Fatal(err)
+	}
+	overview := svc.localConfigOverview("oc-a")
+	if overview == nil {
+		t.Fatal("localConfigOverview returned nil")
+	}
+	if overview.ChatID != "oc-a" {
+		t.Fatalf("overview ChatID = %q, want oc-a", overview.ChatID)
+	}
+	if overview.OverrideCount != 2 {
+		t.Fatalf("overview OverrideCount = %d, want 2", overview.OverrideCount)
+	}
+	byLabel := map[string]card.LocalConfigItem{}
+	for _, item := range overview.Items {
+		byLabel[item.Label] = item
+	}
+	for _, label := range []string{"Reply mode", "Conversation mode"} {
+		if !byLabel[label].Overridden {
+			t.Fatalf("item %q should be marked overridden", label)
+		}
+	}
+	for _, label := range []string{"群消息接收", "响应其他 bot", "Agent bin"} {
+		if byLabel[label].Overridden {
+			t.Fatalf("item %q should be inherited, not overridden", label)
+		}
+	}
+	// Effective values flow through GetForChat.
+	if got := byLabel["Conversation mode"].Value; got != string(config.ConversationModeTopic) {
+		t.Fatalf("Conversation mode value = %q, want topic", got)
+	}
+}
+
+// A group with no override reports zero overrides and all items inherited.
+func TestLocalConfigOverviewNoOverride(t *testing.T) {
+	svc, _ := localConfigService(t)
+	overview := svc.localConfigOverview("oc-empty")
+	if overview == nil {
+		t.Fatal("localConfigOverview returned nil")
+	}
+	if overview.OverrideCount != 0 {
+		t.Fatalf("overview OverrideCount = %d, want 0", overview.OverrideCount)
+	}
+	for _, item := range overview.Items {
+		if item.Overridden {
+			t.Fatalf("item %q should be inherited", item.Label)
+		}
+	}
+}
+
 // A group /local-config form must carry the chat id so the save callback knows
 // its target, and must not touch access lists.
 func TestLocalConfigFormCarriesChatIDAndIgnoresAccess(t *testing.T) {

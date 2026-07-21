@@ -11,6 +11,9 @@ func BuildLarkCard(e Event) map[string]any {
 	if e.HelpCard != nil {
 		e.Streaming = false
 		elements = buildHelpElements(e.SessionID, *e.HelpCard)
+	} else if e.LocalConfigOverview != nil {
+		e.Streaming = false
+		elements = buildLocalConfigOverviewElements(e.SessionID, *e.LocalConfigOverview)
 	} else if e.AgentModeForm != nil {
 		e.Streaming = false
 		elements = buildAgentModeFormElements(e.SessionID, *e.AgentModeForm)
@@ -264,6 +267,40 @@ func buildHelpElements(sessionID string, help HelpCard) []any {
 		{ID: "help.status", Label: "📊 状态"},
 		{ID: "help.open_config", Label: "⚙️ 配置"},
 		{ID: "help.refresh", Label: "🔁 刷新"},
+	}
+	if row := buttonRowElements(buttons, sessionID); row != nil {
+		elements = append(elements, row)
+	}
+	return elements
+}
+
+// buildLocalConfigOverviewElements renders the read-only /local-config summary:
+// a small intro note, one bordered section listing each overridable field's
+// effective value with a （本群）/（继承）badge, a count of overridden fields, and
+// a row of three buttons (edit / reset / close). The edit and reset callbacks
+// are wired in a later task; this card only renders them.
+func buildLocalConfigOverviewElements(sessionID string, overview LocalConfigOverview) []any {
+	body := make([]map[string]any, 0, len(overview.Items))
+	for i, item := range overview.Items {
+		badge := "（继承）"
+		if item.Overridden {
+			badge = "（本群）"
+		}
+		body = append(body, markdownElement(
+			fmt.Sprintf("lc_item_%d", i),
+			fmt.Sprintf("**%s**：%s %s", item.Label, item.Value, badge),
+		))
+	}
+
+	elements := []any{
+		noteElement("lc_intro", "仅影响当前群；未覆盖项继承全局 `/config`。标「（本群）」的是本群已覆盖，标「（继承）」的沿用全局。"),
+		sectionElement("当前生效值", body),
+		noteElement("lc_count", fmt.Sprintf("本群覆盖了 %d 项。点「编辑覆盖」逐项调整，或「重置」清空。", overview.OverrideCount)),
+	}
+	buttons := []Action{
+		{ID: "local_config.edit", Label: "编辑覆盖", Value: overview.ChatID},
+		{ID: "local_config.reset", Label: "重置本群", Value: overview.ChatID},
+		{ID: "config.close", Label: "关闭"},
 	}
 	if row := buttonRowElements(buttons, sessionID); row != nil {
 		elements = append(elements, row)
@@ -660,6 +697,8 @@ func titleForEvent(eventType string) string {
 		return "⚙️ 全局运行偏好"
 	case "local_config":
 		return "本群运行偏好覆盖"
+	case "local_config_overview":
+		return "🏠 本群运行偏好覆盖"
 	case "local_config_saved":
 		return "本群覆盖已保存"
 	default:
@@ -681,6 +720,8 @@ func templateForEvent(eventType string) string {
 		return "orange"
 	case "config":
 		return "grey"
+	case "local_config_overview":
+		return "turquoise"
 	case "help", "local_config":
 		return "blue"
 	default:

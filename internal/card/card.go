@@ -103,6 +103,24 @@ type AgentModeForm struct {
 	Agents []SelectOption
 }
 
+// LocalConfigItem is one row of the read-only /local-config overview: a labelled
+// effective value plus whether this group overrides it (true) or inherits the
+// global default (false).
+type LocalConfigItem struct {
+	Label      string
+	Value      string
+	Overridden bool // true=本群覆盖, false=继承全局
+}
+
+// LocalConfigOverview is the read-only /local-config summary card model: the
+// group's effective per-field values with per-item override/inherit badges and
+// a count of how many fields this group overrides.
+type LocalConfigOverview struct {
+	ChatID        string
+	Items         []LocalConfigItem
+	OverrideCount int
+}
+
 // HelpCard is the sectioned /help card model: a set of titled command groups
 // plus a small footer note rendered under a divider. Buttons are attached by
 // the renderer.
@@ -149,6 +167,7 @@ type Event struct {
 	ConfigForm           *ConfigForm
 	AgentModeForm        *AgentModeForm
 	HelpCard             *HelpCard
+	LocalConfigOverview  *LocalConfigOverview
 }
 
 func WorkDirCreateActions(path string) []Action {
