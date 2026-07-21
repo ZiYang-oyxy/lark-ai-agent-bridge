@@ -1278,7 +1278,8 @@ func TestServiceNewRunsClaudeOneShotAndRendersResult(t *testing.T) {
 	cfg := testConfig(t)
 	ctxDir := t.TempDir()
 	cfg.ClaudeContextUsageDir = ctxDir
-	if err := os.WriteFile(filepath.Join(ctxDir, "sess-1.json"), []byte(`{"session_id":"sess-1","used_percentage":85,"total_tokens":170000,"context_window_size":200000}`), 0o600); err != nil {
+	freshSidecar := fmt.Sprintf(`{"session_id":"sess-1","used_percentage":85,"total_tokens":170000,"context_window_size":200000,"updated_at":%d}`, time.Now().Add(time.Minute).UnixMilli())
+	if err := os.WriteFile(filepath.Join(ctxDir, "sess-1.json"), []byte(freshSidecar), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	renderer := card.NewFakeRenderer()
@@ -1323,6 +1324,33 @@ func TestServiceNewRunsClaudeOneShotAndRendersResult(t *testing.T) {
 	status := svc.statusText(agent.Claude, Message{ChatID: "chat"})
 	if !containsAll(status, "agent_session=sess-1", "state=idle") {
 		t.Fatalf("status = %q, want stored claude session", status)
+	}
+}
+
+func TestPostRunMetaDoesNotReusePreviousOrStaleContext(t *testing.T) {
+	dir := t.TempDir()
+	recorder := audit.NewRecorder()
+	svc := &Service{Audit: recorder}
+	sess := session.Session{ID: "bridge-session", Key: session.Key{Agent: agent.Claude}, AgentSessionID: "previous-agent-session"}
+	started := time.Now()
+
+	previous := fmt.Sprintf(`{"session_id":"previous-agent-session","used_percentage":85,"updated_at":%d}`, time.Now().Add(time.Minute).UnixMilli())
+	if err := os.WriteFile(filepath.Join(dir, "previous-agent-session.json"), []byte(previous), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if meta := svc.postRunMeta(sess, AgentRunResult{}, dir, started); meta.CtxOK {
+		t.Fatalf("missing current session reused previous context: %#v", meta)
+	}
+
+	stale := `{"session_id":"previous-agent-session","used_percentage":85,"updated_at":1}`
+	if err := os.WriteFile(filepath.Join(dir, "previous-agent-session.json"), []byte(stale), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if meta := svc.postRunMeta(sess, AgentRunResult{AgentSessionID: "previous-agent-session"}, dir, started); meta.CtxOK {
+		t.Fatalf("stale current-session sidecar rendered context: %#v", meta)
+	}
+	if events := recorder.Events(); len(events) != 2 || events[0].Detail != "agent=claude reason=empty" || events[1].Detail != "agent=claude reason=stale" {
+		t.Fatalf("context unavailable audits = %#v", events)
 	}
 }
 

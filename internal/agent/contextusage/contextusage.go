@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 // Usage is the normalized context-window occupancy for one session. OK is false
@@ -30,6 +31,7 @@ const (
 	ReasonInvalid  Reason = "invalid"
 	ReasonMismatch Reason = "mismatch"
 	ReasonEmpty    Reason = "empty"
+	ReasonStale    Reason = "stale"
 )
 
 type record struct {
@@ -38,11 +40,22 @@ type record struct {
 	TotalTokens    *int     `json:"total_tokens"`
 	ContextTokens  *int     `json:"context_tokens"`
 	ContextWindow  *int     `json:"context_window_size"`
+	UpdatedAt      *int64   `json:"updated_at"`
 }
 
 // Read locates <dir>/<sessionID>.json, validates its session_id, and returns a
 // normalized Usage. Any failure or all-null usage yields Usage{OK: false}.
 func Read(dir, sessionID string) Usage {
+	return read(dir, sessionID, time.Time{})
+}
+
+// ReadAfter is Read with a freshness requirement for terminal run metadata.
+// Millisecond precision matches the workspace sidecar contract.
+func ReadAfter(dir, sessionID string, notBefore time.Time) Usage {
+	return read(dir, sessionID, notBefore)
+}
+
+func read(dir, sessionID string, notBefore time.Time) Usage {
 	dir = strings.TrimSpace(dir)
 	sessionID = strings.TrimSpace(sessionID)
 	if dir == "" || sessionID == "" {
@@ -51,7 +64,8 @@ func Read(dir, sessionID string) Usage {
 	if sessionID != filepath.Base(sessionID) || strings.ContainsRune(sessionID, filepath.Separator) {
 		return Usage{}
 	}
-	raw, err := os.ReadFile(filepath.Join(dir, sessionID+".json"))
+	path := filepath.Join(dir, sessionID+".json")
+	raw, err := os.ReadFile(path)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
 			return Usage{Reason: ReasonMissing}
@@ -64,6 +78,17 @@ func Read(dir, sessionID string) Usage {
 	}
 	if strings.TrimSpace(rec.SessionID) != sessionID {
 		return Usage{Reason: ReasonMismatch}
+	}
+	if !notBefore.IsZero() {
+		updatedAt := int64(0)
+		if rec.UpdatedAt != nil {
+			updatedAt = *rec.UpdatedAt
+		} else if info, statErr := os.Stat(path); statErr == nil {
+			updatedAt = info.ModTime().UnixMilli()
+		}
+		if updatedAt < notBefore.UnixMilli() {
+			return Usage{Reason: ReasonStale}
+		}
 	}
 	u := Usage{}
 	if rec.ContextTokens != nil && *rec.ContextTokens > 0 {

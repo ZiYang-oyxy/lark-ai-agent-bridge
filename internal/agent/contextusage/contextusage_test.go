@@ -1,15 +1,31 @@
 package contextusage
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func writeFixture(t *testing.T, dir, name, body string) {
 	t.Helper()
 	if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o600); err != nil {
 		t.Fatalf("write fixture: %v", err)
+	}
+}
+
+func TestReadAfterRejectsStaleSidecar(t *testing.T) {
+	dir := t.TempDir()
+	started := time.Now()
+	writeFixture(t, dir, "stale.json", `{"session_id":"stale","used_percentage":85,"updated_at":1}`)
+	writeFixture(t, dir, "fresh.json", fmt.Sprintf(`{"session_id":"fresh","used_percentage":85,"updated_at":%d}`, time.Now().Add(time.Minute).UnixMilli()))
+
+	if got := ReadAfter(dir, "stale", started); got.Reason != ReasonStale || got.OK {
+		t.Fatalf("stale ReadAfter = %+v, want stale", got)
+	}
+	if got := ReadAfter(dir, "fresh", started); !got.OK || got.UsedPercent != 85 {
+		t.Fatalf("fresh ReadAfter = %+v, want 85%%", got)
 	}
 }
 

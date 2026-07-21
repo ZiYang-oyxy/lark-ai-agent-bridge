@@ -1126,6 +1126,7 @@ func (s *Service) executeBatch(ctx context.Context, sess session.Session, batch 
 	if scheduleToken != "" {
 		defer s.ScheduleContexts.Revoke(scheduleToken)
 	}
+	runStartedAt := time.Now()
 	result, err := s.Runner.Run(ctx, AgentRunRequest{Kind: sess.Key.Agent, Bin: bin, Home: home, ContextUsageDir: contextUsageDir, Prompt: prompt, WorkDir: sess.WorkDir, Images: codexImagePaths(batch), AgentSessionID: sess.AgentSessionID, Model: batch.Inputs[0].RequestedModel, Effort: batch.Inputs[0].RequestedEffort, BridgeInstructionsVersion: sess.BridgeInstructionsVersion, ScheduleSocket: scheduleSocket, ScheduleToken: scheduleToken, OnEvent: func(update AgentStreamUpdate) {
 		if model := strings.TrimSpace(update.Model); model != "" {
 			actualModelMu.Lock()
@@ -1160,7 +1161,7 @@ func (s *Service) executeBatch(ctx context.Context, sess session.Session, batch 
 	if result.ProtocolUnknown > 0 || result.ProtocolAnomalies > 0 {
 		s.Audit.Record("system", "codex_protocol_drift", sess.ID, fmt.Sprintf("unknown=%d anomalies=%d", result.ProtocolUnknown, result.ProtocolAnomalies))
 	}
-	terminalMeta := s.postRunMeta(sess, result, contextUsageDir)
+	terminalMeta := s.postRunMeta(sess, result, contextUsageDir, runStartedAt)
 	if run, ok := s.activeRun(id); ok && run.BatchID == batch.ID && run.Stream != nil {
 		if draft, hasDraft := s.scheduleDraftForOrigin(id); status == session.InputCompleted && hasDraft {
 			s.finishScheduleConfirmation(run.Stream, cardStatus, terminalMeta, result, draft, sess.ID)
@@ -1177,20 +1178,21 @@ func (s *Service) executeBatch(ctx context.Context, sess session.Session, batch 
 	s.completeScheduleBatch(batch, status, err, time.Now())
 }
 
-func (s *Service) postRunMeta(sess session.Session, result AgentRunResult, contextUsageDir string) card.Meta {
+func (s *Service) postRunMeta(sess session.Session, result AgentRunResult, contextUsageDir string, runStartedAt time.Time) card.Meta {
 	current := sess
-	if id := strings.TrimSpace(result.AgentSessionID); id != "" {
-		current.AgentSessionID = id
-	}
+	current.AgentSessionID = strings.TrimSpace(result.AgentSessionID)
 	if model := strings.TrimSpace(result.Model); model != "" {
 		current.Model = model
 	}
 	current.Tokens = sess.Tokens + result.Tokens
-	meta, usage := s.metaFromSessionWithDir(current, contextUsageDir)
+	meta, usage := s.metaFromSessionWithDirAfter(current, contextUsageDir, runStartedAt)
+	if current.AgentSessionID == "" {
+		usage = contextusage.Usage{Reason: contextusage.ReasonEmpty}
+	}
 	meta.RunTokens = result.Tokens
 	meta.Tokens = result.Tokens
 	meta.TotalTokens = current.Tokens
-	if strings.TrimSpace(contextUsageDir) != "" && strings.TrimSpace(current.AgentSessionID) != "" && !usage.OK && usage.Reason != "" {
+	if strings.TrimSpace(contextUsageDir) != "" && !usage.OK && usage.Reason != "" {
 		s.Audit.Record("system", "context_usage_unavailable", sess.ID, fmt.Sprintf("agent=%s reason=%s", sess.Key.Agent, usage.Reason))
 	}
 	return meta
@@ -2528,9 +2530,16 @@ func (s *Service) metaFromSession(sess session.Session) card.Meta {
 }
 
 func (s *Service) metaFromSessionWithDir(sess session.Session, dir string) (card.Meta, contextusage.Usage) {
+	return s.metaFromSessionWithDirAfter(sess, dir, time.Time{})
+}
+
+func (s *Service) metaFromSessionWithDirAfter(sess session.Session, dir string, notBefore time.Time) (card.Meta, contextusage.Usage) {
 	userName, ip := runtimeIdentity()
 	meta := card.Meta{Agent: string(sess.Key.Agent), Model: sess.Model, Tokens: sess.Tokens, TotalTokens: sess.Tokens, User: userName, IP: ip, WorkDir: sess.WorkDir, Status: string(sess.State)}
 	u := contextusage.Read(dir, sess.AgentSessionID)
+	if !notBefore.IsZero() {
+		u = contextusage.ReadAfter(dir, sess.AgentSessionID, notBefore)
+	}
 	if u.OK {
 		meta.CtxOK = true
 		meta.CtxUsedPercent = u.UsedPercent
