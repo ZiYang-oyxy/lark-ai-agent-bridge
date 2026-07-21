@@ -21,6 +21,7 @@ func TestRead(t *testing.T) {
 	writeFixture(t, dir, "sess-mismatch.json", `{"session_id":"different","used_percentage":30}`)
 	writeFixture(t, dir, "sess-bad.json", `{not-json`)
 	writeFixture(t, dir, "sess-nowin.json", `{"session_id":"sess-nowin","used_percentage":77,"total_tokens":null,"context_window_size":null}`)
+	writeFixture(t, dir, "codex-current.json", `{"session_id":"codex-current","used_percentage":null,"total_tokens":999999,"context_tokens":50000,"context_window_size":200000}`)
 
 	tests := []struct {
 		name      string
@@ -31,10 +32,11 @@ func TestRead(t *testing.T) {
 		{"ok", dir, "sess-ok", Usage{OK: true, UsedPercent: 42, TotalTokens: 84000, ContextWindow: 200000}},
 		{"null-pct-computed", dir, "sess-null-pct", Usage{OK: true, UsedPercent: 25, TotalTokens: 50000, ContextWindow: 200000}},
 		{"percent-only-no-window", dir, "sess-nowin", Usage{OK: true, UsedPercent: 77}},
-		{"all-null", dir, "sess-all-null", Usage{OK: false}},
-		{"session-mismatch", dir, "sess-mismatch", Usage{OK: false}},
-		{"bad-json", dir, "sess-bad", Usage{OK: false}},
-		{"missing-file", dir, "sess-absent", Usage{OK: false}},
+		{"codex-current-context", dir, "codex-current", Usage{OK: true, UsedPercent: 25, TotalTokens: 50000, ContextWindow: 200000}},
+		{"all-null", dir, "sess-all-null", Usage{OK: false, Reason: ReasonEmpty}},
+		{"session-mismatch", dir, "sess-mismatch", Usage{OK: false, Reason: ReasonMismatch}},
+		{"bad-json", dir, "sess-bad", Usage{OK: false, Reason: ReasonInvalid}},
+		{"missing-file", dir, "sess-absent", Usage{OK: false, Reason: ReasonMissing}},
 		{"empty-dir", "", "sess-ok", Usage{OK: false}},
 		{"empty-session", dir, "", Usage{OK: false}},
 		{"path-traversal", dir, "../sess-ok", Usage{OK: false}},

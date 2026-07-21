@@ -5,6 +5,8 @@ package contextusage
 
 import (
 	"encoding/json"
+	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -18,12 +20,23 @@ type Usage struct {
 	UsedPercent   int
 	TotalTokens   int
 	ContextWindow int
+	Reason        Reason
 }
+
+type Reason string
+
+const (
+	ReasonMissing  Reason = "missing"
+	ReasonInvalid  Reason = "invalid"
+	ReasonMismatch Reason = "mismatch"
+	ReasonEmpty    Reason = "empty"
+)
 
 type record struct {
 	SessionID      string   `json:"session_id"`
 	UsedPercentage *float64 `json:"used_percentage"`
 	TotalTokens    *int     `json:"total_tokens"`
+	ContextTokens  *int     `json:"context_tokens"`
 	ContextWindow  *int     `json:"context_window_size"`
 }
 
@@ -40,17 +53,22 @@ func Read(dir, sessionID string) Usage {
 	}
 	raw, err := os.ReadFile(filepath.Join(dir, sessionID+".json"))
 	if err != nil {
-		return Usage{}
+		if errors.Is(err, fs.ErrNotExist) {
+			return Usage{Reason: ReasonMissing}
+		}
+		return Usage{Reason: ReasonInvalid}
 	}
 	var rec record
 	if err := json.Unmarshal(raw, &rec); err != nil {
-		return Usage{}
+		return Usage{Reason: ReasonInvalid}
 	}
 	if strings.TrimSpace(rec.SessionID) != sessionID {
-		return Usage{}
+		return Usage{Reason: ReasonMismatch}
 	}
 	u := Usage{}
-	if rec.TotalTokens != nil && *rec.TotalTokens > 0 {
+	if rec.ContextTokens != nil && *rec.ContextTokens > 0 {
+		u.TotalTokens = *rec.ContextTokens
+	} else if rec.TotalTokens != nil && *rec.TotalTokens > 0 {
 		u.TotalTokens = *rec.TotalTokens
 	}
 	if rec.ContextWindow != nil && *rec.ContextWindow > 0 {
@@ -64,7 +82,7 @@ func Read(dir, sessionID string) Usage {
 		u.UsedPercent = clampPercent(u.TotalTokens * 100 / u.ContextWindow)
 		u.OK = true
 	default:
-		return Usage{}
+		return Usage{Reason: ReasonEmpty}
 	}
 	return u
 }
