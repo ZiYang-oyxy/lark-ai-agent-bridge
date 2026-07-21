@@ -81,7 +81,7 @@ flowchart TD
 | action 同步卡关闭 streaming_mode | L1 | ✅ | `TestServiceStopSyncCardDisablesStreamingMode`(新增) |
 | create_workdir / cancel_workdir | L1 | ✅ | `TestServiceMissingWorkdirAsksThenRunsAfterCreate` / `TestWorkdirCancelDoesNotRun` |
 | config.save 往返 | L1 | ✅ | `TestServiceConfigSavePersistsValidValuesAndRejectsInvalidValues` |
-| 真实 `card.action.trigger` 投递 | **L3** | ❌ | 需真实点击,见下「L3 canary」 |
+| 真实 `card.action.trigger` 投递 | **L3** | ❌ | 飞书平台限制，无官方自动化手段（Codex + 官方文档查证 2026-07-22）；处理逻辑由 L1 确定性 + L2 render 注入覆盖 |
 
 ### 域 4 · 流式卡片与 native streaming
 | 用例 | 层 | 状态 | 证据 |
