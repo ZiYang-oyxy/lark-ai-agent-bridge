@@ -828,6 +828,17 @@ func (m *Manager) List() []Session {
 	return out
 }
 
+func (m *Manager) HasWork() bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, session := range m.sessions {
+		if session.State == StateRunning || session.ActiveBatch != nil || len(session.Queue) != 0 {
+			return true
+		}
+	}
+	return false
+}
+
 // LiveAttachmentPaths returns a detached set of every attachment still needed
 // by runnable durable work. The manager lock protects only the in-memory copy;
 // callers must perform any filesystem work after this method returns.

@@ -21,6 +21,7 @@
 - 底部状态栏使用分割线和两行分栏：agent/model/tokens，以及 user/ip/workdir。
 - 工作目录不存在时先发确认卡片；点击创建后确认卡变绿并禁用按钮，Claude 执行另起运行卡片。
 - 卡片按钮走长连接 `card.action.trigger`，回调会同步返回终态卡片并保留异步 CardKit update 兜底；HTTP `/card/callback` 只保留为本地兼容调试入口。
+- `/help` 显示当前 Bridge 版本；配置 HTTPS update manifest 后会提示新版本、在卡片内展示 Release note，并允许 owner/admin 一键原子升级。
 
 ## 本地命令
 
@@ -39,6 +40,36 @@ GOCACHE=$PWD/.cache/go-build go run ./cmd/lark-agent-bridge serve --default-work
 ```
 
 `serve` 需要 `LARK_APP_ID` 和 `LARK_APP_SECRET`。本地未配置时会明确失败，用于验证启动前置条件。
+
+## 一键升级与发布物
+
+运行端只需要配置一个稳定 manifest URL：
+
+```bash
+export LAB_UPDATE_MANIFEST_URL=https://updates.example.com/lark-ai-agent-bridge/stable/manifest.json
+```
+
+`/help` 会以 10 分钟内存缓存检查版本。所有授权用户都能查看卡片内 Release note；只有 bot owner/admin 能确认升级。升级前会重新获取 manifest，下载当前平台 binary，严格校验 size 与 SHA-256；存在 active/queued 任务时拒绝升级。通过校验后 Bridge 在当前 binary 同目录保留 `.previous`、原子替换，并以原 argv/env `exec` 新版本。替换或 `exec` 失败会恢复旧 binary；新版本已经启动后再崩溃不自动回滚。
+
+首版只支持：
+
+- `linux/amd64`
+- `darwin/arm64`
+
+开发构建的版本为 `dev`，可显示帮助但禁用自升级。正式 binary 与静态发布目录通过以下流程生成：
+
+```bash
+./scripts/release.sh prepare v1.2.3
+# 编辑并提交 docs/releases/v1.2.3.md
+./scripts/release.sh tag v1.2.3
+./scripts/release.sh bundle v1.2.3 \
+  --base-url https://updates.example.com/lark-ai-agent-bridge
+./tests/release-bundle-smoke.sh dist v1.2.3
+```
+
+`bundle` 使用 Go `1.26.3`、`CGO_ENABLED=0`，在同一发布机交叉构建 Linux x86-64 与 macOS ARM64，输出 `dist/v1.2.3/` 和 `dist/stable/manifest.json`。仓库不内置托管平台或凭证；外部上传命令必须先上传并回读校验完整的 versioned 目录，最后才替换 stable manifest。
+
+人工回退时停止对应 Bridge 实例，把 `<binary>.previous` 原子恢复为 `<binary>`，再通过该部署目标唯一的启动入口恢复服务；不得宽泛 `pkill` 或混用 Test、Steve、Mac 三套部署事务。
 
 ## 自然语言定时任务
 

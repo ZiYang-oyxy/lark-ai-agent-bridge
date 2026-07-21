@@ -202,6 +202,27 @@ func TestHelpCommandCarriesOnlyGroupChatContext(t *testing.T) {
 	}
 }
 
+func TestUpdateHelpReturnPreservesGroupChatContext(t *testing.T) {
+	renderer := card.NewFakeRenderer()
+	svc := NewService(testConfig(t), renderer, newFakeRunner(), audit.NewRecorder())
+	if err := svc.HandleMessage(context.Background(), Message{
+		ID: "help-source", ChatID: "oc-a", Sender: "user-1", Text: "/help",
+		IsGroup: true, Mentioned: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	help := lastEvent(t, renderer)
+	result, err := svc.HandleActionResult(context.Background(), ActionRequest{
+		SessionID: help.SessionID, ActionID: "update.help", Actor: "user-1",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Event == nil || result.Event.HelpCard == nil || result.Event.HelpCard.ChatID != "oc-a" {
+		t.Fatalf("returned help = %#v, want group ChatID oc-a", result.Event)
+	}
+}
+
 func TestHelpOpenLocalConfigCallbackRendersReadOnlyOverview(t *testing.T) {
 	svc, store := localConfigService(t)
 	sessionID := renderGroupHelpForTest(t, svc, "help-source", "oc-a", "user-1")

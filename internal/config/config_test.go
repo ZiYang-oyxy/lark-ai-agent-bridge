@@ -43,6 +43,24 @@ func TestLoadFromEnvPreviewDefaults(t *testing.T) {
 	}
 }
 
+func TestLoadFromEnvStrictParsesHTTPSUpdateManifestURL(t *testing.T) {
+	t.Setenv("LAB_UPDATE_MANIFEST_URL", "https://updates.example/bridge/stable/manifest.json")
+	cfg, err := LoadFromEnvStrict()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.UpdateManifestURL != "https://updates.example/bridge/stable/manifest.json" {
+		t.Fatalf("update manifest URL = %q", cfg.UpdateManifestURL)
+	}
+}
+
+func TestLoadFromEnvStrictRejectsNonHTTPSUpdateManifestURL(t *testing.T) {
+	t.Setenv("LAB_UPDATE_MANIFEST_URL", "http://updates.example/manifest.json")
+	if _, err := LoadFromEnvStrict(); err == nil {
+		t.Fatal("LoadFromEnvStrict accepted non-HTTPS update URL")
+	}
+}
+
 func TestLoadFromEnvStrictRejectsInvalidPreviewTuning(t *testing.T) {
 	for _, name := range []string{"E2E_CARD_MIN_DELTA_CHARS", "E2E_CARD_PREVIEW_MAX_CHARS"} {
 		t.Run(name, func(t *testing.T) {

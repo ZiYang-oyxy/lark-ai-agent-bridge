@@ -3,6 +3,7 @@ package config
 import (
 	"crypto/sha256"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -32,6 +33,7 @@ type Config struct {
 	ScheduleCatchUp             time.Duration
 	ScheduleTimeout             time.Duration
 	ScheduleRetention           time.Duration
+	UpdateManifestURL           string
 	Model                       string
 	Effort                      string
 	ReplyMode                   ReplyMode
@@ -162,6 +164,7 @@ func LoadFromEnv() Config {
 	if v := os.Getenv("E2E_SCHEDULE_SOCKET"); v != "" {
 		cfg.ScheduleSocketPath = v
 	}
+	cfg.UpdateManifestURL = strings.TrimSpace(os.Getenv("LAB_UPDATE_MANIFEST_URL"))
 	if v := os.Getenv("E2E_MODEL"); v != "" {
 		cfg.Model = strings.TrimSpace(v)
 	}
@@ -237,6 +240,12 @@ func LoadFromEnv() Config {
 func LoadFromEnvStrict() (Config, error) {
 	cfg := LoadFromEnv()
 	var err error
+	if cfg.UpdateManifestURL != "" {
+		parsed, parseErr := url.Parse(cfg.UpdateManifestURL)
+		if parseErr != nil || parsed.Scheme != "https" || parsed.Host == "" || parsed.User != nil {
+			return Config{}, fmt.Errorf("LAB_UPDATE_MANIFEST_URL must be an absolute HTTPS URL without userinfo")
+		}
+	}
 	if raw := os.Getenv("E2E_ALLOWED_MODELS"); raw != "" {
 		if _, err := modelCatalog(strings.Split(raw, ",")); err != nil {
 			return Config{}, fmt.Errorf("parse E2E_ALLOWED_MODELS: %w", err)

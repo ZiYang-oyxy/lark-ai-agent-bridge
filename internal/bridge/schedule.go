@@ -17,6 +17,14 @@ import (
 )
 
 func (s *Service) Enqueue(_ context.Context, task schedule.Task, run schedule.Run) (schedule.EnqueueResult, error) {
+	if s.isUpgradeMaintenance() {
+		return schedule.EnqueueResult{}, schedule.ErrQueueFull
+	}
+	s.upgradeGate.RLock()
+	defer s.upgradeGate.RUnlock()
+	if s.isUpgradeMaintenance() {
+		return schedule.EnqueueResult{}, schedule.ErrQueueFull
+	}
 	kind, ok := agent.ParseKind(task.Execution.Agent)
 	if !ok {
 		return schedule.EnqueueResult{}, fmt.Errorf("scheduled task has invalid agent %q", task.Execution.Agent)

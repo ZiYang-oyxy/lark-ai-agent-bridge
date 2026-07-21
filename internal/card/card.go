@@ -60,6 +60,12 @@ type Action struct {
 	Value    string
 	URL      string
 	Disabled bool
+	Confirm  *ActionConfirm
+}
+
+type ActionConfirm struct {
+	Title string
+	Text  string
 }
 
 // SelectOption is a value/display pair for a card dropdown. Value is what gets

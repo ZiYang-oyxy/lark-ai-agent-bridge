@@ -502,6 +502,32 @@ func TestBuildLarkCardStopButtonRequiresConfirmation(t *testing.T) {
 	}
 }
 
+func TestBuildLarkCardSupportsGenericActionConfirmation(t *testing.T) {
+	payload := BuildLarkCard(Event{SessionID: "update", Actions: []Action{{
+		ID: "update.install", Label: "立即升级", Value: "1.2.3",
+		Confirm: &ActionConfirm{Title: "确认升级？", Text: "Bridge 将短暂重启。"},
+	}}})
+	buttons := collectButtons(payload)
+	if len(buttons) != 1 {
+		t.Fatalf("buttons = %#v", buttons)
+	}
+	confirm := buttons[0]["confirm"].(map[string]any)
+	if confirm["title"].(map[string]any)["content"] != "确认升级？" || confirm["text"].(map[string]any)["content"] != "Bridge 将短暂重启。" {
+		t.Fatalf("confirm = %#v", confirm)
+	}
+}
+
+func TestBuildLarkCardOmitsGenericConfirmationWhenDisabled(t *testing.T) {
+	payload := BuildLarkCard(Event{SessionID: "update", Actions: []Action{{
+		ID: "update.install", Label: "立即升级", Disabled: true,
+		Confirm: &ActionConfirm{Title: "确认升级？", Text: "Bridge 将短暂重启。"},
+	}}})
+	button := collectButtons(payload)[0]
+	if _, ok := button["confirm"]; ok {
+		t.Fatalf("disabled button has confirm: %#v", button)
+	}
+}
+
 func TestBuildLarkCardCleanResultOmitsAgentPanels(t *testing.T) {
 	payload := BuildLarkCard(Event{Type: "result", HideAgentPanels: true, Segments: []Segment{{Kind: SegmentText, Text: "answer"}}})
 	elements := payload["body"].(map[string]any)["elements"].([]any)
@@ -967,6 +993,26 @@ func TestBuildLarkCardOmitsLocalConfigFromDirectMessageHelp(t *testing.T) {
 	}
 	if want := []string{"help.status", "help.open_config"}; !reflect.DeepEqual(buttonIDs, want) {
 		t.Fatalf("direct-message help buttons = %#v, want %#v", buttonIDs, want)
+	}
+}
+
+func TestBuildLarkCardRendersUpdateStatusWithSectionedHelp(t *testing.T) {
+	payload := BuildLarkCard(Event{
+		Type:      "help",
+		SessionID: "help:update",
+		HelpCard: &HelpCard{Groups: []HelpGroup{
+			{Title: "💬 会话", Lines: []string{"**`/new`** 开新会话"}},
+		}},
+		Segments: []Segment{{Kind: SegmentText, Text: "当前版本：v1.0.0\n发现新版本 v1.2.0"}},
+		Actions:  []Action{{ID: "update.details", Label: "查看更新", Value: "1.2.0"}},
+	})
+	data, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(data)
+	if !containsAll(text, "当前版本：v1.0.0", "发现新版本 v1.2.0", "update.details", "**`/new`**") {
+		t.Fatalf("sectioned update help missing content: %s", text)
 	}
 }
 

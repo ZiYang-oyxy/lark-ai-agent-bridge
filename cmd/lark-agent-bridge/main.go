@@ -6,6 +6,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"os/signal"
@@ -19,6 +20,7 @@ import (
 	"lark-agent-bridge/internal/audit"
 	"lark-agent-bridge/internal/bridge"
 	"lark-agent-bridge/internal/bridgeinstructions"
+	"lark-agent-bridge/internal/buildinfo"
 	"lark-agent-bridge/internal/card"
 	"lark-agent-bridge/internal/config"
 	"lark-agent-bridge/internal/doctor"
@@ -28,6 +30,7 @@ import (
 	"lark-agent-bridge/internal/reply"
 	"lark-agent-bridge/internal/schedule"
 	"lark-agent-bridge/internal/session"
+	bridgeupdate "lark-agent-bridge/internal/update"
 )
 
 func main() {
@@ -43,6 +46,8 @@ func run(args []string) error {
 		return nil
 	}
 	switch args[0] {
+	case "version":
+		return runVersion(args[1:], os.Stdout)
 	case "doctor":
 		return runDoctor(args[1:])
 	case "simulate":
@@ -62,6 +67,27 @@ func run(args []string) error {
 	default:
 		return fmt.Errorf("unknown command %q", args[0])
 	}
+}
+
+func runVersion(args []string, out io.Writer) error {
+	fs := flag.NewFlagSet("version", flag.ContinueOnError)
+	jsonOutput := fs.Bool("json", false, "print build information as JSON")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if fs.NArg() != 0 {
+		return errors.New("usage: lark-agent-bridge version [--json]")
+	}
+	info := buildinfo.Current()
+	if *jsonOutput {
+		return json.NewEncoder(out).Encode(info)
+	}
+	displayVersion := info.Version
+	if buildinfo.IsRelease() {
+		displayVersion = "v" + displayVersion
+	}
+	_, err := fmt.Fprintf(out, "lark-agent-bridge %s commit=%s built=%s %s/%s\n", displayVersion, info.Commit, info.BuildTime, info.GOOS, info.GOARCH)
+	return err
 }
 
 func runSchedulePropose(args []string) error {
@@ -369,6 +395,7 @@ func runServe(args []string) error {
 	renderer := feishu.NewReactionCardRenderer(sender, cardRouter)
 	runner := &bridge.CLIExecRunner{Instructions: instructions}
 	svc := bridge.NewServiceWithSessions(cfg, renderer, runner, recorder, sessions, notices)
+	svc.Updates = newRuntimeUpdateManager(cfg)
 	svc.Agents = agents
 	svc.Preferences = preferences
 	svc.TopicParticipation = topicStore
@@ -457,6 +484,14 @@ func runServe(args []string) error {
 	defer cancel()
 	shutdownErr := svc.Shutdown(shutdownCtx)
 	return errors.Join(longConnErr, controlErr, shutdownErr)
+}
+
+func newRuntimeUpdateManager(cfg config.Config) *bridgeupdate.Manager {
+	if strings.TrimSpace(cfg.UpdateManifestURL) == "" {
+		return nil
+	}
+	client := bridgeupdate.NewClient(cfg.UpdateManifestURL, nil)
+	return &bridgeupdate.Manager{Client: client, Installer: bridgeupdate.Installer{Stage: client.Stage}}
 }
 
 func openSessionState(cfg config.Config) (*session.Manager, []session.RecoveryNotice, error) {
@@ -556,6 +591,7 @@ func printUsage() {
 	fmt.Println(`lark-agent-bridge
 
 Usage:
+  lark-agent-bridge version [--json]
   lark-agent-bridge doctor [--strict] [--default-workdir /path]
   lark-agent-bridge simulate [--default-workdir /path] -text "/new hello"
   lark-agent-bridge simulate -text "/new first" -next-text "/new second"

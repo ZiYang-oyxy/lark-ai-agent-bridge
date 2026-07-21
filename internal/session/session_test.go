@@ -1148,6 +1148,26 @@ func TestUpdateRunResultAccumulatesTokens(t *testing.T) {
 	}
 }
 
+func TestManagerHasWorkReportsQueuedAndActiveSessions(t *testing.T) {
+	manager := NewManager()
+	key := Key{Agent: agent.Claude, ChatID: "chat"}
+	if manager.HasWork() {
+		t.Fatal("new manager has work")
+	}
+	manager.sessions[key.ID()] = &Session{Key: key, Queue: []Input{{ID: "queued"}}}
+	if !manager.HasWork() {
+		t.Fatal("queued manager does not report work")
+	}
+	manager.sessions[key.ID()] = &Session{Key: key, ActiveBatch: &Batch{ID: "active"}}
+	if !manager.HasWork() {
+		t.Fatal("active manager does not report work")
+	}
+	manager.sessions[key.ID()] = &Session{Key: key, State: StateIdle}
+	if manager.HasWork() {
+		t.Fatal("idle manager reports work")
+	}
+}
+
 func TestScheduleInputsNeverBatchWithOtherInputs(t *testing.T) {
 	ordinary := Input{WorkDir: "/tmp/work", RequestedModel: "sonnet", RequestedEffort: "low", AgentBin: "claude", ReplyMode: config.ReplyModeAppend, ConversationMode: config.ConversationModeTopic, BridgeInstructionsVersion: "v1"}
 	scheduled := ordinary

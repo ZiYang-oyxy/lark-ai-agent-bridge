@@ -11,6 +11,13 @@ func BuildLarkCard(e Event) map[string]any {
 	if e.HelpCard != nil {
 		e.Streaming = false
 		elements = buildHelpElements(e.SessionID, *e.HelpCard)
+		answer, _, _ := splitCardSections(e.Segments)
+		if strings.TrimSpace(answer) != "" {
+			elements = append([]any{noteElement("help_update_status", answer)}, elements...)
+		}
+		for _, action := range buildButtonActions(e) {
+			elements = append(elements, action)
+		}
 	} else if e.LocalConfigOverview != nil {
 		e.Streaming = false
 		elements = buildLocalConfigOverviewElements(e.SessionID, *e.LocalConfigOverview)
@@ -520,6 +527,12 @@ func buildButtonActions(e Event) []any {
 			button["behaviors"] = []any{map[string]any{"type": "open_url", "default_url": action.URL}}
 		} else if !action.Disabled {
 			button["behaviors"] = callbackBehavior(e.SessionID, action.ID, action.Value)
+		}
+		if !action.Disabled && action.Confirm != nil {
+			button["confirm"] = map[string]any{
+				"title": map[string]any{"tag": "plain_text", "content": action.Confirm.Title},
+				"text":  map[string]any{"tag": "plain_text", "content": action.Confirm.Text},
+			}
 		}
 		buttons = append(buttons, button)
 	}

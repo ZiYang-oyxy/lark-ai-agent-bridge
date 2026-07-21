@@ -216,7 +216,6 @@ func TestCommandCardButtonRowElementsDisabled(t *testing.T) {
 		t.Errorf("disabled button must not have behaviors key: %#v", btn)
 	}
 }
-
 func TestCommandCardNoteElement(t *testing.T) {
 	note := noteElement("note_1", "小灰字提示")
 	if note["tag"] != "markdown" {

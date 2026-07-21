@@ -60,12 +60,22 @@ if [[ "${REQUIRE_LARK:-0}" == "1" ]]; then
   require_contains "$doctor_output" "ok LARK_APP_SECRET:" "doctor"
 fi
 
+echo "== version and release tooling =="
+version_output="$(go run ./cmd/lark-agent-bridge version --json)"
+require_contains "$version_output" '"version":"dev"' "development version"
+require_contains "$version_output" '"goos":"' "version platform"
+release_help="$(go run ./cmd/lark-bridge-release help)"
+require_contains "$release_help" "prepare vMAJOR.MINOR.PATCH" "release prepare help"
+require_contains "$release_help" "bundle vMAJOR.MINOR.PATCH" "release bundle help"
+echo "version and release tooling ok"
+
 echo "== command surface simulation =="
-help_output="$(go run ./cmd/lark-agent-bridge simulate -text "/help")"
-require_contains "$help_output" '"Type": "help"' "help simulation"
-require_contains "$help_output" '**`/new`** `[--workdir path]' "help simulation"
-require_contains "$help_output" '**`/config`** 全局运行偏好' "help simulation"
-require_contains "$help_output" '**`/resume`** `[session-id]' "help simulation"
+	help_output="$(go run ./cmd/lark-agent-bridge simulate -text "/help")"
+	require_contains "$help_output" '"Type": "help"' "help simulation"
+	require_contains "$help_output" "当前版本：dev" "help current version"
+	require_contains "$help_output" '**`/new`** `[--workdir path]' "help simulation"
+	require_contains "$help_output" '**`/config`** 全局运行偏好' "help simulation"
+	require_contains "$help_output" '**`/resume`** `[session-id]' "help simulation"
 require_not_contains "$help_output" "/codex" "help simulation"
 
 plain_output="$(go run ./cmd/lark-agent-bridge simulate -text "hello")"
