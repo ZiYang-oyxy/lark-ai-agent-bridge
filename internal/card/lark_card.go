@@ -456,6 +456,10 @@ func buildButtonActions(e Event) []any {
 		}
 		if !e.StopButton.Disabled {
 			button["behaviors"] = callbackBehavior(e.SessionID, "stop", "")
+			button["confirm"] = map[string]any{
+				"title": map[string]any{"tag": "plain_text", "content": "确认停止任务？"},
+				"text":  map[string]any{"tag": "plain_text", "content": "停止后，本轮任务将立即结束，当前已生成的内容会保留。"},
+			}
 		}
 		buttons = append(buttons, button)
 	}

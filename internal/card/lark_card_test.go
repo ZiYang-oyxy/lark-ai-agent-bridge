@@ -450,6 +450,29 @@ func TestBuildLarkCardIncludesDisabledStopButton(t *testing.T) {
 	if _, ok := button["behaviors"]; ok {
 		t.Fatalf("disabled stop button should not include behaviors: %#v", button["behaviors"])
 	}
+	if _, ok := button["confirm"]; ok {
+		t.Fatalf("disabled stop button should not include confirm: %#v", button["confirm"])
+	}
+}
+
+func TestBuildLarkCardStopButtonRequiresConfirmation(t *testing.T) {
+	card := BuildLarkCard(Event{Type: "stream", SessionID: "claude:chat", StopButton: StopButton{Visible: true}})
+	elements := card["body"].(map[string]any)["elements"].([]any)
+	button := elements[0].(map[string]any)
+	confirm := button["confirm"].(map[string]any)
+	title := confirm["title"].(map[string]any)
+	text := confirm["text"].(map[string]any)
+	if title["tag"] != "plain_text" || title["content"] != "确认停止任务？" {
+		t.Fatalf("confirm title = %#v", title)
+	}
+	if text["tag"] != "plain_text" || text["content"] != "停止后，本轮任务将立即结束，当前已生成的内容会保留。" {
+		t.Fatalf("confirm text = %#v", text)
+	}
+	behaviors := button["behaviors"].([]any)
+	value := behaviors[0].(map[string]any)["value"].(map[string]any)
+	if value["action_id"] != "stop" || value["session"] != "claude:chat" {
+		t.Fatalf("stop callback = %#v", value)
+	}
 }
 
 func TestBuildLarkCardCleanResultOmitsAgentPanels(t *testing.T) {
