@@ -30,6 +30,7 @@ import (
 	"lark-agent-bridge/internal/reply"
 	"lark-agent-bridge/internal/schedule"
 	"lark-agent-bridge/internal/session"
+	"lark-agent-bridge/internal/workspace"
 )
 
 const (
@@ -55,6 +56,7 @@ type resumeContext struct {
 type Service struct {
 	Config           config.Config
 	Sessions         *session.Manager
+	Workspaces       *workspace.Store
 	Cards            card.Renderer
 	Runner           AgentRunner
 	Audit            *audit.Recorder
@@ -208,6 +210,13 @@ type pendingRun struct {
 	WorkDir          string
 	Preference       config.RuntimePreference
 	ExpiresAt        time.Time
+	// CdSwitch marks a pending created by /cd on a not-yet-existing directory:
+	// on create_workdir confirmation the callback switches the topic's cwd into
+	// the freshly created directory (via switchWorkDir) instead of running an
+	// agent.
+	CdSwitch bool
+	CdKey    session.Key
+	CdScope  string
 }
 
 type activeRun struct {
@@ -556,6 +565,10 @@ func (s *Service) HandleMessage(ctx context.Context, msg Message) error {
 		return s.handleInviteCommand(ctx, msg, cmd, preference)
 	case CommandRemove:
 		return s.handleRemoveCommand(msg, cmd, preference)
+	case CommandCd:
+		return s.handleCd(ctx, msg, cmd, preference)
+	case CommandWs:
+		return s.handleWs(ctx, msg, cmd, preference)
 	case CommandRun:
 		return s.runWithPreference(ctx, cmd, msg, "", preference)
 	default:
@@ -956,12 +969,21 @@ func (s *Service) runWithPreference(ctx context.Context, cmd Command, msg Messag
 	return nil
 }
 
+// effectiveWorkDir resolves the workdir to run a command in. Authority is a
+// three-layer chain: a one-shot cmd.WorkDir override, then the topic workspace
+// cwd (the sole persistent authority — set/switched via /cd and /ws), then the
+// global DefaultWorkDir fallback. Sessions still record the workdir they ran in
+// (RecordSession / catalog resume grouping), but that recorded value is not a
+// decision source here — record and decide are decoupled. When Workspaces is
+// nil (simulate mode) the middle layer is skipped and we fall back to default.
 func (s *Service) effectiveWorkDir(key session.Key, cmd Command) string {
 	if cmd.WorkDir != "" {
 		return cmd.WorkDir
 	}
-	if existing, ok := s.Sessions.Get(key); ok && existing.WorkDir != "" {
-		return existing.WorkDir
+	if s.Workspaces != nil {
+		if cwd, ok := s.Workspaces.CwdFor(s.workspaceScope(key)); ok {
+			return cwd
+		}
 	}
 	return s.Config.DefaultWorkDir
 }
@@ -1481,7 +1503,13 @@ func (s *Service) HandleActionResult(ctx context.Context, req ActionRequest) (Ac
 			return result, err
 		}
 		if hasPending {
-			if err := s.runWithPreference(ctx, pending.Command, pending.Message, pending.RunCardSessionID, pending.Preference); err != nil {
+			if pending.CdSwitch {
+				// /cd into a missing directory: it now exists, so switch the
+				// topic's cwd into it (interrupt run + store realpath + reset).
+				if err := s.switchWorkDir(pending.CdKey, pending.CdScope, workDir); err != nil {
+					return result, err
+				}
+			} else if err := s.runWithPreference(ctx, pending.Command, pending.Message, pending.RunCardSessionID, pending.Preference); err != nil {
 				return result, err
 			}
 		}

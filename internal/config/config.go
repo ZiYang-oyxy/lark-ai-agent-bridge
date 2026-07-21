@@ -22,6 +22,7 @@ type Config struct {
 	InteractionTimeout          time.Duration
 	AuditLogPath                string
 	SessionStorePath            string
+	WorkspaceStorePath          string
 	PreferenceStorePath         string
 	ReplyStorePath              string
 	AgentsConfigPath            string
@@ -69,6 +70,7 @@ func LoadFromEnv() Config {
 		InteractionTimeout:          120 * time.Second,
 		AuditLogPath:                filepath.Join(workDir, ".lark-agent-bridge", "audit.jsonl"),
 		SessionStorePath:            filepath.Join(workDir, ".lark-agent-bridge", "sessions.json"),
+		WorkspaceStorePath:          filepath.Join(workDir, ".lark-agent-bridge", "workspaces.json"),
 		PreferenceStorePath:         filepath.Join(workDir, ".lark-agent-bridge", "preferences.json"),
 		ReplyStorePath:              filepath.Join(workDir, ".lark-agent-bridge", "replies.json"),
 		AgentsConfigPath:            filepath.Join(workDir, ".lark-agent-bridge", "agents.json"),
@@ -108,6 +110,7 @@ func LoadFromEnv() Config {
 		cfg.DefaultWorkDir = v
 		cfg.AuditLogPath = filepath.Join(v, ".lark-agent-bridge", "audit.jsonl")
 		cfg.SessionStorePath = filepath.Join(v, ".lark-agent-bridge", "sessions.json")
+		cfg.WorkspaceStorePath = filepath.Join(v, ".lark-agent-bridge", "workspaces.json")
 		cfg.PreferenceStorePath = filepath.Join(v, ".lark-agent-bridge", "preferences.json")
 		cfg.ReplyStorePath = filepath.Join(v, ".lark-agent-bridge", "replies.json")
 		cfg.AgentsConfigPath = filepath.Join(v, ".lark-agent-bridge", "agents.json")
@@ -147,6 +150,9 @@ func LoadFromEnv() Config {
 	}
 	if v := os.Getenv("E2E_SESSION_STORE"); v != "" {
 		cfg.SessionStorePath = v
+	}
+	if v := os.Getenv("E2E_WORKSPACE_STORE"); v != "" {
+		cfg.WorkspaceStorePath = v
 	}
 	if v := os.Getenv("E2E_PREFERENCE_STORE"); v != "" {
 		cfg.PreferenceStorePath = v

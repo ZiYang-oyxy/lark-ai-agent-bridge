@@ -13,7 +13,7 @@ bridge 不托管交互式终端，也不通过 tmux/PTY 捕获输出。每个已
 - 启动命令：`claude -p --output-format stream-json --verbose --include-partial-messages --dangerously-skip-permissions --effort low <prompt>`
 - Codex 新会话使用 `codex exec --json [--image <path> ...] [--] -`，续接使用 `codex exec resume --json [--image <path> ...] <thread-id> -`；prompt 写入 stdin。
 - Bridge 不向 Codex 传 model、effort、sandbox、approval、profile、plugins、MCP、rules 或 git-check 参数，这些全部由所选 executable 和环境决定。
-- 子进程 `cmd.Dir` 和 `PWD` 都设置为本轮请求解析出的工作目录；没有 `--workdir` 时使用 `--default-workdir` 或环境默认目录。
+- 子进程 `cmd.Dir` 和 `PWD` 都设置为本轮请求解析出的工作目录。工作目录决策链是三层权威（`internal/bridge` 的 `effectiveWorkDir`）：① 本条消息的一次性 `--workdir` 覆盖；② **topic workspace cwd —— 唯一持久权威**，由 `/cd` / `/ws` 写入 `internal/workspace` 的 store，按 topic scope（`ChatID` 或 `ChatID:ThreadID`）粒度保存；③ 全局 `--default-workdir` / 环境默认目录兜底。会话仍照常**记录**它运行用的 workdir（供 catalog resume 归组），但**决定用哪个目录时不再读 session 的记录值**——记录与决策分离；切目录（`/cd`、`/ws use`）会重置会话，重建时自然落到 scope cwd。simulate 等未接 workspace store 的模式跳过第二层，直接回退默认目录。
 - 如果当前 conversation scope 已保存 agent session id，后续消息使用对应 CLI 的 resume 协议续接。
 - `/new` 会清空当前 conversation scope 保存的 agent session id，并从新会话开始。
 - 执行开始时创建“执行中”卡片，读取 Claude `stream-json` stdout 时增量更新同一张卡片。
@@ -39,7 +39,9 @@ bridge 不托管交互式终端，也不通过 tmux/PTY 捕获输出。每个已
 
 当前飞书命令包括：
 
-- `/new [--workdir <path>] [prompt]`：重置当前 chat/topic 的 Agent 会话；有 prompt 时立即执行，没有 prompt 时只创建 ready 状态。
+- `/new [--workdir <path>] [prompt]`：重置当前 chat/topic 的 Agent 会话；有 prompt 时立即执行，没有 prompt 时只创建 ready 状态。`--workdir` 是**仅对该条消息生效的一次性覆盖**，不会粘到后续消息。
+- `/cd [<path>]`：无参时展示当前 topic 的有效工作目录；带路径时（管理员）把该 topic 的权威工作目录切到目标（不存在时走 Create directory 确认卡，创建即切入），切目录同时中断在跑的 run 并重置会话。
+- `/ws list|save <name>|use <name>|remove <name>`：管理当前 topic 的命名工作区。`save` 记录当前有效工作目录，`use`（管理员）切入命名工作区（复用 `/cd` 的“中断+落库+重置会话”三连），`list` 只读展示。
 - `/status`：查看当前 chat/topic 会话状态；群聊中会额外显示当前群内已知会话数量。
 - `/stop`：停止当前所选 Agent 在当前 chat/topic scope 的 active batch；保留后续 queued 输入，空闲时返回安全提示。
 - `/config`：配置 agent、agent home、agent bin、model、effort、Reply mode 和 Conversation mode；`/config reset` 恢复环境默认。

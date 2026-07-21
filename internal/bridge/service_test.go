@@ -22,6 +22,7 @@ import (
 	"lark-agent-bridge/internal/media"
 	"lark-agent-bridge/internal/reply"
 	"lark-agent-bridge/internal/session"
+	"lark-agent-bridge/internal/workspace"
 )
 
 type fakeRunner struct {
@@ -1721,13 +1722,27 @@ func TestServiceNewWithoutPromptCreatesReadySession(t *testing.T) {
 	}
 }
 
+// TestPlainTextAfterReadySessionKeepsWorkDir locks the Task 6 authority model:
+// the workdir a plain message runs in comes from the topic workspace cwd (the
+// sole persistent authority), not from a session's recorded value. We seed the
+// scope cwd through the workspace store — mirroring what /cd and /ws do — and a
+// follow-up plain message must run there.
 func TestPlainTextAfterReadySessionKeepsWorkDir(t *testing.T) {
 	cfg := testConfig(t)
 	renderer := card.NewFakeRenderer()
 	runner := newFakeRunner()
 	svc := NewService(cfg, renderer, runner, audit.NewRecorder())
+	ws, err := workspace.OpenWorkspaceStore(filepath.Join(t.TempDir(), "workspaces.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc.Workspaces = ws
 	workDir := t.TempDir()
-	if err := svc.HandleMessage(context.Background(), Message{ID: "msg-1", ChatID: "chat", Sender: "u1", Text: "/new --workdir " + workDir, Time: time.Now()}); err != nil {
+	scope := svc.workspaceScope(session.Key{Agent: agent.Claude, ChatID: "chat"})
+	if err := ws.SetCwd(scope, workDir); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.HandleMessage(context.Background(), Message{ID: "msg-1", ChatID: "chat", Sender: "u1", Text: "/new", Time: time.Now()}); err != nil {
 		t.Fatalf("ready message error: %v", err)
 	}
 	if err := svc.DrainReady(time.Now().Add(time.Second)); err != nil {
@@ -2058,6 +2073,12 @@ func TestServiceMissingWorkdirAsksThenRunsAfterCreate(t *testing.T) {
 	}
 }
 
+// TestPlainTextAfterCreatedWorkDirKeepsWorkDir exercises the create-confirm
+// flow (a missing --workdir is created on confirmation) and then locks the
+// Task 6 authority model: the follow-up plain message runs in the topic
+// workspace cwd. We seed the scope cwd to the created dir through the workspace
+// store — the sole persistent authority — rather than relying on the removed
+// session-sticky workdir behaviour.
 func TestPlainTextAfterCreatedWorkDirKeepsWorkDir(t *testing.T) {
 	root := t.TempDir()
 	missing := filepath.Join(root, "missing")
@@ -2065,6 +2086,11 @@ func TestPlainTextAfterCreatedWorkDirKeepsWorkDir(t *testing.T) {
 	renderer := card.NewFakeRenderer()
 	runner := newFakeRunner()
 	svc := NewService(cfg, renderer, runner, audit.NewRecorder())
+	ws, err := workspace.OpenWorkspaceStore(filepath.Join(t.TempDir(), "workspaces.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc.Workspaces = ws
 	if err := svc.HandleMessage(context.Background(), Message{ID: "msg-1", ChatID: "chat", Sender: "u1", Text: "/new --workdir " + missing, Time: time.Now()}); err != nil {
 		t.Fatalf("handle missing workdir error: %v", err)
 	}
@@ -2081,6 +2107,12 @@ func TestPlainTextAfterCreatedWorkDirKeepsWorkDir(t *testing.T) {
 	waitForSessionNoActiveBatch(t, svc, session.Key{Agent: agent.Claude, ChatID: "chat"})
 	if len(runner.Calls()) != 0 {
 		t.Fatalf("runner calls = %#v, want none for empty ready session", runner.Calls())
+	}
+	// Persist the created dir as the topic's authoritative cwd so the follow-up
+	// plain message resolves to it via the workspace store.
+	scope := svc.workspaceScope(session.Key{Agent: agent.Claude, ChatID: "chat"})
+	if err := ws.SetCwd(scope, missing); err != nil {
+		t.Fatal(err)
 	}
 	if err := svc.HandleMessage(context.Background(), Message{ID: "msg-2", ChatID: "chat", Sender: "u1", Text: "show pwd", Time: time.Now()}); err != nil {
 		t.Fatalf("plain message error: %v", err)

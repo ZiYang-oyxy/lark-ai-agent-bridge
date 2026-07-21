@@ -158,6 +158,45 @@ func TestParseNewWorkdirMissingValueIsTreatedAsLiteralText(t *testing.T) {
 	}
 }
 
+func TestParseCommandCd(t *testing.T) {
+	cmd := ParseCommand(Message{Text: "/cd /work/proj"}, agent.Claude)
+	if cmd.Type != CommandCd || cmd.Agent != agent.Claude || cmd.WorkDir != "/work/proj" {
+		t.Fatalf("cmd = %#v, want cd with workdir /work/proj", cmd)
+	}
+
+	empty := ParseCommand(Message{Text: "/cd"}, agent.Claude)
+	if empty.Type != CommandCd || empty.WorkDir != "" {
+		t.Fatalf("cmd = %#v, want cd with empty workdir", empty)
+	}
+}
+
+func TestParseCommandWs(t *testing.T) {
+	tests := []struct {
+		text    string
+		subWant string
+		nameWant string
+	}{
+		{text: "/ws", subWant: "list"},
+		{text: "/ws list", subWant: "list"},
+		{text: "/ws save proj", subWant: "save", nameWant: "proj"},
+		{text: "/ws use proj", subWant: "use", nameWant: "proj"},
+		{text: "/ws remove proj", subWant: "remove", nameWant: "proj"},
+	}
+	for _, test := range tests {
+		cmd := ParseCommand(Message{Text: test.text}, agent.Claude)
+		if cmd.Type != CommandWs || cmd.WsSub != test.subWant || cmd.WsName != test.nameWant {
+			t.Fatalf("ParseCommand(%q) = %#v, want ws sub=%q name=%q", test.text, cmd, test.subWant, test.nameWant)
+		}
+	}
+}
+
+func TestHelpTextIncludesCdAndWsCommands(t *testing.T) {
+	text := HelpText()
+	if !strings.Contains(text, "/cd") || !strings.Contains(text, "/ws") {
+		t.Fatalf("help text = %q, want /cd and /ws", text)
+	}
+}
+
 func TestParseStatusCommand(t *testing.T) {
 	cmd := ParseCommand(Message{Text: "/status"}, agent.Claude)
 	if cmd.Type != CommandStatus || cmd.Agent != agent.Claude {
