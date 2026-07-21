@@ -119,8 +119,8 @@ func validateConfig(config Config) error {
 	if config.PollIntervalMS < 10 || config.PollIntervalMS > 5000 {
 		return fmt.Errorf("poll_interval_ms must be between 10 and 5000")
 	}
-	if config.StepTimeoutMS < 1000 || config.StepTimeoutMS > 120000 {
-		return fmt.Errorf("step_timeout_ms must be between 1000 and 120000")
+	if config.StepTimeoutMS < 1000 || config.StepTimeoutMS > 300000 {
+		return fmt.Errorf("step_timeout_ms must be between 1000 and 300000")
 	}
 	return nil
 }
