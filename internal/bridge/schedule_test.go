@@ -129,6 +129,21 @@ func TestScheduleDispatchUsesFrozenConfiguration(t *testing.T) {
 		Execution: schedule.FrozenExecution{Agent: "codex", Model: "frozen-model", Effort: "high", AgentHome: "/tmp/codex-home", AgentBin: "/opt/codex", WorkDir: workDir, ReplyMode: "append-clean-card", ConversationMode: "topic"},
 	}
 	run := schedule.Run{ID: "cron:task1234:2026-07-21T09:00:00Z", TaskID: task.ID, ScheduledAt: time.Now(), State: schedule.RunPending}
+	conversationKey := session.Key{Agent: agent.Codex, ChatID: task.Target.ChatID, Thread: task.Target.ThreadID}
+	now := time.Now()
+	if _, _, err := service.Sessions.EnqueueDurable(conversationKey, session.Input{ID: "ordinary", Text: "ordinary chat", WorkDir: workDir, Time: now, State: session.InputQueued}, workDir, session.BatchLimits{}); err != nil {
+		t.Fatal(err)
+	}
+	_, ordinaryBatch, err := service.Sessions.FreezeReadyBatch(conversationKey, now, session.BatchLimits{})
+	if err != nil || ordinaryBatch == nil {
+		t.Fatalf("freeze ordinary batch: batch=%#v err=%v", ordinaryBatch, err)
+	}
+	if _, _, err := service.Sessions.MarkBatchRunning(conversationKey, ordinaryBatch.ID, nil, now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.Sessions.FinishBatch(conversationKey, ordinaryBatch.ID, session.BatchCompletion{Status: session.InputCompleted, AgentSessionID: "E2E_AGENT_FIXTURE_invalid", At: now}); err != nil {
+		t.Fatal(err)
+	}
 	result, err := service.Enqueue(context.Background(), task, run)
 	if err != nil {
 		t.Fatal(err)
@@ -136,10 +151,14 @@ func TestScheduleDispatchUsesFrozenConfiguration(t *testing.T) {
 	if result.Duplicate {
 		t.Fatal("first enqueue reported duplicate")
 	}
-	key := session.Key{Agent: agent.Codex, ChatID: task.Target.ChatID, Thread: task.Target.ThreadID}
+	key := session.Key{Agent: agent.Codex, ChatID: task.Target.ChatID, Thread: "schedule:" + task.ID}
 	sess, ok := service.Sessions.Get(key)
 	if !ok || len(sess.Queue) != 1 {
 		t.Fatalf("session = %#v ok=%v", sess, ok)
+	}
+	conversation, ok := service.Sessions.Get(conversationKey)
+	if !ok || conversation.AgentSessionID != "E2E_AGENT_FIXTURE_invalid" || len(conversation.Queue) != 0 {
+		t.Fatalf("scheduled run mutated conversation session: %#v ok=%v", conversation, ok)
 	}
 	input := sess.Queue[0]
 	if input.ID != run.ID || input.Text != task.Prompt || input.WorkDir != workDir || input.RequestedModel != "frozen-model" || input.RequestedEffort != "high" || input.AgentHome != "/tmp/codex-home" || input.AgentBin != "/opt/codex" {
