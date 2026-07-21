@@ -65,7 +65,11 @@ func run(args []string, stdout io.Writer, drivers driverFactory, ids runIDFactor
 		return err
 	}
 
-	registry := e2e.Registry{"stop": e2e.StopScenario(), "resume": e2e.ResumeScenario()}
+	registry := e2e.Registry{
+		"stop":         e2e.StopScenario(),
+		"resume":       e2e.ResumeScenario(),
+		"real_context": e2e.RealContextScenario(),
+	}
 	scenario, failure := registry.Resolve(*scenarioName)
 	if failure != nil {
 		now := time.Now()

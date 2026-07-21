@@ -53,6 +53,27 @@ func TestRunPrintsOneStablePassLine(t *testing.T) {
 	}
 }
 
+func TestRunExecutesRealContextScenario(t *testing.T) {
+	var stdout bytes.Buffer
+	driver := newPassingDriver()
+	err := run([]string{
+		"run",
+		"--scenario", "real_context",
+		"--deployment", deploymentFile(t),
+		"--config", configFile(t),
+		"--evidence-dir", t.TempDir(),
+	}, &stdout, func(e2e.Config, e2e.Deployment) e2e.Drivers {
+		return e2e.Drivers{Messenger: driver, Replies: driver, Audit: driver}
+	}, func() (string, error) { return "run-real-context", nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(strings.TrimSpace(stdout.String()), "\n")
+	if len(lines) != 1 || !strings.HasPrefix(lines[0], "PASS scenario=real_context evidence=") {
+		t.Fatalf("stdout = %q", stdout.String())
+	}
+}
+
 func TestRunRequiresAllFlagsBeforeEvidenceOrDrivers(t *testing.T) {
 	var stdout bytes.Buffer
 	err := run([]string{"run", "--scenario", "stop"}, &stdout, func(e2e.Config, e2e.Deployment) e2e.Drivers {
@@ -84,10 +105,12 @@ func writeJSON(t *testing.T, name, raw string) string {
 }
 
 type passingDriver struct {
-	sent    int
-	mark    int64
-	nonce   string
-	stopped bool
+	sent         int
+	mark         int64
+	nonce        string
+	stopped      bool
+	claudeMarker string
+	codexMarker  string
 }
 
 func newPassingDriver() *passingDriver { return &passingDriver{} }
@@ -97,9 +120,19 @@ func (d *passingDriver) SendText(_ context.Context, body string) (string, *e2e.F
 	switch body {
 	case "/agent-mode claude":
 		return "agent-source", nil
+	case "/agent-mode codex":
+		return "codex-agent-source", nil
 	case "/stop":
 		return "stop-source", nil
 	default:
+		if marker := markerFromPrompt(body, "E2E_REAL_CONTEXT_claude_"); marker != "" {
+			d.claudeMarker = marker
+			return "claude-context-source", nil
+		}
+		if marker := markerFromPrompt(body, "E2E_REAL_CONTEXT_codex_"); marker != "" {
+			d.codexMarker = marker
+			return "codex-context-source", nil
+		}
 		return "start-source", nil
 	}
 }
@@ -108,6 +141,12 @@ func (d *passingDriver) WaitReply(_ context.Context, _ int64, source string) (e2
 	switch source {
 	case "agent-source":
 		return e2e.Reply{MessageID: "agent-reply", Raw: []byte(`{"text":"claude"}`)}, nil
+	case "codex-agent-source":
+		return e2e.Reply{MessageID: "codex-agent-reply", Raw: []byte(`{"text":"codex"}`)}, nil
+	case "claude-context-source":
+		return e2e.Reply{MessageID: source, Raw: []byte(`{"text":"` + d.claudeMarker + ` | 🤖 Claude | 🟢 ctx: 10%"}`)}, nil
+	case "codex-context-source":
+		return e2e.Reply{MessageID: source, Raw: []byte(`{"text":"` + d.codexMarker + ` | 🤖 Codex | 🟡 ctx: 60%"}`)}, nil
 	case "start-source":
 		if d.stopped {
 			return e2e.Reply{MessageID: "start-reply", Raw: []byte(`{"text":"READY_` + d.nonce + `\n已请求停止当前任务；排队输入将继续执行。"}`)}, nil
@@ -141,3 +180,11 @@ func (d *passingDriver) Arm(_ context.Context, nonce string) *e2e.Failure {
 }
 
 func (d *passingDriver) Disarm(context.Context) *e2e.Failure { return nil }
+
+func markerFromPrompt(body, prefix string) string {
+	index := strings.Index(body, prefix)
+	if index < 0 {
+		return ""
+	}
+	return body[index:]
+}
