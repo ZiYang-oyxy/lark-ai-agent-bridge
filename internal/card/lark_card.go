@@ -152,8 +152,14 @@ func normalizeTerminalEvent(e Event) Event {
 	return e
 }
 
+// buildConfigFormElements renders the /config (and /local-config) form as four
+// bordered sections — 运行参数 / 会话行为 / 群消息 / 访问控制 — instead of a flat
+// vertical list. Each field is a bold label + one-line hint + control, produced
+// by fieldElements. Model / Effort / Agent-mode are intentionally not rendered
+// here (those live on /agent-mode or are being retired); the ConfigForm struct
+// still carries them for now.
 func buildConfigFormElements(sessionID string, form ConfigForm) []any {
-	intro := "⚙️ **个人运行偏好**\n\n修改后只影响新进入队列的消息。"
+	intro := "⚙️ **全局运行偏好**\n\n改后只影响新进入队列的消息。此为全局默认，各群可用 `/local-config` 覆盖。"
 	saveAction := "config.save"
 	saveValue := ""
 	if form.ChatID != "" {
@@ -161,36 +167,35 @@ func buildConfigFormElements(sessionID string, form ConfigForm) []any {
 		saveAction = "local_config.save"
 		saveValue = form.ChatID
 	}
+
+	runtime := []map[string]any{}
+	runtime = append(runtime, fieldElements("cfg_home", "Agent home", "默认继承 executable 环境；显式选择注入 CONFIG_DIR", configSelectOptions("agent_home", form.AgentHome, form.AgentHomes))...)
+	runtime = append(runtime, fieldElements("cfg_bin", "Agent bin", "主机项用当前 Agent 默认 executable，其余为预设", configSelectOptions("agent_bin", form.AgentBin, form.AgentBins))...)
+
+	conversation := []map[string]any{}
+	conversation = append(conversation, fieldElements("cfg_reply", "Reply mode", "append 保留全过程 · clean-card 只留末答 · latest-card 复用最新卡", configSelect("reply_mode", form.ReplyMode, form.ReplyModes))...)
+	conversation = append(conversation, fieldElements("cfg_conv", "Conversation mode", "chat 按群共用会话 · topic 按话题隔离", configSelect("conversation_mode", form.ConversationMode, form.ConversationModes))...)
+
+	group := []map[string]any{}
+	group = append(group, fieldElements("cfg_group", "群消息接收", "mention_only 仅 @bot · participated_topics 已参与话题 · all 所有群消息（后两档需群消息权限）", configSelectOptions("group_message_mode", form.GroupMessageMode, []SelectOption{
+		{Value: "mention_only", Label: "仅响应 @bot（默认）"},
+		{Value: "participated_topics", Label: "接收已参与话题的所有消息"},
+		{Value: "all_group_messages", Label: "接收所有群消息"},
+	}))...)
+	group = append(group, fieldElements("cfg_bots", "响应其他 bot", "默认忽略；开启后仍按群消息模式判断", configSelectOptions("respond_to_bots", form.RespondToBots, []SelectOption{
+		{Value: "false", Label: "忽略（默认）"},
+		{Value: "true", Label: "响应"},
+	}))...)
+
 	return []any{
 		markdownElement("config_intro", intro),
 		map[string]any{
 			"tag":  "form",
 			"name": "runtime_config",
 			"elements": []any{
-				markdownElement("cfg_agent_mode", fmt.Sprintf("**Agent mode**\n当前使用 `%s`；如需切换请使用 `/agent-mode`。", form.Agent)),
-				markdownElement("cfg_agent_home", "**Agent home**\n`默认` 继承 executable 的环境配置；显式选择时分别注入 `CLAUDE_CONFIG_DIR` 或 `CODEX_HOME`。"),
-				configSelectOptions("agent_home", form.AgentHome, form.AgentHomes),
-				markdownElement("cfg_agent_bin", "**Agent bin**\n每项显示为 `名称 · 作用`；主机项使用当前 Agent 的默认 executable，其余为 `agents.json` 预设。"),
-				configSelectOptions("agent_bin", form.AgentBin, form.AgentBins),
-				markdownElement("config_model_label", "**Model**\n仅对 Claude 生效；Codex 由所选 executable 及其环境配置决定。"),
-				configSelect("model", form.Model, form.Models),
-				markdownElement("config_effort_label", "**Effort**\n仅对 Claude 生效；Codex 由所选 executable 及其环境配置决定。"),
-				configSelect("effort", form.Effort, form.Efforts),
-				markdownElement("config_reply_label", "**Reply mode**\n`append` 新建卡片并保留全部回复与过程；`append-clean-card` 新建卡片，完成后只留最后回复；`latest-card` 复用最新卡片，其他同 clean。"),
-				configSelect("reply_mode", form.ReplyMode, form.ReplyModes),
-				markdownElement("config_scope_label", "**Conversation mode**\n`chat` 回复到普通聊天并按 chat 共用会话；`topic` 回复到话题并按 thread 隔离会话。"),
-				configSelect("conversation_mode", form.ConversationMode, form.ConversationModes),
-				markdownElement("cfg_group_msg", "**群消息接收**\n`mention_only` 仅响应结构化 @bot；`participated_topics` 接收 Bridge 已参与话题的后续消息；`all_group_messages` 接收所有已授权群消息。后两档需要 `im:message.group_msg`。"),
-				configSelectOptions("group_message_mode", form.GroupMessageMode, []SelectOption{
-					{Value: "mention_only", Label: "仅响应 @bot（默认）"},
-					{Value: "participated_topics", Label: "接收已参与话题的所有消息"},
-					{Value: "all_group_messages", Label: "接收所有群消息"},
-				}),
-				markdownElement("cfg_bot_sender", "**响应其他 bot/app 消息**\n默认忽略；开启后仍按上面的群消息模式判断。Bridge 自身消息始终忽略。"),
-				configSelectOptions("respond_to_bots", form.RespondToBots, []SelectOption{
-					{Value: "false", Label: "忽略（默认）"},
-					{Value: "true", Label: "响应"},
-				}),
+				sectionElement("🤖 运行参数", runtime),
+				sectionElement("💬 会话行为", conversation),
+				sectionElement("👥 群消息", group),
 				accessPanelElement(form),
 				map[string]any{
 					"tag":              "button",
@@ -652,7 +657,7 @@ func titleForEvent(eventType string) string {
 	case "help":
 		return "💡 命令帮助"
 	case "config":
-		return "个人运行偏好"
+		return "⚙️ 全局运行偏好"
 	case "local_config":
 		return "本群运行偏好覆盖"
 	case "local_config_saved":
@@ -674,7 +679,9 @@ func templateForEvent(eventType string) string {
 		return "red"
 	case "interrupted":
 		return "orange"
-	case "help", "config", "local_config":
+	case "config":
+		return "grey"
+	case "help", "local_config":
 		return "blue"
 	default:
 		return "green"

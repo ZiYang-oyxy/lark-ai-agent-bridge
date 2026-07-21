@@ -20,7 +20,10 @@ func TestBuildConfigCardRendersGroupModeAndBotSwitch(t *testing.T) {
 		`"name":"group_message_mode"`, `"initial_option":"participated_topics"`,
 		`"value":"mention_only"`, `"value":"participated_topics"`, `"value":"all_group_messages"`,
 		`"name":"respond_to_bots"`, `"value":"false"`, `"value":"true"`,
-		"im:message.group_msg", "Bridge 自身消息始终忽略",
+		// Task 3 shortened the group-message hint copy: the raw scope name
+		// (im:message.group_msg) and the "Bridge 自身消息始终忽略" clause were
+		// replaced by terser one-liners.
+		"需群消息权限", "默认忽略",
 	} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("config card missing %q: %s", want, text)

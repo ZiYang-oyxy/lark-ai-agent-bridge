@@ -369,26 +369,20 @@ func TestBuildLarkCardRendersRuntimeConfigForm(t *testing.T) {
 	if form == nil || form["name"] != "runtime_config" {
 		t.Fatalf("config form = %#v", form)
 	}
-	controls := form["elements"].([]any)
 	selects := map[string]map[string]any{}
 	buttons := map[string]map[string]any{}
 	var copy strings.Builder
-	for _, raw := range controls {
-		control := raw.(map[string]any)
-		if control["tag"] == "markdown" {
-			copy.WriteString(control["content"].(string))
-			copy.WriteByte('\n')
-		}
-		if control["tag"] == "select_static" {
-			selects[control["name"].(string)] = control
-		}
-		if control["tag"] == "button" {
-			buttons[control["name"].(string)] = control
-		}
-	}
+	collectConfigControls(form["elements"].([]any), selects, buttons, &copy)
 	submit := buttons["submit_runtime_config"]
 	closeButton := buttons["close_runtime_config"]
-	if len(selects) != 8 || selects["model"]["initial_option"] != "opus" || selects["effort"]["initial_option"] != "high" || selects["reply_mode"]["initial_option"] != "latest-card" || selects["conversation_mode"]["initial_option"] != "chat" || selects["group_message_mode"]["initial_option"] != "mention_only" || selects["respond_to_bots"]["initial_option"] != "false" {
+	// Model/Effort dropped from the UI (Task 3); six selects remain.
+	if _, ok := selects["model"]; ok {
+		t.Fatalf("model select must be removed from config form: %#v", selects)
+	}
+	if _, ok := selects["effort"]; ok {
+		t.Fatalf("effort select must be removed from config form: %#v", selects)
+	}
+	if len(selects) != 6 || selects["reply_mode"]["initial_option"] != "latest-card" || selects["conversation_mode"]["initial_option"] != "chat" || selects["group_message_mode"]["initial_option"] != "mention_only" || selects["respond_to_bots"]["initial_option"] != "false" {
 		t.Fatalf("select controls = %#v", selects)
 	}
 	if selects["agent_home"]["initial_option"] != "默认" || selects["agent_bin"]["initial_option"] != "主机 claude" {
@@ -403,8 +397,8 @@ func TestBuildLarkCardRendersRuntimeConfigForm(t *testing.T) {
 	if ark4["value"] != "ark4" || ark4["text"].(map[string]any)["content"] != "ark4 · 豆包 seed-2-1-pro" {
 		t.Fatalf("ark4 bin option value/display not separated: %#v", ark4)
 	}
-	if len(selects["model"]["options"].([]any)) != 4 || len(selects["effort"]["options"].([]any)) != 4 || len(selects["reply_mode"]["options"].([]any)) != 3 || len(selects["conversation_mode"]["options"].([]any)) != 2 {
-		t.Fatalf("select options = model %#v effort %#v reply %#v", selects["model"]["options"], selects["effort"]["options"], selects["reply_mode"]["options"])
+	if len(selects["reply_mode"]["options"].([]any)) != 3 || len(selects["conversation_mode"]["options"].([]any)) != 2 {
+		t.Fatalf("select options = reply %#v conversation %#v", selects["reply_mode"]["options"], selects["conversation_mode"]["options"])
 	}
 	if submit == nil || submit["form_action_type"] != "submit" {
 		t.Fatalf("submit button = %#v", submit)
@@ -415,8 +409,22 @@ func TestBuildLarkCardRendersRuntimeConfigForm(t *testing.T) {
 	if text := closeButton["text"].(map[string]any)["content"]; text != "关闭" {
 		t.Fatalf("close button text = %#v, want 关闭", text)
 	}
-	if !containsAll(copy.String(), "`claude`", "/agent-mode", "Codex", "executable") {
-		t.Fatalf("config guidance = %q", copy.String())
+	formBlob, err := json.Marshal(form)
+	if err != nil {
+		t.Fatal(err)
+	}
+	formText := string(formBlob)
+	// The section titles (living in collapsible_panel headers) must anchor the
+	// four visual regions.
+	if !containsAll(formText, "运行参数", "会话行为", "群消息", "访问控制") {
+		t.Fatalf("config sections missing = %s", formText)
+	}
+	// Model / Effort / Agent-mode copy must be gone from both markdown copy and
+	// the serialized form.
+	guidance := copy.String()
+	if containsAny(guidance, "**Model**", "**Effort**", "/agent-mode") ||
+		containsAny(formText, "config_model_label", "config_effort_label", "cfg_agent_mode", `"name":"model"`, `"name":"effort"`) {
+		t.Fatalf("config form still references dropped fields; guidance=%q form=%s", guidance, formText)
 	}
 	behaviors := submit["behaviors"].([]any)
 	value := behaviors[0].(map[string]any)["value"].(map[string]any)
@@ -941,5 +949,82 @@ func collectHelpButtons(elements []any, out *[]string) {
 		if columns, ok := m["columns"].([]any); ok {
 			collectHelpButtons(columns, out)
 		}
+	}
+}
+
+// collectConfigControls walks the (now sectioned) config form tree, gathering
+// select_static / button controls by name and accumulating markdown copy so the
+// test does not depend on how deeply fields are nested inside sections.
+func collectConfigControls(elements []any, selects, buttons map[string]map[string]any, copy *strings.Builder) {
+	for _, raw := range elements {
+		control, ok := raw.(map[string]any)
+		if !ok {
+			continue
+		}
+		switch control["tag"] {
+		case "markdown":
+			if content, ok := control["content"].(string); ok {
+				copy.WriteString(content)
+				copy.WriteByte('\n')
+			}
+		case "select_static":
+			if name, ok := control["name"].(string); ok {
+				selects[name] = control
+			}
+		case "button":
+			if name, ok := control["name"].(string); ok {
+				buttons[name] = control
+			}
+		}
+		if nested, ok := control["elements"].([]any); ok {
+			collectConfigControls(nested, selects, buttons, copy)
+		}
+		if nested, ok := control["elements"].([]map[string]any); ok {
+			generic := make([]any, len(nested))
+			for i, n := range nested {
+				generic[i] = n
+			}
+			collectConfigControls(generic, selects, buttons, copy)
+		}
+	}
+}
+
+func TestBuildConfigFormElementsGroupsFourSectionsAndDropsModelEffort(t *testing.T) {
+	elements := buildConfigFormElements("claude:chat:message:cfg", ConfigForm{
+		Agent: "claude", AgentHome: "默认", AgentBin: "主机 claude",
+		ReplyMode: "append", ConversationMode: "chat",
+		GroupMessageMode: "mention_only", RespondToBots: "false",
+		AgentHomes: []SelectOption{{Value: "默认", Label: "默认"}},
+		AgentBins:  []SelectOption{{Value: "主机 claude", Label: "主机 claude"}},
+		ReplyModes: []string{"append", "append-clean-card", "latest-card"},
+		ConversationModes: []string{"chat", "topic"},
+	})
+	blob, err := json.Marshal(elements)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(blob)
+	for _, want := range []string{"运行参数", "会话行为", "群消息", "collapsible_panel"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("config form missing section marker %q: %s", want, text)
+		}
+	}
+	for _, banned := range []string{"config_model_label", "config_effort_label", "cfg_agent_mode", "/agent-mode"} {
+		if strings.Contains(text, banned) {
+			t.Fatalf("config form still contains dropped element %q: %s", banned, text)
+		}
+	}
+	// intro copy must state global default + per-group override hint.
+	if !strings.Contains(text, "全局") || !strings.Contains(text, "/local-config") {
+		t.Fatalf("config intro copy missing global/override hint: %s", text)
+	}
+}
+
+func TestConfigEventHeaderIsGreyAndGlobal(t *testing.T) {
+	if got := templateForEvent("config"); got != "grey" {
+		t.Fatalf("config template = %q, want grey", got)
+	}
+	if got := titleForEvent("config"); !strings.Contains(got, "全局") {
+		t.Fatalf("config title = %q, want it to mention 全局", got)
 	}
 }
