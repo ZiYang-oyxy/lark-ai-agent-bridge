@@ -84,9 +84,10 @@ func writeJSON(t *testing.T, name, raw string) string {
 }
 
 type passingDriver struct {
-	sent  int
-	mark  int64
-	nonce string
+	sent    int
+	mark    int64
+	nonce   string
+	stopped bool
 }
 
 func newPassingDriver() *passingDriver { return &passingDriver{} }
@@ -108,6 +109,9 @@ func (d *passingDriver) WaitReply(_ context.Context, _ int64, source string) (e2
 	case "agent-source":
 		return e2e.Reply{MessageID: "agent-reply", Raw: []byte(`{"text":"claude"}`)}, nil
 	case "start-source":
+		if d.stopped {
+			return e2e.Reply{MessageID: "start-reply", Raw: []byte(`{"text":"READY_` + d.nonce + `\n已请求停止当前任务；排队输入将继续执行。"}`)}, nil
+		}
 		return e2e.Reply{MessageID: "start-reply", Raw: []byte(`{"text":"READY_` + d.nonce + `"}`)}, nil
 	default:
 		return e2e.Reply{MessageID: "stop-reply", Raw: []byte(`{"text":"已请求停止当前任务"}`)}, nil
@@ -124,6 +128,9 @@ func (d *passingDriver) Mark(context.Context) (int64, *e2e.Failure) {
 }
 
 func (d *passingDriver) Wait(_ context.Context, _ int64, match e2e.AuditMatch) (e2e.AuditEvent, *e2e.Failure) {
+	if match.Action == "cardkit_update" && match.Detail == "event=stopped" {
+		d.stopped = true
+	}
 	raw, _ := json.Marshal(map[string]string{"Action": match.Action, "Detail": match.Detail})
 	return e2e.AuditEvent{Action: match.Action, Detail: match.Detail, Raw: raw}, nil
 }
