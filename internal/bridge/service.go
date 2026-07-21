@@ -1555,7 +1555,7 @@ func (s *Service) HandleActionResult(ctx context.Context, req ActionRequest) (Ac
 		result, err := s.renderActionEvent(card.Event{
 			Type:      "config_saved",
 			SessionID: req.SessionID,
-			Segments:  []card.Segment{{Kind: card.SegmentText, Text: fmt.Sprintf("偏好已保存。\n\nagent=`%s`\nagent home=`%s`\nagent bin=`%s`\nmodel=`%s`\neffort=`%s`\nreply mode=`%s`\nconversation mode=`%s`\ngroup message mode=`%s`\nrespond to bots=`%t`\n\n下一条新消息开始生效。", preference.Agent, orDefault(preference.AgentHome, config.DefaultHomeLabel), orDefault(preference.AgentBin, config.DefaultBinLabelFor(preference.Agent)), preference.Model, preference.Effort, preference.ReplyMode, preference.ConversationMode, preference.GroupMessageMode, preference.RespondToBots)}},
+			Segments:  []card.Segment{{Kind: card.SegmentText, Text: fmt.Sprintf("偏好已保存。\n\n**Agent**：`%s`\n**Agent 主目录**：`%s`\n**Agent 可执行文件**：`%s`\n**模型**：`%s`\n**Effort**：`%s`\n**回复模式**：`%s`\n**会话模式**：`%s`\n**群消息接收**：`%s`\n**响应其他 bot**：`%t`\n\n下一条新消息开始生效。", preference.Agent, orDefault(preference.AgentHome, config.DefaultHomeLabel), orDefault(preference.AgentBin, config.DefaultBinLabelFor(preference.Agent)), preference.Model, preference.Effort, preference.ReplyMode, preference.ConversationMode, preference.GroupMessageMode, preference.RespondToBots)}},
 		})
 		if err == nil {
 			s.ensureGroupMessageScope(req.SessionID, preference.GroupMessageMode)
@@ -1586,7 +1586,7 @@ func (s *Service) HandleActionResult(ctx context.Context, req ActionRequest) (Ac
 		return s.renderActionEvent(card.Event{
 			Type:      "local_config_saved",
 			SessionID: req.SessionID,
-			Segments:  []card.Segment{{Kind: card.SegmentText, Text: fmt.Sprintf("本群覆盖已保存 —— 仅本群生效，未改全局；未修改的项继承全局 `/config`。\n\nagent=`%s`\nmodel=`%s`\neffort=`%s`\nreply mode=`%s`\nconversation mode=`%s`\ngroup message mode=`%s`\nrespond to bots=`%t`\n\n下一条新消息开始生效。", effective.Agent, effective.Model, effective.Effort, effective.ReplyMode, effective.ConversationMode, effective.GroupMessageMode, effective.RespondToBots)}},
+			Segments:  []card.Segment{{Kind: card.SegmentText, Text: fmt.Sprintf("本群覆盖已保存 —— 仅本群生效，未改全局；未修改的项继承全局 `/config`。\n\n**Agent**：`%s`\n**模型**：`%s`\n**Effort**：`%s`\n**回复模式**：`%s`\n**会话模式**：`%s`\n**群消息接收**：`%s`\n**响应其他 bot**：`%t`\n\n下一条新消息开始生效。", effective.Agent, effective.Model, effective.Effort, effective.ReplyMode, effective.ConversationMode, effective.GroupMessageMode, effective.RespondToBots)}},
 		})
 	case "local_config.edit":
 		if s.Preferences == nil {
@@ -1707,14 +1707,16 @@ func (s *Service) HandleActionResult(ctx context.Context, req ActionRequest) (Ac
 			HeaderTitle: "✅ 已恢复历史会话",
 			Segments:    []card.Segment{{Kind: card.SegmentText, Text: fmt.Sprintf("已恢复 Session `%s`。下一条普通消息将继续该会话。", resumed.AgentSessionID)}},
 		})
-	case "status.refresh":
-		// Re-render the /status card in place from the key we stored when the card
-		// was first sent. Read-only: no agent run, no admin gate. The callback has
-		// no live Message, so group-only rows (本群覆盖项 / 本群会话数) are omitted —
-		// the session runtime rows come straight from the key and stay accurate.
+	case "status.refresh", "help.status":
+		// Both the /help 状态 button and the /status 刷新 button re-render the same
+		// detailed /status card in place, from the key we stored when the card (a
+		// /help or /status card) was first sent. Read-only: no agent run, no admin
+		// gate. The callback carries no live Message, so group-only rows (本群覆盖项
+		// / 本群会话数) are omitted — the session runtime rows come straight from the
+		// key and stay accurate.
 		context, ok := s.resumeContextForSession(req.SessionID, time.Now())
 		if !ok {
-			return s.renderActionEvent(card.Event{Type: "error", SessionID: req.SessionID, Segments: []card.Segment{{Kind: card.SegmentError, Text: "状态上下文已过期，请重新发送 `/status`。"}}})
+			return s.renderActionEvent(card.Event{Type: "error", SessionID: req.SessionID, Segments: []card.Segment{{Kind: card.SegmentError, Text: "状态上下文已过期，请重新发送 `/status` 或 `/help`。"}}})
 		}
 		kind := context.Key.Agent
 		if kind == "" {
@@ -1725,14 +1727,6 @@ func (s *Service) HandleActionResult(ctx context.Context, req ActionRequest) (Ac
 			SessionID:  req.SessionID,
 			StatusCard: s.statusCardDataForKey(kind, context.Key, s.runtimePreference(), nil, ""),
 		})
-	case "help.status":
-		// Equivalent to /status. The callback (ActionRequest) carries no ChatID
-		// or full Message, so we cannot compute the exact per-topic session key
-		// that statusTextWithPreference needs. Render an honest summary from the
-		// effective global preference plus a pointer to /status for per-session
-		// detail, rather than fabricating a Message that would misreport state.
-		preference := s.runtimePreference()
-		return s.renderActionEvent(card.Event{Type: "status", SessionID: req.SessionID, Segments: []card.Segment{{Kind: card.SegmentText, Text: helpStatusSummary(preference)}}})
 	default:
 		return s.renderActionEvent(card.Event{Type: "error", SessionID: req.SessionID, Segments: []card.Segment{{Kind: card.SegmentError, Text: "unknown action: " + req.ActionID}}})
 	}
@@ -1794,9 +1788,9 @@ func (s *Service) localConfigOverview(chatID string) *card.LocalConfigOverview {
 		agentBin = "主机（当前 Agent 默认）"
 	}
 	items := []card.LocalConfigItem{
-		{Label: "Agent bin", Value: agentBin, Overridden: override.AgentBin != nil},
-		{Label: "Reply mode", Value: string(effective.ReplyMode), Overridden: override.ReplyMode != nil},
-		{Label: "Conversation mode", Value: string(effective.ConversationMode), Overridden: override.ConversationMode != nil},
+		{Label: "Agent 可执行文件", Value: agentBin, Overridden: override.AgentBin != nil},
+		{Label: "回复模式", Value: string(effective.ReplyMode), Overridden: override.ReplyMode != nil},
+		{Label: "会话模式", Value: string(effective.ConversationMode), Overridden: override.ConversationMode != nil},
 		{Label: "群消息接收", Value: groupMessageModeText(effective.GroupMessageMode), Overridden: override.GroupMessageMode != nil},
 		{Label: "响应其他 bot", Value: respondToBotsText(effective.RespondToBots), Overridden: override.RespondToBots != nil},
 	}
@@ -2256,19 +2250,6 @@ func (s *Service) renderStream(event card.Event) error {
 
 func (s *Service) statusText(kind agent.Kind, msg Message) string {
 	return s.statusTextWithPreference(kind, msg, s.runtimePreference())
-}
-
-// helpStatusSummary renders the /status text reachable from the /help card
-// button. The card callback has no chat/message context, so this reports the
-// effective global preference and points to /status for per-session detail.
-func helpStatusSummary(preference config.RuntimePreference) string {
-	var b strings.Builder
-	b.WriteString("**全局运行偏好**\n\n")
-	fmt.Fprintf(&b, "**Agent**：`%s`\n", preference.Agent)
-	fmt.Fprintf(&b, "**回复模式**：`%s`\n", preference.ReplyMode)
-	fmt.Fprintf(&b, "**会话模式**：`%s`\n", preference.ConversationMode)
-	b.WriteString("\n在会话中直接发送 `/status` 查看当前会话的详细状态（工作目录、队列、token 等）。")
-	return b.String()
 }
 
 func (s *Service) statusTextWithPreference(kind agent.Kind, msg Message, preference config.RuntimePreference) string {

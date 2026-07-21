@@ -332,28 +332,30 @@ func renderGroupHelpForTest(t *testing.T, svc *Service, messageID, chatID, actor
 	return runID("help", messageID)
 }
 
-func TestHelpStatusCallbackRendersStatusNotUnknown(t *testing.T) {
+func TestHelpStatusCallbackRendersDetailedStatusCard(t *testing.T) {
 	cfg := testConfig(t)
 	store, _ := testPreferenceStore(t, config.RuntimePreference{Model: "default", Effort: "low"}, cfg.AllowedModels)
 	renderer := card.NewFakeRenderer()
 	svc := NewService(cfg, renderer, newFakeRunner(), audit.NewRecorder())
 	svc.Preferences = store
-	_, err := svc.HandleActionResult(context.Background(), ActionRequest{
-		SessionID: "claude:chat", ActionID: "help.status", Actor: "user-1",
-	})
+
+	// Render a /help card so its session key context is stored, then click 状态.
+	if err := svc.HandleMessage(context.Background(), Message{ID: "help-msg", ChatID: "chat", Sender: "user-1", Text: "/help"}); err != nil {
+		t.Fatal(err)
+	}
+	sessionID := runID("help", "help-msg")
+
+	event, err := svc.HandleActionResult(context.Background(), ActionRequest{SessionID: sessionID, ActionID: "help.status", Actor: "user-1"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	event := lastEvent(t, renderer)
-	if event.Type == "error" {
-		t.Fatalf("help.status must not render an error card: %#v", event)
+	_ = event
+	last := lastEvent(t, renderer)
+	if last.Type == "error" {
+		t.Fatalf("help.status must not render an error card: %#v", last)
 	}
-	text := segmentText(event)
-	if strings.Contains(text, "unknown action") {
-		t.Fatalf("help.status fell through to default: %q", text)
-	}
-	if strings.TrimSpace(text) == "" {
-		t.Fatalf("help.status produced no status text: %#v", event)
+	if last.StatusCard == nil {
+		t.Fatalf("help.status must render the detailed StatusCard, got %#v", last)
 	}
 }
 

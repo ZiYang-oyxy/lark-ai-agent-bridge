@@ -233,8 +233,8 @@ func WorkDirCreateActions(path string) []Action {
 
 func WorkDirActions(path string, disabled bool) []Action {
 	return []Action{
-		{ID: "create_workdir", Label: "Create directory", Value: path, Disabled: disabled},
-		{ID: "cancel_workdir", Label: "Cancel", Value: path, Disabled: disabled},
+		{ID: "create_workdir", Label: "创建目录", Value: path, Disabled: disabled},
+		{ID: "cancel_workdir", Label: "取消", Value: path, Disabled: disabled},
 	}
 }
 

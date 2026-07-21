@@ -1180,11 +1180,11 @@ func TestBuildLarkCardRendersLocalConfigOverview(t *testing.T) {
 		LocalConfigOverview: &LocalConfigOverview{
 			ChatID: "oc-42",
 			Items: []LocalConfigItem{
-				{Label: "Reply mode", Value: "latest-card", Overridden: true},
-				{Label: "Conversation mode", Value: "topic", Overridden: true},
+				{Label: "回复模式", Value: "latest-card", Overridden: true},
+				{Label: "会话模式", Value: "topic", Overridden: true},
 				{Label: "群消息接收", Value: "仅响应 @bot", Overridden: false},
 				{Label: "响应其他 bot", Value: "忽略", Overridden: false},
-				{Label: "Agent bin", Value: "主机", Overridden: false},
+				{Label: "Agent 可执行文件", Value: "主机", Overridden: false},
 			},
 			OverrideCount: 2,
 		},
@@ -1208,7 +1208,7 @@ func TestBuildLarkCardRendersLocalConfigOverview(t *testing.T) {
 		t.Fatal(err)
 	}
 	text := string(data)
-	for _, want := range []string{"本群覆盖了 2 项", "Reply mode", "（本群）", "（继承）", "继承全局"} {
+	for _, want := range []string{"本群覆盖了 2 项", "回复模式", "（本群）", "（继承）", "继承全局"} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("local config overview missing %q: %s", want, text)
 		}
@@ -1346,14 +1346,19 @@ func TestBuildLarkCardRendersResumeCard(t *testing.T) {
 		t.Fatal(err)
 	}
 	text := string(data)
-	for _, want := range []string{"`s-current`", "`s-older`", "当前", "最新一轮", "工作目录 `/tmp/work`"} {
+	// Compact rows show time, summary and the 当前 marker; the session id is not
+	// shown on-screen (it rides the button callback value only).
+	for _, want := range []string{"2026-07-21 10:00:00", "2026-07-20 09:00:00", "当前", "最新一轮", "上一轮", "恢复"} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("resume card missing %q: %s", want, text)
 		}
 	}
+	// The non-current row's id rides its resume.select callback value; the
+	// current row's button is disabled and carries no callback.
+	if !strings.Contains(text, "s-older") {
+		t.Fatalf("resume card should carry s-older on a callback value: %s", text)
+	}
 
-	// Both rows carry a resume.select button; the current session's button is
-	// disabled but the callback id is still present.
 	ids := collectCallbackIDs(t, payload)
 	var selects int
 	for _, id := range ids {

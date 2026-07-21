@@ -185,12 +185,12 @@ func buildConfigFormElements(sessionID string, form ConfigForm) []any {
 	}
 
 	runtime := []map[string]any{}
-	runtime = append(runtime, fieldElements("cfg_home", "Agent home", "默认继承 executable 环境；显式选择注入 CONFIG_DIR", configSelectOptions("agent_home", form.AgentHome, form.AgentHomes))...)
-	runtime = append(runtime, fieldElements("cfg_bin", "Agent bin", "主机项用当前 Agent 默认 executable，其余为预设", configSelectOptions("agent_bin", form.AgentBin, form.AgentBins))...)
+	runtime = append(runtime, fieldElements("cfg_home", "Agent 主目录", "默认继承 executable 环境；显式选择注入 CONFIG_DIR", configSelectOptions("agent_home", form.AgentHome, form.AgentHomes))...)
+	runtime = append(runtime, fieldElements("cfg_bin", "Agent 可执行文件", "主机项用当前 Agent 默认 executable，其余为预设", configSelectOptions("agent_bin", form.AgentBin, form.AgentBins))...)
 
 	conversation := []map[string]any{}
-	conversation = append(conversation, fieldElements("cfg_reply", "Reply mode", "append 保留全过程 · clean-card 只留末答 · latest-card 复用最新卡", configSelect("reply_mode", form.ReplyMode, form.ReplyModes))...)
-	conversation = append(conversation, fieldElements("cfg_conv", "Conversation mode", "chat 按群共用会话 · topic 按话题隔离", configSelect("conversation_mode", form.ConversationMode, form.ConversationModes))...)
+	conversation = append(conversation, fieldElements("cfg_reply", "回复模式", "append 保留全过程 · clean-card 只留末答 · latest-card 复用最新卡", configSelect("reply_mode", form.ReplyMode, form.ReplyModes))...)
+	conversation = append(conversation, fieldElements("cfg_conv", "会话模式", "chat 按群共用会话 · topic 按话题隔离", configSelect("conversation_mode", form.ConversationMode, form.ConversationModes))...)
 
 	group := []map[string]any{}
 	group = append(group, fieldElements("cfg_group", "群消息接收", "mention_only 仅 @bot · participated_topics 已参与话题 · all 所有群消息（后两档需群消息权限）", configSelectOptions("group_message_mode", form.GroupMessageMode, []SelectOption{
@@ -371,35 +371,66 @@ func buildStatusElements(sessionID string, status StatusCard) []any {
 	return elements
 }
 
-// buildResumeElements renders the /resume list: an intro note naming the agent
-// and workdir the sessions belong to, then one bordered section per recent
-// session (index · time · [当前] badge, optional summary) with a one-click 恢复
-// button whose callback carries the session id. Empty Items renders a friendly
-// note pointing back at plain messaging.
+// buildResumeElements renders a compact /resume list: a one-line intro, then one
+// row per recent session laid out as [ text | 恢复 button ]. Each row's text is a
+// single line — 序号 · 时间 · 摘要 (truncated) with a 当前 marker — so rows stay
+// low. The session id lives only on the button callback value (it is machine
+// detail, redundant on-screen); users tell rows apart by time and summary. Empty
+// Items renders a friendly note.
 func buildResumeElements(sessionID string, resume ResumeCard) []any {
 	elements := make([]any, 0, len(resume.Items)+2)
-	elements = append(elements, noteElement("resume_intro", fmt.Sprintf("最近的历史会话（Agent `%s` · 工作目录 `%s`）。点「恢复」即可继续该会话，下一条普通消息将接着它跑。", resume.Agent, resume.WorkDir)))
+	elements = append(elements, noteElement("resume_intro", fmt.Sprintf("最近历史会话（`%s`）· 点「恢复」继续", resume.Agent)))
 	if len(resume.Items) == 0 {
 		elements = append(elements, noteElement("resume_empty", "当前 Agent 与工作目录下没有可恢复的历史会话。直接发送消息开始新会话即可。"))
 		return elements
 	}
 	for i, item := range resume.Items {
-		title := fmt.Sprintf("%d · %s", item.Index, item.UpdatedAt)
+		line := fmt.Sprintf("**%d.** %s", item.Index, item.UpdatedAt)
 		if item.Current {
-			title += "  ·  当前"
+			line += " · 当前"
 		}
-		body := []map[string]any{
-			markdownElement(fmt.Sprintf("resume_%d_id", i), "`"+item.SessionID+"`"),
+		if summary := truncateResumeSummary(item.Summary); summary != "" {
+			line += " · " + summary
 		}
-		if summary := strings.TrimSpace(item.Summary); summary != "" {
-			body = append(body, noteElement(fmt.Sprintf("resume_%d_summary", i), summary))
+		text := markdownElement(fmt.Sprintf("resume_%d", i), line)
+		button := map[string]any{
+			"tag":      "button",
+			"text":     map[string]any{"tag": "plain_text", "content": "恢复"},
+			"type":     "primary",
+			"width":    "default",
+			"size":     "small",
+			"disabled": item.Current,
 		}
-		if row := buttonRowElements([]Action{{ID: "resume.select", Label: "恢复", Value: item.SessionID, Disabled: item.Current}}, sessionID); row != nil {
-			body = append(body, row)
+		if !item.Current {
+			button["behaviors"] = callbackBehavior(sessionID, "resume.select", item.SessionID)
 		}
-		elements = append(elements, sectionElement(title, body))
+		elements = append(elements, map[string]any{
+			"tag":                "column_set",
+			"horizontal_spacing": "8px",
+			"columns": []any{
+				map[string]any{"tag": "column", "width": "weighted", "weight": 1, "vertical_align": "center", "elements": []any{text}},
+				map[string]any{"tag": "column", "width": "auto", "vertical_align": "center", "elements": []any{button}},
+			},
+		})
 	}
 	return elements
+}
+
+// truncateResumeSummary keeps a session summary to one short line so /resume rows
+// stay compact; it collapses newlines and clips over-long summaries with an
+// ellipsis.
+func truncateResumeSummary(summary string) string {
+	summary = strings.TrimSpace(summary)
+	if summary == "" {
+		return ""
+	}
+	summary = strings.ReplaceAll(summary, "\n", " ")
+	const max = 24
+	runes := []rune(summary)
+	if len(runes) > max {
+		return string(runes[:max]) + "…"
+	}
+	return summary
 }
 
 func accessPanelElement(form ConfigForm) map[string]any {

@@ -145,19 +145,19 @@ func TestLocalConfigOverviewMarksOverriddenFields(t *testing.T) {
 	for _, item := range overview.Items {
 		byLabel[item.Label] = item
 	}
-	for _, label := range []string{"Reply mode", "Conversation mode"} {
+	for _, label := range []string{"回复模式", "会话模式"} {
 		if !byLabel[label].Overridden {
 			t.Fatalf("item %q should be marked overridden", label)
 		}
 	}
-	for _, label := range []string{"群消息接收", "响应其他 bot", "Agent bin"} {
+	for _, label := range []string{"群消息接收", "响应其他 bot", "Agent 可执行文件"} {
 		if byLabel[label].Overridden {
 			t.Fatalf("item %q should be inherited, not overridden", label)
 		}
 	}
 	// Effective values flow through GetForChat.
-	if got := byLabel["Conversation mode"].Value; got != string(config.ConversationModeTopic) {
-		t.Fatalf("Conversation mode value = %q, want topic", got)
+	if got := byLabel["会话模式"].Value; got != string(config.ConversationModeTopic) {
+		t.Fatalf("会话模式 value = %q, want topic", got)
 	}
 }
 

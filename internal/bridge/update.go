@@ -8,9 +8,11 @@ import (
 	"strings"
 	"time"
 
+	"lark-agent-bridge/internal/agent"
 	"lark-agent-bridge/internal/buildinfo"
 	"lark-agent-bridge/internal/card"
 	"lark-agent-bridge/internal/config"
+	"lark-agent-bridge/internal/session"
 	bridgeupdate "lark-agent-bridge/internal/update"
 )
 
@@ -33,9 +35,18 @@ func (s *Service) handleHelpCommand(ctx context.Context, msg Message, preference
 	if err := s.Cards.Render(event); err != nil {
 		return err
 	}
+	now := time.Now()
 	if help.ChatID != "" {
-		s.storeHelpContext(sessionID, help.ChatID, time.Now())
+		s.storeHelpContext(sessionID, help.ChatID, now)
 	}
+	// Store the session key behind this help card so the 状态 button can render
+	// the same detailed /status card the /status command would (via the shared
+	// status.refresh/help.status callback), instead of a degraded summary.
+	kind, ok := agent.ParseKind(preference.Agent)
+	if !ok {
+		kind = agent.Claude
+	}
+	s.storeResumeContext(sessionID, sessionKeyForMode(kind, msg, preference.ConversationMode), session.CatalogIdentity{Agent: kind}, now)
 	return nil
 }
 
