@@ -735,6 +735,19 @@ func metaModelText(meta Meta) string {
 }
 
 func metaTokenText(meta Meta) string {
+	if meta.CtxUsedPercent > 0 {
+		dot := "🟢"
+		switch {
+		case meta.CtxUsedPercent >= 85:
+			dot = "🔴"
+		case meta.CtxUsedPercent >= 60:
+			dot = "🟡"
+		}
+		if meta.CtxWindow > 0 {
+			return fmt.Sprintf("%s ctx: %d%% (%s/%s)", dot, meta.CtxUsedPercent, compactInt(meta.CtxTokens), compactInt(meta.CtxWindow))
+		}
+		return fmt.Sprintf("%s ctx: %d%%", dot, meta.CtxUsedPercent)
+	}
 	runTokens := meta.RunTokens
 	totalTokens := meta.TotalTokens
 	if runTokens == 0 && meta.Tokens > 0 {
