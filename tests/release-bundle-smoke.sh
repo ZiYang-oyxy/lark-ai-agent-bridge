@@ -2,7 +2,7 @@
 set -euo pipefail
 
 if [[ $# -ne 2 ]]; then
-  echo "usage: $0 <dist-dir> <vMAJOR.MINOR.PATCH>" >&2
+  echo "usage: $0 <dist-dir> <vMAJOR.MINOR.PATCH[-rc.N]>" >&2
   exit 2
 fi
 

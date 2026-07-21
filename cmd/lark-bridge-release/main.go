@@ -12,9 +12,12 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	bridgeupdate "lark-agent-bridge/internal/update"
 )
@@ -49,7 +52,7 @@ func run(args []string) error {
 
 func runPrepare(args []string) error {
 	if len(args) != 1 {
-		return errors.New("usage: lark-bridge-release prepare vMAJOR.MINOR.PATCH")
+		return errors.New("usage: lark-bridge-release prepare vMAJOR.MINOR.PATCH[-rc.N]")
 	}
 	tag := args[0]
 	canonical, err := canonicalReleaseVersion(tag)
@@ -59,6 +62,9 @@ func runPrepare(args []string) error {
 	if err := requireCleanWorktree(); err != nil {
 		return err
 	}
+	if err := requireReleaseNoteTemplate(); err != nil {
+		return err
+	}
 	latest, _ := gitOutput("tag", "--list", "v*", "--sort=-version:refname")
 	previous := firstLine(latest)
 	if previous != "" {
@@ -66,7 +72,7 @@ func runPrepare(args []string) error {
 		if parseErr != nil {
 			return parseErr
 		}
-		comparison, compareErr := bridgeupdate.CompareStable(canonical, previousCanonical)
+		comparison, compareErr := compareReleaseVersions(canonical, previousCanonical)
 		if compareErr != nil || comparison <= 0 {
 			return fmt.Errorf("release %s must be newer than %s", tag, previous)
 		}
@@ -98,7 +104,7 @@ func runPrepare(args []string) error {
 
 func runTag(args []string) error {
 	if len(args) != 1 {
-		return errors.New("usage: lark-bridge-release tag vMAJOR.MINOR.PATCH")
+		return errors.New("usage: lark-bridge-release tag vMAJOR.MINOR.PATCH[-rc.N]")
 	}
 	tag := args[0]
 	if _, err := canonicalReleaseVersion(tag); err != nil {
@@ -114,6 +120,9 @@ func runTag(args []string) error {
 	tracked, err := gitOutput("ls-files", "--error-unmatch", note)
 	if err != nil || strings.TrimSpace(tracked) == "" {
 		return fmt.Errorf("release note is not tracked: %s", note)
+	}
+	if err := validateReleaseNoteFile(tag); err != nil {
+		return err
 	}
 	if err := command("go", "test", "./..."); err != nil {
 		return fmt.Errorf("release tests: %w", err)
@@ -137,6 +146,9 @@ func runBundle(args []string) error {
 		return err
 	}
 	if err := requireExactAnnotatedTag(tag); err != nil {
+		return err
+	}
+	if err := validateReleaseNoteFile(tag); err != nil {
 		return err
 	}
 	goVersion, err := commandOutput("go", "env", "GOVERSION")
@@ -210,27 +222,86 @@ func parseBundleArgs(args []string) (string, string, error) {
 	if tag == "" && fs.NArg() == 1 {
 		tag = fs.Arg(0)
 	} else if fs.NArg() != 0 {
-		return "", "", errors.New("usage: lark-bridge-release bundle vMAJOR.MINOR.PATCH --base-url https://host/path")
+		return "", "", errors.New("usage: lark-bridge-release bundle vMAJOR.MINOR.PATCH[-rc.N] --base-url https://host/path")
 	}
 	if tag == "" || strings.TrimSpace(*baseURL) == "" {
-		return "", "", errors.New("usage: lark-bridge-release bundle vMAJOR.MINOR.PATCH --base-url https://host/path")
+		return "", "", errors.New("usage: lark-bridge-release bundle vMAJOR.MINOR.PATCH[-rc.N] --base-url https://host/path")
 	}
 	return tag, strings.TrimSpace(*baseURL), nil
 }
 
 func canonicalReleaseVersion(tag string) (string, error) {
-	if !strings.HasPrefix(tag, "v") || len(tag) == 1 {
-		return "", fmt.Errorf("release tag %q must use vMAJOR.MINOR.PATCH", tag)
-	}
 	canonical := strings.TrimPrefix(tag, "v")
-	if _, err := bridgeupdate.CompareStable(canonical, canonical); err != nil {
-		return "", fmt.Errorf("invalid stable release tag %q: %w", tag, err)
+	if !strings.HasPrefix(tag, "v") || !releaseVersionPattern.MatchString(canonical) {
+		return "", fmt.Errorf("release tag %q must use vMAJOR.MINOR.PATCH or vMAJOR.MINOR.PATCH-rc.N", tag)
 	}
 	return canonical, nil
 }
 
+var releaseVersionPattern = regexp.MustCompile(`^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(?:-rc\.(0|[1-9][0-9]*))?$`)
+
+func compareReleaseVersions(a, b string) (int, error) {
+	parse := func(value string) ([4]uint64, bool, error) {
+		var numbers [4]uint64
+		match := releaseVersionPattern.FindStringSubmatch(value)
+		if match == nil {
+			return numbers, false, fmt.Errorf("invalid release version %q", value)
+		}
+		for index := 1; index <= 3; index++ {
+			number, err := strconv.ParseUint(match[index], 10, 64)
+			if err != nil {
+				return numbers, false, err
+			}
+			numbers[index-1] = number
+		}
+		if match[4] == "" {
+			return numbers, false, nil
+		}
+		rc, err := strconv.ParseUint(match[4], 10, 64)
+		if err != nil {
+			return numbers, false, err
+		}
+		numbers[3] = rc
+		return numbers, true, nil
+	}
+	av, arc, err := parse(a)
+	if err != nil {
+		return 0, err
+	}
+	bv, brc, err := parse(b)
+	if err != nil {
+		return 0, err
+	}
+	for index := 0; index < 3; index++ {
+		if av[index] < bv[index] {
+			return -1, nil
+		}
+		if av[index] > bv[index] {
+			return 1, nil
+		}
+	}
+	if arc != brc {
+		if arc {
+			return -1, nil
+		}
+		return 1, nil
+	}
+	if arc {
+		if av[3] < bv[3] {
+			return -1, nil
+		}
+		if av[3] > bv[3] {
+			return 1, nil
+		}
+	}
+	return 0, nil
+}
+
 func renderReleaseNotes(tag string, subjects []string) string {
-	groups := map[string][]string{"Breaking": {}, "Features": {}, "Fixes": {}, "Other": {}}
+	groups := make(map[string][]string, len(releaseNoteSections))
+	for _, section := range releaseNoteSections {
+		groups[section] = nil
+	}
 	for _, subject := range subjects {
 		subject = strings.TrimSpace(subject)
 		if subject == "" {
@@ -238,13 +309,13 @@ func renderReleaseNotes(tag string, subjects []string) string {
 		}
 		prefix, description, hasColon := strings.Cut(subject, ":")
 		description = strings.TrimSpace(description)
-		group := "Other"
+		group := "Miscellaneous"
 		if hasColon && strings.Contains(prefix, "!") {
-			group = "Breaking"
-		} else if hasColon && strings.HasPrefix(prefix, "feat") {
+			group = "Breaking Changes"
+		} else if hasColon && conventionalCommitType(prefix) == "feat" {
 			group = "Features"
-		} else if hasColon && strings.HasPrefix(prefix, "fix") {
-			group = "Fixes"
+		} else if hasColon && conventionalCommitType(prefix) == "fix" {
+			group = "Bug Fixes"
 		}
 		if !hasColon || description == "" {
 			description = subject
@@ -253,16 +324,138 @@ func renderReleaseNotes(tag string, subjects []string) string {
 	}
 	var output strings.Builder
 	fmt.Fprintf(&output, "# %s\n", tag)
-	for _, group := range []string{"Breaking", "Features", "Fixes", "Other"} {
+	for _, group := range releaseNoteSections {
+		fmt.Fprintf(&output, "\n## %s\n\n", group)
 		if len(groups[group]) == 0 {
+			output.WriteString("- 无。\n")
 			continue
 		}
-		fmt.Fprintf(&output, "\n## %s\n\n", group)
 		for _, item := range groups[group] {
 			fmt.Fprintf(&output, "- %s\n", item)
 		}
 	}
 	return output.String()
+}
+
+var releaseNoteSections = []string{
+	"Breaking Changes",
+	"Features",
+	"Bug Fixes",
+	"Upgrade Notes",
+	"Miscellaneous",
+}
+
+func conventionalCommitType(prefix string) string {
+	prefix = strings.TrimSuffix(strings.TrimSpace(prefix), "!")
+	if index := strings.IndexByte(prefix, '('); index >= 0 {
+		prefix = prefix[:index]
+	}
+	return prefix
+}
+
+func requireReleaseNoteTemplate() error {
+	data, err := os.ReadFile(filepath.Join("docs", "releases", "TEMPLATE.md"))
+	if err != nil {
+		return fmt.Errorf("read release note template: %w", err)
+	}
+	template := string(data)
+	position := 0
+	for _, section := range releaseNoteSections {
+		heading := "## " + section
+		relative := strings.Index(template[position:], heading)
+		if relative < 0 {
+			return fmt.Errorf("release note template is missing ordered section %q", section)
+		}
+		position += relative + len(heading)
+	}
+	return nil
+}
+
+func validateReleaseNoteFile(tag string) error {
+	path := filepath.Join("docs", "releases", tag+".md")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Errorf("read release note: %w", err)
+	}
+	if err := validateReleaseNote(tag, data); err != nil {
+		return fmt.Errorf("invalid release note %s: %w", path, err)
+	}
+	return nil
+}
+
+func validateReleaseNote(tag string, data []byte) error {
+	if !utf8.Valid(data) {
+		return errors.New("content must be UTF-8")
+	}
+	content := strings.ReplaceAll(string(data), "\r\n", "\n")
+	lines := strings.Split(content, "\n")
+	titleSeen := false
+	nextSection := 0
+	currentSection := -1
+	bulletCounts := make([]int, len(releaseNoteSections))
+	hasEmptyMarker := make([]bool, len(releaseNoteSections))
+	seenBullets := make(map[string]string)
+
+	for lineNumber, raw := range lines {
+		line := strings.TrimSpace(raw)
+		if line == "" {
+			continue
+		}
+		if !titleSeen {
+			if line != "# "+tag {
+				return fmt.Errorf("line %d must be exact title %q", lineNumber+1, "# "+tag)
+			}
+			titleSeen = true
+			continue
+		}
+		if strings.HasPrefix(line, "## ") {
+			if nextSection >= len(releaseNoteSections) {
+				return fmt.Errorf("line %d has unexpected section %q", lineNumber+1, line)
+			}
+			expected := "## " + releaseNoteSections[nextSection]
+			if line != expected {
+				return fmt.Errorf("line %d must be section %q, got %q", lineNumber+1, expected, line)
+			}
+			currentSection = nextSection
+			nextSection++
+			continue
+		}
+		if strings.HasPrefix(line, "#") {
+			return fmt.Errorf("line %d has an unsupported heading %q", lineNumber+1, line)
+		}
+		if !strings.HasPrefix(line, "- ") || currentSection < 0 {
+			return fmt.Errorf("line %d must be a bullet under a template section", lineNumber+1)
+		}
+		item := strings.TrimSpace(strings.TrimPrefix(line, "- "))
+		if item == "" {
+			return fmt.Errorf("line %d has an empty bullet", lineNumber+1)
+		}
+		bulletCounts[currentSection]++
+		if item == "无。" {
+			hasEmptyMarker[currentSection] = true
+			continue
+		}
+		if previousSection, exists := seenBullets[item]; exists {
+			return fmt.Errorf("line %d duplicates a bullet from %s", lineNumber+1, previousSection)
+		}
+		seenBullets[item] = releaseNoteSections[currentSection]
+	}
+
+	if !titleSeen {
+		return errors.New("exact release title is missing")
+	}
+	if nextSection != len(releaseNoteSections) {
+		return fmt.Errorf("missing section %q", releaseNoteSections[nextSection])
+	}
+	for index, section := range releaseNoteSections {
+		if bulletCounts[index] == 0 {
+			return fmt.Errorf("section %q must contain at least one bullet", section)
+		}
+		if hasEmptyMarker[index] && bulletCounts[index] != 1 {
+			return fmt.Errorf("section %q cannot combine %q with other bullets", section, "无。")
+		}
+	}
+	return nil
 }
 
 func writeBundleMetadata(dir, tag, baseURL string, publishedAt time.Time) (bridgeupdate.Manifest, error) {
@@ -434,9 +627,9 @@ func releaseUsage() string {
 	return `lark-bridge-release
 
 Usage:
-  lark-bridge-release prepare vMAJOR.MINOR.PATCH
-  lark-bridge-release tag vMAJOR.MINOR.PATCH
-  lark-bridge-release bundle vMAJOR.MINOR.PATCH --base-url https://host/path
+  lark-bridge-release prepare vMAJOR.MINOR.PATCH[-rc.N]
+  lark-bridge-release tag vMAJOR.MINOR.PATCH[-rc.N]
+  lark-bridge-release bundle vMAJOR.MINOR.PATCH[-rc.N] --base-url https://host/path
 `
 }
 

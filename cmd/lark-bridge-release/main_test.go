@@ -18,7 +18,9 @@ func TestCanonicalReleaseVersion(t *testing.T) {
 	}{
 		{input: "v1.2.3", canonical: "1.2.3", ok: true},
 		{input: "1.2.3"},
-		{input: "v1.2.3-rc.1"},
+		{input: "v1.2.3-rc.1", canonical: "1.2.3-rc.1", ok: true},
+		{input: "v1.2.3-rc.0", canonical: "1.2.3-rc.0", ok: true},
+		{input: "v1.2.3-beta.1"},
 		{input: "v01.2.3"},
 	} {
 		got, err := canonicalReleaseVersion(tc.input)
@@ -27,6 +29,22 @@ func TestCanonicalReleaseVersion(t *testing.T) {
 		}
 		if !tc.ok && err == nil {
 			t.Fatalf("canonicalReleaseVersion(%q) accepted", tc.input)
+		}
+	}
+}
+
+func TestCompareReleaseVersions(t *testing.T) {
+	for _, tc := range []struct {
+		a, b string
+		want int
+	}{
+		{a: "1.2.3-rc.1", b: "1.2.3-rc.0", want: 1},
+		{a: "1.2.3", b: "1.2.3-rc.9", want: 1},
+		{a: "1.2.4-rc.0", b: "1.2.3", want: 1},
+	} {
+		got, err := compareReleaseVersions(tc.a, tc.b)
+		if err != nil || got != tc.want {
+			t.Fatalf("compareReleaseVersions(%q,%q) = %d,%v", tc.a, tc.b, got, err)
 		}
 	}
 }
@@ -44,11 +62,64 @@ func TestRenderReleaseNotesGroupsConventionalCommits(t *testing.T) {
 		"fix(update): verify hash",
 		"refactor: simplify client",
 		"feat!: change manifest schema",
+		"featish: do not misclassify",
 	})
-	for _, want := range []string{"# v1.2.3", "## Breaking", "change manifest schema", "## Features", "add cards", "## Fixes", "verify hash", "## Other", "simplify client"} {
+	for _, want := range []string{
+		"# v1.2.3",
+		"## Features", "add cards",
+		"## Bug Fixes", "verify hash",
+		"## Breaking Changes", "change manifest schema",
+		"## Miscellaneous", "simplify client", "do not misclassify",
+		"## Upgrade Notes", "- 无。",
+	} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("release notes missing %q:\n%s", want, got)
 		}
+	}
+}
+
+func TestReleaseNoteTemplateMatchesGeneratedSections(t *testing.T) {
+	t.Chdir(filepath.Join("..", ".."))
+	if err := requireReleaseNoteTemplate(); err != nil {
+		t.Fatal(err)
+	}
+	template, err := os.ReadFile(filepath.Join("docs", "releases", "TEMPLATE.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, section := range releaseNoteSections {
+		if strings.Count(string(template), "## "+section) != 1 {
+			t.Fatalf("template must contain exactly one %q section", section)
+		}
+	}
+}
+
+func TestValidateReleaseNoteEnforcesStructuredTemplate(t *testing.T) {
+	valid := renderReleaseNotes("v1.2.3", []string{
+		"feat: add cards",
+		"fix: verify hash",
+		"docs: explain deployment",
+	})
+	if err := validateReleaseNote("v1.2.3", []byte(valid)); err != nil {
+		t.Fatalf("valid note rejected: %v\n%s", err, valid)
+	}
+
+	tests := map[string]string{
+		"wrong title":     strings.Replace(valid, "# v1.2.3", "# v1.2.4", 1),
+		"missing section": strings.Replace(valid, "\n## Bug Fixes\n\n- verify hash\n", "", 1),
+		"wrong order": strings.Replace(valid,
+			"## Breaking Changes\n\n- 无。\n\n## Features\n\n- add cards",
+			"## Features\n\n- add cards\n\n## Breaking Changes\n\n- 无。", 1),
+		"prose outside bullet":     strings.Replace(valid, "- add cards", "add cards", 1),
+		"empty mixed with content": strings.Replace(valid, "## Upgrade Notes\n\n- 无。", "## Upgrade Notes\n\n- 无。\n- restart", 1),
+		"duplicate bullet":         strings.Replace(valid, "## Upgrade Notes\n\n- 无。", "## Upgrade Notes\n\n- add cards", 1),
+	}
+	for name, note := range tests {
+		t.Run(name, func(t *testing.T) {
+			if err := validateReleaseNote("v1.2.3", []byte(note)); err == nil {
+				t.Fatalf("invalid note accepted:\n%s", note)
+			}
+		})
 	}
 }
 
