@@ -55,6 +55,19 @@ func TestResumeScenarioClassifiesMissingResumeArgvAsProduct(t *testing.T) {
 	}
 }
 
+func TestResumeScenarioAcceptsCompactRowsWithoutVisibleSessionIDs(t *testing.T) {
+	fake := newFakeResumeDrivers()
+	rc := newRunnerContext(t)
+	rc.Drivers = fake.driverSet()
+	rc.SetValue(resumeSeedKey, "TESTSEED1234")
+
+	result := NewRunner().Run(context.Background(), ResumeScenario(), rc)
+
+	if result.Status != "passed" {
+		t.Fatalf("result = %#v", result)
+	}
+}
+
 type fakeResumeDrivers struct {
 	mark            int64
 	nextSource      int
@@ -63,6 +76,7 @@ type fakeResumeDrivers struct {
 	plans           map[string]AgentFixturePlan
 	invocations     map[string]map[string]AgentInvocation
 	completed       []string
+	summaries       map[string]string
 	selected        string
 	busy            bool
 	restarts        int
@@ -73,7 +87,7 @@ type fakeResumeDrivers struct {
 }
 
 func newFakeResumeDrivers() *fakeResumeDrivers {
-	return &fakeResumeDrivers{bodies: map[string]string{}, plans: map[string]AgentFixturePlan{}, invocations: map[string]map[string]AgentInvocation{}}
+	return &fakeResumeDrivers{bodies: map[string]string{}, plans: map[string]AgentFixturePlan{}, invocations: map[string]map[string]AgentInvocation{}, summaries: map[string]string{}}
 }
 
 func (f *fakeResumeDrivers) driverSet() Drivers {
@@ -135,11 +149,11 @@ func (f *fakeResumeDrivers) WaitReply(_ context.Context, _ int64, source string)
 	case body == "/resume":
 		var list []string
 		for i := len(f.completed) - 1; i >= 0 && len(list) < 10; i-- {
-			list = append(list, f.completed[i])
+			list = append(list, f.summaries[f.completed[i]])
 		}
 		text = strings.Join(list, "\n")
 		if f.selected != "" {
-			text += "\n当前 " + f.selected
+			text += "\n当前 " + f.summaries[f.selected]
 		}
 	case strings.HasPrefix(body, "/resume "):
 		target := strings.TrimPrefix(body, "/resume ")
@@ -159,6 +173,7 @@ func (f *fakeResumeDrivers) WaitReply(_ context.Context, _ int64, source string)
 		text = plan.Text
 		if !plan.Block {
 			f.completed = append(f.completed, plan.SessionID)
+			f.summaries[plan.SessionID] = plan.Text
 			f.selected = plan.SessionID
 		}
 	}
