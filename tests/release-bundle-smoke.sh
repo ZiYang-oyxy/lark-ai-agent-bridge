@@ -37,6 +37,6 @@ jq -e --arg version "$canonical" '
 
 (cd "$version_dir" && shasum -a 256 -c SHA256SUMS)
 file "$version_dir/lark-agent-bridge-linux-amd64" | grep -q 'ELF 64-bit'
-file "$version_dir/lark-agent-bridge-darwin-arm64" | grep -q 'Mach-O 64-bit arm64'
+file "$version_dir/lark-agent-bridge-darwin-arm64" | grep -Eq 'Mach-O 64-bit .*arm64'
 
 echo "release bundle ok: $tag"
