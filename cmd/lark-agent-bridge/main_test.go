@@ -1,7 +1,9 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -16,12 +18,45 @@ import (
 	"lark-agent-bridge/internal/agent"
 	"lark-agent-bridge/internal/audit"
 	"lark-agent-bridge/internal/bridge"
+	"lark-agent-bridge/internal/buildinfo"
 	"lark-agent-bridge/internal/card"
 	"lark-agent-bridge/internal/config"
 	"lark-agent-bridge/internal/feishu"
 	"lark-agent-bridge/internal/schedule"
 	"lark-agent-bridge/internal/session"
 )
+
+func TestRunVersionJSONReportsBuildInfo(t *testing.T) {
+	oldVersion, oldCommit, oldBuildTime := buildinfo.Version, buildinfo.Commit, buildinfo.BuildTime
+	t.Cleanup(func() {
+		buildinfo.Version, buildinfo.Commit, buildinfo.BuildTime = oldVersion, oldCommit, oldBuildTime
+	})
+	buildinfo.Version, buildinfo.Commit, buildinfo.BuildTime = "1.2.3", "abc123", "2026-07-21T12:00:00Z"
+	var out bytes.Buffer
+	if err := runVersion([]string{"--json"}, &out); err != nil {
+		t.Fatal(err)
+	}
+	var got buildinfo.Info
+	if err := json.Unmarshal(out.Bytes(), &got); err != nil {
+		t.Fatalf("decode version output: %v\n%s", err, out.String())
+	}
+	if got.Version != "1.2.3" || got.Commit != "abc123" || got.GOOS == "" || got.GOARCH == "" {
+		t.Fatalf("version output = %#v", got)
+	}
+}
+
+func TestRunVersionHumanPrefixesReleaseVersion(t *testing.T) {
+	old := buildinfo.Version
+	t.Cleanup(func() { buildinfo.Version = old })
+	buildinfo.Version = "1.2.3"
+	var out bytes.Buffer
+	if err := runVersion(nil, &out); err != nil {
+		t.Fatal(err)
+	}
+	if got := out.String(); !strings.Contains(got, "v1.2.3") {
+		t.Fatalf("human version output = %q", got)
+	}
+}
 
 type serveCardKitClientFake struct {
 	fullUpdates    int
