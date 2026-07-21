@@ -2168,6 +2168,9 @@ func TestServiceStopCancelsActiveOneShotRun(t *testing.T) {
 	if result.Event == nil || result.Event.Type != "stopped" || !result.Event.StopButton.Disabled {
 		t.Fatalf("stop action result = %#v, want disabled stopped", result.Event)
 	}
+	if got := result.Event.Segments[len(result.Event.Segments)-1].Text; got != stopRequestedNotice {
+		t.Fatalf("sync stop tail = %q, want %q", got, stopRequestedNotice)
+	}
 	prepared, err := result.PrepareCard(cfg.CardMaxChars)
 	if err != nil {
 		t.Fatalf("PrepareCard() error: %v", err)
@@ -2188,10 +2191,14 @@ func TestServiceStopCancelsActiveOneShotRun(t *testing.T) {
 	if button["disabled"] != true {
 		t.Fatalf("sync stop button = %#v, want disabled", button)
 	}
+	waitForSessionNoActiveBatch(t, svc, session.Key{Agent: agent.Claude, ChatID: "chat"})
 	events := renderer.Events()
 	last := events[len(events)-1]
 	if last.Type != "stopped" || !last.StopButton.Disabled || last.HeaderTemplate != "grey" {
 		t.Fatalf("stop event = %#v", last)
+	}
+	if got := last.Segments[len(last.Segments)-1].Text; got != stopRequestedNotice {
+		t.Fatalf("terminal stop tail = %q, want %q", got, stopRequestedNotice)
 	}
 }
 
@@ -2225,8 +2232,15 @@ func TestServiceTextStopCancelsCurrentScopeAndRejectsArguments(t *testing.T) {
 		t.Fatal(err)
 	}
 	waitForSessionNoActiveBatch(t, svc, key)
-	if !eventsContainText(renderer.Events(), "已请求停止当前任务") {
-		t.Fatalf("events = %#v, want stop acknowledgement", renderer.Events())
+	events := renderer.Events()
+	for _, event := range events {
+		if event.ReplyToMessageID == "stop" {
+			t.Fatalf("events = %#v, active /stop created a reply card", events)
+		}
+	}
+	last := events[len(events)-1]
+	if last.Type != "stopped" || len(last.Segments) == 0 || last.Segments[len(last.Segments)-1].Text != stopRequestedNotice {
+		t.Fatalf("last event = %#v, want in-place stop notice", last)
 	}
 }
 

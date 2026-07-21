@@ -481,13 +481,13 @@ func (s *Service) handleStopCommand(msg Message, cmd Command, preference config.
 		return s.renderTextWithMode("stop-usage", msg.ID, card.SegmentError, "用法：/stop（仅停止当前会话正在运行的任务，并保留排队输入）", preference.ConversationMode)
 	}
 	key := sessionKeyForMode(cmd.Agent, msg, preference.ConversationMode)
-	run, ok := s.cancelActiveRunByKey(key)
+	run, _, ok := s.requestActiveRunStopByKey(key)
 	if !ok {
 		s.Audit.Record(msg.Sender, "batch_stop_ignored", key.ID(), "no active batch")
 		return s.renderTextWithMode("stop-idle", msg.ID, card.SegmentText, "当前会话没有正在运行的任务。", preference.ConversationMode)
 	}
 	s.Audit.Record(msg.Sender, "batch_stop_requested", run.BaseSessionID, run.BatchID)
-	return s.renderTextWithMode("stop-requested", msg.ID, card.SegmentText, "已请求停止当前任务；排队输入将继续执行。", preference.ConversationMode)
+	return nil
 }
 
 func (s *Service) handleResumeCommand(msg Message, cmd Command, preference config.RuntimePreference) error {
@@ -1323,10 +1323,9 @@ func (s *Service) HandleActionResult(ctx context.Context, req ActionRequest) (Ac
 		s.Audit.Record(req.Actor, "schedule_draft_cancelled", req.Value, "card action")
 		return s.renderActionEvent(card.Event{Type: "schedule_cancelled", SessionID: req.SessionID, HeaderTitle: "已取消", HeaderTemplate: "grey", Segments: []card.Segment{{Kind: card.SegmentText, Text: "已取消，不会创建定时任务。"}}})
 	case "stop":
-		if run, ok := s.cancelActiveRun(req.SessionID); ok {
+		if run, event, ok := s.requestActiveRunStop(req.SessionID); ok {
 			s.Audit.Record(req.Actor, "batch_stop_requested", run.BaseSessionID, run.BatchID)
-			event := stoppedActionEvent(req.SessionID)
-			return s.renderActionEvent(event)
+			return actionResultFromEvent(event), nil
 		}
 		return s.renderActionEvent(stoppedActionEvent(req.SessionID))
 	case "create_workdir":
@@ -1594,8 +1593,8 @@ func stoppedActionEvent(sessionID string) card.Event {
 	return card.Event{
 		Type:           "stopped",
 		SessionID:      sessionID,
+		Segments:       []card.Segment{{Kind: card.SegmentText, Text: stopRequestedNotice}},
 		StopButton:     card.StopButton{Visible: true, Disabled: true},
-		Message:        "stopped",
 		HeaderTitle:    "⏹ 已停止 · ⏱ 0s",
 		HeaderTemplate: "grey",
 	}
@@ -1773,38 +1772,35 @@ func (s *Service) activeRun(id string) (activeRun, bool) {
 	return run, ok
 }
 
-func (s *Service) cancelActiveRun(id string) (activeRun, bool) {
+func (s *Service) requestActiveRunStop(id string) (activeRun, card.Event, bool) {
 	s.mu.Lock()
 	run, ok := s.activeRuns[id]
-	if ok {
-		run.Cancel()
-	}
 	s.mu.Unlock()
-	// 在锁外标记停止:阻止排队的 preview 在停止卡发出后再把卡片渲染回"运行中"。
-	if ok && run.Stream != nil {
-		run.Stream.markStopping()
+	if !ok || run.Stream == nil {
+		return run, card.Event{}, false
 	}
-	return run, ok
+	event := run.Stream.requestStop()
+	run.Cancel()
+	return run, event, true
 }
 
-func (s *Service) cancelActiveRunByKey(key session.Key) (activeRun, bool) {
+func (s *Service) requestActiveRunStopByKey(key session.Key) (activeRun, card.Event, bool) {
 	s.mu.Lock()
 	var matched activeRun
 	found := false
 	for _, run := range s.activeRuns {
 		if run.Key == key {
 			matched, found = run, true
-			matched.Cancel()
 			break
 		}
 	}
 	s.mu.Unlock()
-	// Match cancelActiveRun: prevent a queued preview from reverting the run
-	// card to "running" after the text command acknowledged the stop request.
-	if found && matched.Stream != nil {
-		matched.Stream.markStopping()
+	if !found || matched.Stream == nil {
+		return matched, card.Event{}, false
 	}
-	return matched, found
+	event := matched.Stream.requestStop()
+	matched.Cancel()
+	return matched, event, true
 }
 
 func (s *Service) cancelActiveRunByMessageID(messageID string) (activeRun, bool) {

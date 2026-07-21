@@ -40,6 +40,9 @@ func TestCallbackHTTPHandlerDispatchesAction(t *testing.T) {
 	if bodyResp["card"] == nil {
 		t.Fatalf("response body = %#v, want card payload", bodyResp)
 	}
+	if !strings.Contains(rec.Body.String(), stopRequestedNotice) {
+		t.Fatalf("response body = %s, want in-place stop notice", rec.Body.String())
+	}
 	events := renderer.Events()
 	if got := events[len(events)-1]; got.Type != "stopped" || !got.StopButton.Disabled || got.HeaderTemplate != "grey" {
 		t.Fatalf("last event = %#v, want disabled stop", got)
