@@ -118,6 +118,49 @@ func TestResolveNonexistentPassesFormatButNotExists(t *testing.T) {
 	}
 }
 
+func TestResolveEmptyHomeRejectsTilde(t *testing.T) {
+	// An empty (or non-absolute) home must not let a ~ path degrade into an
+	// unvalidated relative path that escapes the blacklist.
+	for _, in := range []string{"~/foo", "~"} {
+		r := ResolveWorkingDirectory(in, "")
+		if r.OK {
+			t.Fatalf("%q with empty home should be rejected: %+v", in, r)
+		}
+		if r.UserVisible == "" {
+			t.Fatalf("%q with empty home should carry a message", in)
+		}
+	}
+	// Non-absolute home is equally unsafe.
+	if r := ResolveWorkingDirectory("~/foo", "relative/home"); r.OK {
+		t.Fatalf("~ with non-absolute home should be rejected: %+v", r)
+	}
+}
+
+func TestResolveSymlinkBypassRejected(t *testing.T) {
+	home := t.TempDir()
+
+	// 1. A literal symlinked system dir: /etc -> /private/etc on macOS. The
+	//    input "/etc" is canonicalized to /private/etc, and the blacklist entry
+	//    is canonicalized the same way, so the bypass is caught.
+	if r := ResolveWorkingDirectory("/etc", home); r.OK {
+		t.Fatalf("/etc (symlink to /private/etc) should be rejected: %+v", r)
+	}
+
+	// 2. A user-created symlink pointing at a blacklisted target must not let a
+	//    caller reach that target through the link. Point link -> /usr (system
+	//    dir). Resolving the link yields /usr, which is blacklisted.
+	link := filepath.Join(home, "escape")
+	if err := os.Symlink("/usr", link); err != nil {
+		t.Skipf("symlink unsupported: %v", err)
+	}
+	if r := ResolveWorkingDirectory(link, home); r.OK {
+		t.Fatalf("symlink to /usr should be rejected after canonicalization: %+v", r)
+	}
+	if r := ResolveWorkingDirectory("~/escape", home); r.OK {
+		t.Fatalf("~ symlink to /usr should be rejected: %+v", r)
+	}
+}
+
 func TestResolveRejectsExistingNonDirectory(t *testing.T) {
 	home := t.TempDir()
 	file := filepath.Join(home, "work", "afile.txt")

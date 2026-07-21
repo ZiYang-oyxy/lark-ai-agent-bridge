@@ -10,7 +10,7 @@ import (
 type Resolution struct {
 	OK          bool   // format + blacklist passed
 	Exists      bool   // realpath resolved to an existing directory
-	Realpath    string // resolved absolute path (set when Exists); else the cleaned abs path
+	Realpath    string // resolved absolute path: full realpath when Exists, else canonical existing-ancestor prefix + not-yet-created tail
 	UserVisible string // Chinese message when !OK
 }
 
@@ -25,11 +25,20 @@ func ResolveWorkingDirectory(input, home string) Resolution {
 	}
 	expanded := input
 	if input == "~" || strings.HasPrefix(input, "~/") {
+		if home == "" || !filepath.IsAbs(home) {
+			return Resolution{UserVisible: "无法展开 ~：未知的 home 目录。"}
+		}
 		expanded = filepath.Join(home, strings.TrimPrefix(strings.TrimPrefix(input, "~"), "/"))
 	} else if !filepath.IsAbs(input) {
 		return Resolution{UserVisible: "请使用绝对路径或 ~ 开头的路径。"}
 	}
 	cleaned := filepath.Clean(expanded)
+	// Defense in depth: never proceed with a non-absolute path, even if a future
+	// caller reuses resolveExistingPrefix or feeds an unexpected home. This
+	// backstops the ~-expansion and IsAbs checks above.
+	if !filepath.IsAbs(cleaned) {
+		return Resolution{UserVisible: "请使用绝对路径或 ~ 开头的路径。"}
+	}
 
 	// realpath if it exists; otherwise resolve the longest existing ancestor and
 	// re-append the missing tail. This keeps the blacklist comparison on a
