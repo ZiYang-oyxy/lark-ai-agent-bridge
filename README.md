@@ -2,6 +2,22 @@
 
 独立的 Feishu/Lark AI agent bridge，用于让用户在飞书里触发 Claude Code 或 Codex 任务，并用 CardKit 卡片同步展示执行状态与结果。
 
+## 使用 AI Agent 安装
+
+在目标 workspace 中打开 AI 编程助手，将仓库或发布链接填入下面的提示词并发送：
+
+```text
+请根据这个仓库或发布链接，将 Lark AI Agent Bridge 安装并接入当前
+workspace：
+<链接>
+
+请自动完成环境检查、下载或构建、配置、后台启动和验证；只在必须由我
+完成的飞书授权步骤时引导我操作。不要让我手动执行命令，安装成功后告诉
+我如何在飞书中开始使用。
+```
+
+推荐使用发布目录中的 `stable/AI_INSTALL.md`；需要固定版本时，使用对应版本目录中的 `AI_INSTALL.md`。用户只需根据 AI 提示完成必要的飞书授权。
+
 当前实现聚焦 CLI one-shot 模式：
 
 - 飞书消息通过 SDK 长连接进入 bridge。
