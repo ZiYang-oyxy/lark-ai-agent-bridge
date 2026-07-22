@@ -516,6 +516,9 @@ func writeAIInstallGuides(versionDir, stableDir, tag, baseURL string, source []b
 		if err := os.WriteFile(guide.path, []byte(content), 0o644); err != nil {
 			return fmt.Errorf("write AI install guide %s: %w", guide.path, err)
 		}
+		if err := os.Chmod(guide.path, 0o644); err != nil {
+			return fmt.Errorf("set AI install guide mode %s: %w", guide.path, err)
+		}
 	}
 	return nil
 }

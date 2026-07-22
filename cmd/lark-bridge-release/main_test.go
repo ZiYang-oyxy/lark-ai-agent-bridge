@@ -188,6 +188,14 @@ func TestWriteAIInstallGuidesUsesFixedAndStableManifestURLs(t *testing.T) {
 	if err := os.MkdirAll(stableDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
+	for _, path := range []string{
+		filepath.Join(versionDir, "AI_INSTALL.md"),
+		filepath.Join(stableDir, "AI_INSTALL.md"),
+	} {
+		if err := os.WriteFile(path, []byte("stale"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
 	source := []byte("# Install\n\nManifest: {{MANIFEST_URL}}\n")
 	if err := writeAIInstallGuides(versionDir, stableDir, "v1.2.3", "https://updates.example/bridge/", source); err != nil {
 		t.Fatal(err)
