@@ -302,6 +302,18 @@ func renderReleaseNotes(tag string, subjects []string) string {
 	for _, section := range releaseNoteSections {
 		groups[section] = nil
 	}
+	type candidate struct {
+		group       string
+		description string
+	}
+	var candidates []candidate
+	bestGroup := make(map[string]string)
+	priority := map[string]int{
+		"Miscellaneous":    1,
+		"Bug Fixes":        2,
+		"Features":         3,
+		"Breaking Changes": 4,
+	}
 	for _, subject := range subjects {
 		subject = strings.TrimSpace(subject)
 		if subject == "" {
@@ -320,7 +332,21 @@ func renderReleaseNotes(tag string, subjects []string) string {
 		if !hasColon || description == "" {
 			description = subject
 		}
-		groups[group] = append(groups[group], description)
+		candidates = append(candidates, candidate{group: group, description: description})
+		if current := bestGroup[description]; current == "" || priority[group] > priority[current] {
+			bestGroup[description] = group
+		}
+	}
+	emitted := make(map[string]struct{}, len(candidates))
+	for _, item := range candidates {
+		if bestGroup[item.description] != item.group {
+			continue
+		}
+		if _, ok := emitted[item.description]; ok {
+			continue
+		}
+		groups[item.group] = append(groups[item.group], item.description)
+		emitted[item.description] = struct{}{}
 	}
 	var output strings.Builder
 	fmt.Fprintf(&output, "# %s\n", tag)

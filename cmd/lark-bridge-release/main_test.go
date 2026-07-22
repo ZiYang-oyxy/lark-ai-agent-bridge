@@ -78,6 +78,23 @@ func TestRenderReleaseNotesGroupsConventionalCommits(t *testing.T) {
 	}
 }
 
+func TestRenderReleaseNotesDeduplicatesIntoHighestPrioritySection(t *testing.T) {
+	got := renderReleaseNotes("v1.2.3", []string{
+		"merge: preserve diagnostics",
+		"feat(bridge): preserve diagnostics",
+	})
+	if strings.Count(got, "- preserve diagnostics\n") != 1 {
+		t.Fatalf("release note duplicate count != 1:\n%s", got)
+	}
+	features := strings.SplitN(got, "## Bug Fixes", 2)[0]
+	if !strings.Contains(features, "## Features\n\n- preserve diagnostics") {
+		t.Fatalf("duplicate was not retained in Features:\n%s", got)
+	}
+	if err := validateReleaseNote("v1.2.3", []byte(got)); err != nil {
+		t.Fatalf("generated release note is invalid: %v\n%s", err, got)
+	}
+}
+
 func TestReleaseNoteTemplateMatchesGeneratedSections(t *testing.T) {
 	t.Chdir(filepath.Join("..", ".."))
 	if err := requireReleaseNoteTemplate(); err != nil {
