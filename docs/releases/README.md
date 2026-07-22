@@ -26,4 +26,15 @@ Release note 使用 [`TEMPLATE.md`](./TEMPLATE.md) 的固定结构，由以下�
   --base-url https://updates.example.com/lark-ai-agent-bridge
 ```
 
-仓库不负责上传。外部发布工具必须先完整上传不可变的 `dist/v1.2.3/`，逐文件下载并验证 SHA-256 后，最后替换 `dist/stable/manifest.json` 对应的线上对象。
+发布目录除双平台 binary、manifest、`SHA256SUMS` 和 Release note 外，还包含面向 AI Agent 的安装入口：
+
+- `dist/<tag>/AI_INSTALL.md`：引用固定版本 manifest，适合可复现安装。
+- `dist/stable/AI_INSTALL.md`：引用 stable manifest，适合 README 和日常分享。
+
+仓库不负责上传。外部发布工具必须按以下顺序上传并回读验证：
+
+1. 完整上传不可变的 `dist/<tag>/`；
+2. 上传 `dist/stable/AI_INSTALL.md`；
+3. 最后原子替换 `dist/stable/manifest.json`。
+
+stable manifest 仍是版本切换的最终提交点。不得先发布指向尚未完整上传版本的 stable manifest。
