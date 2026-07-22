@@ -177,3 +177,61 @@ func TestWriteBundleMetadataUsesExactFilesAndBaseURL(t *testing.T) {
 		t.Fatalf("checksums = %q, %v", checksums, err)
 	}
 }
+
+func TestWriteAIInstallGuidesUsesFixedAndStableManifestURLs(t *testing.T) {
+	dir := t.TempDir()
+	versionDir := filepath.Join(dir, "v1.2.3")
+	stableDir := filepath.Join(dir, "stable")
+	if err := os.MkdirAll(versionDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(stableDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	source := []byte("# Install\n\nManifest: {{MANIFEST_URL}}\n")
+	if err := writeAIInstallGuides(versionDir, stableDir, "v1.2.3", "https://updates.example/bridge/", source); err != nil {
+		t.Fatal(err)
+	}
+
+	versioned, err := os.ReadFile(filepath.Join(versionDir, "AI_INSTALL.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	stable, err := os.ReadFile(filepath.Join(stableDir, "AI_INSTALL.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := string(versioned); !strings.Contains(got, "https://updates.example/bridge/v1.2.3/manifest.json") || strings.Contains(got, "{{MANIFEST_URL}}") {
+		t.Fatalf("versioned guide = %q", got)
+	}
+	if got := string(stable); !strings.Contains(got, "https://updates.example/bridge/stable/manifest.json") || strings.Contains(got, "{{MANIFEST_URL}}") {
+		t.Fatalf("stable guide = %q", got)
+	}
+	if strings.Contains(string(versioned), dir) || strings.Contains(string(stable), dir) {
+		t.Fatalf("guide leaked build path %q", dir)
+	}
+	for _, path := range []string{
+		filepath.Join(versionDir, "AI_INSTALL.md"),
+		filepath.Join(stableDir, "AI_INSTALL.md"),
+	} {
+		info, err := os.Stat(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := info.Mode().Perm(); got != 0o644 {
+			t.Fatalf("%s mode = %o, want 644", path, got)
+		}
+	}
+}
+
+func TestWriteAIInstallGuidesRequiresExactlyOneManifestMarker(t *testing.T) {
+	for _, source := range []string{
+		"# missing\n",
+		"{{MANIFEST_URL}}\n{{MANIFEST_URL}}\n",
+	} {
+		err := writeAIInstallGuides(t.TempDir(), t.TempDir(), "v1.2.3", "https://updates.example/bridge", []byte(source))
+		if err == nil || !strings.Contains(err.Error(), "exactly one {{MANIFEST_URL}} marker") {
+			t.Fatalf("source %q error = %v", source, err)
+		}
+	}
+}

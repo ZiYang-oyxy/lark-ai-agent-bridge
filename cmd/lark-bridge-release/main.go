@@ -204,6 +204,13 @@ func runBundle(args []string) error {
 	if err := os.MkdirAll(stableDir, 0o755); err != nil {
 		return err
 	}
+	guideSource, err := os.ReadFile(filepath.Join("docs", "workflow", "ai-agent-install.md"))
+	if err != nil {
+		return fmt.Errorf("read AI install guide: %w", err)
+	}
+	if err := writeAIInstallGuides(versionDir, stableDir, tag, baseURL, guideSource); err != nil {
+		return err
+	}
 	return writeJSONAtomic(filepath.Join(stableDir, "manifest.json"), manifest)
 }
 
@@ -479,6 +486,35 @@ func validateReleaseNote(tag string, data []byte) error {
 		}
 		if hasEmptyMarker[index] && bulletCounts[index] != 1 {
 			return fmt.Errorf("section %q cannot combine %q with other bullets", section, "无。")
+		}
+	}
+	return nil
+}
+
+const aiInstallManifestMarker = "{{MANIFEST_URL}}"
+
+func writeAIInstallGuides(versionDir, stableDir, tag, baseURL string, source []byte) error {
+	if strings.Count(string(source), aiInstallManifestMarker) != 1 {
+		return errors.New("AI install guide must contain exactly one {{MANIFEST_URL}} marker")
+	}
+	baseURL = strings.TrimRight(baseURL, "/")
+	guides := []struct {
+		path        string
+		manifestURL string
+	}{
+		{
+			path:        filepath.Join(versionDir, "AI_INSTALL.md"),
+			manifestURL: baseURL + "/" + tag + "/manifest.json",
+		},
+		{
+			path:        filepath.Join(stableDir, "AI_INSTALL.md"),
+			manifestURL: baseURL + "/stable/manifest.json",
+		},
+	}
+	for _, guide := range guides {
+		content := strings.Replace(string(source), aiInstallManifestMarker, guide.manifestURL, 1)
+		if err := os.WriteFile(guide.path, []byte(content), 0o644); err != nil {
+			return fmt.Errorf("write AI install guide %s: %w", guide.path, err)
 		}
 	}
 	return nil
