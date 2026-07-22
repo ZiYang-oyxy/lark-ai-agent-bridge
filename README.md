@@ -191,7 +191,7 @@ Bridge 会按引用顺序把图片作为独立的飞书图片消息发送，并�
 
 - **Agent mode**：从 `agents.json` 中选择 `claude` 或 `codex`。也支持 `/agent-mode claude`、`/agent-mode codex` 直接切换。
 - **Agent home**：选 `默认` 时完整继承 executable 的环境；选显式预设时，Claude 注入 `CLAUDE_CONFIG_DIR=<path>`，Codex 注入 `CODEX_HOME=<path>`。
-- **Agent bin**：Claude 的主机默认为 `E2E_CLAUDE_BIN`（默认 `claude`），Codex 的主机默认为 `codex`；其他选项直接使用预设路径。
+- **Agent bin**：Claude 的主机默认为 `E2E_CLAUDE_BIN`（默认 `claude`），并兼容旧部署变量 `LAB_CLAUDE_BIN`；两者同时存在时 `E2E_CLAUDE_BIN` 优先。Codex 的主机默认为 `codex`；其他选项直接使用预设路径。
 
 可选项来自工作目录下的 `.lark-agent-bridge/agents.json`（**不引入任何新的 `E2E_*` 环境变量**）。该文件缺失或非法时回退到内置默认（单个 claude、只有「默认」home 和「主机 claude」bin），不阻断启动，`doctor` 的 `agents_config` 项会给出软告警。Agent mode、home、bin 与其它偏好一起持久化到 `preferences.json`，`/config reset` 一并恢复默认。
 

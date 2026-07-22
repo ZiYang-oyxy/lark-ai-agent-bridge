@@ -43,6 +43,24 @@ func TestLoadFromEnvPreviewDefaults(t *testing.T) {
 	}
 }
 
+func TestLoadFromEnvClaudeBinSupportsLegacyLABVariable(t *testing.T) {
+	t.Setenv("E2E_CLAUDE_BIN", "")
+	t.Setenv("LAB_CLAUDE_BIN", "/workspace/bin/claude")
+
+	if got := LoadFromEnv().ClaudeBin; got != "/workspace/bin/claude" {
+		t.Fatalf("ClaudeBin = %q, want legacy LAB_CLAUDE_BIN value", got)
+	}
+}
+
+func TestLoadFromEnvClaudeBinPrefersE2EVariable(t *testing.T) {
+	t.Setenv("LAB_CLAUDE_BIN", "/legacy/bin/claude")
+	t.Setenv("E2E_CLAUDE_BIN", "/current/bin/claude")
+
+	if got := LoadFromEnv().ClaudeBin; got != "/current/bin/claude" {
+		t.Fatalf("ClaudeBin = %q, want E2E_CLAUDE_BIN value", got)
+	}
+}
+
 func TestLoadFromEnvStrictParsesHTTPSUpdateManifestURL(t *testing.T) {
 	t.Setenv("LAB_UPDATE_MANIFEST_URL", "https://updates.example/bridge/stable/manifest.json")
 	cfg, err := LoadFromEnvStrict()

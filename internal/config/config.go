@@ -103,6 +103,9 @@ func LoadFromEnv() Config {
 	if v := os.Getenv("E2E_DEFAULT_AGENT"); v != "" {
 		cfg.DefaultAgent = v
 	}
+	if v := os.Getenv("LAB_CLAUDE_BIN"); v != "" {
+		cfg.ClaudeBin = v
+	}
 	if v := os.Getenv("E2E_CLAUDE_BIN"); v != "" {
 		cfg.ClaudeBin = v
 	}
