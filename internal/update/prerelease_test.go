@@ -9,6 +9,39 @@ import (
 	"testing"
 )
 
+func TestDerivePrereleaseURL(t *testing.T) {
+	got, ok := derivePrereleaseURL("https://tos.example/lark-ai-agent-bridge-stable-manifest.json")
+	if !ok || got != "https://tos.example/lark-ai-agent-bridge-prerelease-manifest.json" {
+		t.Fatalf("derive = %q ok=%v", got, ok)
+	}
+	if _, ok := derivePrereleaseURL("https://tos.example/no-channel-segment.json"); ok {
+		t.Fatal("URL without -stable- must not derive")
+	}
+}
+
+// TestClientAutoDerivesPrereleaseURL: in prerelease mode with no explicit
+// PrereleaseURL, the client must fetch the derived -prerelease- manifest so
+// enabling developer mode needs zero extra configuration.
+func TestClientAutoDerivesPrereleaseURL(t *testing.T) {
+	c := &Client{
+		ManifestURL: "https://tos.example/lark-ai-agent-bridge-stable-manifest.json",
+		Prerelease:  func() bool { return true },
+	}
+	if got := c.activeURL(); got != "https://tos.example/lark-ai-agent-bridge-prerelease-manifest.json" {
+		t.Fatalf("activeURL = %q, want derived prerelease URL", got)
+	}
+	// Explicit PrereleaseURL overrides derivation.
+	c.PrereleaseURL = "https://tos.example/custom-rc.json"
+	if got := c.activeURL(); got != "https://tos.example/custom-rc.json" {
+		t.Fatalf("explicit PrereleaseURL should win, got %q", got)
+	}
+	// Off => stable regardless.
+	c.Prerelease = func() bool { return false }
+	if got := c.activeURL(); got != c.ManifestURL {
+		t.Fatalf("stable mode must use ManifestURL, got %q", got)
+	}
+}
+
 // TestClientChannelSelection verifies the developer prerelease channel: with
 // the Prerelease callback off, Check follows the stable manifest and ignores
 // the rc build; with it on, Check follows the prerelease manifest and offers

@@ -56,8 +56,10 @@ func (s *Service) develStatusText() string {
 	var b strings.Builder
 	if on {
 		b.WriteString("🛠️ 开发者模式：**已开启**\n升级通道：**预发布（rc）**。`/help` 检查更新时可看到并升级到 rc 版本。")
-		if strings.TrimSpace(s.PrereleaseManifestURL) == "" {
-			b.WriteString("\n\n⚠️ 未配置预发布 manifest（`LAB_UPDATE_PRERELEASE_MANIFEST_URL`），当前仍会回落到 stable 通道。")
+		if strings.TrimSpace(s.PrereleaseManifestURL) != "" {
+			b.WriteString("\n（预发布 manifest 已显式配置。）")
+		} else {
+			b.WriteString("\n（预发布 manifest 由 stable 通道自动推导 `-stable-`→`-prerelease-`；如推导不适用可设 `LAB_UPDATE_PRERELEASE_MANIFEST_URL` 覆盖。）")
 		}
 	} else {
 		b.WriteString("🛠️ 开发者模式：**已关闭**\n升级通道：**stable（正式版）**。用 `/.devel 1` 开启预发布通道。")

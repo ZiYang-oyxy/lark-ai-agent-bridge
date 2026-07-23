@@ -80,14 +80,35 @@ func (c *Client) prerelease() bool {
 	return c.Prerelease != nil && c.Prerelease()
 }
 
-// activeURL resolves the manifest URL for the current channel. Prerelease mode
-// uses PrereleaseURL when configured, otherwise it degrades to stable rather
-// than erroring — a missing prerelease channel simply means "nothing newer".
+// activeURL resolves the manifest URL for the current channel. In prerelease
+// mode it uses an explicit PrereleaseURL when set, otherwise it derives the
+// prerelease manifest from the stable URL by swapping the "-stable-" channel
+// segment for "-prerelease-" — so enabling developer mode needs no extra
+// configuration when the two channels follow the standard naming. If neither
+// applies it degrades to stable rather than erroring (a missing prerelease
+// channel simply means "nothing newer").
 func (c *Client) activeURL() string {
-	if c.prerelease() && strings.TrimSpace(c.PrereleaseURL) != "" {
-		return c.PrereleaseURL
+	if !c.prerelease() {
+		return c.ManifestURL
+	}
+	if url := strings.TrimSpace(c.PrereleaseURL); url != "" {
+		return url
+	}
+	if derived, ok := derivePrereleaseURL(c.ManifestURL); ok {
+		return derived
 	}
 	return c.ManifestURL
+}
+
+// derivePrereleaseURL turns a stable manifest URL into its prerelease sibling
+// by replacing the "-stable-" segment with "-prerelease-". Returns false when
+// the URL does not contain that segment, so the caller can fall back safely.
+func derivePrereleaseURL(stableURL string) (string, bool) {
+	const stableSeg = "-stable-"
+	if !strings.Contains(stableURL, stableSeg) {
+		return "", false
+	}
+	return strings.Replace(stableURL, stableSeg, "-prerelease-", 1), true
 }
 
 func (c *Client) Check(ctx context.Context, currentVersion string) (CheckResult, error) {

@@ -18,24 +18,31 @@ func TestCurrentUsesInjectedValuesAndRuntimePlatform(t *testing.T) {
 	}
 }
 
-func TestIsReleaseRequiresCanonicalStableSemver(t *testing.T) {
+func TestIsReleaseAcceptsStableAndRc(t *testing.T) {
 	old := Version
 	t.Cleanup(func() { Version = old })
 	for _, tc := range []struct {
-		version string
-		want    bool
+		version    string
+		release    bool // IsRelease: stable OR rc
+		stableOnly bool // IsStableRelease: stable only
 	}{
 		{version: "dev"},
 		{version: "v1.2.3"},
-		{version: "1.2.3-rc.1"},
 		{version: "1.2"},
 		{version: "01.2.3"},
-		{version: "1.2.3", want: true},
-		{version: "0.0.0", want: true},
+		{version: "1.2.3-rc.0"},                // non-canonical rc
+		{version: "1.2.3-beta.1"},              // unsupported suffix
+		{version: "1.2.3-rc.1", release: true}, // rc is a release, not stable
+		{version: "0.1.4-rc.2", release: true},
+		{version: "1.2.3", release: true, stableOnly: true},
+		{version: "0.0.0", release: true, stableOnly: true},
 	} {
 		Version = tc.version
-		if got := IsRelease(); got != tc.want {
-			t.Fatalf("IsRelease() for %q = %t, want %t", tc.version, got, tc.want)
+		if got := IsRelease(); got != tc.release {
+			t.Fatalf("IsRelease() for %q = %t, want %t", tc.version, got, tc.release)
+		}
+		if got := IsStableRelease(); got != tc.stableOnly {
+			t.Fatalf("IsStableRelease() for %q = %t, want %t", tc.version, got, tc.stableOnly)
 		}
 	}
 }
