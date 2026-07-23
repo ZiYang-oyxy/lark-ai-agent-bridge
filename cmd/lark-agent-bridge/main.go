@@ -429,6 +429,7 @@ func runServe(args []string) error {
 	svc.Reactions = sender
 	svc.OutputImages = sender
 	svc.MessageDeleter = sender
+	svc.Notifier = sender
 	actionGateway := bridge.ActionGateway{Service: svc, Fencer: cardRouter}
 	actionHandler, callbackHandler := newServeActionTransports(actionGateway, cfg.CardMaxChars)
 	svc.ProcessRecoveryNotices(ctx)

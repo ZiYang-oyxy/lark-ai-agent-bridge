@@ -32,6 +32,52 @@ func TestConfigSavePersistsGroupModeAndBotSwitch(t *testing.T) {
 	}
 }
 
+func TestConfigSaveTogglesNotifyOnComplete(t *testing.T) {
+	cfg := testConfig(t)
+	store, _ := testPreferenceStore(t, config.RuntimePreference{Model: "default", Effort: "low"}, cfg.AllowedModels)
+	svc := NewService(cfg, card.NewFakeRenderer(), newFakeRunner(), audit.NewRecorder())
+	svc.Preferences = store
+	if store.Get().NotifyOnComplete {
+		t.Fatalf("precondition: NotifyOnComplete should default false")
+	}
+	// Turn it on via the /config form.
+	if _, err := svc.HandleActionResult(context.Background(), ActionRequest{
+		SessionID: "config", ActionID: "config.save", Actor: "owner",
+		FormValues: map[string]string{
+			"model": "default", "effort": "low", "reply_mode": "append", "conversation_mode": "chat",
+			"group_message_mode": "mention_only", "respond_to_bots": "false", "notify_on_complete": "true",
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if !store.Get().NotifyOnComplete {
+		t.Fatalf("save did not enable NotifyOnComplete: %#v", store.Get())
+	}
+	// A save that omits the field must preserve the current (enabled) value.
+	if _, err := svc.HandleActionResult(context.Background(), ActionRequest{
+		SessionID: "config", ActionID: "config.save", Actor: "owner",
+		FormValues: map[string]string{"model": "default", "effort": "low", "reply_mode": "append", "conversation_mode": "chat"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if !store.Get().NotifyOnComplete {
+		t.Fatalf("omitting notify_on_complete erased the setting: %#v", store.Get())
+	}
+	// And back off again.
+	if _, err := svc.HandleActionResult(context.Background(), ActionRequest{
+		SessionID: "config", ActionID: "config.save", Actor: "owner",
+		FormValues: map[string]string{
+			"model": "default", "effort": "low", "reply_mode": "append", "conversation_mode": "chat",
+			"group_message_mode": "mention_only", "respond_to_bots": "false", "notify_on_complete": "false",
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if store.Get().NotifyOnComplete {
+		t.Fatalf("save did not disable NotifyOnComplete: %#v", store.Get())
+	}
+}
+
 func TestConfigSaveFromOldCardPreservesGroupSettings(t *testing.T) {
 	cfg := testConfig(t)
 	store, _ := testPreferenceStore(t, config.RuntimePreference{Model: "default", Effort: "low", GroupMessageMode: config.GroupMessageModeAll, RespondToBots: true}, cfg.AllowedModels)

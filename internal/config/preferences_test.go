@@ -305,6 +305,38 @@ func TestPreferenceStorePersistsGroupMessageModesAndBotSwitch(t *testing.T) {
 	}
 }
 
+func TestPreferenceStoreNotifyOnCompleteDefaultsFalseAndPersistsToggle(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "preferences.json")
+	defaults := RuntimePreference{Model: "default", Effort: "low", GroupMessageMode: GroupMessageModeMentionOnly}
+	store, err := OpenPreferenceStore(path, defaults, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Absent from defaults / legacy snapshots ⇒ false, no panic.
+	if store.Get().NotifyOnComplete {
+		t.Fatalf("NotifyOnComplete default = true, want false")
+	}
+	// Saving the toggle on flips it and survives a reopen.
+	want := RuntimePreference{Model: "opus", Effort: "high", GroupMessageMode: GroupMessageModeMentionOnly, NotifyOnComplete: true}
+	if err := store.Set(want); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+	reopened, err := OpenPreferenceStore(path, defaults, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reopened.Get().NotifyOnComplete {
+		t.Fatalf("reopened NotifyOnComplete = false, want true")
+	}
+	// Reset falls back to the (false) default.
+	if err := store.Reset(); err != nil {
+		t.Fatal(err)
+	}
+	if store.Get().NotifyOnComplete {
+		t.Fatalf("after reset NotifyOnComplete = true, want false")
+	}
+}
+
 func TestPreferenceStoreResetRestoresGroupMessageEnvironmentDefaults(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "preferences.json")
 	defaults := RuntimePreference{Model: "default", Effort: "low", GroupMessageMode: GroupMessageModeAll, RespondToBots: true}

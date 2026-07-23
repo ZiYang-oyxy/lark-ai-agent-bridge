@@ -70,6 +70,7 @@ type Service struct {
 	CardTarget            reply.CardTarget
 	Reactions             feishu.ReactionSink
 	OutputImages          feishu.ImageSender
+	Notifier              feishu.Sender
 	MessageDeleter        MessageDeleter
 	SequenceResolver      session.RenderRefSequenceResolver
 	RestoreNotices        []session.RecoveryNotice
@@ -957,7 +958,7 @@ func (s *Service) runWithPreference(ctx context.Context, cmd Command, msg Messag
 	bin, home := s.resolveAgentBinHome(cmd.Agent, preference)
 	receivedAt := time.Now()
 	debounceWindow := DebounceFor(msg)
-	input := session.Input{ID: msg.ID, Sender: msg.Sender, Text: text, Attachments: attachments, ReplyToMessageID: msg.ID, CardSessionID: cardSessionID, WorkDir: workDir, RequestedModel: preference.Model, RequestedEffort: preference.Effort, AgentBin: bin, AgentHome: home, ReplyMode: preference.ReplyMode, ConversationMode: preference.ConversationMode, BridgeInstructionsVersion: bridgeinstructions.CurrentVersion, ScheduleKind: cmd.ScheduleKind, ScheduleTargetThreadID: msg.ThreadID, IsGroup: msg.IsGroup, Time: effectiveMessageTime(msg), DebounceUntil: receivedAt.Add(debounceWindow), DebounceWindow: debounceWindow, State: session.InputDebouncing, Reset: cmd.Reset || cmd.ScheduleKind != ""}
+	input := session.Input{ID: msg.ID, Sender: msg.Sender, Text: text, Attachments: attachments, ReplyToMessageID: msg.ID, CardSessionID: cardSessionID, WorkDir: workDir, RequestedModel: preference.Model, RequestedEffort: preference.Effort, AgentBin: bin, AgentHome: home, ReplyMode: preference.ReplyMode, ConversationMode: preference.ConversationMode, NotifyOnComplete: preference.NotifyOnComplete, BridgeInstructionsVersion: bridgeinstructions.CurrentVersion, ScheduleKind: cmd.ScheduleKind, ScheduleTargetThreadID: msg.ThreadID, IsGroup: msg.IsGroup, Time: effectiveMessageTime(msg), DebounceUntil: receivedAt.Add(debounceWindow), DebounceWindow: debounceWindow, State: session.InputDebouncing, Reset: cmd.Reset || cmd.ScheduleKind != ""}
 	accepted, queued, err := s.Sessions.AcceptAndEnqueue(key, input, receivedAt, s.dedupTTL(), s.dedupMaxEntries(), s.batchLimits())
 	if err != nil {
 		action := "queue_rejected"
@@ -1187,7 +1188,48 @@ func (s *Service) executeBatch(ctx context.Context, sess session.Session, batch 
 	if err == nil {
 		err = finishErr
 	}
+	s.notifyOnCompleteIfEnabled(ctx, sess, batch, status)
 	s.completeScheduleBatch(batch, status, err, time.Now())
+}
+
+// notifyOnCompleteIfEnabled 在 run 成功收敛为 completed 终态后，可选地补发一条简短的
+// thread reply 文本消息。终态卡片是 CardKit 原地 update、默认不产生红点，而新消息天然
+// 产生未读提醒；群里 @ 发起人做定向提醒。整个行为由 NotifyOnComplete 偏好（默认关闭）
+// 控制，且绝不影响主完成流程：任何前置不满足或发送失败都只记 audit、不返回 error、不 panic。
+func (s *Service) notifyOnCompleteIfEnabled(ctx context.Context, sess session.Session, batch session.Batch, status session.InputState) {
+	// 仅成功完成才通知：stopped/failed 不打扰。
+	if status != session.InputCompleted {
+		return
+	}
+	if s.Notifier == nil || len(batch.Inputs) == 0 {
+		return
+	}
+	origin := batch.Inputs[0]
+	if !origin.NotifyOnComplete {
+		return
+	}
+	if strings.TrimSpace(origin.ReplyToMessageID) == "" {
+		return
+	}
+	inThread := origin.ConversationMode == config.ConversationModeTopic
+	reply := feishu.Reply{
+		ShouldReply:      true,
+		ReplyToMessageID: origin.ReplyToMessageID,
+		ReplyInThread:    inThread,
+		Message:          "✅ 已完成",
+		Kind:             feishu.ReplyKindFinal,
+	}
+	// 群聊/话题里 @ 发起人以定向提醒；私聊 @ 无意义，留空。
+	if origin.IsGroup && strings.TrimSpace(origin.Sender) != "" {
+		reply.MentionSender = true
+		reply.MentionOpenID = origin.Sender
+	}
+	// run 结束后 ctx 可能已被取消（尤其 topic/超时场景），补发的通知不应受其影响。
+	if _, err := s.Notifier.SendReply(context.WithoutCancel(ctx), reply); err != nil {
+		s.Audit.Record("system", "notify_on_complete_failed", sess.ID, err.Error())
+		return
+	}
+	s.Audit.Record("system", "notify_on_complete_sent", sess.ID, "")
 }
 
 func (s *Service) postRunMeta(sess session.Session, result AgentRunResult, contextUsageDir string, runStartedAt time.Time) card.Meta {
@@ -1612,10 +1654,19 @@ func (s *Service) HandleActionResult(ctx context.Context, req ActionRequest) (Ac
 			}
 			respondToBots = parsed
 		}
+		notifyOnComplete := current.NotifyOnComplete
+		if raw, ok := req.FormValues["notify_on_complete"]; ok {
+			parsed, err := strconv.ParseBool(strings.TrimSpace(raw))
+			if err != nil {
+				s.Audit.Record(req.Actor, "config_save_failed", req.SessionID, "invalid notify_on_complete")
+				return s.renderActionEvent(configSaveErrorEvent(req.SessionID))
+			}
+			notifyOnComplete = parsed
+		}
 		// Model/Effort are no longer editable from the /config form (the selects
 		// were removed), so preserve the existing preference values instead of
 		// overwriting them with empty form fields.
-		preference := config.RuntimePreference{Model: current.Model, Effort: current.Effort, ReplyMode: config.ReplyMode(req.FormValues["reply_mode"]), ConversationMode: config.ConversationMode(req.FormValues["conversation_mode"]), GroupMessageMode: groupMessageMode, RespondToBots: respondToBots, Agent: selectedAgent, AgentHome: req.FormValues["agent_home"], AgentBin: req.FormValues["agent_bin"]}
+		preference := config.RuntimePreference{Model: current.Model, Effort: current.Effort, ReplyMode: config.ReplyMode(req.FormValues["reply_mode"]), ConversationMode: config.ConversationMode(req.FormValues["conversation_mode"]), GroupMessageMode: groupMessageMode, RespondToBots: respondToBots, NotifyOnComplete: notifyOnComplete, Agent: selectedAgent, AgentHome: req.FormValues["agent_home"], AgentBin: req.FormValues["agent_bin"]}
 		if !strings.EqualFold(strings.TrimSpace(current.Agent), strings.TrimSpace(preference.Agent)) {
 			if _, ok := s.Agents.HomePath(preference.Agent, preference.AgentHome); !ok {
 				preference.AgentHome = ""
@@ -1629,7 +1680,7 @@ func (s *Service) HandleActionResult(ctx context.Context, req ActionRequest) (Ac
 			return s.renderActionEvent(configSaveErrorEvent(req.SessionID))
 		}
 		preference = s.Preferences.Get()
-		s.Audit.Record(req.Actor, "config_saved", req.SessionID, fmt.Sprintf("agent=%s agent_home=%s agent_bin=%s model=%s effort=%s reply_mode=%s conversation_mode=%s group_message_mode=%s respond_to_bots=%t", preference.Agent, preference.AgentHome, preference.AgentBin, preference.Model, preference.Effort, preference.ReplyMode, preference.ConversationMode, preference.GroupMessageMode, preference.RespondToBots))
+		s.Audit.Record(req.Actor, "config_saved", req.SessionID, fmt.Sprintf("agent=%s agent_home=%s agent_bin=%s model=%s effort=%s reply_mode=%s conversation_mode=%s group_message_mode=%s respond_to_bots=%t notify_on_complete=%t", preference.Agent, preference.AgentHome, preference.AgentBin, preference.Model, preference.Effort, preference.ReplyMode, preference.ConversationMode, preference.GroupMessageMode, preference.RespondToBots, preference.NotifyOnComplete))
 		s.Audit.Record(req.Actor, "group_message_mode_saved", req.SessionID, fmt.Sprintf("mode=%s respond_to_bots=%t", preference.GroupMessageMode, preference.RespondToBots))
 		result, err := s.renderActionEvent(card.Event{
 			Type:      "config_saved",
@@ -1825,7 +1876,8 @@ func (s *Service) configForm(preference config.RuntimePreference) *card.ConfigFo
 		Agent: agentKind, AgentHome: preference.AgentHome, AgentBin: preference.AgentBin,
 		Model: preference.Model, Effort: preference.Effort, ReplyMode: string(preference.ReplyMode), ConversationMode: string(preference.ConversationMode),
 		GroupMessageMode: string(preference.GroupMessageMode), RespondToBots: strconv.FormatBool(preference.RespondToBots),
-		Agents: toCardOptions(s.Agents.AgentOptions()), AgentHomes: toCardOptions(s.Agents.HomeOptions(agentKind)), AgentBins: toCardOptions(s.Agents.BinOptions(agentKind)),
+		NotifyOnComplete: strconv.FormatBool(preference.NotifyOnComplete),
+		Agents:           toCardOptions(s.Agents.AgentOptions()), AgentHomes: toCardOptions(s.Agents.HomeOptions(agentKind)), AgentBins: toCardOptions(s.Agents.BinOptions(agentKind)),
 		Models: s.configModelOptions(), Efforts: []string{"default", "low", "medium", "high"},
 		ReplyModes:        []string{string(config.ReplyModeAppend), string(config.ReplyModeAppendCleanCard), string(config.ReplyModeLatestCard)},
 		ConversationModes: []string{string(config.ConversationModeChat), string(config.ConversationModeTopic)},

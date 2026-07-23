@@ -195,6 +195,10 @@ func buildConfigFormElements(sessionID string, form ConfigForm) []any {
 		{Value: "false", Label: "忽略（默认）"},
 		{Value: "true", Label: "响应"},
 	}))...)
+	group = append(group, fieldElements("cfg_notify", "完成通知", "开启后每次任务完成补发一条 @发起人的消息产生红点提醒；默认关闭避免打扰", configSelectOptions("notify_on_complete", form.NotifyOnComplete, []SelectOption{
+		{Value: "false", Label: "关闭（默认）"},
+		{Value: "true", Label: "完成时提醒发起人"},
+	}))...)
 	saveButton := map[string]any{
 		"tag":              "button",
 		"name":             "submit_runtime_config",

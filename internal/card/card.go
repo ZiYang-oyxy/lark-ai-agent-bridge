@@ -90,6 +90,7 @@ type ConfigForm struct {
 	ConversationMode  string
 	GroupMessageMode  string
 	RespondToBots     string
+	NotifyOnComplete  string
 	Agents            []SelectOption
 	AgentHomes        []SelectOption
 	AgentBins         []SelectOption

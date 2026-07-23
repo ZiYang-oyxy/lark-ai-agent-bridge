@@ -67,6 +67,7 @@ type Input struct {
 	ScheduleKind              string `json:",omitempty"`
 	ScheduleTargetThreadID    string `json:",omitempty"`
 	IsGroup                   bool   `json:",omitempty"`
+	NotifyOnComplete          bool   `json:",omitempty"`
 	Time                      time.Time
 	DebounceUntil             time.Time
 	DebounceWindow            time.Duration `json:",omitempty"`

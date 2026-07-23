@@ -48,6 +48,11 @@ type RuntimePreference struct {
 	ConversationMode ConversationMode `json:"conversation_mode,omitempty"`
 	GroupMessageMode GroupMessageMode `json:"group_message_mode,omitempty"`
 	RespondToBots    bool             `json:"respond_to_bots,omitempty"`
+	// NotifyOnComplete, when true,补发一条 thread reply 文本消息 in the chat when a
+	// run reaches the completed terminal state, so the 发起用户 gets a red-dot /
+	// unread notification (the terminal card is an in-place CardKit update and
+	// produces no new message). Defaults to false to avoid打扰.
+	NotifyOnComplete bool `json:"notify_on_complete,omitempty"`
 	// Agent is the selected agent kind (empty = "claude").
 	Agent string `json:"agent,omitempty"`
 	// AgentHome / AgentBin store the selected preset labels (not paths); they

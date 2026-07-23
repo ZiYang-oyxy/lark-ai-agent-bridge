@@ -343,6 +343,7 @@ func TestBuildLarkCardRendersRuntimeConfigForm(t *testing.T) {
 			ConversationMode:  "chat",
 			GroupMessageMode:  "mention_only",
 			RespondToBots:     "false",
+			NotifyOnComplete:  "false",
 			Agents:            []SelectOption{{Value: "claude", Label: "claude · Claude Code"}},
 			AgentHomes:        []SelectOption{{Value: "默认", Label: "默认 · 宿主默认配置目录"}, {Value: "隔离", Label: "隔离 · demo home"}},
 			AgentBins:         []SelectOption{{Value: "主机 claude", Label: "主机 claude · bridge 默认可执行"}, {Value: "ark4", Label: "ark4 · 豆包 seed-2-1-pro"}},
@@ -394,14 +395,16 @@ func TestBuildLarkCardRendersRuntimeConfigForm(t *testing.T) {
 	collectConfigControls(formElements, selects, buttons, &copy)
 	submit := buttons["submit_runtime_config"]
 	closeButton := buttons["close_runtime_config"]
-	// Model/Effort dropped from the UI (Task 3); six selects remain.
+	// Model/Effort dropped from the UI (Task 3); the notify-on-complete toggle
+	// adds a seventh select alongside reply/conversation/group/respond-to-bots
+	// and the two agent selects.
 	if _, ok := selects["model"]; ok {
 		t.Fatalf("model select must be removed from config form: %#v", selects)
 	}
 	if _, ok := selects["effort"]; ok {
 		t.Fatalf("effort select must be removed from config form: %#v", selects)
 	}
-	if len(selects) != 6 || selects["reply_mode"]["initial_option"] != "latest-card" || selects["conversation_mode"]["initial_option"] != "chat" || selects["group_message_mode"]["initial_option"] != "mention_only" || selects["respond_to_bots"]["initial_option"] != "false" {
+	if len(selects) != 7 || selects["reply_mode"]["initial_option"] != "latest-card" || selects["conversation_mode"]["initial_option"] != "chat" || selects["group_message_mode"]["initial_option"] != "mention_only" || selects["respond_to_bots"]["initial_option"] != "false" || selects["notify_on_complete"]["initial_option"] != "false" {
 		t.Fatalf("select controls = %#v", selects)
 	}
 	if selects["agent_home"]["initial_option"] != "默认" || selects["agent_bin"]["initial_option"] != "主机 claude" {
