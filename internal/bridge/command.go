@@ -26,6 +26,7 @@ const (
 	CommandCd          CommandType = "cd"
 	CommandWs          CommandType = "ws"
 	CommandDevel       CommandType = "devel"
+	CommandTodo        CommandType = "todo"
 	CommandUnknown     CommandType = "unknown"
 	CommandIgnored     CommandType = "ignored"
 )
@@ -90,6 +91,12 @@ func ParseCommand(msg Message, defaultAgent agent.Kind) Command {
 		// Hidden developer command (not listed in /help): toggles the opt-in
 		// prerelease update channel. Text carries the raw argument ("", "0", "1").
 		return Command{Type: CommandDevel, Text: strings.TrimSpace(rest), Raw: raw}
+	case ".todo":
+		// Hidden self-loop command (not listed in /help): hands the argument to
+		// the agent as a "improve bridge itself" requirement, driving the
+		// self-loop workflow (analyse → edit source → layered verify → report).
+		// Admin-only, since it lets the bridge modify its own source tree.
+		return Command{Type: CommandTodo, Text: strings.TrimSpace(rest), Raw: raw}
 	case "new":
 		cmd := Command{Type: CommandRun, Agent: defaultAgent, Text: strings.TrimSpace(rest), Reset: true, Explicit: true, Raw: raw}
 		parseRunOptions(&cmd)

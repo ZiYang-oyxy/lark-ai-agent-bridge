@@ -83,7 +83,7 @@ func (s *Service) messageAccessDecision(msg Message) (access.Decision, bool) {
 }
 
 func (s *Service) adminCommand(kind CommandType) bool {
-	return kind == CommandConfig || kind == CommandAgentMode || kind == CommandInvite || kind == CommandRemove
+	return kind == CommandConfig || kind == CommandAgentMode || kind == CommandInvite || kind == CommandRemove || kind == CommandTodo
 }
 
 func (s *Service) canRunAdminCommand(sender string) bool {

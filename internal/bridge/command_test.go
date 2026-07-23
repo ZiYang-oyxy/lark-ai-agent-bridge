@@ -29,6 +29,46 @@ func TestParseNewCommand(t *testing.T) {
 	}
 }
 
+func TestParseTodoCommand(t *testing.T) {
+	cmd := ParseCommand(Message{Text: "/.todo 给 /help 卡片加个版本号"}, agent.Claude)
+	if cmd.Type != CommandTodo {
+		t.Fatalf("type = %s, want todo", cmd.Type)
+	}
+	if cmd.Text != "给 /help 卡片加个版本号" {
+		t.Fatalf("text = %q", cmd.Text)
+	}
+}
+
+func TestParseTodoCommandEmpty(t *testing.T) {
+	cmd := ParseCommand(Message{Text: "/.todo"}, agent.Claude)
+	if cmd.Type != CommandTodo {
+		t.Fatalf("type = %s, want todo", cmd.Type)
+	}
+	if cmd.Text != "" {
+		t.Fatalf("text = %q, want empty", cmd.Text)
+	}
+}
+
+func TestTodoCommandHiddenFromHelp(t *testing.T) {
+	if strings.Contains(HelpText(), ".todo") {
+		t.Fatalf("/.todo must stay hidden from /help")
+	}
+	for _, g := range HelpCardData().Groups {
+		for _, line := range g.Lines {
+			if strings.Contains(line, ".todo") {
+				t.Fatalf("/.todo must stay hidden from help card: %q", line)
+			}
+		}
+	}
+}
+
+func TestTodoCommandIsAdminOnly(t *testing.T) {
+	s := &Service{}
+	if !s.adminCommand(CommandTodo) {
+		t.Fatalf("/.todo must be admin-only")
+	}
+}
+
 func TestParseNewAllowsEmptyPrompt(t *testing.T) {
 	cmd := ParseCommand(Message{Text: "/new --workdir /tmp/project"}, agent.Claude)
 	if cmd.Type != CommandRun || cmd.Text != "" || !cmd.Reset {

@@ -527,7 +527,7 @@ func (s *Service) HandleMessage(ctx context.Context, msg Message) error {
 		s.Audit.Record(msg.Sender, "admin_denied", msg.ChatID, string(cmd.Type))
 		return s.renderTextWithMode("admin-denied", msg.ID, card.SegmentError, "❌ 此命令仅管理员可用。", preference.ConversationMode)
 	}
-	if cmd.Type != CommandRun && !scheduleCommandStartsAgentRun(cmd) {
+	if cmd.Type != CommandRun && cmd.Type != CommandTodo && !scheduleCommandStartsAgentRun(cmd) {
 		accepted, err := s.Sessions.AcceptMessage(msg.ID, effectiveMessageTime(msg), s.dedupTTL(), s.dedupMaxEntries())
 		if err != nil {
 			s.Audit.Record(msg.Sender, "command_persist_failed", "", err.Error())
@@ -575,6 +575,8 @@ func (s *Service) HandleMessage(ctx context.Context, msg Message) error {
 		return s.handleWs(ctx, msg, cmd, preference)
 	case CommandDevel:
 		return s.handleDevel(ctx, msg, cmd, preference)
+	case CommandTodo:
+		return s.handleTodoCommand(ctx, msg, cmd, preference)
 	case CommandRun:
 		return s.runWithPreference(ctx, cmd, msg, "", preference)
 	default:
