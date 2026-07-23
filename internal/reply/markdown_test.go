@@ -33,7 +33,7 @@ func TestRenderMarkdownHidesThinkingAndCollapsesToolLifecycle(t *testing.T) {
 		},
 		Meta: card.Meta{Agent: "codex", RunTokens: 107600, TotalTokens: 107600},
 	})
-	want := "checking\n\n> ✅ **Bash** · git status\n\ndone\n\n🤖 codex · 🔢 tokens: ▶ 107.6k / ∑ 107.6k"
+	want := "checking\n\n> ✅ **Bash** · git status\n\ndone\n\n🤖 codex · 🔢 tokens: 本轮 107.6k"
 	if got != want {
 		t.Fatalf("markdown = %q, want %q", got, want)
 	}
@@ -75,7 +75,7 @@ func TestRenderMarkdownCompleteTerminalFooter(t *testing.T) {
 		},
 	})
 	want := "done\n\n" +
-		"🤖 Claude · 🧠 claude-opus-4-8[1m]（default） · 🔢 tokens: ▶ 21743.2k / ∑ 29261.5k\n" +
+		"🤖 Claude · 🧠 claude-opus-4-8[1m]（default） · 🔢 tokens: 本轮 21743.2k · 累计 29261.5k\n" +
 		"👤 developer · 🖥️ 192.0.2.10 · 📁 `/workspace/lark-agent-workspace`"
 	if got != want {
 		t.Fatalf("markdown = %q, want %q", got, want)

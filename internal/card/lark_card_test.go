@@ -293,7 +293,7 @@ func TestMetaRowsFormatsCompleteFooter(t *testing.T) {
 		IP:          "192.0.2.10",
 		WorkDir:     "/workspace/lark-agent-workspace",
 	})
-	if want := "🤖 Claude · 🧠 claude-opus-4-8[1m]（default） · 🔢 tokens: ▶ 21743.2k / ∑ 29261.5k"; primary != want {
+	if want := "🤖 Claude · 🧠 claude-opus-4-8[1m]（default） · 🔢 tokens: 本轮 21743.2k · 累计 29261.5k"; primary != want {
 		t.Fatalf("primary = %q, want %q", primary, want)
 	}
 	if want := "👤 developer · 🖥️ 192.0.2.10 · 📁 `/workspace/lark-agent-workspace`"; runtime != want {
@@ -1477,8 +1477,9 @@ func TestMetaTokenTextContextUsage(t *testing.T) {
 		{"green-boundary-59", Meta{CtxOK: true, CtxUsedPercent: 59, CtxTokens: 118000, CtxWindow: 200000}, "🟢 ctx: 59% (118k/200k)"},
 		{"percent-only-no-window", Meta{CtxOK: true, CtxUsedPercent: 42}, "🟢 ctx: 42%"},
 		{"ctx-zero-percent", Meta{CtxOK: true, CtxUsedPercent: 0, CtxTokens: 100, CtxWindow: 200000}, "🟢 ctx: 0% (100/200k)"},
-		{"fallback-to-cumulative", Meta{RunTokens: 1200, TotalTokens: 5000}, "🔢 tokens: ▶ 1.2k / ∑ 5k"},
-		{"fallback-run-only", Meta{RunTokens: 800}, "🔢 tokens: ▶ 800"},
+		{"fallback-to-cumulative", Meta{RunTokens: 1200, TotalTokens: 5000}, "🔢 tokens: 本轮 1.2k · 累计 5k"},
+		{"fallback-run-only", Meta{RunTokens: 800}, "🔢 tokens: 本轮 800"},
+		{"fallback-total-equals-run", Meta{RunTokens: 5000, TotalTokens: 5000}, "🔢 tokens: 本轮 5k"},
 		{"empty", Meta{}, ""},
 	}
 	for _, tt := range tests {

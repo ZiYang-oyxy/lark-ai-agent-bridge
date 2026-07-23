@@ -810,10 +810,10 @@ func metaTokenText(meta Meta) string {
 	if runTokens == 0 && totalTokens == 0 {
 		return ""
 	}
-	if totalTokens > 0 {
-		return fmt.Sprintf("🔢 tokens: ▶ %s / ∑ %s", compactInt(runTokens), compactInt(totalTokens))
+	if totalTokens > 0 && totalTokens != runTokens {
+		return fmt.Sprintf("🔢 tokens: 本轮 %s · 累计 %s", compactInt(runTokens), compactInt(totalTokens))
 	}
-	return fmt.Sprintf("🔢 tokens: ▶ %s", compactInt(runTokens))
+	return fmt.Sprintf("🔢 tokens: 本轮 %s", compactInt(runTokens))
 }
 
 func metaLineElement(id, content string) map[string]any {
