@@ -167,6 +167,36 @@ func TestWorkspaceCmdWsSaveUseList(t *testing.T) {
 	}
 }
 
+// TestWorkspaceCmdWsDeleteAliases verifies the unified delete verb: /ws
+// removal must accept del / delete / remove / rm interchangeably, so users need
+// not remember a workspace-specific word distinct from /cron and /timer.
+func TestWorkspaceCmdWsDeleteAliases(t *testing.T) {
+	for _, verb := range []string{"del", "delete", "remove", "rm"} {
+		t.Run(verb, func(t *testing.T) {
+			dir := t.TempDir()
+			ws, err := workspace.OpenWorkspaceStore(filepath.Join(dir, "workspaces.json"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			s := newTestServiceWithWorkspace(t, ws)
+			msg := Message{ID: "m1", Sender: "admin", ChatID: "c1", ThreadID: "t1", IsGroup: true}
+			pref := config.RuntimePreference{ConversationMode: config.ConversationModeTopic}
+			scope := s.workspaceScope(sessionKeyForMode(agent.Claude, msg, config.ConversationModeTopic))
+
+			if err := ws.SaveNamed(scope, "foo", dir); err != nil {
+				t.Fatal(err)
+			}
+			delCmd := Command{Type: CommandWs, Agent: agent.Claude, WsSub: verb, WsName: "foo"}
+			if err := s.handleWs(context.Background(), msg, delCmd, pref); err != nil {
+				t.Fatalf("handleWs %s: %v", verb, err)
+			}
+			if _, ok := ws.UseNamed(scope, "foo"); ok {
+				t.Fatalf("alias foo still present after /ws %s", verb)
+			}
+		})
+	}
+}
+
 func TestWorkspaceCmdCdNonexistentTriggersConfirmAndDoesNotStore(t *testing.T) {
 	dir := t.TempDir()
 	// A well-formed path under a real TempDir that does not yet exist.

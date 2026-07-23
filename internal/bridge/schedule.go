@@ -140,7 +140,7 @@ func (s *Service) handleScheduleCommand(ctx context.Context, msg Message, cmd Co
 		}
 		run := Command{Type: CommandRun, Agent: cmd.Agent, Text: scheduleAddPrompt(kind, request), Raw: cmd.Raw, ScheduleKind: string(kind)}
 		return s.runWithPreference(ctx, run, msg, "", preference)
-	case "info", "del", "delete", "run", "enable", "disable":
+	case "info", "del", "delete", "remove", "rm", "run", "enable", "disable":
 		if len(args) != 1 {
 			return s.renderTextWithMode(label+"-usage", msg.ID, card.SegmentError, "任务 ID 参数不正确。\n\n"+scheduleUsageText(kind), preference.ConversationMode)
 		}
@@ -154,7 +154,7 @@ func (s *Service) handleScheduleCommand(ctx context.Context, msg Message, cmd Co
 		switch sub {
 		case "info":
 			return s.renderTextWithMode(label+"-info", msg.ID, card.SegmentText, scheduleTaskText(task), preference.ConversationMode)
-		case "del", "delete":
+		case "del", "delete", "remove", "rm":
 			var err error
 			if s.Scheduler != nil {
 				err = s.Scheduler.Remove(task.ID)

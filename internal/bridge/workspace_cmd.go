@@ -158,13 +158,13 @@ func (s *Service) handleWs(ctx context.Context, msg Message, cmd Command, prefer
 		return s.renderTextWithMode("ws", msg.ID, card.SegmentText,
 			fmt.Sprintf("📁 已切换到 `%s`：`%s`（已重置会话）", cmd.WsName, res.Realpath), preference.ConversationMode)
 
-	case "remove":
+	case "del", "delete", "remove", "rm":
 		if !s.canRunAdminCommand(msg.Sender) {
-			s.Audit.Record(msg.Sender, "admin_denied", msg.ChatID, "ws remove")
+			s.Audit.Record(msg.Sender, "admin_denied", msg.ChatID, "ws del")
 			return s.renderTextWithMode("ws", msg.ID, card.SegmentError, "❌ 只有管理员可以删除工作区。", preference.ConversationMode)
 		}
 		if strings.TrimSpace(cmd.WsName) == "" {
-			return s.renderTextWithMode("ws", msg.ID, card.SegmentError, "用法：/ws remove <name>", preference.ConversationMode)
+			return s.renderTextWithMode("ws", msg.ID, card.SegmentError, "用法：/ws del <name>", preference.ConversationMode)
 		}
 		if err := s.Workspaces.RemoveNamed(scope, cmd.WsName); err != nil {
 			return s.renderTextWithMode("ws", msg.ID, card.SegmentError, "删除失败："+err.Error(), preference.ConversationMode)
@@ -173,6 +173,6 @@ func (s *Service) handleWs(ctx context.Context, msg Message, cmd Command, prefer
 			fmt.Sprintf("已删除命名工作区 `%s`", cmd.WsName), preference.ConversationMode)
 
 	default:
-		return s.renderTextWithMode("ws", msg.ID, card.SegmentError, "用法：/ws list|save|use|remove [name]", preference.ConversationMode)
+		return s.renderTextWithMode("ws", msg.ID, card.SegmentError, "用法：/ws list|save|use|del [name]", preference.ConversationMode)
 	}
 }

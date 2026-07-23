@@ -197,6 +197,31 @@ func TestHelpTextIncludesCdAndWsCommands(t *testing.T) {
 	}
 }
 
+// TestHelpCardStatusAndStopOnSeparateLines locks the requirement that /status
+// and /stop each occupy their own line in the /help card (they used to share
+// one line). Each command must appear bold and no single line may carry both.
+func TestHelpCardStatusAndStopOnSeparateLines(t *testing.T) {
+	var statusLines, stopLines int
+	for _, group := range HelpCardData().Groups {
+		for _, line := range group.Lines {
+			hasStatus := strings.Contains(line, "**`/status`**")
+			hasStop := strings.Contains(line, "**`/stop`**")
+			if hasStatus && hasStop {
+				t.Fatalf("/status and /stop must not share a line: %q", line)
+			}
+			if hasStatus {
+				statusLines++
+			}
+			if hasStop {
+				stopLines++
+			}
+		}
+	}
+	if statusLines != 1 || stopLines != 1 {
+		t.Fatalf("want /status and /stop each on exactly one line, got status=%d stop=%d", statusLines, stopLines)
+	}
+}
+
 func TestParseStatusCommand(t *testing.T) {
 	cmd := ParseCommand(Message{Text: "/status"}, agent.Claude)
 	if cmd.Type != CommandStatus || cmd.Agent != agent.Claude {

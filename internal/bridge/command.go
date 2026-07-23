@@ -153,11 +153,12 @@ func HelpCardData() card.HelpCard {
 				Title: "💬 会话",
 				Lines: []string{
 					"**`/new`** `[--workdir path] [prompt]` 开新会话",
-					"**`/status`** 当前会话状态 · **`/stop`** 停止当前任务",
+					"**`/status`** 当前会话状态",
+					"**`/stop`** 停止当前任务",
 					"**`/resume`** `[session-id]` 恢复历史会话",
 					"**`/agent-mode`** 切换 claude / codex",
 					"**`/cd`** `[path]` 切换本 topic 工作目录",
-					"**`/ws`** `list|save|use|remove [name]` 命名工作区",
+					"**`/ws`** `list|save|use|del [name]` 命名工作区",
 				},
 			},
 			{
@@ -193,7 +194,7 @@ func HelpText() string {
 		"/stop - stop the active task in this chat/topic; queued inputs are preserved",
 		"/agent-mode - choose claude or codex for subsequent messages",
 		"/cd [path] - switch the working directory for this chat/topic",
-		"/ws list|save|use|remove [name] - manage named workspaces",
+		"/ws list|save|use|del [name] - manage named workspaces",
 		"/cron [list [all]] - list recurring Agent tasks in this conversation, or all tasks for admins",
 		"/cron add <natural-language task> - create a recurring task after confirmation",
 		"/cron info|run|enable|disable|del <id> - inspect or manage a recurring task",

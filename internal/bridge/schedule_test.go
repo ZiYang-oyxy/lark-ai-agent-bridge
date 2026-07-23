@@ -156,6 +156,34 @@ func TestInvalidScheduleArgumentsShowCompleteUsage(t *testing.T) {
 	}
 }
 
+// TestScheduleDeleteAcceptsUnifiedVerbs verifies /cron and /timer accept the
+// same delete verbs as /ws (del / delete / remove / rm), so the delete word is
+// uniform across all three commands.
+func TestScheduleDeleteAcceptsUnifiedVerbs(t *testing.T) {
+	for _, verb := range []string{"del", "delete", "remove", "rm"} {
+		t.Run(verb, func(t *testing.T) {
+			service, _, store := scheduleTestService(t)
+			draft := bridgeFixtureDraft(time.Now())
+			if err := store.CreateDraft(draft); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := store.ConfirmDraft(draft.ID, draft.Creator, time.Now()); err != nil {
+				t.Fatal(err)
+			}
+			msg := Message{
+				ID: "om_del", ChatID: "oc_chat", ThreadID: "omt_topic", Sender: "ou_creator",
+				Text: "/timer " + verb + " " + draft.ID, Time: time.Now(),
+			}
+			if err := service.HandleMessage(context.Background(), msg); err != nil {
+				t.Fatal(err)
+			}
+			if _, ok := store.Task(draft.ID); ok {
+				t.Fatalf("task still present after /timer %s", verb)
+			}
+		})
+	}
+}
+
 func TestScheduleDispatchUsesFrozenConfiguration(t *testing.T) {
 	service, _, _ := scheduleTestService(t)
 	workDir := t.TempDir()
