@@ -92,28 +92,23 @@ func ParseManifest(r io.Reader) (Manifest, error) {
 func CompareStable(a, b string) (int, error) {
 	// The stable channel only ever offers stable targets, so a (the candidate
 	// version from the manifest) must be strict stable SemVer — an rc target
-	// can never qualify. But b (the currently running version) may legitimately
-	// be an rc build (a bridge running 0.1.4-rc.N on the stable channel), so we
-	// compare against its numeric core rather than rejecting it. Otherwise a
-	// bridge running an rc on the stable channel makes every update check fail
-	// ("暂时无法检查更新") instead of correctly reporting "already up to date".
-	av, err := parseStable(a)
-	if err != nil {
+	// can never qualify and is rejected here. But b (the currently running
+	// version) may legitimately be an rc build (a bridge running 0.1.4-rc.N on
+	// the stable channel), which must not make the check error out (that
+	// surfaced as "暂时无法检查更新"); it is parsed with rc precision preserved.
+	//
+	// Precedence follows SemVer including the prerelease rule: a prerelease is
+	// strictly lower than its corresponding release (0.1.4-rc.3 < 0.1.4). So a
+	// bridge on 0.1.4-rc.N sees the stable 0.1.4 as a genuine upgrade — the
+	// intended "rc → matching release" path on the stable channel. Only when the
+	// running version is at or beyond the stable core (same core as a final
+	// release, or a higher core) does the check report "already up to date".
+	if _, err := parseStable(a); err != nil {
 		return 0, err
 	}
-	bv, _, err := parsePrerelease(b)
-	if err != nil {
-		return 0, err
-	}
-	for i := range av {
-		if av[i] < bv[i] {
-			return -1, nil
-		}
-		if av[i] > bv[i] {
-			return 1, nil
-		}
-	}
-	return 0, nil
+	// a is strict stable (rc == 0 by construction); comparing with rc-aware
+	// precedence yields release > matching prerelease without dropping b's rc.
+	return CompareAllowingPrerelease(a, b)
 }
 
 // CompareAllowingPrerelease compares two versions that may carry an -rc.N

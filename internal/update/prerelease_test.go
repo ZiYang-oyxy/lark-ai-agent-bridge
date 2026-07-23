@@ -148,18 +148,28 @@ func TestStableCompareStillRejectsRc(t *testing.T) {
 	}
 }
 
-// TestStableCompareAcceptsRcCurrentVersion covers the fixed bug: a bridge
-// running an rc build on the stable channel must not error out (which surfaced
-// as "暂时无法检查更新"). The rc current version compares by its numeric core,
-// so a stable target at or below that core reports "no update available".
+// TestStableCompareAcceptsRcCurrentVersion covers a bridge running an rc build
+// on the stable channel: the check must not error out (which surfaced as
+// "暂时无法检查更新"). Precedence follows SemVer with rc precision preserved —
+// a prerelease is strictly lower than its matching release, so 0.1.4-rc.N sees
+// the stable 0.1.4 as a genuine upgrade (the "rc → matching release" path).
 func TestStableCompareAcceptsRcCurrentVersion(t *testing.T) {
 	// Running 0.1.4-rc.3, stable manifest at 0.1.3 → current is newer, no update.
 	if got, err := CompareStable("0.1.3", "0.1.4-rc.3"); err != nil || got != -1 {
 		t.Fatalf("CompareStable(0.1.3, 0.1.4-rc.3) = %d,%v want -1,nil", got, err)
 	}
-	// Running 0.1.4-rc.3, stable manifest reaches 0.1.4 core → equal core, no update.
-	if got, err := CompareStable("0.1.4", "0.1.4-rc.3"); err != nil || got != 0 {
-		t.Fatalf("CompareStable(0.1.4, 0.1.4-rc.3) = %d,%v want 0,nil", got, err)
+	// Running 0.1.4-rc.3, stable manifest reaches the matching release 0.1.4 →
+	// release outranks its prerelease, so this is an available upgrade.
+	if got, err := CompareStable("0.1.4", "0.1.4-rc.3"); err != nil || got != 1 {
+		t.Fatalf("CompareStable(0.1.4, 0.1.4-rc.3) = %d,%v want 1,nil", got, err)
+	}
+	// Running 0.1.4-rc.5 (the reported case), stable manifest at 0.1.4 → upgrade.
+	if got, err := CompareStable("0.1.4", "0.1.4-rc.5"); err != nil || got != 1 {
+		t.Fatalf("CompareStable(0.1.4, 0.1.4-rc.5) = %d,%v want 1,nil", got, err)
+	}
+	// Running the final 0.1.4, stable manifest at 0.1.4 → already up to date.
+	if got, err := CompareStable("0.1.4", "0.1.4"); err != nil || got != 0 {
+		t.Fatalf("CompareStable(0.1.4, 0.1.4) = %d,%v want 0,nil", got, err)
 	}
 	// Running 0.1.4-rc.3, stable manifest at 0.2.0 → genuine stable upgrade.
 	if got, err := CompareStable("0.2.0", "0.1.4-rc.3"); err != nil || got != 1 {
