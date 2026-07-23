@@ -33,15 +33,26 @@ type Staged struct {
 
 type Client struct {
 	ManifestURL string
-	HTTP        *http.Client
-	Now         func() time.Time
-	GOOS        string
-	GOARCH      string
-	CacheTTL    time.Duration
+	// PrereleaseURL is the manifest for the opt-in prerelease (rc) channel. When
+	// empty, prerelease mode falls back to the stable ManifestURL.
+	PrereleaseURL string
+	// Prerelease reports whether the developer prerelease channel is active. It
+	// is consulted live on every Check so a /.devel toggle takes effect without
+	// reconstructing the client. Nil means "always stable".
+	Prerelease func() bool
+	HTTP       *http.Client
+	Now        func() time.Time
+	GOOS       string
+	GOARCH     string
+	CacheTTL   time.Duration
 
-	mu       sync.Mutex
-	cached   Manifest
-	cachedAt time.Time
+	mu     sync.Mutex
+	cached map[string]cacheEntry // keyed by resolved manifest URL
+}
+
+type cacheEntry struct {
+	manifest Manifest
+	at       time.Time
 }
 
 func NewClient(manifestURL string, httpClient *http.Client) *Client {
@@ -60,13 +71,28 @@ func NewClient(manifestURL string, httpClient *http.Client) *Client {
 
 func (c *Client) Invalidate() {
 	c.mu.Lock()
-	c.cached = Manifest{}
-	c.cachedAt = time.Time{}
+	c.cached = nil
 	c.mu.Unlock()
 }
 
+// prerelease reports whether the opt-in prerelease channel is currently active.
+func (c *Client) prerelease() bool {
+	return c.Prerelease != nil && c.Prerelease()
+}
+
+// activeURL resolves the manifest URL for the current channel. Prerelease mode
+// uses PrereleaseURL when configured, otherwise it degrades to stable rather
+// than erroring — a missing prerelease channel simply means "nothing newer".
+func (c *Client) activeURL() string {
+	if c.prerelease() && strings.TrimSpace(c.PrereleaseURL) != "" {
+		return c.PrereleaseURL
+	}
+	return c.ManifestURL
+}
+
 func (c *Client) Check(ctx context.Context, currentVersion string) (CheckResult, error) {
-	manifest, err := c.manifest(ctx)
+	prerelease := c.prerelease()
+	manifest, err := c.manifest(ctx, c.activeURL())
 	if err != nil {
 		return CheckResult{}, err
 	}
@@ -74,21 +100,28 @@ func (c *Client) Check(ctx context.Context, currentVersion string) (CheckResult,
 	if !ok || !supportedPlatform(c.GOOS, c.GOARCH) {
 		return CheckResult{Manifest: manifest, UnsupportedPlatform: true}, nil
 	}
-	comparison, err := CompareStable(manifest.Version, currentVersion)
+	// Stable channel keeps the strict gate (rc versions fail to parse and never
+	// qualify). Prerelease channel uses the rc-aware comparator so rc builds can
+	// be offered and ordered.
+	compare := CompareStable
+	if prerelease {
+		compare = CompareAllowingPrerelease
+	}
+	comparison, err := compare(manifest.Version, currentVersion)
 	if err != nil {
 		return CheckResult{}, fmt.Errorf("compare update versions: %w", err)
 	}
 	return CheckResult{Manifest: manifest, Asset: asset, UpdateAvailable: comparison > 0}, nil
 }
 
-func (c *Client) manifest(ctx context.Context) (Manifest, error) {
-	if err := validateHTTPS(c.ManifestURL); err != nil {
+func (c *Client) manifest(ctx context.Context, manifestURL string) (Manifest, error) {
+	if err := validateHTTPS(manifestURL); err != nil {
 		return Manifest{}, fmt.Errorf("invalid manifest URL: %w", err)
 	}
 	now := c.Now()
 	c.mu.Lock()
-	if !c.cachedAt.IsZero() && now.Sub(c.cachedAt) < c.cacheTTL() {
-		cached := c.cached
+	if entry, ok := c.cached[manifestURL]; ok && now.Sub(entry.at) < c.cacheTTL() {
+		cached := entry.manifest
 		c.mu.Unlock()
 		return cached, nil
 	}
@@ -96,7 +129,7 @@ func (c *Client) manifest(ctx context.Context) (Manifest, error) {
 
 	requestCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
 	defer cancel()
-	response, err := c.doGET(requestCtx, c.ManifestURL)
+	response, err := c.doGET(requestCtx, manifestURL)
 	if err != nil {
 		return Manifest{}, fmt.Errorf("fetch update manifest: %w", err)
 	}
@@ -106,7 +139,10 @@ func (c *Client) manifest(ctx context.Context) (Manifest, error) {
 		return Manifest{}, err
 	}
 	c.mu.Lock()
-	c.cached, c.cachedAt = manifest, now
+	if c.cached == nil {
+		c.cached = make(map[string]cacheEntry)
+	}
+	c.cached[manifestURL] = cacheEntry{manifest: manifest, at: now}
 	c.mu.Unlock()
 	return manifest, nil
 }

@@ -25,6 +25,7 @@ const (
 	CommandRemove      CommandType = "remove"
 	CommandCd          CommandType = "cd"
 	CommandWs          CommandType = "ws"
+	CommandDevel       CommandType = "devel"
 	CommandUnknown     CommandType = "unknown"
 	CommandIgnored     CommandType = "ignored"
 )
@@ -85,6 +86,10 @@ func ParseCommand(msg Message, defaultAgent agent.Kind) Command {
 			wsName = fields[1]
 		}
 		return Command{Type: CommandWs, WsSub: sub, WsName: wsName, Raw: raw}
+	case ".devel":
+		// Hidden developer command (not listed in /help): toggles the opt-in
+		// prerelease update channel. Text carries the raw argument ("", "0", "1").
+		return Command{Type: CommandDevel, Text: strings.TrimSpace(rest), Raw: raw}
 	case "new":
 		cmd := Command{Type: CommandRun, Agent: defaultAgent, Text: strings.TrimSpace(rest), Reset: true, Explicit: true, Raw: raw}
 		parseRunOptions(&cmd)

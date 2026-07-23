@@ -25,6 +25,7 @@ import (
 	"lark-agent-bridge/internal/bridgeinstructions"
 	"lark-agent-bridge/internal/card"
 	"lark-agent-bridge/internal/config"
+	"lark-agent-bridge/internal/devmode"
 	"lark-agent-bridge/internal/feishu"
 	"lark-agent-bridge/internal/media"
 	"lark-agent-bridge/internal/reply"
@@ -54,27 +55,29 @@ type resumeContext struct {
 }
 
 type Service struct {
-	Config           config.Config
-	Sessions         *session.Manager
-	Workspaces       *workspace.Store
-	Cards            card.Renderer
-	Runner           AgentRunner
-	Audit            *audit.Recorder
-	MediaCache       mediaResolver
-	MediaDownloader  media.Downloader
-	MediaGC          mediaSweeper
-	Preferences      *config.PreferenceStore
-	Agents           config.AgentsConfig
-	Replies          *reply.Store
-	CardTarget       reply.CardTarget
-	Reactions        feishu.ReactionSink
-	OutputImages     feishu.ImageSender
-	MessageDeleter   MessageDeleter
-	SequenceResolver session.RenderRefSequenceResolver
-	RestoreNotices   []session.RecoveryNotice
-	Access           *access.Store
-	AccessControls   *access.RuntimeControls
-	AccessInfo       interface {
+	Config                config.Config
+	Sessions              *session.Manager
+	Workspaces            *workspace.Store
+	Cards                 card.Renderer
+	Runner                AgentRunner
+	Audit                 *audit.Recorder
+	MediaCache            mediaResolver
+	MediaDownloader       media.Downloader
+	MediaGC               mediaSweeper
+	Preferences           *config.PreferenceStore
+	Agents                config.AgentsConfig
+	Replies               *reply.Store
+	CardTarget            reply.CardTarget
+	Reactions             feishu.ReactionSink
+	OutputImages          feishu.ImageSender
+	MessageDeleter        MessageDeleter
+	SequenceResolver      session.RenderRefSequenceResolver
+	RestoreNotices        []session.RecoveryNotice
+	Access                *access.Store
+	DevMode               *devmode.Store
+	PrereleaseManifestURL string
+	AccessControls        *access.RuntimeControls
+	AccessInfo            interface {
 		GetOwner(context.Context, string) (string, error)
 		ListChats(context.Context) ([]feishu.KnownChat, error)
 	}
@@ -570,6 +573,8 @@ func (s *Service) HandleMessage(ctx context.Context, msg Message) error {
 		return s.handleCd(ctx, msg, cmd, preference)
 	case CommandWs:
 		return s.handleWs(ctx, msg, cmd, preference)
+	case CommandDevel:
+		return s.handleDevel(ctx, msg, cmd, preference)
 	case CommandRun:
 		return s.runWithPreference(ctx, cmd, msg, "", preference)
 	default:

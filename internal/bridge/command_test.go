@@ -222,6 +222,41 @@ func TestHelpCardStatusAndStopOnSeparateLines(t *testing.T) {
 	}
 }
 
+func TestParseDevelCommand(t *testing.T) {
+	for _, tt := range []struct {
+		text string
+		want string
+	}{
+		{"/.devel", ""},
+		{"/.devel 1", "1"},
+		{"/.devel 0", "0"},
+		{"/.devel on", "on"},
+	} {
+		cmd := ParseCommand(Message{Text: tt.text}, agent.Claude)
+		if cmd.Type != CommandDevel {
+			t.Fatalf("%q type = %s, want devel", tt.text, cmd.Type)
+		}
+		if cmd.Text != tt.want {
+			t.Fatalf("%q text = %q, want %q", tt.text, cmd.Text, tt.want)
+		}
+	}
+}
+
+// TestDevelCommandHiddenFromHelp guards the "hidden" contract: /.devel must not
+// appear in the /help card or the plain help text.
+func TestDevelCommandHiddenFromHelp(t *testing.T) {
+	if strings.Contains(HelpText(), ".devel") {
+		t.Fatal("/.devel must not appear in HelpText")
+	}
+	for _, group := range HelpCardData().Groups {
+		for _, line := range group.Lines {
+			if strings.Contains(line, ".devel") {
+				t.Fatalf("/.devel must not appear in help card: %q", line)
+			}
+		}
+	}
+}
+
 func TestParseStatusCommand(t *testing.T) {
 	cmd := ParseCommand(Message{Text: "/status"}, agent.Claude)
 	if cmd.Type != CommandStatus || cmd.Agent != agent.Claude {

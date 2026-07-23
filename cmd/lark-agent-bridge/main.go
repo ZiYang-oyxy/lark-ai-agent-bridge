@@ -23,6 +23,7 @@ import (
 	"lark-agent-bridge/internal/buildinfo"
 	"lark-agent-bridge/internal/card"
 	"lark-agent-bridge/internal/config"
+	"lark-agent-bridge/internal/devmode"
 	"lark-agent-bridge/internal/doctor"
 	"lark-agent-bridge/internal/feishu"
 	"lark-agent-bridge/internal/media"
@@ -384,6 +385,10 @@ func runServe(args []string) error {
 	if err != nil {
 		return fmt.Errorf("open access store: %w", err)
 	}
+	devModeStore, err := devmode.OpenStore(cfg.DevModeStorePath)
+	if err != nil {
+		return fmt.Errorf("open dev-mode store: %w", err)
+	}
 	workspaces, err := workspace.OpenWorkspaceStore(cfg.WorkspaceStorePath)
 	if err != nil {
 		return fmt.Errorf("open workspace store: %w", err)
@@ -400,11 +405,13 @@ func runServe(args []string) error {
 	renderer := feishu.NewReactionCardRenderer(sender, cardRouter)
 	runner := &bridge.CLIExecRunner{Instructions: instructions}
 	svc := bridge.NewServiceWithSessions(cfg, renderer, runner, recorder, sessions, notices)
-	svc.Updates = newRuntimeUpdateManager(cfg)
+	svc.Updates = newRuntimeUpdateManager(cfg, devModeStore)
 	svc.Agents = agents
 	svc.Preferences = preferences
 	svc.TopicParticipation = topicStore
 	svc.Access = accessStore
+	svc.DevMode = devModeStore
+	svc.PrereleaseManifestURL = cfg.UpdatePrereleaseManifestURL
 	svc.Workspaces = workspaces
 	svc.AccessControls = access.NewRuntimeControls()
 	svc.AccessAppID = appID
@@ -492,11 +499,13 @@ func runServe(args []string) error {
 	return errors.Join(longConnErr, controlErr, shutdownErr)
 }
 
-func newRuntimeUpdateManager(cfg config.Config) *bridgeupdate.Manager {
+func newRuntimeUpdateManager(cfg config.Config, devMode *devmode.Store) *bridgeupdate.Manager {
 	if strings.TrimSpace(cfg.UpdateManifestURL) == "" {
 		return nil
 	}
 	client := bridgeupdate.NewClient(cfg.UpdateManifestURL, nil)
+	client.PrereleaseURL = cfg.UpdatePrereleaseManifestURL
+	client.Prerelease = devMode.Prerelease
 	return &bridgeupdate.Manager{Client: client, Installer: bridgeupdate.Installer{Stage: client.Stage}}
 }
 

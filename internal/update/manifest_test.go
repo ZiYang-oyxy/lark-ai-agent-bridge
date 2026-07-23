@@ -31,6 +31,22 @@ func TestParseManifestSelectsExactPlatform(t *testing.T) {
 	}
 }
 
+// TestParseManifestAcceptsPrerelease documents that rc versions are valid at
+// the parse layer; the stable-vs-prerelease decision is enforced later in
+// Client.Check, not here.
+func TestParseManifestAcceptsPrerelease(t *testing.T) {
+	hash := strings.Repeat("a", 64)
+	base := validManifest("https://updates.example/notes", "https://updates.example/binary", 3, hash)
+	rc := strings.Replace(base, `"1.2.3"`, `"1.2.3-rc.1"`, 1)
+	manifest, err := ParseManifest(strings.NewReader(rc))
+	if err != nil {
+		t.Fatalf("ParseManifest(rc) error = %v", err)
+	}
+	if manifest.Version != "1.2.3-rc.1" {
+		t.Fatalf("version = %q, want 1.2.3-rc.1", manifest.Version)
+	}
+}
+
 func TestParseManifestRejectsUnsafeOrAmbiguousInput(t *testing.T) {
 	hash := strings.Repeat("a", 64)
 	base := validManifest("https://updates.example/notes", "https://updates.example/binary", 3, hash)
@@ -40,7 +56,7 @@ func TestParseManifestRejectsUnsafeOrAmbiguousInput(t *testing.T) {
 		"http notes":     strings.Replace(base, "https://updates.example/notes", "http://updates.example/notes", 1),
 		"http binary":    strings.ReplaceAll(base, "https://updates.example/binary", "http://updates.example/binary"),
 		"bad version":    strings.Replace(base, `"1.2.3"`, `"v1.2.3"`, 1),
-		"prerelease":     strings.Replace(base, `"1.2.3"`, `"1.2.3-rc.1"`, 1),
+		"bad prerelease": strings.Replace(base, `"1.2.3"`, `"1.2.3-beta.1"`, 1),
 		"uppercase hash": strings.ReplaceAll(base, hash, strings.ToUpper(hash)),
 		"oversized":      strings.ReplaceAll(base, `"size": 3`, fmt.Sprintf(`"size": %d`, MaxBinaryBytes+1)),
 	}

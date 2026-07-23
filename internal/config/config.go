@@ -35,6 +35,8 @@ type Config struct {
 	ScheduleTimeout             time.Duration
 	ScheduleRetention           time.Duration
 	UpdateManifestURL           string
+	UpdatePrereleaseManifestURL string
+	DevModeStorePath            string
 	Model                       string
 	Effort                      string
 	ReplyMode                   ReplyMode
@@ -75,6 +77,7 @@ func LoadFromEnv() Config {
 		ReplyStorePath:              filepath.Join(workDir, ".lark-agent-bridge", "replies.json"),
 		AgentsConfigPath:            filepath.Join(workDir, ".lark-agent-bridge", "agents.json"),
 		AccessStorePath:             filepath.Join(workDir, ".lark-agent-bridge", "access.json"),
+		DevModeStorePath:            filepath.Join(workDir, ".lark-agent-bridge", "dev-mode.json"),
 		ParticipatedTopicsStorePath: filepath.Join(workDir, ".lark-agent-bridge", "participated-topics.json"),
 		ScheduleStorePath:           filepath.Join(workDir, ".lark-agent-bridge", "schedules.json"),
 		ScheduleSocketPath:          DefaultScheduleSocketPath(workDir),
@@ -118,6 +121,7 @@ func LoadFromEnv() Config {
 		cfg.ReplyStorePath = filepath.Join(v, ".lark-agent-bridge", "replies.json")
 		cfg.AgentsConfigPath = filepath.Join(v, ".lark-agent-bridge", "agents.json")
 		cfg.AccessStorePath = filepath.Join(v, ".lark-agent-bridge", "access.json")
+		cfg.DevModeStorePath = filepath.Join(v, ".lark-agent-bridge", "dev-mode.json")
 		cfg.ParticipatedTopicsStorePath = filepath.Join(v, ".lark-agent-bridge", "participated-topics.json")
 		cfg.ScheduleStorePath = filepath.Join(v, ".lark-agent-bridge", "schedules.json")
 		cfg.ScheduleSocketPath = DefaultScheduleSocketPath(v)
@@ -176,6 +180,7 @@ func LoadFromEnv() Config {
 		cfg.ScheduleSocketPath = v
 	}
 	cfg.UpdateManifestURL = strings.TrimSpace(os.Getenv("LAB_UPDATE_MANIFEST_URL"))
+	cfg.UpdatePrereleaseManifestURL = strings.TrimSpace(os.Getenv("LAB_UPDATE_PRERELEASE_MANIFEST_URL"))
 	if v := os.Getenv("E2E_MODEL"); v != "" {
 		cfg.Model = strings.TrimSpace(v)
 	}
@@ -273,6 +278,12 @@ func LoadFromEnvStrict() (Config, error) {
 		parsed, parseErr := url.Parse(cfg.UpdateManifestURL)
 		if parseErr != nil || parsed.Scheme != "https" || parsed.Host == "" || parsed.User != nil {
 			return Config{}, fmt.Errorf("LAB_UPDATE_MANIFEST_URL must be an absolute HTTPS URL without userinfo")
+		}
+	}
+	if cfg.UpdatePrereleaseManifestURL != "" {
+		parsed, parseErr := url.Parse(cfg.UpdatePrereleaseManifestURL)
+		if parseErr != nil || parsed.Scheme != "https" || parsed.Host == "" || parsed.User != nil {
+			return Config{}, fmt.Errorf("LAB_UPDATE_PRERELEASE_MANIFEST_URL must be an absolute HTTPS URL without userinfo")
 		}
 	}
 	if raw := os.Getenv("E2E_ALLOWED_MODELS"); raw != "" {

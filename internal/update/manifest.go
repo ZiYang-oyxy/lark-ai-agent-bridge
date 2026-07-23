@@ -50,7 +50,11 @@ func ParseManifest(r io.Reader) (Manifest, error) {
 	if manifest.SchemaVersion != 1 {
 		return Manifest{}, fmt.Errorf("unsupported update manifest schema %d", manifest.SchemaVersion)
 	}
-	if _, err := parseStable(manifest.Version); err != nil {
+	// Accept both stable (x.y.z) and rc (x.y.z-rc.N) versions here. Which one is
+	// actually offered is gated later by Client.Check: the stable channel uses
+	// CompareStable (rejects rc), the prerelease channel uses
+	// CompareAllowingPrerelease. Parsing must not pre-empt that decision.
+	if _, _, err := parsePrerelease(manifest.Version); err != nil {
 		return Manifest{}, fmt.Errorf("invalid update version: %w", err)
 	}
 	if manifest.PublishedAt.IsZero() {
@@ -103,6 +107,75 @@ func CompareStable(a, b string) (int, error) {
 		}
 	}
 	return 0, nil
+}
+
+// CompareAllowingPrerelease compares two versions that may carry an -rc.N
+// prerelease suffix, returning -1, 0, or 1. Precedence follows SemVer: a
+// prerelease is lower than its corresponding release (0.1.4-rc.1 < 0.1.4), and
+// rc numbers order numerically (0.1.4-rc.1 < 0.1.4-rc.2). Used only by the
+// opt-in developer (prerelease) update channel; the stable channel keeps the
+// strict CompareStable gate so rc builds can never reach it.
+func CompareAllowingPrerelease(a, b string) (int, error) {
+	aCore, aPre, err := parsePrerelease(a)
+	if err != nil {
+		return 0, err
+	}
+	bCore, bPre, err := parsePrerelease(b)
+	if err != nil {
+		return 0, err
+	}
+	for i := range aCore {
+		if aCore[i] < bCore[i] {
+			return -1, nil
+		}
+		if aCore[i] > bCore[i] {
+			return 1, nil
+		}
+	}
+	// Cores equal: a release (rc == 0) outranks any prerelease of the same core.
+	switch {
+	case aPre == 0 && bPre == 0:
+		return 0, nil
+	case aPre == 0:
+		return 1, nil
+	case bPre == 0:
+		return -1, nil
+	case aPre < bPre:
+		return -1, nil
+	case aPre > bPre:
+		return 1, nil
+	default:
+		return 0, nil
+	}
+}
+
+// parsePrerelease splits "x.y.z" or "x.y.z-rc.N" into its numeric core and an
+// rc number (0 means "no prerelease", i.e. a final release). Only the -rc.N
+// form is accepted; any other suffix is rejected.
+func parsePrerelease(value string) ([3]uint64, uint64, error) {
+	core := value
+	var rc uint64
+	if idx := strings.Index(value, "-"); idx >= 0 {
+		core = value[:idx]
+		suffix := value[idx+1:]
+		rest, ok := strings.CutPrefix(suffix, "rc.")
+		if !ok {
+			return [3]uint64{}, 0, fmt.Errorf("%q has an unsupported prerelease suffix", value)
+		}
+		if rest == "" || (len(rest) > 1 && rest[0] == '0') {
+			return [3]uint64{}, 0, fmt.Errorf("%q has a non-canonical rc number", value)
+		}
+		n, err := strconv.ParseUint(rest, 10, 64)
+		if err != nil || n == 0 {
+			return [3]uint64{}, 0, fmt.Errorf("%q has an invalid rc number", value)
+		}
+		rc = n
+	}
+	parsed, err := parseStable(core)
+	if err != nil {
+		return [3]uint64{}, 0, err
+	}
+	return parsed, rc, nil
 }
 
 func parseStable(value string) ([3]uint64, error) {

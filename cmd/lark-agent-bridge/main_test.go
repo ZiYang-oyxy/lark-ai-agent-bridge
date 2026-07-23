@@ -59,12 +59,22 @@ func TestRunVersionHumanPrefixesReleaseVersion(t *testing.T) {
 }
 
 func TestNewRuntimeUpdateManagerFollowsConfiguration(t *testing.T) {
-	if got := newRuntimeUpdateManager(config.Config{}); got != nil {
+	if got := newRuntimeUpdateManager(config.Config{}, nil); got != nil {
 		t.Fatalf("manager without URL = %#v", got)
 	}
-	got := newRuntimeUpdateManager(config.Config{UpdateManifestURL: "https://updates.example/manifest.json"})
+	got := newRuntimeUpdateManager(config.Config{
+		UpdateManifestURL:           "https://updates.example/manifest.json",
+		UpdatePrereleaseManifestURL: "https://updates.example/prerelease.json",
+	}, nil)
 	if got == nil || got.Client == nil || got.Client.ManifestURL != "https://updates.example/manifest.json" {
 		t.Fatalf("configured manager = %#v", got)
+	}
+	if got.Client.PrereleaseURL != "https://updates.example/prerelease.json" {
+		t.Fatalf("prerelease URL not wired = %q", got.Client.PrereleaseURL)
+	}
+	// A nil dev-mode store must yield a stable (non-prerelease) channel, not panic.
+	if got.Client.Prerelease == nil || got.Client.Prerelease() {
+		t.Fatalf("nil dev-mode store must report stable channel")
 	}
 }
 
