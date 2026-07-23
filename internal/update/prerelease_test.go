@@ -147,3 +147,50 @@ func TestStableCompareStillRejectsRc(t *testing.T) {
 		t.Fatal("CompareStable must reject rc versions")
 	}
 }
+
+// TestStableCompareAcceptsRcCurrentVersion covers the fixed bug: a bridge
+// running an rc build on the stable channel must not error out (which surfaced
+// as "暂时无法检查更新"). The rc current version compares by its numeric core,
+// so a stable target at or below that core reports "no update available".
+func TestStableCompareAcceptsRcCurrentVersion(t *testing.T) {
+	// Running 0.1.4-rc.3, stable manifest at 0.1.3 → current is newer, no update.
+	if got, err := CompareStable("0.1.3", "0.1.4-rc.3"); err != nil || got != -1 {
+		t.Fatalf("CompareStable(0.1.3, 0.1.4-rc.3) = %d,%v want -1,nil", got, err)
+	}
+	// Running 0.1.4-rc.3, stable manifest reaches 0.1.4 core → equal core, no update.
+	if got, err := CompareStable("0.1.4", "0.1.4-rc.3"); err != nil || got != 0 {
+		t.Fatalf("CompareStable(0.1.4, 0.1.4-rc.3) = %d,%v want 0,nil", got, err)
+	}
+	// Running 0.1.4-rc.3, stable manifest at 0.2.0 → genuine stable upgrade.
+	if got, err := CompareStable("0.2.0", "0.1.4-rc.3"); err != nil || got != 1 {
+		t.Fatalf("CompareStable(0.2.0, 0.1.4-rc.3) = %d,%v want 1,nil", got, err)
+	}
+}
+
+// TestStableChannelCheckWithRcCurrentVersion is the end-to-end guard for the
+// reported bug: an rc build on the stable channel used to make Client.Check
+// return an error, which the /help card renders as "暂时无法检查更新". After the
+// fix the check succeeds and reports no update (the rc is already newer than the
+// stable manifest), so /help shows "已是最新版本".
+func TestStableChannelCheckWithRcCurrentVersion(t *testing.T) {
+	bin := []byte("payload")
+	hash := fmt.Sprintf("%x", sha256.Sum256(bin))
+	var srv *httptest.Server
+	srv = httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		body := validManifest(srv.URL+"/notes", srv.URL+"/bin", len(bin), hash)
+		_, _ = w.Write([]byte(replaceManifestVersion(body, "0.1.3")))
+	}))
+	defer srv.Close()
+
+	client := NewClient(srv.URL, srv.Client())
+	client.GOOS, client.GOARCH = "linux", "amd64"
+	// Prerelease is nil → always stable channel (the default user mode).
+
+	res, err := client.Check(t.Context(), "0.1.4-rc.3")
+	if err != nil {
+		t.Fatalf("stable check with rc current version must not error: %v", err)
+	}
+	if res.UpdateAvailable {
+		t.Fatalf("rc build newer than stable 0.1.3 must report no update, got %s", res.Manifest.Version)
+	}
+}

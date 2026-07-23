@@ -90,11 +90,18 @@ func ParseManifest(r io.Reader) (Manifest, error) {
 }
 
 func CompareStable(a, b string) (int, error) {
+	// The stable channel only ever offers stable targets, so a (the candidate
+	// version from the manifest) must be strict stable SemVer — an rc target
+	// can never qualify. But b (the currently running version) may legitimately
+	// be an rc build (a bridge running 0.1.4-rc.N on the stable channel), so we
+	// compare against its numeric core rather than rejecting it. Otherwise a
+	// bridge running an rc on the stable channel makes every update check fail
+	// ("暂时无法检查更新") instead of correctly reporting "already up to date".
 	av, err := parseStable(a)
 	if err != nil {
 		return 0, err
 	}
-	bv, err := parseStable(b)
+	bv, _, err := parsePrerelease(b)
 	if err != nil {
 		return 0, err
 	}
