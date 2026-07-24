@@ -40,6 +40,9 @@ func TestCurrentCatalogContainsScheduleProposalContract(t *testing.T) {
 		"--kind timer",
 		"不要声称任务已经创建",
 		"用户确认",
+		"CronCreate",
+		"ScheduleWakeup",
+		"严禁",
 	} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("v2 missing %q", want)
