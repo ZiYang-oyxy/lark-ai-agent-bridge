@@ -691,7 +691,7 @@ func (s *agentCardStream) eventLocked(initial bool) card.Event {
 	segments := s.segmentsLocked()
 	message := ""
 	if initial && len(segments) == 0 {
-		message = "正在执行 Claude 请求..."
+		message = "思考中…"
 	}
 	stopVisible := s.stopVisible && (s.status == "running" || s.status == "stopped" || s.status == "completed" || s.status == "failed")
 	stopDisabled := s.status != "running"

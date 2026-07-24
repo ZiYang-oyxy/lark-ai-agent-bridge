@@ -248,7 +248,7 @@ func TestServeCardRouterSwitchesToNativeAfterAnswerLayoutStabilizes(t *testing.T
 	initial := base
 	initial.Activity = "reasoning"
 	initial.HeaderTitle = "🧠 正在推理 · ⏱ 1s"
-	initial.Message = "正在执行 Claude 请求..."
+	initial.Message = "思考中…"
 	if err := renderer.Render(initial); err != nil {
 		t.Fatal(err)
 	}
