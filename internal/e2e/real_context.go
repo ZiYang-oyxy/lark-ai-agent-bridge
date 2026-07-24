@@ -101,11 +101,11 @@ func runRealContextAgent(ctx context.Context, rc *RunContext, agent string) *Fai
 }
 
 func assertRealClaude(_ context.Context, rc *RunContext) *Failure {
-	return assertRealContextCard(rc, "claude", "🤖 Claude")
+	return assertRealContextCard(rc, "claude", "🍊")
 }
 
 func assertRealCodex(_ context.Context, rc *RunContext) *Failure {
-	return assertRealContextCard(rc, "codex", "🤖 Codex")
+	return assertRealContextCard(rc, "codex", "⚙️")
 }
 
 func assertRealContextCard(rc *RunContext, agent, label string) *Failure {

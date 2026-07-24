@@ -752,7 +752,7 @@ func buildMetaElements(meta Meta) []any {
 func MetaRows(meta Meta) (string, string) {
 	var first []string
 	if meta.Agent != "" {
-		first = append(first, "🤖 "+displayAgent(meta.Agent))
+		first = append(first, agentEmoji(meta.Agent)+" "+shortSessionID(meta.SessionID, meta.Agent))
 	}
 	if model := metaModelText(meta); model != "" {
 		first = append(first, "🧠 "+model)
@@ -833,6 +833,33 @@ func displayAgent(agent string) string {
 	default:
 		return agent
 	}
+}
+
+// agentEmoji picks a per-agent icon so the footer distinguishes which agent
+// client produced the reply at a glance.
+func agentEmoji(agent string) string {
+	switch strings.ToLower(agent) {
+	case "claude":
+		return "🍊"
+	case "codex":
+		return "⚙️"
+	default:
+		return "🤖"
+	}
+}
+
+// shortSessionID returns the first 6 characters of the session id for the
+// footer. It falls back to the agent display name when no session id is known
+// yet (e.g. before the first turn establishes one).
+func shortSessionID(sessionID, agent string) string {
+	id := strings.TrimSpace(sessionID)
+	if id == "" {
+		return displayAgent(agent)
+	}
+	if len(id) > 6 {
+		return id[:6]
+	}
+	return id
 }
 
 func compactInt(n int) string {

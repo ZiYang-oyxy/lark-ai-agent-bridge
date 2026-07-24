@@ -286,6 +286,7 @@ func TestBuildLarkCardIncludesActionsAndMeta(t *testing.T) {
 func TestMetaRowsFormatsCompleteFooter(t *testing.T) {
 	primary, runtime := MetaRows(Meta{
 		Agent:       "claude",
+		SessionID:   "a1b2c3d4-e5f6",
 		ModelInfo:   ModelInfo{Actual: "claude-opus-4-8[1m]", Effort: "default"},
 		RunTokens:   21_743_200,
 		TotalTokens: 29_261_500,
@@ -293,11 +294,33 @@ func TestMetaRowsFormatsCompleteFooter(t *testing.T) {
 		IP:          "192.0.2.10",
 		WorkDir:     "/workspace/lark-agent-workspace",
 	})
-	if want := "🤖 Claude · 🧠 claude-opus-4-8[1m]（default） · 🔢 tokens: 本轮 21743.2k · 累计 29261.5k"; primary != want {
+	if want := "🍊 a1b2c3 · 🧠 claude-opus-4-8[1m]（default） · 🔢 tokens: 本轮 21743.2k · 累计 29261.5k"; primary != want {
 		t.Fatalf("primary = %q, want %q", primary, want)
 	}
 	if want := "👤 developer · 🖥️ 192.0.2.10 · 📁 `/workspace/lark-agent-workspace`"; runtime != want {
 		t.Fatalf("runtime = %q, want %q", runtime, want)
+	}
+}
+
+func TestMetaRowsAgentEmojiAndSessionID(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		agent     string
+		sessionID string
+		want      string
+	}{
+		{name: "claude with id", agent: "claude", sessionID: "a1b2c3d4-e5f6", want: "🍊 a1b2c3"},
+		{name: "codex with id", agent: "codex", sessionID: "0192837465", want: "⚙️ 019283"},
+		{name: "short id kept", agent: "codex", sessionID: "abc", want: "⚙️ abc"},
+		{name: "claude fallback to name", agent: "claude", sessionID: "", want: "🍊 Claude"},
+		{name: "codex fallback to name", agent: "codex", sessionID: "", want: "⚙️ codex"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			primary, _ := MetaRows(Meta{Agent: tc.agent, SessionID: tc.sessionID})
+			if primary != tc.want {
+				t.Fatalf("primary = %q, want %q", primary, tc.want)
+			}
+		})
 	}
 }
 

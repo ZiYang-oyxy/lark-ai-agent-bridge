@@ -38,6 +38,7 @@ type ModelInfo struct {
 
 type Meta struct {
 	Agent          string
+	SessionID      string
 	Model          string
 	Tokens         int
 	RunTokens      int

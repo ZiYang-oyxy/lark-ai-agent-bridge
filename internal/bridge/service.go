@@ -2599,7 +2599,7 @@ func (s *Service) metaFromSessionWithDir(sess session.Session, dir string) (card
 
 func (s *Service) metaFromSessionWithDirAfter(sess session.Session, dir string, notBefore time.Time) (card.Meta, contextusage.Usage) {
 	userName, ip := runtimeIdentity()
-	meta := card.Meta{Agent: string(sess.Key.Agent), Model: sess.Model, Tokens: sess.Tokens, TotalTokens: sess.Tokens, User: userName, IP: ip, WorkDir: sess.WorkDir, Status: string(sess.State)}
+	meta := card.Meta{Agent: string(sess.Key.Agent), SessionID: sess.AgentSessionID, Model: sess.Model, Tokens: sess.Tokens, TotalTokens: sess.Tokens, User: userName, IP: ip, WorkDir: sess.WorkDir, Status: string(sess.State)}
 	u := contextusage.Read(dir, sess.AgentSessionID)
 	if !notBefore.IsZero() {
 		u = contextusage.ReadAfter(dir, sess.AgentSessionID, notBefore)

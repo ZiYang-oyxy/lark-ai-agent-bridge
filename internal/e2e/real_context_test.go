@@ -157,10 +157,10 @@ func (f *realContextFake) ContainsVisibleText(reply Reply, expected string) (boo
 
 func (f *realContextFake) cardText(agent string) string {
 	marker := testClaudeMarker
-	label := "🤖 Claude"
+	label := "🍊 a1b2c3"
 	if agent == "codex" {
 		marker = testCodexMarker
-		label = "🤖 Codex"
+		label = "⚙️ 019283"
 	}
 	parts := []string{marker, label, "🟢 ctx: 42%"}
 	filtered := parts[:0]

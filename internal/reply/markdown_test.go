@@ -33,7 +33,7 @@ func TestRenderMarkdownHidesThinkingAndCollapsesToolLifecycle(t *testing.T) {
 		},
 		Meta: card.Meta{Agent: "codex", RunTokens: 107600, TotalTokens: 107600},
 	})
-	want := "checking\n\n> ✅ **Bash** · git status\n\ndone\n\n🤖 codex · 🔢 tokens: 本轮 107.6k"
+	want := "checking\n\n> ✅ **Bash** · git status\n\ndone\n\n⚙️ codex · 🔢 tokens: 本轮 107.6k"
 	if got != want {
 		t.Fatalf("markdown = %q, want %q", got, want)
 	}
@@ -66,6 +66,7 @@ func TestRenderMarkdownCompleteTerminalFooter(t *testing.T) {
 		Segments: []card.Segment{{Kind: card.SegmentText, Text: "done"}},
 		Meta: card.Meta{
 			Agent:       "claude",
+			SessionID:   "a1b2c3d4-e5f6",
 			ModelInfo:   card.ModelInfo{Actual: "claude-opus-4-8[1m]", Effort: "default"},
 			RunTokens:   21_743_200,
 			TotalTokens: 29_261_500,
@@ -75,7 +76,7 @@ func TestRenderMarkdownCompleteTerminalFooter(t *testing.T) {
 		},
 	})
 	want := "done\n\n" +
-		"🤖 Claude · 🧠 claude-opus-4-8[1m]（default） · 🔢 tokens: 本轮 21743.2k · 累计 29261.5k\n" +
+		"🍊 a1b2c3 · 🧠 claude-opus-4-8[1m]（default） · 🔢 tokens: 本轮 21743.2k · 累计 29261.5k\n" +
 		"👤 developer · 🖥️ 192.0.2.10 · 📁 `/workspace/lark-agent-workspace`"
 	if got != want {
 		t.Fatalf("markdown = %q, want %q", got, want)
@@ -175,7 +176,7 @@ func TestRenderMarkdownShowsFailedToolAndTerminalState(t *testing.T) {
 		},
 		Meta: card.Meta{Agent: "claude"},
 	})
-	want := "> ❌ **Bash** · false\n\n_⏹ 已停止_\n\n🤖 Claude"
+	want := "> ❌ **Bash** · false\n\n_⏹ 已停止_\n\n🍊 Claude"
 	if got != want {
 		t.Fatalf("markdown = %q, want %q", got, want)
 	}

@@ -144,9 +144,9 @@ func (d *passingDriver) WaitReply(_ context.Context, _ int64, source string) (e2
 	case "codex-agent-source":
 		return e2e.Reply{MessageID: "codex-agent-reply", Raw: []byte(`{"text":"codex"}`)}, nil
 	case "claude-context-source":
-		return e2e.Reply{MessageID: source, Raw: []byte(`{"text":"` + d.claudeMarker + ` | 🤖 Claude | 🟢 ctx: 10%"}`)}, nil
+		return e2e.Reply{MessageID: source, Raw: []byte(`{"text":"` + d.claudeMarker + ` | 🍊 a1b2c3 | 🟢 ctx: 10%"}`)}, nil
 	case "codex-context-source":
-		return e2e.Reply{MessageID: source, Raw: []byte(`{"text":"` + d.codexMarker + ` | 🤖 Codex | 🟡 ctx: 60%"}`)}, nil
+		return e2e.Reply{MessageID: source, Raw: []byte(`{"text":"` + d.codexMarker + ` | ⚙️ 019283 | 🟡 ctx: 60%"}`)}, nil
 	case "start-source":
 		if d.stopped {
 			return e2e.Reply{MessageID: "start-reply", Raw: []byte(`{"text":"READY_` + d.nonce + `\n已请求停止当前任务；排队输入将继续执行。"}`)}, nil
