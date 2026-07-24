@@ -53,6 +53,10 @@ type RuntimePreference struct {
 	// unread notification (the terminal card is an in-place CardKit update and
 	// produces no new message). Defaults to false to avoid打扰.
 	NotifyOnComplete bool `json:"notify_on_complete,omitempty"`
+	// ShowMetaRows, when true, 在 AI 回复卡片底部渲染两行运行时元信息
+	// (agent/会话/模型/tokens 与 user/ip/workdir)。默认 false 隐藏,避免把
+	// 这些信息暴露到聊天;可在 /config 全局或 /local-config 按群开启。
+	ShowMetaRows bool `json:"show_meta_rows,omitempty"`
 	// Agent is the selected agent kind (empty = "claude").
 	Agent string `json:"agent,omitempty"`
 	// AgentHome / AgentBin store the selected preset labels (not paths); they

@@ -268,22 +268,39 @@ func TestBuildLarkCardIncludesActionsAndHidesMeta(t *testing.T) {
 }
 
 // meta 两行(agent/会话ID/模型/tokens · user/ip/workdir)已整体停用,
-// MetaRows 恒返回空,回复卡片底部不再渲染任何运行信息行。
-func TestMetaRowsAlwaysEmpty(t *testing.T) {
-	primary, runtime := MetaRows(Meta{
-		Agent:       "claude",
-		SessionID:   "a1b2c3d4-e5f6",
-		ModelInfo:   ModelInfo{Actual: "claude-opus-4-8[1m]", Effort: "default"},
-		RunTokens:   21_743_200,
-		TotalTokens: 29_261_500,
-		CtxOK:       true,
+// MetaRows 受 ShowMetaRows 开关控制:默认(false)返回空,开启后渲染两行。
+func TestMetaRowsGatedByShowMetaRows(t *testing.T) {
+	base := Meta{
+		Agent:          "claude",
+		SessionID:      "a1b2c3d4-e5f6",
+		ModelInfo:      ModelInfo{Actual: "claude-opus-4-8[1m]", Effort: "default"},
+		RunTokens:      21_743_200,
+		TotalTokens:    29_261_500,
+		CtxOK:          true,
 		CtxUsedPercent: 42,
-		User:        "developer",
-		IP:          "192.0.2.10",
-		WorkDir:     "/workspace/lark-agent-workspace",
-	})
-	if primary != "" || runtime != "" {
-		t.Fatalf("MetaRows = (%q, %q), want both empty", primary, runtime)
+		User:           "developer",
+		IP:             "192.0.2.10",
+		WorkDir:        "/workspace/lark-agent-workspace",
+	}
+
+	// 默认隐藏:两行都空,buildMetaElements 会连分隔线一起跳过。
+	if primary, runtime := MetaRows(base); primary != "" || runtime != "" {
+		t.Fatalf("hidden MetaRows = (%q, %q), want both empty", primary, runtime)
+	}
+
+	// 开启后渲染:第一行含 agent/会话/模型/ctx,第二行含 user/ip/workdir。
+	on := base
+	on.ShowMetaRows = true
+	primary, runtime := MetaRows(on)
+	for _, want := range []string{"🍊", "ctx: 42%", "claude-opus-4-8[1m]"} {
+		if !strings.Contains(primary, want) {
+			t.Fatalf("shown MetaRows primary %q missing %q", primary, want)
+		}
+	}
+	for _, want := range []string{"developer", "192.0.2.10", "/workspace/lark-agent-workspace"} {
+		if !strings.Contains(runtime, want) {
+			t.Fatalf("shown MetaRows runtime %q missing %q", runtime, want)
+		}
 	}
 }
 
@@ -303,6 +320,7 @@ func TestBuildLarkCardRendersRuntimeConfigForm(t *testing.T) {
 			GroupMessageMode:  "mention_only",
 			RespondToBots:     "false",
 			NotifyOnComplete:  "false",
+			ShowMetaRows:      "false",
 			Agents:            []SelectOption{{Value: "claude", Label: "claude · Claude Code"}},
 			AgentHomes:        []SelectOption{{Value: "默认", Label: "默认 · 宿主默认配置目录"}, {Value: "隔离", Label: "隔离 · demo home"}},
 			AgentBins:         []SelectOption{{Value: "主机 claude", Label: "主机 claude · bridge 默认可执行"}, {Value: "ark4", Label: "ark4 · 豆包 seed-2-1-pro"}},
@@ -354,16 +372,16 @@ func TestBuildLarkCardRendersRuntimeConfigForm(t *testing.T) {
 	collectConfigControls(formElements, selects, buttons, &copy)
 	submit := buttons["submit_runtime_config"]
 	closeButton := buttons["close_runtime_config"]
-	// Model/Effort dropped from the UI (Task 3); the notify-on-complete toggle
-	// adds a seventh select alongside reply/conversation/group/respond-to-bots
-	// and the two agent selects.
+	// Model/Effort dropped from the UI (Task 3); notify-on-complete and
+	// show-meta-rows toggles bring the total to eight selects alongside
+	// reply/conversation/group/respond-to-bots and the two agent selects.
 	if _, ok := selects["model"]; ok {
 		t.Fatalf("model select must be removed from config form: %#v", selects)
 	}
 	if _, ok := selects["effort"]; ok {
 		t.Fatalf("effort select must be removed from config form: %#v", selects)
 	}
-	if len(selects) != 7 || selects["reply_mode"]["initial_option"] != "latest-card" || selects["conversation_mode"]["initial_option"] != "chat" || selects["group_message_mode"]["initial_option"] != "mention_only" || selects["respond_to_bots"]["initial_option"] != "false" || selects["notify_on_complete"]["initial_option"] != "false" {
+	if len(selects) != 8 || selects["reply_mode"]["initial_option"] != "latest-card" || selects["conversation_mode"]["initial_option"] != "chat" || selects["group_message_mode"]["initial_option"] != "mention_only" || selects["respond_to_bots"]["initial_option"] != "false" || selects["notify_on_complete"]["initial_option"] != "false" || selects["show_meta_rows"]["initial_option"] != "false" {
 		t.Fatalf("select controls = %#v", selects)
 	}
 	if selects["agent_home"]["initial_option"] != "默认" || selects["agent_bin"]["initial_option"] != "主机 claude" {

@@ -58,6 +58,31 @@ func TestSetChatOverridesSingleField(t *testing.T) {
 	}
 }
 
+// ShowMetaRows 是布尔覆盖:本群可独立开启,不影响全局与其它群。
+func TestSetChatOverrideShowMetaRows(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "preferences.json")
+	store, err := OpenPreferenceStore(path, baseDefaults(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if store.Get().ShowMetaRows {
+		t.Fatal("global ShowMetaRows should default to false")
+	}
+	on := true
+	if err := store.SetChat("oc-a", ChatOverride{ShowMetaRows: &on}); err != nil {
+		t.Fatal(err)
+	}
+	if !store.GetForChat("oc-a").ShowMetaRows {
+		t.Fatal("chat oc-a ShowMetaRows override not applied")
+	}
+	if store.GetForChat("oc-b").ShowMetaRows {
+		t.Fatal("chat oc-b should still inherit global false")
+	}
+	if store.Get().ShowMetaRows {
+		t.Fatal("global ShowMetaRows must stay false")
+	}
+}
+
 // Per-field inheritance is live, not a snapshot: changing the global default
 // for a field not overridden by the chat must flow through to GetForChat.
 func TestGetForChatInheritsLiveGlobalChanges(t *testing.T) {

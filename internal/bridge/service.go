@@ -1669,10 +1669,19 @@ func (s *Service) HandleActionResult(ctx context.Context, req ActionRequest) (Ac
 			}
 			notifyOnComplete = parsed
 		}
+		showMetaRows := current.ShowMetaRows
+		if raw, ok := req.FormValues["show_meta_rows"]; ok {
+			parsed, err := strconv.ParseBool(strings.TrimSpace(raw))
+			if err != nil {
+				s.Audit.Record(req.Actor, "config_save_failed", req.SessionID, "invalid show_meta_rows")
+				return s.renderActionEvent(configSaveErrorEvent(req.SessionID))
+			}
+			showMetaRows = parsed
+		}
 		// Model/Effort are no longer editable from the /config form (the selects
 		// were removed), so preserve the existing preference values instead of
 		// overwriting them with empty form fields.
-		preference := config.RuntimePreference{Model: current.Model, Effort: current.Effort, ReplyMode: config.ReplyMode(req.FormValues["reply_mode"]), ConversationMode: config.ConversationMode(req.FormValues["conversation_mode"]), GroupMessageMode: groupMessageMode, RespondToBots: respondToBots, NotifyOnComplete: notifyOnComplete, Agent: selectedAgent, AgentHome: req.FormValues["agent_home"], AgentBin: req.FormValues["agent_bin"]}
+		preference := config.RuntimePreference{Model: current.Model, Effort: current.Effort, ReplyMode: config.ReplyMode(req.FormValues["reply_mode"]), ConversationMode: config.ConversationMode(req.FormValues["conversation_mode"]), GroupMessageMode: groupMessageMode, RespondToBots: respondToBots, NotifyOnComplete: notifyOnComplete, ShowMetaRows: showMetaRows, Agent: selectedAgent, AgentHome: req.FormValues["agent_home"], AgentBin: req.FormValues["agent_bin"]}
 		if !strings.EqualFold(strings.TrimSpace(current.Agent), strings.TrimSpace(preference.Agent)) {
 			if _, ok := s.Agents.HomePath(preference.Agent, preference.AgentHome); !ok {
 				preference.AgentHome = ""
@@ -1686,7 +1695,7 @@ func (s *Service) HandleActionResult(ctx context.Context, req ActionRequest) (Ac
 			return s.renderActionEvent(configSaveErrorEvent(req.SessionID))
 		}
 		preference = s.Preferences.Get()
-		s.Audit.Record(req.Actor, "config_saved", req.SessionID, fmt.Sprintf("agent=%s agent_home=%s agent_bin=%s model=%s effort=%s reply_mode=%s conversation_mode=%s group_message_mode=%s respond_to_bots=%t notify_on_complete=%t", preference.Agent, preference.AgentHome, preference.AgentBin, preference.Model, preference.Effort, preference.ReplyMode, preference.ConversationMode, preference.GroupMessageMode, preference.RespondToBots, preference.NotifyOnComplete))
+		s.Audit.Record(req.Actor, "config_saved", req.SessionID, fmt.Sprintf("agent=%s agent_home=%s agent_bin=%s model=%s effort=%s reply_mode=%s conversation_mode=%s group_message_mode=%s respond_to_bots=%t notify_on_complete=%t show_meta_rows=%t", preference.Agent, preference.AgentHome, preference.AgentBin, preference.Model, preference.Effort, preference.ReplyMode, preference.ConversationMode, preference.GroupMessageMode, preference.RespondToBots, preference.NotifyOnComplete, preference.ShowMetaRows))
 		s.Audit.Record(req.Actor, "group_message_mode_saved", req.SessionID, fmt.Sprintf("mode=%s respond_to_bots=%t", preference.GroupMessageMode, preference.RespondToBots))
 		result, err := s.renderActionEvent(card.Event{
 			Type:      "config_saved",
@@ -1883,6 +1892,7 @@ func (s *Service) configForm(preference config.RuntimePreference) *card.ConfigFo
 		Model: preference.Model, Effort: preference.Effort, ReplyMode: string(preference.ReplyMode), ConversationMode: string(preference.ConversationMode),
 		GroupMessageMode: string(preference.GroupMessageMode), RespondToBots: strconv.FormatBool(preference.RespondToBots),
 		NotifyOnComplete: strconv.FormatBool(preference.NotifyOnComplete),
+		ShowMetaRows:     strconv.FormatBool(preference.ShowMetaRows),
 		Agents:           toCardOptions(s.Agents.AgentOptions()), AgentHomes: toCardOptions(s.Agents.HomeOptions(agentKind)), AgentBins: toCardOptions(s.Agents.BinOptions(agentKind)),
 		Models: s.configModelOptions(), Efforts: []string{"default", "low", "medium", "high"},
 		ReplyModes:        []string{string(config.ReplyModeAppend), string(config.ReplyModeAppendCleanCard), string(config.ReplyModeLatestCard)},
@@ -1992,6 +2002,11 @@ func chatOverrideFromForm(values map[string]string, global config.RuntimePrefere
 	if raw, ok := values["respond_to_bots"]; ok {
 		if parsed, err := strconv.ParseBool(strings.TrimSpace(raw)); err == nil && parsed != global.RespondToBots {
 			override.RespondToBots = &parsed
+		}
+	}
+	if raw, ok := values["show_meta_rows"]; ok {
+		if parsed, err := strconv.ParseBool(strings.TrimSpace(raw)); err == nil && parsed != global.ShowMetaRows {
+			override.ShowMetaRows = &parsed
 		}
 	}
 	if raw, ok := values["agent"]; ok {
@@ -2605,7 +2620,12 @@ func (s *Service) metaFromSessionWithDir(sess session.Session, dir string) (card
 
 func (s *Service) metaFromSessionWithDirAfter(sess session.Session, dir string, notBefore time.Time) (card.Meta, contextusage.Usage) {
 	userName, ip := runtimeIdentity()
-	meta := card.Meta{Agent: string(sess.Key.Agent), SessionID: sess.AgentSessionID, Model: sess.Model, Tokens: sess.Tokens, TotalTokens: sess.Tokens, User: userName, IP: ip, WorkDir: sess.WorkDir, Status: string(sess.State)}
+	// 元信息行显隐按会话所在 chat 的偏好(含本群覆盖)决定;无覆盖时 GetForChat 退回全局。
+	showMetaRows := false
+	if s.Preferences != nil {
+		showMetaRows = s.Preferences.GetForChat(sess.Key.ChatID).ShowMetaRows
+	}
+	meta := card.Meta{Agent: string(sess.Key.Agent), SessionID: sess.AgentSessionID, Model: sess.Model, Tokens: sess.Tokens, TotalTokens: sess.Tokens, User: userName, IP: ip, WorkDir: sess.WorkDir, Status: string(sess.State), ShowMetaRows: showMetaRows}
 	// base 是不设新鲜度门槛的读取:同 session 最近一次已知占用。
 	base := contextusage.Read(dir, sess.AgentSessionID)
 	u := base

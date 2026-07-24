@@ -16,6 +16,7 @@ type ChatOverride struct {
 	ConversationMode *ConversationMode `json:"conversation_mode,omitempty"`
 	GroupMessageMode *GroupMessageMode `json:"group_message_mode,omitempty"`
 	RespondToBots    *bool             `json:"respond_to_bots,omitempty"`
+	ShowMetaRows     *bool             `json:"show_meta_rows,omitempty"`
 	Agent            *string           `json:"agent,omitempty"`
 	AgentHome        *string           `json:"agent_home,omitempty"`
 	AgentBin         *string           `json:"agent_bin,omitempty"`
@@ -25,8 +26,8 @@ type ChatOverride struct {
 func (o ChatOverride) IsEmpty() bool {
 	return o.Model == nil && o.Effort == nil && o.ReplyMode == nil &&
 		o.ConversationMode == nil && o.GroupMessageMode == nil &&
-		o.RespondToBots == nil && o.Agent == nil && o.AgentHome == nil &&
-		o.AgentBin == nil
+		o.RespondToBots == nil && o.ShowMetaRows == nil && o.Agent == nil &&
+		o.AgentHome == nil && o.AgentBin == nil
 }
 
 // normalizeChatOverride trims/lowercases set string fields to match the
@@ -95,6 +96,9 @@ func mergeChatOverride(base RuntimePreference, o ChatOverride, allowedModels []s
 	}
 	if o.RespondToBots != nil {
 		merged.RespondToBots = *o.RespondToBots
+	}
+	if o.ShowMetaRows != nil {
+		merged.ShowMetaRows = *o.ShowMetaRows
 	}
 	if o.Agent != nil {
 		merged.Agent = *o.Agent

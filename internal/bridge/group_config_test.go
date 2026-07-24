@@ -78,6 +78,65 @@ func TestConfigSaveTogglesNotifyOnComplete(t *testing.T) {
 	}
 }
 
+// show_meta_rows 可在 /config 全局开关,也可在 /local-config 按群覆盖;
+// 本群开启不影响全局与其它群。
+func TestConfigSaveAndLocalOverrideShowMetaRows(t *testing.T) {
+	cfg := testConfig(t)
+	store, _ := testPreferenceStore(t, config.RuntimePreference{Model: "default", Effort: "low"}, cfg.AllowedModels)
+	svc := NewService(cfg, card.NewFakeRenderer(), newFakeRunner(), audit.NewRecorder())
+	svc.Preferences = store
+	if store.Get().ShowMetaRows {
+		t.Fatalf("precondition: ShowMetaRows should default false")
+	}
+	// 全局 /config 开启。
+	if _, err := svc.HandleActionResult(context.Background(), ActionRequest{
+		SessionID: "config", ActionID: "config.save", Actor: "owner",
+		FormValues: map[string]string{
+			"model": "default", "effort": "low", "reply_mode": "append", "conversation_mode": "chat",
+			"group_message_mode": "mention_only", "respond_to_bots": "false", "notify_on_complete": "false",
+			"show_meta_rows": "true",
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if !store.Get().ShowMetaRows {
+		t.Fatalf("global save did not enable ShowMetaRows: %#v", store.Get())
+	}
+	// 全局关回 false,再用 /local-config 只给 oc-a 开启。
+	if _, err := svc.HandleActionResult(context.Background(), ActionRequest{
+		SessionID: "config", ActionID: "config.save", Actor: "owner",
+		FormValues: map[string]string{
+			"model": "default", "effort": "low", "reply_mode": "append", "conversation_mode": "chat",
+			"group_message_mode": "mention_only", "respond_to_bots": "false", "notify_on_complete": "false",
+			"show_meta_rows": "false",
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if store.Get().ShowMetaRows {
+		t.Fatalf("global save did not disable ShowMetaRows: %#v", store.Get())
+	}
+	if _, err := svc.HandleActionResult(context.Background(), ActionRequest{
+		SessionID: "local", ActionID: "local_config.save", Actor: "owner", Value: "oc-a",
+		FormValues: map[string]string{
+			"model": "default", "effort": "low", "reply_mode": "append", "conversation_mode": "chat",
+			"group_message_mode": "mention_only", "respond_to_bots": "false", "notify_on_complete": "false",
+			"show_meta_rows": "true",
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if !store.GetForChat("oc-a").ShowMetaRows {
+		t.Fatalf("local override did not enable ShowMetaRows for oc-a")
+	}
+	if store.GetForChat("oc-b").ShowMetaRows {
+		t.Fatalf("oc-b should still inherit global false")
+	}
+	if store.Get().ShowMetaRows {
+		t.Fatalf("local override leaked into global")
+	}
+}
+
 func TestConfigSaveFromOldCardPreservesGroupSettings(t *testing.T) {
 	cfg := testConfig(t)
 	store, _ := testPreferenceStore(t, config.RuntimePreference{Model: "default", Effort: "low", GroupMessageMode: config.GroupMessageModeAll, RespondToBots: true}, cfg.AllowedModels)

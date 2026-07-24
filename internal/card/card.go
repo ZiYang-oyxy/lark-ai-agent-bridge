@@ -53,6 +53,8 @@ type Meta struct {
 	WorkDir        string
 	Status         string
 	ModelInfo      ModelInfo
+	// ShowMetaRows 为 true 时才渲染底部两行元信息;默认隐藏。
+	ShowMetaRows bool
 }
 
 type StopButton struct {
@@ -93,6 +95,7 @@ type ConfigForm struct {
 	GroupMessageMode  string
 	RespondToBots     string
 	NotifyOnComplete  string
+	ShowMetaRows      string
 	Agents            []SelectOption
 	AgentHomes        []SelectOption
 	AgentBins         []SelectOption
