@@ -2600,12 +2600,27 @@ func (s *Service) metaFromSessionWithDir(sess session.Session, dir string) (card
 func (s *Service) metaFromSessionWithDirAfter(sess session.Session, dir string, notBefore time.Time) (card.Meta, contextusage.Usage) {
 	userName, ip := runtimeIdentity()
 	meta := card.Meta{Agent: string(sess.Key.Agent), SessionID: sess.AgentSessionID, Model: sess.Model, Tokens: sess.Tokens, TotalTokens: sess.Tokens, User: userName, IP: ip, WorkDir: sess.WorkDir, Status: string(sess.State)}
-	u := contextusage.Read(dir, sess.AgentSessionID)
+	// base 是不设新鲜度门槛的读取:同 session 最近一次已知占用。
+	base := contextusage.Read(dir, sess.AgentSessionID)
+	u := base
+	approx := false
 	if !notBefore.IsZero() {
-		u = contextusage.ReadAfter(dir, sess.AgentSessionID, notBefore)
+		// 流式路径要求本轮已落盘的新鲜值;侧车在轮末才落盘,
+		// 卡片首帧读到的还是上一轮,ReadAfter 会判 stale。
+		if fresh := contextusage.ReadAfter(dir, sess.AgentSessionID, notBefore); fresh.OK {
+			u = fresh
+		} else if base.OK {
+			// 无新鲜值但有同 session 上一次已知占用:沿用它并标注近似,
+			// 好过退回与占用量纲不同的累计流水 token(会误导)。
+			u = base
+			approx = true
+		} else {
+			u = fresh
+		}
 	}
 	if u.OK {
 		meta.CtxOK = true
+		meta.CtxApprox = approx
 		meta.CtxUsedPercent = u.UsedPercent
 		meta.CtxTokens = u.TotalTokens
 		meta.CtxWindow = u.ContextWindow

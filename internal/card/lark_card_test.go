@@ -1502,6 +1502,8 @@ func TestMetaTokenTextContextUsage(t *testing.T) {
 		{"red-boundary-85", Meta{CtxOK: true, CtxUsedPercent: 85, CtxTokens: 170000, CtxWindow: 200000}, "🔴 ctx: 85% (170k/200k)"},
 		{"green-boundary-59", Meta{CtxOK: true, CtxUsedPercent: 59, CtxTokens: 118000, CtxWindow: 200000}, "🟢 ctx: 59% (118k/200k)"},
 		{"percent-only-no-window", Meta{CtxOK: true, CtxUsedPercent: 42}, "🟢 ctx: 42%"},
+		{"approx-with-window", Meta{CtxOK: true, CtxApprox: true, CtxUsedPercent: 42, CtxTokens: 84000, CtxWindow: 200000}, "🟢 ~ctx: 42% (84k/200k)"},
+		{"approx-percent-only", Meta{CtxOK: true, CtxApprox: true, CtxUsedPercent: 85}, "🔴 ~ctx: 85%"},
 		{"ctx-zero-percent", Meta{CtxOK: true, CtxUsedPercent: 0, CtxTokens: 100, CtxWindow: 200000}, "🟢 ctx: 0% (100/200k)"},
 		{"fallback-to-cumulative", Meta{RunTokens: 1200, TotalTokens: 5000}, "🔢 tokens: 本轮 1.2k · 累计 5k"},
 		{"fallback-run-only", Meta{RunTokens: 800}, "🔢 tokens: 本轮 800"},

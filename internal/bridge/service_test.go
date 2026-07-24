@@ -1412,13 +1412,17 @@ func TestServiceNewRunsClaudeOneShotAndRendersResult(t *testing.T) {
 	}
 }
 
-func TestPostRunMetaDoesNotReusePreviousOrStaleContext(t *testing.T) {
+// 契约:跨 session(本轮身份未知)绝不复用其它 session 的侧车;但同 session 的
+// stale 侧车(侧车轮末才落盘,首帧/收尾偶尔读到上一轮 updated_at)复用为近似占用,
+// 好过退回与占用量纲不同、会误导的累计流水 token。
+func TestPostRunMetaReusesSameSessionStaleAsApproxButNotCrossSession(t *testing.T) {
 	dir := t.TempDir()
 	recorder := audit.NewRecorder()
 	svc := &Service{Audit: recorder}
 	sess := session.Session{ID: "bridge-session", Key: session.Key{Agent: agent.Claude}, AgentSessionID: "previous-agent-session"}
 	started := time.Now()
 
+	// 本轮 result 无 session id:身份未知,绝不把别的 session 的用量算作本轮。
 	previous := fmt.Sprintf(`{"session_id":"previous-agent-session","used_percentage":85,"updated_at":%d}`, time.Now().Add(time.Minute).UnixMilli())
 	if err := os.WriteFile(filepath.Join(dir, "previous-agent-session.json"), []byte(previous), 0o600); err != nil {
 		t.Fatal(err)
@@ -1427,14 +1431,17 @@ func TestPostRunMetaDoesNotReusePreviousOrStaleContext(t *testing.T) {
 		t.Fatalf("missing current session reused previous context: %#v", meta)
 	}
 
+	// 本轮 result 的 session 与侧车匹配,但 updated_at 陈旧:复用为近似(CtxApprox)。
 	stale := `{"session_id":"previous-agent-session","used_percentage":85,"updated_at":1}`
 	if err := os.WriteFile(filepath.Join(dir, "previous-agent-session.json"), []byte(stale), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if meta := svc.postRunMeta(sess, AgentRunResult{AgentSessionID: "previous-agent-session"}, dir, started); meta.CtxOK {
-		t.Fatalf("stale current-session sidecar rendered context: %#v", meta)
+	meta := svc.postRunMeta(sess, AgentRunResult{AgentSessionID: "previous-agent-session"}, dir, started)
+	if !meta.CtxOK || !meta.CtxApprox || meta.CtxUsedPercent != 85 {
+		t.Fatalf("same-session stale sidecar should render approx context: %#v", meta)
 	}
-	if events := recorder.Events(); len(events) != 2 || events[0].Detail != "agent=claude reason=empty" || events[1].Detail != "agent=claude reason=stale" {
+	// 只应记一条 unavailable(第一次身份未知,reason=empty);近似渲染成功不算 unavailable。
+	if events := recorder.Events(); len(events) != 1 || events[0].Detail != "agent=claude reason=empty" {
 		t.Fatalf("context unavailable audits = %#v", events)
 	}
 }

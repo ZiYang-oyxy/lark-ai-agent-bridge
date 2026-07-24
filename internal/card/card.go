@@ -44,6 +44,7 @@ type Meta struct {
 	RunTokens      int
 	TotalTokens    int
 	CtxOK          bool
+	CtxApprox      bool
 	CtxUsedPercent int
 	CtxTokens      int
 	CtxWindow      int

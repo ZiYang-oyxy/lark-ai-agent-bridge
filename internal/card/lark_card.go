@@ -798,10 +798,16 @@ func metaTokenText(meta Meta) string {
 		case meta.CtxUsedPercent >= 60:
 			dot = "🟡"
 		}
-		if meta.CtxWindow > 0 {
-			return fmt.Sprintf("%s ctx: %d%% (%s/%s)", dot, meta.CtxUsedPercent, compactInt(meta.CtxTokens), compactInt(meta.CtxWindow))
+		// 近似值(本轮侧车尚未落盘,沿用同 session 上一次已知占用)前缀 ~,
+		// 与实时值区分,但仍显示占用而非误导性的累计流水 token。
+		prefix := ""
+		if meta.CtxApprox {
+			prefix = "~"
 		}
-		return fmt.Sprintf("%s ctx: %d%%", dot, meta.CtxUsedPercent)
+		if meta.CtxWindow > 0 {
+			return fmt.Sprintf("%s %sctx: %d%% (%s/%s)", dot, prefix, meta.CtxUsedPercent, compactInt(meta.CtxTokens), compactInt(meta.CtxWindow))
+		}
+		return fmt.Sprintf("%s %sctx: %d%%", dot, prefix, meta.CtxUsedPercent)
 	}
 	runTokens := meta.RunTokens
 	totalTokens := meta.TotalTokens
