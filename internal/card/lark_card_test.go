@@ -131,9 +131,13 @@ func TestBuildLarkCardInlineTimelineKeepsFullShellAndPlainTools(t *testing.T) {
 		t.Fatalf("panels = %#v, want one folded thought panel", panels)
 	}
 	serialized := fmt.Sprint(payload)
-	for _, want := range []string{"停止", "Claude", "model", "tokens:", "user", "host", "/work"} {
-		if !strings.Contains(serialized, want) {
-			t.Fatalf("full shell missing %q: %s", want, serialized)
+	if !strings.Contains(serialized, "停止") {
+		t.Fatalf("full shell missing stop button: %s", serialized)
+	}
+	// meta 行已整体停用:agent/模型/tokens/user/host/workdir 都不应再进卡片。
+	for _, hidden := range []string{"🍊", "tokens:", "/work", "📁", "🖥️"} {
+		if strings.Contains(serialized, hidden) {
+			t.Fatalf("meta fragment %q still rendered: %s", hidden, serialized)
 		}
 	}
 	if strings.Contains(serialized, "must not render as panel") {
@@ -224,13 +228,13 @@ func TestBuildLarkCardUsesValidElementIDs(t *testing.T) {
 	}
 }
 
-func TestBuildLarkCardIncludesActionsAndMeta(t *testing.T) {
+func TestBuildLarkCardIncludesActionsAndHidesMeta(t *testing.T) {
 	card := BuildLarkCard(Event{
 		Type:      "workdir_confirm",
 		SessionID: "claude:chat",
 		Segments:  []Segment{{Kind: SegmentText, Text: "Workdir does not exist: /tmp/work"}},
 		Actions:   WorkDirCreateActions("/tmp/work"),
-		Meta:      Meta{Agent: "REDACTED", Model: "REDACTED", RunTokens: 42, TotalTokens: 4200, User: "REDACTED", IP: "REDACTED", WorkDir: "REDACTED", Status: "REDACTED"},
+		Meta:      Meta{Agent: "claude", Model: "opus", RunTokens: 42, TotalTokens: 4200, User: "dev", IP: "192.0.2.1", WorkDir: "/tmp/work", Status: "running"},
 	})
 	if card["schema"] != "2.0" {
 		t.Fatalf("schema = %#v, want 2.0", card["schema"])
@@ -241,8 +245,6 @@ func TestBuildLarkCardIncludesActionsAndMeta(t *testing.T) {
 		t.Fatalf("elements missing: %#v", body["elements"])
 	}
 	foundButtons := 0
-	foundDivider := false
-	metaLines := map[string]string{}
 	for _, el := range elements {
 		m, _ := el.(map[string]any)
 		switch m["tag"] {
@@ -253,104 +255,38 @@ func TestBuildLarkCardIncludesActionsAndMeta(t *testing.T) {
 			if value["session"] != "claude:chat" {
 				t.Fatalf("button value = %#v, want session", value)
 			}
-		case "hr":
-			foundDivider = true
 		case "markdown":
+			// meta 两行已整体停用,卡片里不应再出现任何运行信息行。
 			if id, _ := m["element_id"].(string); id == "meta_primary" || id == "meta_runtime" {
-				metaLines[id], _ = m["content"].(string)
+				t.Fatalf("meta line %q still rendered, want hidden", id)
 			}
 		}
 	}
 	if foundButtons != 2 {
 		t.Fatalf("button count = %d, want 2", foundButtons)
 	}
-	if !foundDivider {
-		t.Fatal("meta divider missing")
-	}
-	if metaLines["meta_primary"] == "" || metaLines["meta_runtime"] == "" {
-		t.Fatalf("meta lines = %#v, want primary and runtime rows", metaLines)
-	}
-	metaContent := metaLines["meta_primary"] + "\n" + metaLines["meta_runtime"]
-	if containsAny(metaContent, "agent=", "model=", "workdir=", "status=") {
-		t.Fatalf("meta content contains machine prefixes: %q", metaContent)
-	}
-	if !containsAll(metaContent, "REDACTED", "REDACTED", "REDACTED", "REDACTED", "REDACTED", "REDACTED") {
-		t.Fatalf("meta content = %q", metaContent)
-	}
-	// 紧凑行用间隔点连接同一行的字段。
-	if !strings.Contains(metaLines["meta_primary"], " · ") {
-		t.Fatalf("primary line not compact: %q", metaLines["meta_primary"])
-	}
 }
 
-func TestMetaRowsFormatsCompleteFooter(t *testing.T) {
+// meta 两行(agent/会话ID/模型/tokens · user/ip/workdir)已整体停用,
+// MetaRows 恒返回空,回复卡片底部不再渲染任何运行信息行。
+func TestMetaRowsAlwaysEmpty(t *testing.T) {
 	primary, runtime := MetaRows(Meta{
 		Agent:       "claude",
 		SessionID:   "a1b2c3d4-e5f6",
 		ModelInfo:   ModelInfo{Actual: "claude-opus-4-8[1m]", Effort: "default"},
 		RunTokens:   21_743_200,
 		TotalTokens: 29_261_500,
+		CtxOK:       true,
+		CtxUsedPercent: 42,
 		User:        "developer",
 		IP:          "192.0.2.10",
 		WorkDir:     "/workspace/lark-agent-workspace",
 	})
-	if want := "🍊 a1b2c3 · 🧠 claude-opus-4-8[1m]（default） · 🔢 tokens: 本轮 21743.2k · 累计 29261.5k"; primary != want {
-		t.Fatalf("primary = %q, want %q", primary, want)
-	}
-	if want := "👤 developer · 🖥️ 192.0.2.10 · 📁 `/workspace/lark-agent-workspace`"; runtime != want {
-		t.Fatalf("runtime = %q, want %q", runtime, want)
+	if primary != "" || runtime != "" {
+		t.Fatalf("MetaRows = (%q, %q), want both empty", primary, runtime)
 	}
 }
 
-func TestMetaRowsAgentEmojiAndSessionID(t *testing.T) {
-	for _, tc := range []struct {
-		name      string
-		agent     string
-		sessionID string
-		want      string
-	}{
-		{name: "claude with id", agent: "claude", sessionID: "a1b2c3d4-e5f6", want: "🍊 a1b2c3"},
-		{name: "codex with id", agent: "codex", sessionID: "0192837465", want: "⚙️ 019283"},
-		{name: "short id kept", agent: "codex", sessionID: "abc", want: "⚙️ abc"},
-		{name: "claude fallback to name", agent: "claude", sessionID: "", want: "🍊 Claude"},
-		{name: "codex fallback to name", agent: "codex", sessionID: "", want: "⚙️ codex"},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			primary, _ := MetaRows(Meta{Agent: tc.agent, SessionID: tc.sessionID})
-			if primary != tc.want {
-				t.Fatalf("primary = %q, want %q", primary, tc.want)
-			}
-		})
-	}
-}
-
-func TestBuildLarkCardLabelsRequestedAndActualModel(t *testing.T) {
-	for _, tc := range []struct {
-		name string
-		info ModelInfo
-		want []string
-		not  []string
-	}{
-		{name: "reported actual", info: ModelInfo{Requested: "opus", Actual: "claude-opus-4-1", Effort: "high"}, want: []string{"claude-opus-4-1", "（high）"}, not: []string{"opus）"}},
-		{name: "missing actual", info: ModelInfo{Requested: "sonnet", Effort: "medium"}, want: []string{"unknown", "（medium）"}, not: []string{"sonnet"}},
-		{name: "default requested", info: ModelInfo{Requested: "default", Effort: "low"}, want: []string{"unknown", "（low）"}, not: []string{"default"}},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			payload := BuildLarkCard(Event{Type: "result", Meta: Meta{Agent: "claude", Model: "legacy-must-not-win", ModelInfo: tc.info}})
-			elements := payload["body"].(map[string]any)["elements"].([]any)
-			var text string
-			for _, raw := range elements {
-				element := raw.(map[string]any)
-				if id, _ := element["element_id"].(string); id == "meta_primary" || id == "meta_runtime" {
-					text += element["content"].(string)
-				}
-			}
-			if !containsAll(text, tc.want...) || containsAny(text, tc.not...) || strings.Contains(text, "legacy-must-not-win") {
-				t.Fatalf("model provenance text = %q, want %#v without %#v", text, tc.want, tc.not)
-			}
-		})
-	}
-}
 
 func TestBuildLarkCardRendersRuntimeConfigForm(t *testing.T) {
 	payload := BuildLarkCard(Event{
@@ -1490,31 +1426,3 @@ func TestBuildLarkCardResumeEmptyShowsHint(t *testing.T) {
 	}
 }
 
-func TestMetaTokenTextContextUsage(t *testing.T) {
-	tests := []struct {
-		name string
-		meta Meta
-		want string
-	}{
-		{"green-with-window", Meta{CtxOK: true, CtxUsedPercent: 42, CtxTokens: 84000, CtxWindow: 200000}, "🟢 ctx: 42% (84k/200k)"},
-		{"yellow-boundary-60", Meta{CtxOK: true, CtxUsedPercent: 60, CtxTokens: 120000, CtxWindow: 200000}, "🟡 ctx: 60% (120k/200k)"},
-		{"yellow-boundary-84", Meta{CtxOK: true, CtxUsedPercent: 84, CtxTokens: 168000, CtxWindow: 200000}, "🟡 ctx: 84% (168k/200k)"},
-		{"red-boundary-85", Meta{CtxOK: true, CtxUsedPercent: 85, CtxTokens: 170000, CtxWindow: 200000}, "🔴 ctx: 85% (170k/200k)"},
-		{"green-boundary-59", Meta{CtxOK: true, CtxUsedPercent: 59, CtxTokens: 118000, CtxWindow: 200000}, "🟢 ctx: 59% (118k/200k)"},
-		{"percent-only-no-window", Meta{CtxOK: true, CtxUsedPercent: 42}, "🟢 ctx: 42%"},
-		{"approx-with-window", Meta{CtxOK: true, CtxApprox: true, CtxUsedPercent: 42, CtxTokens: 84000, CtxWindow: 200000}, "🟢 ~ctx: 42% (84k/200k)"},
-		{"approx-percent-only", Meta{CtxOK: true, CtxApprox: true, CtxUsedPercent: 85}, "🔴 ~ctx: 85%"},
-		{"ctx-zero-percent", Meta{CtxOK: true, CtxUsedPercent: 0, CtxTokens: 100, CtxWindow: 200000}, "🟢 ctx: 0% (100/200k)"},
-		{"fallback-to-cumulative", Meta{RunTokens: 1200, TotalTokens: 5000}, "🔢 tokens: 本轮 1.2k · 累计 5k"},
-		{"fallback-run-only", Meta{RunTokens: 800}, "🔢 tokens: 本轮 800"},
-		{"fallback-total-equals-run", Meta{RunTokens: 5000, TotalTokens: 5000}, "🔢 tokens: 本轮 5k"},
-		{"empty", Meta{}, ""},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if got := metaTokenText(tt.meta); got != tt.want {
-				t.Fatalf("metaTokenText(%+v) = %q, want %q", tt.meta, got, tt.want)
-			}
-		})
-	}
-}

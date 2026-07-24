@@ -750,80 +750,11 @@ func buildMetaElements(meta Meta) []any {
 // MetaRows formats the two compact metadata rows shared by full CardKit and
 // lightweight append replies.
 func MetaRows(meta Meta) (string, string) {
-	var first []string
-	if meta.Agent != "" {
-		first = append(first, agentEmoji(meta.Agent)+" "+shortSessionID(meta.SessionID, meta.Agent))
-	}
-	if model := metaModelText(meta); model != "" {
-		first = append(first, "🧠 "+model)
-	}
-	if tokens := metaTokenText(meta); tokens != "" {
-		first = append(first, tokens)
-	}
-	var second []string
-	if meta.User != "" {
-		second = append(second, "👤 "+meta.User)
-	}
-	if meta.IP != "" {
-		second = append(second, "🖥️ "+meta.IP)
-	}
-	if meta.WorkDir != "" {
-		second = append(second, "📁 `"+meta.WorkDir+"`")
-	}
-	return strings.Join(first, " · "), strings.Join(second, " · ")
-}
-
-// metaModelText 用实际模型值(缺失显 unknown),effort 以括号后缀呈现,
-// 取代旧的 "requested: x · actual: y · effort: z" 冗长三段。
-func metaModelText(meta Meta) string {
-	if meta.ModelInfo != (ModelInfo{}) {
-		model := meta.ModelInfo.Actual
-		if model == "" {
-			model = "unknown"
-		}
-		if effort := meta.ModelInfo.Effort; effort != "" && effort != "unknown" {
-			return fmt.Sprintf("%s（%s）", model, effort)
-		}
-		return model
-	}
-	return meta.Model
-}
-
-func metaTokenText(meta Meta) string {
-	if meta.CtxOK {
-		dot := "🟢"
-		switch {
-		case meta.CtxUsedPercent >= 85:
-			dot = "🔴"
-		case meta.CtxUsedPercent >= 60:
-			dot = "🟡"
-		}
-		// 近似值(本轮侧车尚未落盘,沿用同 session 上一次已知占用)前缀 ~,
-		// 与实时值区分,但仍显示占用而非误导性的累计流水 token。
-		prefix := ""
-		if meta.CtxApprox {
-			prefix = "~"
-		}
-		if meta.CtxWindow > 0 {
-			return fmt.Sprintf("%s %sctx: %d%% (%s/%s)", dot, prefix, meta.CtxUsedPercent, compactInt(meta.CtxTokens), compactInt(meta.CtxWindow))
-		}
-		return fmt.Sprintf("%s %sctx: %d%%", dot, prefix, meta.CtxUsedPercent)
-	}
-	runTokens := meta.RunTokens
-	totalTokens := meta.TotalTokens
-	if runTokens == 0 && meta.Tokens > 0 {
-		runTokens = meta.Tokens
-	}
-	if totalTokens == 0 && meta.Tokens > 0 {
-		totalTokens = meta.Tokens
-	}
-	if runTokens == 0 && totalTokens == 0 {
-		return ""
-	}
-	if totalTokens > 0 && totalTokens != runTokens {
-		return fmt.Sprintf("🔢 tokens: 本轮 %s · 累计 %s", compactInt(runTokens), compactInt(totalTokens))
-	}
-	return fmt.Sprintf("🔢 tokens: 本轮 %s", compactInt(runTokens))
+	// 底部 meta 两行(agent · 会话ID · 模型 · tokens/ctx;user · ip · workdir)
+	// 一律不再展示 —— 返回空串使 buildMetaElements 连分隔线一起跳过,
+	// markdown 回复的 footer 同样为空。
+	_ = meta
+	return "", ""
 }
 
 func metaLineElement(id, content string) map[string]any {

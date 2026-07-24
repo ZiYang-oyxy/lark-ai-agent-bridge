@@ -1557,17 +1557,13 @@ func TestServiceSeparatesRequestedAndActualModel(t *testing.T) {
 		if terminal.Meta.ModelInfo.Requested != "sonnet" || terminal.Meta.ModelInfo.Actual != "" {
 			t.Fatalf("terminal model provenance = %#v", terminal.Meta.ModelInfo)
 		}
+		// meta 行已整体停用:模型 provenance 仍在 event 上被追踪,但不再渲染进卡片。
 		payload := card.BuildLarkCard(terminal)
-		var text string
 		for _, raw := range payload["body"].(map[string]any)["elements"].([]any) {
 			element := raw.(map[string]any)
 			if id, _ := element["element_id"].(string); id == "meta_primary" || id == "meta_runtime" {
-				text += element["content"].(string)
+				t.Fatalf("meta line %q still rendered, want hidden", id)
 			}
-		}
-		// v2:model 用实际值,缺失显 unknown;不再泄漏 requested 值(sonnet)。
-		if !strings.Contains(text, "unknown") || strings.Contains(text, "sonnet") {
-			t.Fatalf("rendered model provenance = %q", text)
 		}
 	})
 

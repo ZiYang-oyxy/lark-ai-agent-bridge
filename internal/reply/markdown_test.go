@@ -33,7 +33,7 @@ func TestRenderMarkdownHidesThinkingAndCollapsesToolLifecycle(t *testing.T) {
 		},
 		Meta: card.Meta{Agent: "codex", RunTokens: 107600, TotalTokens: 107600},
 	})
-	want := "checking\n\n> ✅ **Bash** · git status\n\ndone\n\n⚙️ codex · 🔢 tokens: 本轮 107.6k"
+	want := "checking\n\n> ✅ **Bash** · git status\n\ndone"
 	if got != want {
 		t.Fatalf("markdown = %q, want %q", got, want)
 	}
@@ -75,37 +75,20 @@ func TestRenderMarkdownCompleteTerminalFooter(t *testing.T) {
 			WorkDir:     "/workspace/lark-agent-workspace",
 		},
 	})
-	want := "done\n\n" +
-		"🍊 a1b2c3 · 🧠 claude-opus-4-8[1m]（default） · 🔢 tokens: 本轮 21743.2k · 累计 29261.5k\n" +
-		"👤 developer · 🖥️ 192.0.2.10 · 📁 `/workspace/lark-agent-workspace`"
+	// meta footer(agent/会话ID/模型/tokens · user/ip/workdir)已整体停用,只剩正文。
+	want := "done"
 	if got != want {
 		t.Fatalf("markdown = %q, want %q", got, want)
 	}
 }
 
-func TestRenderMarkdownPartialTerminalFooter(t *testing.T) {
-	for _, test := range []struct {
-		name string
-		meta card.Meta
-		want string
-	}{
-		{
-			name: "primary only",
-			meta: card.Meta{ModelInfo: card.ModelInfo{Actual: "claude-sonnet-4-6"}},
-			want: "🧠 claude-sonnet-4-6",
-		},
-		{
-			name: "runtime only",
-			meta: card.Meta{User: "developer", WorkDir: "/repo"},
-			want: "👤 developer · 📁 `/repo`",
-		},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			got := RenderMarkdown(card.Event{Type: "result", Meta: test.meta})
-			if got != test.want || strings.HasPrefix(got, "\n") || strings.HasSuffix(got, "\n") || strings.Contains(got, " ·  · ") {
-				t.Fatalf("markdown = %q, want %q", got, test.want)
-			}
-		})
+// meta footer 已整体停用,仅有 meta 而无正文时应回落到"未返回内容"占位,不再拼 footer。
+func TestRenderMarkdownMetaOnlyHasNoFooter(t *testing.T) {
+	got := RenderMarkdown(card.Event{Type: "result", Meta: card.Meta{
+		Agent: "claude", SessionID: "a1b2c3d4", User: "developer", WorkDir: "/repo",
+	}})
+	if strings.ContainsAny(got, "🍊⚙️🧠🔢👤🖥️") || strings.Contains(got, "📁") {
+		t.Fatalf("markdown still carries meta footer: %q", got)
 	}
 }
 
@@ -176,7 +159,7 @@ func TestRenderMarkdownShowsFailedToolAndTerminalState(t *testing.T) {
 		},
 		Meta: card.Meta{Agent: "claude"},
 	})
-	want := "> ❌ **Bash** · false\n\n_⏹ 已停止_\n\n🍊 Claude"
+	want := "> ❌ **Bash** · false\n\n_⏹ 已停止_"
 	if got != want {
 		t.Fatalf("markdown = %q, want %q", got, want)
 	}
