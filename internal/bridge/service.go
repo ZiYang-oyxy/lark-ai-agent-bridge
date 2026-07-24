@@ -848,7 +848,13 @@ func (s *Service) resolveAgentBinHome(kind agent.Kind, preference config.Runtime
 	if path, ok := s.Agents.BinPath(agentKind, preference.AgentBin); ok && strings.TrimSpace(path) != "" {
 		bin = path
 	} else if kind == agent.Codex {
-		bin = "codex"
+		// 与 claude 对称:未选定 bin 时兜底到可配置的 Config.CodexBin
+		// (LAB_CODEX_BIN/E2E_CODEX_BIN 可配成绝对路径),而非裸名 "codex"
+		// ——后者依赖运行时 PATH,Test/服务进程 PATH 不含 workspace bin 时 exec 失败。
+		// 零值 Config(未走 LoadFromEnv)时 CodexBin 为空,退回裸名以不劣于原行为。
+		if bin = strings.TrimSpace(s.Config.CodexBin); bin == "" {
+			bin = "codex"
+		}
 	} else {
 		bin = s.Config.ClaudeBin
 	}

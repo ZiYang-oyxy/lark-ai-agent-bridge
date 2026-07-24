@@ -61,6 +61,33 @@ func TestLoadFromEnvClaudeBinPrefersE2EVariable(t *testing.T) {
 	}
 }
 
+func TestLoadFromEnvCodexBinSupportsLABVariable(t *testing.T) {
+	t.Setenv("E2E_CODEX_BIN", "")
+	t.Setenv("LAB_CODEX_BIN", "/workspace/bin/codex")
+
+	if got := LoadFromEnv().CodexBin; got != "/workspace/bin/codex" {
+		t.Fatalf("CodexBin = %q, want LAB_CODEX_BIN value", got)
+	}
+}
+
+func TestLoadFromEnvCodexBinPrefersE2EVariable(t *testing.T) {
+	t.Setenv("LAB_CODEX_BIN", "/legacy/bin/codex")
+	t.Setenv("E2E_CODEX_BIN", "/current/bin/codex")
+
+	if got := LoadFromEnv().CodexBin; got != "/current/bin/codex" {
+		t.Fatalf("CodexBin = %q, want E2E_CODEX_BIN value", got)
+	}
+}
+
+func TestLoadFromEnvCodexBinDefaultsToBareName(t *testing.T) {
+	t.Setenv("LAB_CODEX_BIN", "")
+	t.Setenv("E2E_CODEX_BIN", "")
+
+	if got := LoadFromEnv().CodexBin; got != "codex" {
+		t.Fatalf("CodexBin = %q, want default \"codex\"", got)
+	}
+}
+
 func TestLoadFromEnvStrictParsesHTTPSUpdateManifestURL(t *testing.T) {
 	t.Setenv("LAB_UPDATE_MANIFEST_URL", "https://updates.example/bridge/stable/manifest.json")
 	cfg, err := LoadFromEnvStrict()

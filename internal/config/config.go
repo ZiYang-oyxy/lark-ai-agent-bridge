@@ -15,6 +15,7 @@ type Config struct {
 	DefaultAgent                string
 	DefaultWorkDir              string
 	ClaudeBin                   string
+	CodexBin                    string
 	CardUpdateEvery             time.Duration
 	CardMaxChars                int
 	CardMinDeltaChars           int
@@ -65,6 +66,7 @@ func LoadFromEnv() Config {
 		DefaultAgent:                "claude",
 		DefaultWorkDir:              workDir,
 		ClaudeBin:                   "claude",
+		CodexBin:                    "codex",
 		CardUpdateEvery:             800 * time.Millisecond,
 		CardMaxChars:                12000,
 		CardMinDeltaChars:           30,
@@ -111,6 +113,12 @@ func LoadFromEnv() Config {
 	}
 	if v := os.Getenv("E2E_CLAUDE_BIN"); v != "" {
 		cfg.ClaudeBin = v
+	}
+	if v := os.Getenv("LAB_CODEX_BIN"); v != "" {
+		cfg.CodexBin = v
+	}
+	if v := os.Getenv("E2E_CODEX_BIN"); v != "" {
+		cfg.CodexBin = v
 	}
 	if v := os.Getenv("E2E_DEFAULT_WORKDIR"); v != "" {
 		cfg.DefaultWorkDir = v

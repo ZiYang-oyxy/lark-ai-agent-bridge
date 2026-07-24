@@ -181,6 +181,7 @@ func TestResolveAgentBinHomeUsesCataloguePresets(t *testing.T) {
 	}
 }
 
+// 零值 Config(CodexBin 未设)时,codex 未选定 bin 退回裸名 "codex",不劣于原行为。
 func TestResolveAgentBinHomeDefaultsCodexToHostCodex(t *testing.T) {
 	svc := NewService(config.Config{ClaudeBin: "/opt/wrap/cc", DefaultWorkDir: t.TempDir()}, card.NewFakeRenderer(), newFakeRunner(), audit.NewRecorder())
 	svc.Agents = config.AgentsConfig{
@@ -195,6 +196,26 @@ func TestResolveAgentBinHomeDefaultsCodexToHostCodex(t *testing.T) {
 	bin, home := svc.resolveAgentBinHome(agent.Codex, config.RuntimePreference{Agent: "codex"})
 	if bin != "codex" || home != "" {
 		t.Fatalf("resolved = %q/%q, want codex/empty", bin, home)
+	}
+}
+
+// 与 claude 对称:配置了 Config.CodexBin(经 LAB_CODEX_BIN 注入绝对路径)时,
+// codex 未选定 bin 兜底到该配置值,而非裸名 —— 修复 Test/服务进程 PATH 不含
+// workspace bin 时 codex exec "codex" not found in $PATH 的失败。
+func TestResolveAgentBinHomeDefaultsCodexToConfigBin(t *testing.T) {
+	svc := NewService(config.Config{ClaudeBin: "/opt/wrap/cc", CodexBin: "/opt/wrap/cx", DefaultWorkDir: t.TempDir()}, card.NewFakeRenderer(), newFakeRunner(), audit.NewRecorder())
+	svc.Agents = config.AgentsConfig{
+		SchemaVersion: config.AgentsSchemaVersion,
+		Agents: []config.AgentDef{{
+			Kind:  "codex",
+			Label: "Codex CLI",
+			Homes: []config.AgentHome{{Label: config.DefaultHomeLabel}},
+			Bins:  []config.AgentBin{{Label: config.DefaultBinLabel}},
+		}},
+	}
+	bin, home := svc.resolveAgentBinHome(agent.Codex, config.RuntimePreference{Agent: "codex", AgentBin: config.DefaultBinLabel})
+	if bin != "/opt/wrap/cx" || home != "" {
+		t.Fatalf("resolved = %q/%q, want /opt/wrap/cx/empty", bin, home)
 	}
 }
 
