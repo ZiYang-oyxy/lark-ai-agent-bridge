@@ -167,9 +167,22 @@ func (s *Service) handleUpdateInstall(ctx context.Context, req ActionRequest) (A
 	}
 	actionResult, renderErr := s.renderActionEvent(event)
 	go func() {
+		// On success the current process exits inside Restart (detach launcher),
+		// so anything past this call only runs when the restart genuinely failed.
 		restartErr := prepared.Restart(os.Args, os.Environ())
 		if restartErr != nil {
 			s.Audit.Record(req.Actor, "update_exec_failed", req.SessionID, restartErr.Error())
+			// The "正在重启" card is now a lie — the process did not restart and the
+			// binary was rolled back to the previous version. Tell the user the
+			// truth and clear maintenance so a retry is possible, instead of
+			// silently leaving a stale process running under a "升级中" banner.
+			s.setUpgradeMaintenance(false)
+			_ = s.Cards.Render(card.Event{
+				Type: "update_message", SessionID: req.SessionID,
+				HeaderTitle: "Bridge 升级失败", HeaderTemplate: "red",
+				Segments: []card.Segment{{Kind: card.SegmentError, Text: fmt.Sprintf(
+					"重启失败，已回滚到当前版本 v%s，请稍后在 /help 重试。", buildinfo.Version)}},
+			})
 		}
 		s.endUpgradeAttempt(true)
 	}()

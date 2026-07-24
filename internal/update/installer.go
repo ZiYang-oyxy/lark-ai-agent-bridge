@@ -8,7 +8,6 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
-	"syscall"
 	"time"
 )
 
@@ -72,7 +71,7 @@ func (i Installer) Prepare(ctx context.Context, asset Asset) (*Prepared, error) 
 	}
 	execFn := i.Exec
 	if execFn == nil {
-		execFn = syscall.Exec
+		execFn = detachRestart
 	}
 	sleep := i.Sleep
 	if sleep == nil {
@@ -189,6 +188,35 @@ func (p *Prepared) Abort() {
 	}
 	p.done = true
 }
+
+// detachRestart is the default restart strategy. It launches the freshly
+// replaced binary as a NEW process (inheriting argv/env/stdio/cwd) and, once the
+// child is confirmed started, exits the current process so only the new binary
+// survives.
+//
+// Why not syscall.Exec: execve replaces only the calling OS thread's image and
+// is unsafe to call from a non-main goroutine in a multi-threaded Go runtime —
+// it can fail (or leave the process half-replaced) with the error swallowed,
+// which is exactly the "binary replaced on disk but process never restarted"
+// drift this default was rewritten to eliminate. StartProcess has no such
+// thread constraint and works reliably from any goroutine.
+func detachRestart(path string, argv, env []string) error {
+	files := []*os.File{os.Stdin, os.Stdout, os.Stderr}
+	proc, err := os.StartProcess(path, argv, &os.ProcAttr{Env: env, Files: files})
+	if err != nil {
+		return err
+	}
+	// Detach: don't wait on the child, let it run independently.
+	_ = proc.Release()
+	// Give the child a moment to come up before we vacate, then exit so the old
+	// (stale) image stops handling traffic. StartProcess succeeding means the
+	// new binary is running; from here the current process must terminate.
+	osExit(0)
+	return nil
+}
+
+// osExit is a seam so tests can assert the exit without terminating the runner.
+var osExit = os.Exit
 
 func syncFile(path string) error {
 	file, err := os.Open(path)

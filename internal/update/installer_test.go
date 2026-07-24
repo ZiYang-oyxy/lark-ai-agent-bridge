@@ -92,6 +92,39 @@ func TestPreparedAbortRemovesOnlyUninstalledStage(t *testing.T) {
 	prepared.Abort()
 }
 
+// detachRestart is the production default and the exact spot that used to drift
+// (syscall.Exec in a goroutine failing silently). These lock in that it (a)
+// launches the new binary as a real process and exits the current one on
+// success, and (b) surfaces the error instead of swallowing it on failure.
+func TestDetachRestartStartsProcessAndExits(t *testing.T) {
+	bin := "/bin/true"
+	if _, err := os.Stat(bin); err != nil {
+		t.Skipf("no %s on this host", bin)
+	}
+	prevExit := osExit
+	exited := 0
+	osExit = func(int) { exited++ }
+	t.Cleanup(func() { osExit = prevExit })
+
+	if err := detachRestart(bin, []string{bin}, os.Environ()); err != nil {
+		t.Fatalf("detachRestart() error = %v", err)
+	}
+	if exited != 1 {
+		t.Fatalf("osExit called %d times, want 1", exited)
+	}
+}
+
+func TestDetachRestartReturnsErrorWhenLaunchFails(t *testing.T) {
+	prevExit := osExit
+	osExit = func(int) { t.Fatal("osExit must not be called when launch fails") }
+	t.Cleanup(func() { osExit = prevExit })
+
+	missing := filepath.Join(t.TempDir(), "does-not-exist")
+	if err := detachRestart(missing, []string{missing}, nil); err == nil {
+		t.Fatal("detachRestart() error = nil, want launch failure")
+	}
+}
+
 func assertFileContent(t *testing.T, path, want string) {
 	t.Helper()
 	got, err := os.ReadFile(path)
