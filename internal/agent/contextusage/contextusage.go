@@ -21,6 +21,7 @@ type Usage struct {
 	UsedPercent   int
 	TotalTokens   int
 	ContextWindow int
+	Model         string
 	Reason        Reason
 }
 
@@ -40,6 +41,7 @@ type record struct {
 	TotalTokens    *int     `json:"total_tokens"`
 	ContextTokens  *int     `json:"context_tokens"`
 	ContextWindow  *int     `json:"context_window_size"`
+	Model          string   `json:"model"`
 	UpdatedAt      *int64   `json:"updated_at"`
 }
 
@@ -79,6 +81,7 @@ func read(dir, sessionID string, notBefore time.Time) Usage {
 	if strings.TrimSpace(rec.SessionID) != sessionID {
 		return Usage{Reason: ReasonMismatch}
 	}
+	model := strings.TrimSpace(rec.Model)
 	if !notBefore.IsZero() {
 		updatedAt := int64(0)
 		if rec.UpdatedAt != nil {
@@ -87,10 +90,10 @@ func read(dir, sessionID string, notBefore time.Time) Usage {
 			updatedAt = info.ModTime().UnixMilli()
 		}
 		if updatedAt < notBefore.UnixMilli() {
-			return Usage{Reason: ReasonStale}
+			return Usage{Model: model, Reason: ReasonStale}
 		}
 	}
-	u := Usage{}
+	u := Usage{Model: model}
 	if rec.ContextTokens != nil && *rec.ContextTokens > 0 {
 		u.TotalTokens = *rec.ContextTokens
 	} else if rec.TotalTokens != nil && *rec.TotalTokens > 0 {
@@ -107,7 +110,7 @@ func read(dir, sessionID string, notBefore time.Time) Usage {
 		u.UsedPercent = clampPercent(u.TotalTokens * 100 / u.ContextWindow)
 		u.OK = true
 	default:
-		return Usage{Reason: ReasonEmpty}
+		return Usage{Model: model, Reason: ReasonEmpty}
 	}
 	return u
 }

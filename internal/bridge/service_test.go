@@ -1446,6 +1446,23 @@ func TestPostRunMetaReusesSameSessionStaleAsApproxButNotCrossSession(t *testing.
 	}
 }
 
+func TestPostRunMetaUsesCodexSidecarModelWhenRunnerOmitsIt(t *testing.T) {
+	dir := t.TempDir()
+	started := time.Now()
+	sidecar := fmt.Sprintf(`{"session_id":"codex-session","used_percentage":47,"context_tokens":120292,"context_window_size":258400,"model":"gpt-5.6-sol","updated_at":%d}`, started.Add(time.Second).UnixMilli())
+	if err := os.WriteFile(filepath.Join(dir, "codex-session.json"), []byte(sidecar), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	svc := &Service{Audit: audit.NewRecorder()}
+	sess := session.Session{ID: "bridge-session", Key: session.Key{Agent: agent.Codex, ChatID: "chat"}}
+
+	meta := svc.postRunMeta(sess, AgentRunResult{AgentSessionID: "codex-session"}, dir, started)
+
+	if meta.Model != "gpt-5.6-sol" || !meta.CtxOK || meta.CtxUsedPercent != 47 {
+		t.Fatalf("Codex post-run metadata = %#v, want sidecar model and context", meta)
+	}
+}
+
 func TestServiceAuditsUnavailablePostRunContextWithoutSensitiveDetail(t *testing.T) {
 	cfg := testConfig(t)
 	cfg.ClaudeContextUsageDir = t.TempDir()
