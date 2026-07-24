@@ -22,6 +22,7 @@ type UpdateManager interface {
 	Check(context.Context, string) (bridgeupdate.CheckResult, error)
 	Refresh(context.Context, string) (bridgeupdate.CheckResult, error)
 	ReleaseNotes(context.Context, bridgeupdate.Manifest) (string, error)
+	AggregatedReleaseNotes(ctx context.Context, currentVersion string, manifest bridgeupdate.Manifest, onSkip func(version string, err error)) (string, error)
 	Prepare(context.Context, bridgeupdate.Asset) (bridgeupdate.PreparedUpdate, error)
 }
 
@@ -98,7 +99,9 @@ func (s *Service) handleUpdateDetails(ctx context.Context, req ActionRequest) (A
 		}
 		return s.renderUpdateMessage(req.SessionID, card.SegmentError, "该版本已不可用，请返回帮助重新检查。")
 	}
-	notes, err := s.Updates.ReleaseNotes(ctx, result.Manifest)
+	notes, err := s.Updates.AggregatedReleaseNotes(ctx, buildinfo.Version, result.Manifest, func(version string, skipErr error) {
+		s.Audit.Record(req.Actor, "update_notes_skipped", req.SessionID, "version="+version+" err="+skipErr.Error())
+	})
 	if err != nil {
 		s.Audit.Record(req.Actor, "update_notes_failed", req.SessionID, err.Error())
 		return s.renderUpdateMessage(req.SessionID, card.SegmentError, "Release note 暂时无法读取。")
@@ -110,9 +113,13 @@ func (s *Service) handleUpdateDetails(ctx context.Context, req ActionRequest) (A
 			Confirm: &card.ActionConfirm{Title: "确认升级？", Text: fmt.Sprintf("Bridge 将从 v%s 升级到 v%s，并短暂重启。", buildinfo.Version, result.Manifest.Version)},
 		})
 	}
+	title := "v" + result.Manifest.Version + " Release note"
+	if buildinfo.Version != result.Manifest.Version {
+		title = "v" + buildinfo.Version + " → v" + result.Manifest.Version + " Release note"
+	}
 	return s.renderActionEvent(card.Event{
 		Type: "update_details", SessionID: req.SessionID,
-		HeaderTitle: "v" + result.Manifest.Version + " Release note", HeaderTemplate: "blue",
+		HeaderTitle: title, HeaderTemplate: "blue",
 		Segments: []card.Segment{{Kind: card.SegmentText, Text: notes}}, Actions: actions,
 	})
 }

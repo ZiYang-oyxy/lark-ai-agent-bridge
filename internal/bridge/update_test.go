@@ -39,6 +39,9 @@ func (f *fakeUpdateManager) Refresh(context.Context, string) (bridgeupdate.Check
 func (f *fakeUpdateManager) ReleaseNotes(context.Context, bridgeupdate.Manifest) (string, error) {
 	return f.notes, f.notesErr
 }
+func (f *fakeUpdateManager) AggregatedReleaseNotes(_ context.Context, _ string, _ bridgeupdate.Manifest, _ func(string, error)) (string, error) {
+	return f.notes, f.notesErr
+}
 func (f *fakeUpdateManager) Prepare(context.Context, bridgeupdate.Asset) (PreparedUpdate, error) {
 	f.prepareCall++
 	return f.prepared, f.prepareErr

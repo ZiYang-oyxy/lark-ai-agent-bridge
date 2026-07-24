@@ -169,9 +169,13 @@ func (c *Client) manifest(ctx context.Context, manifestURL string) (Manifest, er
 }
 
 func (c *Client) ReleaseNotes(ctx context.Context, manifest Manifest) (string, error) {
+	return c.releaseNotesFromURL(ctx, manifest.ReleaseNotesURL)
+}
+
+func (c *Client) releaseNotesFromURL(ctx context.Context, notesURL string) (string, error) {
 	requestCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
-	response, err := c.doGET(requestCtx, manifest.ReleaseNotesURL)
+	response, err := c.doGET(requestCtx, notesURL)
 	if err != nil {
 		return "", fmt.Errorf("fetch release notes: %w", err)
 	}
@@ -187,6 +191,107 @@ func (c *Client) ReleaseNotes(ctx context.Context, manifest Manifest) (string, e
 		return "", errors.New("release notes are not UTF-8")
 	}
 	return string(data), nil
+}
+
+// maxAggregatedReleaseNotes bounds how many intermediate versions we will fetch
+// notes for, guarding against a runaway range (e.g. a corrupt version pair).
+const maxAggregatedReleaseNotes = 30
+
+// intermediateVersions returns the versions whose release notes should be shown
+// when upgrading from currentVersion to the target manifest's version, ordered
+// newest-first (target first). It only expands the rc range within a single
+// core release (the common rc.N → rc.M supervisor upgrade): every rc strictly
+// above the current rc up to and including the target rc. When the versions are
+// not a same-core rc pair (cross-core upgrade, jump to a final release, or an
+// unpar?able current version), it degrades to just the target version, matching
+// the previous single-version behaviour. The target is always included.
+func intermediateVersions(currentVersion, targetVersion string) []string {
+	versions := []string{targetVersion}
+	targetCore, targetRC, err := parsePrerelease(targetVersion)
+	if err != nil {
+		return versions
+	}
+	currentCore, currentRC, err := parsePrerelease(currentVersion)
+	if err != nil {
+		return versions
+	}
+	// Only expand within the same core and only for the rc.N → rc.M path, where
+	// both endpoints are prereleases (rc != 0) and the target is strictly newer.
+	if currentCore != targetCore || targetRC == 0 || currentRC == 0 || targetRC <= currentRC {
+		return versions
+	}
+	// Reconstruct "x.y.z" from the shared core (targetCore == currentCore).
+	core := fmt.Sprintf("%d.%d.%d", targetCore[0], targetCore[1], targetCore[2])
+	versions = versions[:0]
+	for rc := targetRC; rc > currentRC; rc-- {
+		versions = append(versions, fmt.Sprintf("%s-rc.%d", core, rc))
+		if len(versions) >= maxAggregatedReleaseNotes {
+			break
+		}
+	}
+	return versions
+}
+
+// releaseNotesURLForVersion derives the notes URL for wantVersion from the
+// target manifest's release_notes_url by substituting the version token. The
+// published URL embeds the version as "v<version>" in a flat filename
+// (…-v0.1.4-rc.17-release-notes.md), so a single string replace of "v<target>"
+// with "v<want>" yields the sibling URL. Returns false when the token is not
+// present (defensive: unknown URL shape), so the caller can skip that version.
+func releaseNotesURLForVersion(templateURL, targetVersion, wantVersion string) (string, bool) {
+	token := "v" + targetVersion
+	if !strings.Contains(templateURL, token) {
+		return "", false
+	}
+	return strings.Replace(templateURL, token, "v"+wantVersion, 1), true
+}
+
+// AggregatedReleaseNotes fetches and concatenates the release notes for every
+// version between currentVersion (exclusive) and the target manifest's version
+// (inclusive), newest-first, each section prefixed with a "## v<version>"
+// heading. Intermediate versions whose notes cannot be fetched are skipped (and
+// reported via onSkip) rather than failing the whole card, so a single missing
+// or 404 note never blocks the upgrade view. If only the target version applies
+// (single-version upgrade or a non-expandable range), it returns that version's
+// notes without an added heading, preserving the previous behaviour.
+func (c *Client) AggregatedReleaseNotes(ctx context.Context, currentVersion string, manifest Manifest, onSkip func(version string, err error)) (string, error) {
+	versions := intermediateVersions(currentVersion, manifest.Version)
+	if len(versions) <= 1 {
+		return c.ReleaseNotes(ctx, manifest)
+	}
+	var sections []string
+	for _, version := range versions {
+		noteURL, ok := releaseNotesURLForVersion(manifest.ReleaseNotesURL, manifest.Version, version)
+		if !ok {
+			// Fall back to the target's own URL for the target version itself.
+			if version == manifest.Version {
+				noteURL = manifest.ReleaseNotesURL
+			} else {
+				if onSkip != nil {
+					onSkip(version, errors.New("release notes URL not derivable"))
+				}
+				continue
+			}
+		}
+		notes, err := c.releaseNotesFromURL(ctx, noteURL)
+		if err != nil {
+			if onSkip != nil {
+				onSkip(version, err)
+			}
+			continue
+		}
+		notes = strings.TrimSpace(notes)
+		if notes == "" {
+			continue
+		}
+		sections = append(sections, "## v"+version+"\n\n"+notes)
+	}
+	if len(sections) == 0 {
+		// Every fetch failed — fall back to the single target note so the card is
+		// not empty; surface the original error path if that also fails.
+		return c.ReleaseNotes(ctx, manifest)
+	}
+	return strings.Join(sections, "\n\n---\n\n"), nil
 }
 
 func (c *Client) Stage(ctx context.Context, asset Asset, dir string) (staged Staged, err error) {
