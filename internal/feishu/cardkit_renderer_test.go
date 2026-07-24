@@ -929,3 +929,69 @@ func containsAll(text string, parts ...string) bool {
 	}
 	return true
 }
+
+// topicJoinCapture records CardKit topic-join notifications so the tests can
+// assert the renderer forwards Feishu-assigned thread_id upward.
+type topicJoinCapture struct {
+	fakeCardKitObserver
+	joins []topicJoinEvent
+}
+
+type topicJoinEvent struct {
+	ChatID           string
+	ThreadID         string
+	ReplyToMessageID string
+	MessageID        string
+}
+
+func (c *topicJoinCapture) RecordCardReply(chatID, threadID, replyToMessageID, messageID string, _ time.Time) {
+	c.joins = append(c.joins, topicJoinEvent{
+		ChatID:           chatID,
+		ThreadID:         threadID,
+		ReplyToMessageID: replyToMessageID,
+		MessageID:        messageID,
+	})
+}
+
+func TestCardKitRendererNotifiesTopicJoinOnReplyWithThreadID(t *testing.T) {
+	client := &fakeCardKitClient{replyResult: CardKitReplyResult{MessageID: "om_reply", ChatID: "oc_chat", ThreadID: "omt_topic"}}
+	obs := &topicJoinCapture{}
+	renderer := NewCardKitRendererWithObserver(client, "om_origin", obs, "session-a")
+	if err := renderer.Render(card.Event{Type: "stream", SessionID: "session-a", ReplyInThread: true}); err != nil {
+		t.Fatalf("render error: %v", err)
+	}
+	if got := len(obs.joins); got != 1 {
+		t.Fatalf("topic joins = %d, want 1; audit=%v", got, obs.fakeCardKitObserver.actions)
+	}
+	got := obs.joins[0]
+	want := topicJoinEvent{ChatID: "oc_chat", ThreadID: "omt_topic", ReplyToMessageID: "om_origin", MessageID: "om_reply"}
+	if got != want {
+		t.Fatalf("topic join = %+v, want %+v", got, want)
+	}
+}
+
+func TestCardKitRendererSkipsTopicJoinWhenThreadIDEmpty(t *testing.T) {
+	// Non-topic reply (ReplyInThread=false or Feishu did not create a thread)
+	// leaves ThreadID empty; the renderer must not fire a topic-join hint.
+	client := &fakeCardKitClient{replyResult: CardKitReplyResult{MessageID: "om_reply", ChatID: "oc_chat"}}
+	obs := &topicJoinCapture{}
+	renderer := NewCardKitRendererWithObserver(client, "om_origin", obs, "session-b")
+	if err := renderer.Render(card.Event{Type: "stream", SessionID: "session-b", ReplyInThread: false}); err != nil {
+		t.Fatalf("render error: %v", err)
+	}
+	if len(obs.joins) != 0 {
+		t.Fatalf("topic joins = %d, want 0", len(obs.joins))
+	}
+}
+
+func TestCardKitRendererSkipsTopicJoinWhenObserverDoesNotImplement(t *testing.T) {
+	// Existing observers that only satisfy CardKitRenderObserver must keep
+	// working — the topic-join hook is strictly optional.
+	client := &fakeCardKitClient{replyResult: CardKitReplyResult{MessageID: "om_reply", ChatID: "oc_chat", ThreadID: "omt_topic"}}
+	obs := &fakeCardKitObserver{}
+	renderer := NewCardKitRendererWithObserver(client, "om_origin", obs, "session-c")
+	if err := renderer.Render(card.Event{Type: "stream", SessionID: "session-c", ReplyInThread: true}); err != nil {
+		t.Fatalf("render error: %v", err)
+	}
+	// No panic, no join delivered anywhere else — success.
+}

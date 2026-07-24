@@ -401,7 +401,8 @@ func runServe(args []string) error {
 	if err != nil {
 		return fmt.Errorf("open native sequence journal: %w", err)
 	}
-	cardRouter := newServeCardRouter(cardClient, recorder, sequenceJournal)
+	topicJoinObserver := bridge.NewTopicJoinObserver(recorder, topicStore)
+	cardRouter := newServeCardRouter(cardClient, topicJoinObserver, sequenceJournal)
 	renderer := feishu.NewReactionCardRenderer(sender, cardRouter)
 	runner := &bridge.CLIExecRunner{Instructions: instructions}
 	svc := bridge.NewServiceWithSessions(cfg, renderer, runner, recorder, sessions, notices)

@@ -86,6 +86,18 @@ type CardKitRenderObserver interface {
 	Record(actor, action, sessionID, detail string)
 }
 
+// CardKitTopicJoinObserver is an optional interface that observers may
+// implement to be notified whenever the bridge successfully replies with a
+// CardKit card into a Feishu topic (reply_in_thread=true, and Feishu returns a
+// non-empty thread_id). The bridge uses this to auto-mark the topic as
+// participated: without it, the first user message in a fresh topic (posted
+// without @bot) is dropped as topic_not_participated because CardKit reply is
+// the only path that learns the thread_id — the originating top-level @bot
+// message carries thread_id="".
+type CardKitTopicJoinObserver interface {
+	RecordCardReply(chatID, threadID, replyToMessageID, messageID string, at time.Time)
+}
+
 func NewCardKitRouterRenderer(client CardKitClientAPI) *CardKitRouterRenderer {
 	return NewCardKitRouterRendererWithObserver(client, nil)
 }
@@ -252,7 +264,8 @@ func (r *CardKitRenderer) renderContext(ctx context.Context, e card.Event) error
 			r.cardID = cardID
 			r.createdAt = createdAt
 			r.snapshot = snapshotForPrepared(prepared)
-			r.recordRender("cardkit_reply", e, fmt.Sprintf("key=%s card_id=%s reply_to=%s message_id=%s event=%s %s", r.renderKey(e), cardID, r.replyToMessageID, replied.MessageID, e.Type, renderAuditState(e)))
+			r.recordRender("cardkit_reply", e, fmt.Sprintf("key=%s card_id=%s reply_to=%s message_id=%s thread_id=%s event=%s %s", r.renderKey(e), cardID, r.replyToMessageID, replied.MessageID, replied.ThreadID, e.Type, renderAuditState(e)))
+			r.notifyTopicJoin(replied)
 			return nil
 		}
 		r.cardID = cardID
@@ -320,6 +333,7 @@ func (r *CardKitRenderer) recoverTerminalCard(ctx context.Context, e card.Event,
 	}
 	// 旧卡序号不确定的状态保留(pendingSequence),但终态已在新卡上收敛。
 	r.recordRender("cardkit_terminal_recovered_new_card", e, fmt.Sprintf("key=%s stale_card_id=%s new_card_id=%s new_message_id=%s event=%s", r.renderKey(e), r.cardID, created.CardID, replied.MessageID, e.Type))
+	r.notifyTopicJoin(replied)
 	return nil
 }
 
@@ -528,6 +542,27 @@ func (r *CardKitRenderer) recordRender(action string, e card.Event, detail strin
 		sessionID = r.renderKey(e)
 	}
 	r.observer.Record("system", action, sessionID, detail)
+}
+
+// notifyTopicJoin publishes a topic-join hint to the observer when Feishu
+// returns a real thread_id for the reply. This is the only reliable moment the
+// bridge learns the thread_id of a topic it opened by reply_in_thread=true on
+// a top-level message. Observers that do not implement
+// CardKitTopicJoinObserver are silently ignored.
+func (r *CardKitRenderer) notifyTopicJoin(replied CardKitReplyResult) {
+	if r == nil || r.observer == nil {
+		return
+	}
+	joiner, ok := r.observer.(CardKitTopicJoinObserver)
+	if !ok {
+		return
+	}
+	chatID := strings.TrimSpace(replied.ChatID)
+	threadID := strings.TrimSpace(replied.ThreadID)
+	if chatID == "" || threadID == "" {
+		return
+	}
+	joiner.RecordCardReply(chatID, threadID, r.replyToMessageID, replied.MessageID, r.now().UTC())
 }
 
 func (r *CardKitRenderer) renderKey(e card.Event) string {
