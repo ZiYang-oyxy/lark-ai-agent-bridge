@@ -372,16 +372,20 @@ func TestBuildLarkCardRendersRuntimeConfigForm(t *testing.T) {
 	collectConfigControls(formElements, selects, buttons, &copy)
 	submit := buttons["submit_runtime_config"]
 	closeButton := buttons["close_runtime_config"]
-	// Model/Effort dropped from the UI (Task 3); notify-on-complete and
-	// show-meta-rows toggles bring the total to eight selects alongside
-	// reply/conversation/group/respond-to-bots and the two agent selects.
+	// Model stays dropped from the UI; effort is now editable again (per-chat
+	// override supported). Together with notify-on-complete and show-meta-rows
+	// this brings the total to nine selects alongside reply/conversation/group/
+	// respond-to-bots and the two agent selects.
 	if _, ok := selects["model"]; ok {
-		t.Fatalf("model select must be removed from config form: %#v", selects)
+		t.Fatalf("model select must stay removed from config form: %#v", selects)
 	}
-	if _, ok := selects["effort"]; ok {
-		t.Fatalf("effort select must be removed from config form: %#v", selects)
+	if effort, ok := selects["effort"]; !ok || effort["initial_option"] != "high" {
+		t.Fatalf("effort select missing or wrong initial: %#v", selects)
 	}
-	if len(selects) != 8 || selects["reply_mode"]["initial_option"] != "latest-card" || selects["conversation_mode"]["initial_option"] != "chat" || selects["group_message_mode"]["initial_option"] != "mention_only" || selects["respond_to_bots"]["initial_option"] != "false" || selects["notify_on_complete"]["initial_option"] != "false" || selects["show_meta_rows"]["initial_option"] != "false" {
+	if opts := selects["effort"]["options"].([]any); len(opts) != 4 {
+		t.Fatalf("effort select must expose 4 options (default/low/medium/high), got %#v", opts)
+	}
+	if len(selects) != 9 || selects["reply_mode"]["initial_option"] != "latest-card" || selects["conversation_mode"]["initial_option"] != "chat" || selects["group_message_mode"]["initial_option"] != "mention_only" || selects["respond_to_bots"]["initial_option"] != "false" || selects["notify_on_complete"]["initial_option"] != "false" || selects["show_meta_rows"]["initial_option"] != "false" {
 		t.Fatalf("select controls = %#v", selects)
 	}
 	if selects["agent_home"]["initial_option"] != "默认" || selects["agent_bin"]["initial_option"] != "主机 claude" {
@@ -418,11 +422,11 @@ func TestBuildLarkCardRendersRuntimeConfigForm(t *testing.T) {
 	if !containsAll(formText, "运行参数", "会话行为", "群消息", "访问控制") {
 		t.Fatalf("config sections missing = %s", formText)
 	}
-	// Model / Effort / Agent-mode copy must be gone from both markdown copy and
-	// the serialized form.
+	// Model / Agent-mode copy stays gone from both markdown copy and the
+	// serialized form. Effort was re-added, so it is no longer forbidden here.
 	guidance := copy.String()
-	if containsAny(guidance, "**Model**", "**Effort**", "/agent-mode") ||
-		containsAny(formText, "config_model_label", "config_effort_label", "cfg_agent_mode", `"name":"model"`, `"name":"effort"`) {
+	if containsAny(guidance, "**Model**", "/agent-mode") ||
+		containsAny(formText, "config_model_label", "cfg_agent_mode", `"name":"model"`) {
 		t.Fatalf("config form still references dropped fields; guidance=%q form=%s", guidance, formText)
 	}
 	behaviors := submit["behaviors"].([]any)

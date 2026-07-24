@@ -769,14 +769,13 @@ func TestServiceConfigSavePersistsValidValuesAndRejectsInvalidValues(t *testing.
 	renderer := card.NewFakeRenderer()
 	svc := NewService(cfg, renderer, newFakeRunner(), audit.NewRecorder())
 	svc.Preferences = store
-	// Model/Effort are no longer part of the /config form. Even if a client
-	// submits them, they must be ignored and the existing preference values
-	// (here the defaults default/low) preserved.
+	// Model is not part of the /config form (a submitted "model" is ignored);
+	// effort is part of the form and must be applied.
 	result, err := svc.HandleActionResult(context.Background(), ActionRequest{SessionID: "config-card", ActionID: "config.save", Actor: "user", FormValues: map[string]string{"model": "claude-custom-1", "effort": "medium", "reply_mode": "latest-card", "conversation_mode": "topic"}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Event == nil || result.Event.Type != "config_saved" || store.Get() != (config.RuntimePreference{Model: "default", Effort: "low", ReplyMode: config.ReplyModeLatestCard, ConversationMode: config.ConversationModeTopic, GroupMessageMode: config.GroupMessageModeMentionOnly, Agent: config.DefaultAgentKind}) {
+	if result.Event == nil || result.Event.Type != "config_saved" || store.Get() != (config.RuntimePreference{Model: "default", Effort: "medium", ReplyMode: config.ReplyModeLatestCard, ConversationMode: config.ConversationModeTopic, GroupMessageMode: config.GroupMessageModeMentionOnly, Agent: config.DefaultAgentKind}) {
 		t.Fatalf("save result/store = %#v / %#v", result, store.Get())
 	}
 	if result.Event.ConfigForm != nil {
@@ -799,11 +798,11 @@ func TestServiceConfigSavePersistsValidValuesAndRejectsInvalidValues(t *testing.
 	}
 }
 
-// TestServiceConfigSavePreservesModelEffort guards the removal of the
-// Model/Effort selects from the /config form: a config.save with no model/effort
-// (or with stale ones a client might still send) must keep the existing
-// preference model/effort intact rather than clobbering them with empty strings.
-func TestServiceConfigSavePreservesModelEffort(t *testing.T) {
+// TestServiceConfigSaveModelStaysStickyEffortIsEditable guards the /config
+// form's split treatment of the two knobs: Model is intentionally not part of
+// the form and must survive stale/malicious submissions; Effort is editable and
+// must be applied when the form carries it (and preserved when omitted).
+func TestServiceConfigSaveModelStaysStickyEffortIsEditable(t *testing.T) {
 	cfg := testConfig(t)
 	cfg.Model, cfg.Effort = "opus", "high"
 	cfg.AllowedModels = []string{"default", "sonnet", "opus", "haiku"}
@@ -812,8 +811,8 @@ func TestServiceConfigSavePreservesModelEffort(t *testing.T) {
 	svc := NewService(cfg, card.NewFakeRenderer(), newFakeRunner(), audit.NewRecorder())
 	svc.Preferences = store
 
-	// Submit a form without model/effort (the current UI) — model/effort must
-	// be preserved from the existing preference, other fields updated.
+	// Form omits both model and effort — both must be preserved from the
+	// existing preference; only the other fields update.
 	result, err := svc.HandleActionResult(context.Background(), ActionRequest{SessionID: "config-card", ActionID: "config.save", Actor: "user", FormValues: map[string]string{"reply_mode": "latest-card", "conversation_mode": "topic"}})
 	if err != nil {
 		t.Fatal(err)
@@ -822,13 +821,22 @@ func TestServiceConfigSavePreservesModelEffort(t *testing.T) {
 		t.Fatalf("save without model/effort = %#v / %#v, want %#v", result, store.Get(), want)
 	}
 
-	// Even if a stale client still submits model/effort, they must be ignored
-	// and the existing values preserved.
+	// Form now submits both model and effort. Model must be ignored (it isn't
+	// part of the form); effort must be applied.
 	if _, err := svc.HandleActionResult(context.Background(), ActionRequest{SessionID: "config-card", ActionID: "config.save", Actor: "user", FormValues: map[string]string{"model": "sonnet", "effort": "low", "reply_mode": "append"}}); err != nil {
 		t.Fatal(err)
 	}
-	if got := store.Get(); got.Model != "opus" || got.Effort != "high" {
-		t.Fatalf("stale form model/effort leaked into preference: %#v", got)
+	if got := store.Get(); got.Model != "opus" || got.Effort != "low" {
+		t.Fatalf("model must stay opus (form ignored) and effort must switch to low: %#v", got)
+	}
+
+	// Form submits an unknown effort — the save must be rejected and the store
+	// must keep the previous values.
+	if _, err := svc.HandleActionResult(context.Background(), ActionRequest{SessionID: "config-card", ActionID: "config.save", Actor: "user", FormValues: map[string]string{"effort": "bogus", "reply_mode": "append"}}); err != nil {
+		t.Fatal(err)
+	}
+	if got := store.Get(); got.Effort != "low" {
+		t.Fatalf("invalid effort should have been rejected, got %#v", got)
 	}
 }
 
@@ -904,9 +912,10 @@ func TestServiceFreezesPreferencesAtEnqueueTime(t *testing.T) {
 	if err := svc.HandleMessage(context.Background(), Message{ID: "before-config", ChatID: "chat", Sender: "user", Text: "first", Time: now}); err != nil {
 		t.Fatal(err)
 	}
-	// Model/Effort can no longer be changed via the form, so mutate reply_mode
-	// (still editable) to exercise the freeze-at-enqueue-time behaviour. The
-	// model/effort submitted here must be ignored and stay at the defaults.
+	// Model is not editable via the form (stays at the default), but effort
+	// and reply_mode are — mutate both to exercise the freeze-at-enqueue-time
+	// behaviour: the message that landed before the save keeps the old effort
+	// and reply_mode; the one after picks up the new values.
 	if _, err := svc.HandleActionResult(context.Background(), ActionRequest{SessionID: "config-card", ActionID: "config.save", Actor: "user", FormValues: map[string]string{"model": "opus", "effort": "high", "reply_mode": "latest-card"}}); err != nil {
 		t.Fatal(err)
 	}
@@ -917,7 +926,7 @@ func TestServiceFreezesPreferencesAtEnqueueTime(t *testing.T) {
 	if !ok || len(sess.Queue) != 2 {
 		t.Fatalf("session queue = %#v", sess)
 	}
-	if first, second := sess.Queue[0], sess.Queue[1]; first.RequestedModel != "sonnet" || first.RequestedEffort != "low" || first.ReplyMode != config.ReplyModeAppend || second.RequestedModel != "sonnet" || second.RequestedEffort != "low" || second.ReplyMode != config.ReplyModeLatestCard {
+	if first, second := sess.Queue[0], sess.Queue[1]; first.RequestedModel != "sonnet" || first.RequestedEffort != "low" || first.ReplyMode != config.ReplyModeAppend || second.RequestedModel != "sonnet" || second.RequestedEffort != "high" || second.ReplyMode != config.ReplyModeLatestCard {
 		t.Fatalf("frozen queue preferences = %#v", sess.Queue)
 	}
 }

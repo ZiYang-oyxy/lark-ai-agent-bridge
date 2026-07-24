@@ -1693,10 +1693,17 @@ func (s *Service) HandleActionResult(ctx context.Context, req ActionRequest) (Ac
 			}
 			showMetaRows = parsed
 		}
-		// Model/Effort are no longer editable from the /config form (the selects
-		// were removed), so preserve the existing preference values instead of
-		// overwriting them with empty form fields.
-		preference := config.RuntimePreference{Model: current.Model, Effort: current.Effort, ReplyMode: config.ReplyMode(req.FormValues["reply_mode"]), ConversationMode: config.ConversationMode(req.FormValues["conversation_mode"]), GroupMessageMode: groupMessageMode, RespondToBots: respondToBots, NotifyOnComplete: notifyOnComplete, ShowMetaRows: showMetaRows, Agent: selectedAgent, AgentHome: req.FormValues["agent_home"], AgentBin: req.FormValues["agent_bin"]}
+		effort := current.Effort
+		if raw, ok := req.FormValues["effort"]; ok {
+			v := strings.TrimSpace(raw)
+			if !isKnownEffort(v) {
+				s.Audit.Record(req.Actor, "config_save_failed", req.SessionID, "invalid effort")
+				return s.renderActionEvent(configSaveErrorEvent(req.SessionID))
+			}
+			effort = v
+		}
+		// Model is still not editable from the /config form; preserve current value.
+		preference := config.RuntimePreference{Model: current.Model, Effort: effort, ReplyMode: config.ReplyMode(req.FormValues["reply_mode"]), ConversationMode: config.ConversationMode(req.FormValues["conversation_mode"]), GroupMessageMode: groupMessageMode, RespondToBots: respondToBots, NotifyOnComplete: notifyOnComplete, ShowMetaRows: showMetaRows, Agent: selectedAgent, AgentHome: req.FormValues["agent_home"], AgentBin: req.FormValues["agent_bin"]}
 		if !strings.EqualFold(strings.TrimSpace(current.Agent), strings.TrimSpace(preference.Agent)) {
 			if _, ok := s.Agents.HomePath(preference.Agent, preference.AgentHome); !ok {
 				preference.AgentHome = ""
@@ -1897,6 +1904,17 @@ func (s *Service) agentKindConfigured(kind string) bool {
 	return ok
 }
 
+// isKnownEffort reports whether v is one of the effort options offered by the
+// /config form. Kept next to configForm() so the accepted set stays in sync
+// with what the UI renders.
+func isKnownEffort(v string) bool {
+	switch v {
+	case "default", "low", "medium", "high":
+		return true
+	}
+	return false
+}
+
 func (s *Service) configForm(preference config.RuntimePreference) *card.ConfigForm {
 	agentKind := strings.TrimSpace(preference.Agent)
 	if agentKind == "" {
@@ -1951,6 +1969,7 @@ func (s *Service) localConfigOverview(chatID string) *card.LocalConfigOverview {
 	}
 	items := []card.LocalConfigItem{
 		{Label: "Agent 可执行文件", Value: agentBin, Overridden: override.AgentBin != nil},
+		{Label: "推理深度", Value: effective.Effort, Overridden: override.Effort != nil},
 		{Label: "回复模式", Value: string(effective.ReplyMode), Overridden: override.ReplyMode != nil},
 		{Label: "会话模式", Value: string(effective.ConversationMode), Overridden: override.ConversationMode != nil},
 		{Label: "群消息接收", Value: groupMessageModeText(effective.GroupMessageMode), Overridden: override.GroupMessageMode != nil},
@@ -1997,8 +2016,14 @@ func respondToBotsText(v bool) string {
 // never read here — access is global-only.
 func chatOverrideFromForm(values map[string]string, global config.RuntimePreference) config.ChatOverride {
 	var override config.ChatOverride
-	// Model/Effort are no longer part of the /config form, so they are never
-	// read here; they keep inheriting from the global preference.
+	// Model is still not exposed on the /config form so it keeps inheriting the
+	// global preference. Effort is editable and can be per-chat overridden.
+	if raw, ok := values["effort"]; ok {
+		v := strings.TrimSpace(raw)
+		if isKnownEffort(v) && v != global.Effort {
+			override.Effort = &v
+		}
+	}
 	if raw, ok := values["reply_mode"]; ok {
 		if v := config.ReplyMode(strings.TrimSpace(raw)); v != "" && v != global.ReplyMode {
 			override.ReplyMode = &v

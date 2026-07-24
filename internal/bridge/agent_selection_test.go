@@ -160,8 +160,8 @@ func TestConfigSaveWithoutAgentKeepsCurrentAgentMode(t *testing.T) {
 	svc := NewService(config.Config{}, card.NewFakeRenderer(), newFakeRunner(), audit.NewRecorder())
 	svc.Agents = agents
 	svc.Preferences = store
-	// Model/Effort are no longer read from the form; effort must stay at the
-	// current "low" even though the (stale) form submits "high".
+	// Model is not read from the form (it stays at the default); effort is
+	// read from the form, so the submitted "high" replaces the current "low".
 	_, err = svc.HandleActionResult(context.Background(), ActionRequest{SessionID: "config-card", ActionID: "config.save", Actor: "user", FormValues: map[string]string{
 		"model": "default", "effort": "high", "reply_mode": "append", "conversation_mode": "chat", "agent_bin": "cx3",
 	}})
@@ -169,7 +169,7 @@ func TestConfigSaveWithoutAgentKeepsCurrentAgentMode(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := store.Get()
-	if got.Agent != "codex" || got.AgentBin != "cx3" || got.Effort != "low" {
+	if got.Agent != "codex" || got.AgentBin != "cx3" || got.Effort != "high" {
 		t.Fatalf("preference = %#v", got)
 	}
 }

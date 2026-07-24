@@ -180,6 +180,7 @@ func buildConfigFormElements(sessionID string, form ConfigForm) []any {
 	runtime := []map[string]any{}
 	runtime = append(runtime, fieldElements("cfg_home", "Agent 主目录", "默认继承 executable 环境；显式选择注入 CONFIG_DIR", configSelectOptions("agent_home", form.AgentHome, form.AgentHomes))...)
 	runtime = append(runtime, fieldElements("cfg_bin", "Agent 可执行文件", "主机项用当前 Agent 默认 executable，其余为预设", configSelectOptions("agent_bin", form.AgentBin, form.AgentBins))...)
+	runtime = append(runtime, fieldElements("cfg_effort", "推理深度", "default 跟随 Agent 自身设定 · low/medium/high 显式指定思考强度", configSelectOptions("effort", form.Effort, effortOptions(form.Efforts)))...)
 
 	conversation := []map[string]any{}
 	conversation = append(conversation, fieldElements("cfg_reply", "回复模式", "append 保留全过程 · clean-card 只留末答 · latest-card 复用最新卡", configSelect("reply_mode", form.ReplyMode, form.ReplyModes))...)
@@ -500,6 +501,21 @@ func accessPanelElement(form ConfigForm) map[string]any {
 	}
 	content := fmt.Sprintf("_留空 = 不响应聊天消息。_\n\n**owner API**：`%s`\n\n**允许私聊的用户**（共 %d 人）\n%s\n\n_加 / 删：_ `/invite user @某人`  `/remove user @某人`\n\n**允许响应的群**（共 %d 个）\n%s\n\n_加 / 删：_ `/invite group`  `/remove group`  `/invite all group`\n\n**管理员**（共 %d 人）\n%s\n\n_加 / 删：_ `/invite admin @某人`  `/remove admin @某人`", ownerState, len(form.AllowedUsers), userLine, len(form.AllowedChats), chatLine, len(form.Admins), adminLine)
 	return collapsiblePanelElement("panel_access", "🔒 访问控制", false, []map[string]any{markdownElement("access_summary", content)})
+}
+
+// effortOptions turns a plain effort list (e.g. "default","low","medium","high")
+// into SelectOption pairs that annotate "default" so users know it defers to
+// the agent's own setting.
+func effortOptions(values []string) []SelectOption {
+	opts := make([]SelectOption, 0, len(values))
+	for _, v := range values {
+		label := v
+		if v == "default" {
+			label = "default（跟随 Agent 默认）"
+		}
+		opts = append(opts, SelectOption{Value: v, Label: label})
+	}
+	return opts
 }
 
 func configSelect(name, initial string, values []string) map[string]any {
