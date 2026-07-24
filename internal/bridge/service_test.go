@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"testing"
@@ -1794,7 +1795,13 @@ func TestServiceStartsDMDebounceFromLocalReceiptTime(t *testing.T) {
 }
 
 func TestServiceBatchesPlainGroupInputsWithinDebounceCohort(t *testing.T) {
+	// In chat mode two top-level @bot mentions in the same group share the
+	// chat root session key and get batched together within the debounce
+	// window. Force chat mode explicitly (testConfig defaults to topic,
+	// which now mints a per-mention thread key so batching is intentionally
+	// disabled — see TestServiceGroupTopicMentionsRunConcurrently below).
 	cfg := testConfig(t)
+	cfg.ConversationMode = config.ConversationModeChat
 	renderer := card.NewFakeRenderer()
 	runner := newFakeRunner()
 	svc := NewService(cfg, renderer, runner, audit.NewRecorder())
@@ -1820,6 +1827,80 @@ func TestServiceBatchesPlainGroupInputsWithinDebounceCohort(t *testing.T) {
 	calls := runner.Calls()
 	if len(calls) != 1 || !containsAll(calls[0].Prompt, "first", "second") || strings.Index(calls[0].Prompt, "first") > strings.Index(calls[0].Prompt, "second") {
 		t.Fatalf("runner calls = %#v, want one ordered group batch", calls)
+	}
+}
+
+// In topic mode Feishu leaves thread_id="" on the top-level @bot delivery, so
+// bridge mints a per-mention synthetic thread key so concurrent @bots don't
+// serialise on the chat root. This test asserts two @bots in the same group,
+// posted inside the debounce window, land on distinct session keys and
+// eventually run as independent runner calls (not as one merged batch).
+func TestServiceGroupTopicMentionsRunConcurrently(t *testing.T) {
+	cfg := testConfig(t)
+	cfg.ConversationMode = config.ConversationModeTopic
+	renderer := card.NewFakeRenderer()
+	runner := newFakeRunner()
+	svc := NewService(cfg, renderer, runner, audit.NewRecorder())
+	now := time.Now()
+	for _, msg := range []Message{
+		{ID: "m1", ChatID: "chat", Sender: "u", Text: "first", Time: now, IsGroup: true, Mentioned: true},
+		{ID: "m2", ChatID: "chat", Sender: "u", Text: "second", Time: now.Add(50 * time.Millisecond), IsGroup: true, Mentioned: true},
+	} {
+		if err := svc.HandleMessage(context.Background(), msg); err != nil {
+			t.Fatalf("handle %s: %v", msg.ID, err)
+		}
+	}
+	if err := svc.DrainReady(now.Add(2 * time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	waitForCalls(t, runner, 2)
+	calls := runner.Calls()
+	if len(calls) != 2 {
+		t.Fatalf("runner calls = %d, want 2 independent runs, calls=%#v", len(calls), calls)
+	}
+	prompts := []string{calls[0].Prompt, calls[1].Prompt}
+	sort.Strings(prompts)
+	if prompts[0] != "first" || prompts[1] != "second" {
+		t.Fatalf("prompts = %v, want [first second] each as its own run", prompts)
+	}
+	sessions := svc.Sessions.List()
+	seenThreads := map[string]struct{}{}
+	for _, s := range sessions {
+		if s.Key.ChatID != "chat" {
+			continue
+		}
+		seenThreads[s.Key.Thread] = struct{}{}
+	}
+	if _, ok := seenThreads[SyntheticTopicThreadPrefix+"m1"]; !ok {
+		t.Fatalf("missing session for @bot:m1, sessions=%#v", sessions)
+	}
+	if _, ok := seenThreads[SyntheticTopicThreadPrefix+"m2"]; !ok {
+		t.Fatalf("missing session for @bot:m2, sessions=%#v", sessions)
+	}
+}
+
+// After a synthetic @bot:<msg_id> session runs and CardKit reply lands with a
+// real Feishu thread_id, TopicJoinObserver binds an alias so the next reply
+// inside that topic (which arrives with the real thread_id) routes back to
+// the same session instead of a new empty one.
+func TestServiceTopicAliasRoutesFollowUpIntoSyntheticSession(t *testing.T) {
+	aliases := NewTopicAliasStore()
+	aliases.Bind("chat", "omt_real", SyntheticTopicThreadPrefix+"m1")
+	mention := Message{ID: "m1", ChatID: "chat", Sender: "u", IsGroup: true, Mentioned: true}
+	mentionKey := sessionKeyForModeWithAlias(agent.Claude, mention, config.ConversationModeTopic, aliases)
+	if mentionKey.Thread != SyntheticTopicThreadPrefix+"m1" {
+		t.Fatalf("mention key = %+v, want thread=%s", mentionKey, SyntheticTopicThreadPrefix+"m1")
+	}
+	followUp := Message{ID: "m2", ChatID: "chat", ThreadID: "omt_real", Sender: "u"}
+	followUpKey := sessionKeyForModeWithAlias(agent.Claude, followUp, config.ConversationModeTopic, aliases)
+	if followUpKey != mentionKey {
+		t.Fatalf("follow-up key = %+v, want to match mention key %+v via alias", followUpKey, mentionKey)
+	}
+	// Unrelated thread_id without a bound alias keeps its own key.
+	other := Message{ID: "m3", ChatID: "chat", ThreadID: "omt_other", Sender: "u"}
+	otherKey := sessionKeyForModeWithAlias(agent.Claude, other, config.ConversationModeTopic, aliases)
+	if otherKey.Thread != "omt_other" {
+		t.Fatalf("unaliased thread routed unexpectedly: %+v", otherKey)
 	}
 }
 

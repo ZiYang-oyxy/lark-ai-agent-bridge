@@ -85,6 +85,7 @@ type Service struct {
 	AccessAppID        string
 	BotOpenID          string
 	TopicParticipation TopicParticipation
+	TopicAliases       *TopicAliasStore
 	ScopeInspector     ScopeInspector
 	ScopeGrants        feishu.ScopeGrantProvider
 	Schedules          *schedule.Store
@@ -550,7 +551,7 @@ func (s *Service) HandleMessage(ctx context.Context, msg Message) error {
 		return s.renderTextWithMode("command", msg.ID, card.SegmentError, cmd.Text, preference.ConversationMode)
 	case CommandStatus:
 		statusSessionID := runID("status", msg.ID)
-		key := sessionKeyForMode(cmd.Agent, msg, preference.ConversationMode)
+		key := s.keyForMessage(cmd.Agent, msg, preference.ConversationMode)
 		s.storeResumeContext(statusSessionID, key, session.CatalogIdentity{Agent: cmd.Agent}, effectiveMessageTime(msg))
 		return s.Cards.Render(card.Event{
 			Type:             "status",
@@ -602,7 +603,7 @@ func (s *Service) handleStopCommand(msg Message, cmd Command, preference config.
 	if strings.TrimSpace(cmd.Text) != "" {
 		return s.renderTextWithMode("stop-usage", msg.ID, card.SegmentError, "用法：/stop（仅停止当前会话正在运行的任务，并保留排队输入）", preference.ConversationMode)
 	}
-	key := sessionKeyForMode(cmd.Agent, msg, preference.ConversationMode)
+	key := s.keyForMessage(cmd.Agent, msg, preference.ConversationMode)
 	run, _, ok := s.requestActiveRunStopByKey(key)
 	if !ok {
 		s.Audit.Record(msg.Sender, "batch_stop_ignored", key.ID(), "no active batch")
@@ -613,7 +614,7 @@ func (s *Service) handleStopCommand(msg Message, cmd Command, preference config.
 }
 
 func (s *Service) handleResumeCommand(msg Message, cmd Command, preference config.RuntimePreference) error {
-	key := sessionKeyForMode(cmd.Agent, msg, preference.ConversationMode)
+	key := s.keyForMessage(cmd.Agent, msg, preference.ConversationMode)
 	workDir, err := session.CanonicalWorkDir(s.effectiveWorkDir(key, Command{}))
 	if err != nil {
 		s.Audit.Record(msg.Sender, "session_resume_failed", key.ID(), err.Error())
@@ -936,7 +937,7 @@ func (s *Service) runWithPreference(ctx context.Context, cmd Command, msg Messag
 			cmd.Agent = agent.Claude
 		}
 	}
-	conversationKey := sessionKeyForMode(cmd.Agent, msg, preference.ConversationMode)
+	conversationKey := sessionKeyForModeWithAlias(cmd.Agent, msg, preference.ConversationMode, s.TopicAliases)
 	workDir := s.effectiveWorkDir(conversationKey, cmd)
 	key := conversationKey
 	if cmd.ScheduleKind != "" {
@@ -2445,7 +2446,7 @@ func (s *Service) statusText(kind agent.Kind, msg Message) string {
 }
 
 func (s *Service) statusTextWithPreference(kind agent.Kind, msg Message, preference config.RuntimePreference) string {
-	key := sessionKeyForMode(kind, msg, preference.ConversationMode)
+	key := s.keyForMessage(kind, msg, preference.ConversationMode)
 	var b strings.Builder
 	fmt.Fprintf(&b, "mode=%s_oneshot\n", kind)
 	fmt.Fprintf(&b, "agent=%s\n", kind)
@@ -2489,7 +2490,7 @@ func (s *Service) statusTextWithPreference(kind agent.Kind, msg Message, prefere
 // renderer wraps them in inline code. The key=value statusText is left intact
 // for simulate and audit callers.
 func (s *Service) statusCardData(kind agent.Kind, msg Message, preference config.RuntimePreference) *card.StatusCard {
-	key := sessionKeyForMode(kind, msg, preference.ConversationMode)
+	key := s.keyForMessage(kind, msg, preference.ConversationMode)
 	overrideFields := s.localOverrideFields(msg)
 	groupChatID := ""
 	if msg.IsGroup {
@@ -2634,31 +2635,80 @@ func (s *Service) countChatSessions(chatID string) int {
 }
 
 func (s *Service) sessionKey(kind agent.Kind, msg Message) session.Key {
-	return sessionKeyForMode(kind, msg, s.runtimePreference().ConversationMode)
+	return s.keyForMessage(kind, msg, s.runtimePreference().ConversationMode)
+}
+
+// keyForMessage is the Service-scoped session-key resolver: it applies topic
+// aliasing so top-level @bot mentions get their per-mention synthetic thread,
+// and follow-up messages inside the resulting Feishu topic route back to that
+// same synthetic key. Command handlers, intake, status, workspace and update
+// paths should all go through this rather than the bare sessionKeyForMode so
+// they observe the same routing.
+func (s *Service) keyForMessage(kind agent.Kind, msg Message, mode config.ConversationMode) session.Key {
+	return sessionKeyForModeWithAlias(kind, msg, mode, s.TopicAliases)
+}
+
+// TopicAliasResolver looks up the synthetic "@bot:<msg_id>" thread key that a
+// real Feishu thread_id was bound to when the bot's first CardKit reply
+// created that topic. sessionKeyForModeWithAlias uses this to keep follow-up
+// messages inside the topic routed to the same session that ran the
+// originating @bot mention. A nil resolver skips alias lookup (safe default).
+type TopicAliasResolver interface {
+	Resolve(chatID, realThreadID string) (string, bool)
 }
 
 func sessionKeyForMode(kind agent.Kind, msg Message, mode config.ConversationMode) session.Key {
+	return sessionKeyForModeWithAlias(kind, msg, mode, nil)
+}
+
+// sessionKeyForModeWithAlias computes the session key for msg under mode. In
+// topic mode, when the top-level @bot delivery carries no thread_id (Feishu
+// only assigns one after the first reply lands), we synthesise a per-mention
+// thread key "@bot:<msg_id>" so concurrent @bots get concurrent sessions
+// instead of serialising on the chat's root key. When a real thread_id is
+// present and the alias resolver knows it belongs to an earlier synthetic
+// key, we route back to that key so the follow-up continues the same
+// session.
+func sessionKeyForModeWithAlias(kind agent.Kind, msg Message, mode config.ConversationMode, aliases TopicAliasResolver) session.Key {
 	key := session.Key{Agent: kind, ChatID: msg.ChatID}
-	if mode == config.ConversationModeTopic {
+	if mode != config.ConversationModeTopic {
+		return key
+	}
+	if msg.ThreadID != "" {
+		if aliases != nil {
+			if syn, ok := aliases.Resolve(msg.ChatID, msg.ThreadID); ok && syn != "" {
+				key.Thread = syn
+				return key
+			}
+		}
 		key.Thread = msg.ThreadID
+		return key
+	}
+	// Top-level @bot in a group: mint a per-mention thread key so this
+	// mention runs concurrently with any other in-flight @bot on the same
+	// chat. Requires a stable msg.ID (Feishu message id) — without it we
+	// have nothing unique to key on, fall back to the chat root.
+	if msg.IsGroup && msg.Mentioned && msg.ID != "" {
+		key.Thread = SyntheticTopicThreadPrefix + msg.ID
 	}
 	return key
 }
 
 // forkSeedForTopicSession decides whether a fresh topic-scoped session should
 // have its agent history seeded by forking from the chat's root session.
-// Feishu delivers the topic's opening message with an empty thread_id, so the
-// root session was already fed by that message before the user pivoted into
-// the topic; without a fork the topic session would start with no memory of
-// what the user asked in the root, breaking continuity. Only meaningful for
+// Applies whenever the topic key has a non-empty Thread — that covers both
+// (a) messages posted inside a real Feishu topic (thread_id != "") and
+// (b) top-level @bot mentions we route to a synthetic "@bot:<msg_id>" thread
+// key so concurrent @bots don't serialise. Without a fork the new session
+// would start with no memory of prior chat context. Only meaningful for
 // Claude (Codex CLI has no headless fork yet) and only for the first-ever
-// message on this topic session — after the seed run the session owns a real
-// AgentSessionID and executeBatch stops looking at the fork seed.
+// run on this key — once AgentSessionID is minted, executeBatch stops
+// looking at the fork seed.
 func (s *Service) forkSeedForTopicSession(kind agent.Kind, topicKey session.Key, msg Message, mode config.ConversationMode) string {
 	if kind != agent.Claude {
 		return ""
 	}
-	if mode != config.ConversationModeTopic || msg.ThreadID == "" {
+	if mode != config.ConversationModeTopic || topicKey.Thread == "" {
 		return ""
 	}
 	if s.Sessions == nil {
@@ -2668,6 +2718,9 @@ func (s *Service) forkSeedForTopicSession(kind agent.Kind, topicKey session.Key,
 		return ""
 	}
 	rootKey := session.Key{Agent: topicKey.Agent, ChatID: topicKey.ChatID}
+	if rootKey == topicKey {
+		return ""
+	}
 	root, ok := s.Sessions.Get(rootKey)
 	if !ok {
 		return ""

@@ -401,7 +401,9 @@ func runServe(args []string) error {
 	if err != nil {
 		return fmt.Errorf("open native sequence journal: %w", err)
 	}
+	topicAliases := bridge.NewTopicAliasStore()
 	topicJoinObserver := bridge.NewTopicJoinObserver(recorder, topicStore)
+	topicJoinObserver.Aliases = topicAliases
 	cardRouter := newServeCardRouter(cardClient, topicJoinObserver, sequenceJournal)
 	renderer := feishu.NewReactionCardRenderer(sender, cardRouter)
 	runner := &bridge.CLIExecRunner{Instructions: instructions}
@@ -410,6 +412,7 @@ func runServe(args []string) error {
 	svc.Agents = agents
 	svc.Preferences = preferences
 	svc.TopicParticipation = topicStore
+	svc.TopicAliases = topicAliases
 	svc.Access = accessStore
 	svc.DevMode = devModeStore
 	svc.PrereleaseManifestURL = cfg.UpdatePrereleaseManifestURL

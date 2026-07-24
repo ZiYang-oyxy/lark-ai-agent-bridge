@@ -38,7 +38,7 @@ func (s *Service) switchWorkDir(key session.Key, scope, realpath string) error {
 }
 
 func (s *Service) handleCd(ctx context.Context, msg Message, cmd Command, preference config.RuntimePreference) error {
-	key := sessionKeyForMode(cmd.Agent, msg, preference.ConversationMode)
+	key := s.keyForMessage(cmd.Agent, msg, preference.ConversationMode)
 	scope := s.workspaceScope(key)
 
 	// bare /cd — read-only, show current effective workdir. Allowed for any
@@ -87,7 +87,7 @@ func (s *Service) handleCd(ctx context.Context, msg Message, cmd Command, prefer
 }
 
 func (s *Service) handleWs(ctx context.Context, msg Message, cmd Command, preference config.RuntimePreference) error {
-	key := sessionKeyForMode(cmd.Agent, msg, preference.ConversationMode)
+	key := s.keyForMessage(cmd.Agent, msg, preference.ConversationMode)
 	scope := s.workspaceScope(key)
 
 	if s.Workspaces == nil {

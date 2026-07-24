@@ -47,7 +47,7 @@ func (s *Service) handleHelpCommand(ctx context.Context, msg Message, preference
 	if !ok {
 		kind = agent.Claude
 	}
-	s.storeResumeContext(sessionID, sessionKeyForMode(kind, msg, preference.ConversationMode), session.CatalogIdentity{Agent: kind}, now)
+	s.storeResumeContext(sessionID, s.keyForMessage(kind, msg, preference.ConversationMode), session.CatalogIdentity{Agent: kind}, now)
 	return nil
 }
 

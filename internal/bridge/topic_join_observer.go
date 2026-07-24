@@ -17,11 +17,17 @@ import (
 type TopicJoinObserver struct {
 	Recorder *audit.Recorder
 	Topics   TopicParticipation
+	// Aliases binds the real Feishu thread_id to the synthetic "@bot:<msg_id>"
+	// session key used to run the originating @bot mention, so follow-up
+	// messages inside the topic route back to that same session. May be nil,
+	// in which case aliasing is skipped (legacy behaviour).
+	Aliases *TopicAliasStore
 }
 
 // NewTopicJoinObserver constructs a TopicJoinObserver bound to the given
 // recorder and topic-participation store. Both may be nil, in which case the
-// corresponding side effect is skipped.
+// corresponding side effect is skipped. Wire Aliases separately after
+// construction for callers that opt in to per-mention synthetic sessions.
 func NewTopicJoinObserver(recorder *audit.Recorder, topics TopicParticipation) *TopicJoinObserver {
 	return &TopicJoinObserver{Recorder: recorder, Topics: topics}
 }
@@ -53,6 +59,13 @@ func (o *TopicJoinObserver) RecordCardReply(chatID, threadID, replyToMessageID, 
 			}
 			return
 		}
+	}
+	if o.Aliases != nil && replyToMessageID != "" {
+		// Bind the real Feishu thread_id back to the synthetic session key we
+		// minted for the originating @bot message, so any later reply in this
+		// topic (which arrives with the real thread_id set) routes to the
+		// same session that ran the mention.
+		o.Aliases.Bind(chatID, threadID, SyntheticTopicThreadPrefix+replyToMessageID)
 	}
 	if o.Recorder != nil {
 		o.Recorder.Record("system", "topic_participation_auto_joined",
