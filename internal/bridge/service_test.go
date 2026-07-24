@@ -3814,6 +3814,52 @@ func TestStreamUpdateParsesToolUseBlockIntoToolSegment(t *testing.T) {
 	}
 }
 
+func TestStreamUpdateDropsPartialToolInputJSONDeltas(t *testing.T) {
+	// 回归:tool_use 的 input 以 partial_json 分片到达,单片是未闭合 JSON 碎片。
+	// 若把碎片当卡片文本追加,飞书窄折叠面板会按字符硬折行成竖排乱码,故应丢弃。
+	data := []byte(strings.Join([]string{
+		`{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"input_json_delta","partial_json":"{\"com"}}}`,
+		`{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"input_json_delta","partial_json":"mand\": \"cd ~/br"}}}`,
+		`{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"input_json_delta","partial_json":"idge\"}"}}}`,
+	}, "\n"))
+	_, err := parseClaudeStream(bytes.NewReader(data), nil, func(update AgentStreamUpdate) {
+		for _, segment := range update.Segments {
+			if segment.Kind == card.SegmentTool {
+				t.Fatalf("partial_json delta produced tool segment %q, want dropped", segment.Text)
+			}
+		}
+	})
+	if err != nil {
+		t.Fatalf("parse stream error: %v", err)
+	}
+}
+
+func TestStreamUpdateSkipsEmptyToolInputFence(t *testing.T) {
+	// 回归:content_block_start 时 tool_use 的 input 常为空对象,不应渲染出
+	// 一个空的 "```json {} ```" 围栏(卡片里显示为空的“1 行代码”块)。
+	var got []AgentStreamUpdate
+	data := []byte(`{"type":"content_block_start","content_block":{"type":"tool_use","name":"Bash","id":"tu-1","input":{}}}`)
+	_, err := parseClaudeStream(bytes.NewReader(data), nil, func(update AgentStreamUpdate) {
+		got = append(got, update)
+	})
+	if err != nil {
+		t.Fatalf("parse stream error: %v", err)
+	}
+	if len(got) != 1 || len(got[0].Segments) != 1 {
+		t.Fatalf("updates = %#v", got)
+	}
+	seg := got[0].Segments[0]
+	if strings.Contains(seg.Text, "```") {
+		t.Fatalf("empty tool input should not render a code fence, got %q", seg.Text)
+	}
+	// 名称与 id 仍应出现,保留“正在调用 Bash”的可读性。
+	for _, want := range []string{"Bash", "tu-1"} {
+		if !strings.Contains(seg.Text, want) {
+			t.Fatalf("tool_use segment %q missing %q", seg.Text, want)
+		}
+	}
+}
+
 func TestStreamUpdateParsesToolResultBlockIntoToolSegment(t *testing.T) {
 	var got []AgentStreamUpdate
 	data := []byte(`{"type":"content_block_start","content_block":{"type":"tool_result","tool_use_id":"tu-1","content":"exit 0"}}`)

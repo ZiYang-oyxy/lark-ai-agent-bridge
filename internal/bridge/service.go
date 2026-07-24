@@ -3210,16 +3210,17 @@ func streamSegmentsFromDelta(delta map[string]any) []card.Segment {
 	case "thinking_delta", "reasoning_delta":
 		return segmentFromText(card.SegmentThought, firstString(delta, "thinking", "text", "reasoning"))
 	case "input_json_delta":
-		return segmentFromText(card.SegmentTool, firstString(delta, "partial_json"))
+		// tool_use 的 input 以 partial_json 分片流式到达,单片是未闭合的 JSON 碎片
+		// （如 {"com / mand": "）。若把碎片当卡片文本追加，飞书在窄折叠面板里会按
+		// 字符硬折行，渲染成竖排乱码。完整 input 由 content_block_start 的 tool_use
+		// block 与终态 assistant message 经 writeToolUse 围栏化呈现，故此处丢弃增量碎片。
+		return nil
 	}
 	if text := firstString(delta, "thinking", "reasoning"); text != "" {
 		return segmentFromText(card.SegmentThought, text)
 	}
 	if text := firstString(delta, "text", "content", "delta"); text != "" {
 		return segmentFromText(card.SegmentText, text)
-	}
-	if text := firstString(delta, "partial_json"); text != "" {
-		return segmentFromText(card.SegmentTool, text)
 	}
 	return nil
 }
@@ -3287,13 +3288,29 @@ func writeToolUse(b *strings.Builder, block map[string]any) {
 		b.WriteString(id)
 		b.WriteString("`")
 	}
-	if input, ok := block["input"]; ok {
+	if input, ok := block["input"]; ok && !emptyToolInput(input) {
 		if payload, err := json.Marshal(input); err == nil && len(payload) > 0 {
 			// 代码围栏前需要空行,围栏后另起一行。
 			b.WriteString("\n\n```json\n")
 			b.Write(payload)
 			b.WriteString("\n```")
 		}
+	}
+}
+
+// emptyToolInput 判定 tool_use 的 input 是否为空（nil / 空 map / 空串）。
+// content_block_start 阶段 input 通常还是空对象，此时不渲染围栏，避免卡片里
+// 出现一个空的“1 行代码 {}”块。
+func emptyToolInput(input any) bool {
+	switch v := input.(type) {
+	case nil:
+		return true
+	case map[string]any:
+		return len(v) == 0
+	case string:
+		return strings.TrimSpace(v) == ""
+	default:
+		return false
 	}
 }
 
