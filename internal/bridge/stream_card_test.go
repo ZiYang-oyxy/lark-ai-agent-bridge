@@ -16,6 +16,57 @@ import (
 	"lark-agent-bridge/internal/session"
 )
 
+func TestAgentCardStreamHandleAdoptsFirstTurnSessionID(t *testing.T) {
+	// 首轮:sess.AgentSessionID 为空,Handle 收到 update 里带 agent session id 时,
+	// 卡片 meta 应当立即反映,让首轮流式卡片就能显示 Session ID(而不是等第二轮)。
+	cfg := testConfig(t)
+	renderer := card.NewFakeRenderer()
+	svc := NewService(cfg, renderer, newFakeRunner(), audit.NewRecorder())
+	sess := session.Session{Key: session.Key{Agent: "claude", ChatID: "chat"}, ID: "claude:chat"}
+	stream := newAgentCardStream(svc, "run", sess, session.Input{ReplyToMessageID: "source", Time: time.Now()})
+	if stream.meta.SessionID != "" {
+		t.Fatalf("initial meta.SessionID = %q, want empty", stream.meta.SessionID)
+	}
+	stream.Handle(AgentStreamUpdate{AgentSessionID: "sid-first-turn"})
+	if stream.meta.SessionID != "sid-first-turn" {
+		t.Fatalf("Handle did not adopt session id: meta.SessionID = %q", stream.meta.SessionID)
+	}
+	// 后续 update 不带 id 时不应清空;已有 id 时也不覆盖为空。
+	stream.Handle(AgentStreamUpdate{Tokens: 10})
+	if stream.meta.SessionID != "sid-first-turn" {
+		t.Fatalf("subsequent Handle without id clobbered SessionID: %q", stream.meta.SessionID)
+	}
+}
+
+func TestAgentCardStreamFinishBackfillsFirstTurnSessionID(t *testing.T) {
+	// 首轮:如果 Handle 期间从未收到 session id(极端场景),终态 Finish 仍应从
+	// postRunMeta 返回的 meta 或 result.AgentSessionID 兜底回填,保证首轮终态卡不缺 Session ID。
+	cfg := testConfig(t)
+	renderer := card.NewFakeRenderer()
+	svc := NewService(cfg, renderer, newFakeRunner(), audit.NewRecorder())
+	sess := session.Session{Key: session.Key{Agent: "claude", ChatID: "chat"}, ID: "claude:chat"}
+	stream := newAgentCardStream(svc, "run", sess, session.Input{ReplyToMessageID: "source", Time: time.Now()})
+
+	// (a) meta.SessionID 分支
+	terminal, err := stream.Finish("completed", card.Meta{SessionID: "sid-from-meta"}, AgentRunResult{Segments: []card.Segment{{Kind: card.SegmentText, Text: "done"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if terminal.Meta.SessionID != "sid-from-meta" {
+		t.Fatalf("FinishTransformed did not adopt meta.SessionID: got %q", terminal.Meta.SessionID)
+	}
+
+	// (b) result.AgentSessionID 兜底分支
+	stream2 := newAgentCardStream(svc, "run", sess, session.Input{ReplyToMessageID: "source", Time: time.Now()})
+	terminal2, err := stream2.Finish("completed", card.Meta{}, AgentRunResult{AgentSessionID: "sid-from-result", Segments: []card.Segment{{Kind: card.SegmentText, Text: "done"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if terminal2.Meta.SessionID != "sid-from-result" {
+		t.Fatalf("FinishTransformed did not fall back to result.AgentSessionID: got %q", terminal2.Meta.SessionID)
+	}
+}
+
 func TestAgentCardStreamFinishClearsStaleContextUsage(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "old-session.json"), []byte(`{"session_id":"old-session","used_percentage":42,"total_tokens":84000,"context_window_size":200000}`), 0o600); err != nil {

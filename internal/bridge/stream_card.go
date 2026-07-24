@@ -158,9 +158,10 @@ func (s *agentCardStream) Handle(update AgentStreamUpdate) {
 		return
 	}
 	previousActivity := s.activity
-	if update.AgentSessionID != "" {
-		// Session id is applied to the durable session after Run returns; streaming
-		// updates only need model/tokens for display.
+	if update.AgentSessionID != "" && s.meta.SessionID == "" {
+		// 首轮流式期间就把 agent 抛出来的 session id 反映到卡片 meta,让首轮卡片也能显示 Session ID。
+		// durable session 的回写仍由 Run 结束后的 postRunMeta 路径负责,不受此处影响。
+		s.meta.SessionID = update.AgentSessionID
 	}
 	if update.Model != "" {
 		s.meta.Model = update.Model
@@ -223,6 +224,15 @@ func (s *agentCardStream) FinishTransformed(status string, meta card.Meta, resul
 	s.status = status
 	if meta.Agent != "" {
 		s.meta.Agent = meta.Agent
+	}
+	// Session ID 兜底:流式期间 Handle 已尽力从 update.AgentSessionID 采纳;
+	// 终态再从 postRunMeta 返回的 meta 和 result 兜底一次,确保首轮终态卡不缺 Session ID。
+	if s.meta.SessionID == "" {
+		if meta.SessionID != "" {
+			s.meta.SessionID = meta.SessionID
+		} else if result.AgentSessionID != "" {
+			s.meta.SessionID = result.AgentSessionID
+		}
 	}
 	if meta.Model != "" && s.meta.ModelInfo == (card.ModelInfo{}) {
 		s.meta.Model = meta.Model
