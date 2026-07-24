@@ -2653,7 +2653,7 @@ func (s *Service) metaFromSessionWithDirAfter(sess session.Session, dir string, 
 		meta.CtxTokens = u.TotalTokens
 		meta.CtxWindow = u.ContextWindow
 	}
-	if meta.Model == "" {
+	if sess.Key.Agent == agent.Codex && meta.Model == "" {
 		meta.Model = strings.TrimSpace(u.Model)
 	}
 	return meta, u

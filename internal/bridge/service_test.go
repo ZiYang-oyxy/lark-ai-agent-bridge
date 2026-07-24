@@ -1463,6 +1463,27 @@ func TestPostRunMetaUsesCodexSidecarModelWhenRunnerOmitsIt(t *testing.T) {
 	}
 }
 
+func TestPostRunMetaDoesNotUseSidecarModelForClaude(t *testing.T) {
+	dir := t.TempDir()
+	started := time.Now()
+	sidecar := fmt.Sprintf(`{"session_id":"claude-session","used_percentage":12,"model":"sidecar-model","updated_at":%d}`, started.Add(time.Second).UnixMilli())
+	if err := os.WriteFile(filepath.Join(dir, "claude-session.json"), []byte(sidecar), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	svc := &Service{Audit: audit.NewRecorder()}
+	sess := session.Session{ID: "bridge-session", Key: session.Key{Agent: agent.Claude, ChatID: "chat"}}
+
+	withoutRunnerModel := svc.postRunMeta(sess, AgentRunResult{AgentSessionID: "claude-session"}, dir, started)
+	withRunnerModel := svc.postRunMeta(sess, AgentRunResult{AgentSessionID: "claude-session", Model: "runner-model"}, dir, started)
+
+	if withoutRunnerModel.Model != "" {
+		t.Fatalf("Claude missing runner model fell back to sidecar: %#v", withoutRunnerModel)
+	}
+	if withRunnerModel.Model != "runner-model" {
+		t.Fatalf("Claude runner model was not authoritative: %#v", withRunnerModel)
+	}
+}
+
 func TestServiceAuditsUnavailablePostRunContextWithoutSensitiveDetail(t *testing.T) {
 	cfg := testConfig(t)
 	cfg.ClaudeContextUsageDir = t.TempDir()
