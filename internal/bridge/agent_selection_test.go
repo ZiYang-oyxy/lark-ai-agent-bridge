@@ -27,6 +27,24 @@ func TestResolveAgentBinHomeDefaultsToConfigBin(t *testing.T) {
 	}
 }
 
+func TestResolveAgentBinHomeDoesNotReuseForeignAgentPreset(t *testing.T) {
+	agents := config.AgentsConfig{
+		SchemaVersion: config.AgentsSchemaVersion,
+		Agents: []config.AgentDef{
+			{Kind: "claude", Homes: []config.AgentHome{{Label: config.DefaultHomeLabel}}, Bins: []config.AgentBin{{Label: config.DefaultBinLabel}}},
+			{Kind: "codex", Homes: []config.AgentHome{{Label: "codex-home", Path: "/h/codex"}}, Bins: []config.AgentBin{{Label: "cx4", Path: "/b/cx4"}}},
+		},
+	}
+	svc := NewService(config.Config{ClaudeBin: "/opt/wrap/claude", DefaultWorkDir: t.TempDir()}, card.NewFakeRenderer(), newFakeRunner(), audit.NewRecorder())
+	svc.Agents = agents
+
+	bin, home := svc.resolveAgentBinHome(agent.Claude, config.RuntimePreference{Agent: "codex", AgentHome: "codex-home", AgentBin: "cx4"})
+
+	if bin != "/opt/wrap/claude" || home != "" {
+		t.Fatalf("resolved foreign preset as bin=%q home=%q, want Claude defaults", bin, home)
+	}
+}
+
 func TestServiceFreezesResolvedAgentBinAndHomeAtEnqueue(t *testing.T) {
 	agents := config.AgentsConfig{
 		SchemaVersion: config.AgentsSchemaVersion,

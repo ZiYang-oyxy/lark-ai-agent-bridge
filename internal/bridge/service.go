@@ -829,7 +829,9 @@ func (s *Service) runtimePreference() config.RuntimePreference {
 }
 
 // resolveAgentBinHome resolves the executable path and home/config directory
-// for a run from the current preference against the agents catalogue.
+// for a run against the agents catalogue. The run kind is authoritative so an
+// explicit agent command cannot inherit another agent's preset from the current
+// preference.
 //
 //   - bin: the preset's path if set; otherwise falls back to Config.ClaudeBin
 //     (which itself defaults to "claude"), preserving existing behaviour.
@@ -838,9 +840,9 @@ func (s *Service) runtimePreference() config.RuntimePreference {
 // Unknown/empty labels resolve to the defaults so a stale selection can never
 // wedge execution.
 func (s *Service) resolveAgentBinHome(kind agent.Kind, preference config.RuntimePreference) (bin, home string) {
-	agentKind := strings.TrimSpace(preference.Agent)
+	agentKind := strings.TrimSpace(string(kind))
 	if agentKind == "" {
-		agentKind = string(kind)
+		agentKind = strings.TrimSpace(preference.Agent)
 	}
 	if agentKind == "" {
 		agentKind = config.DefaultAgentKind
