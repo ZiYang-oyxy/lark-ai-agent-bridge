@@ -113,6 +113,13 @@ func (s *Service) handleUpdateDetails(ctx context.Context, req ActionRequest) (A
 			Confirm: &card.ActionConfirm{Title: "确认升级？", Text: fmt.Sprintf("Bridge 将从 v%s 升级到 v%s，并短暂重启。", buildinfo.Version, result.Manifest.Version)},
 		})
 	}
+	// Release history is a read-only external link, so it is offered to every
+	// user (not gated on admin like 立即升级). The base host is derived from the
+	// manifest's release-notes URL, which is same-origin with the TOS bucket.
+	prerelease := s.DevMode != nil && s.DevMode.Prerelease()
+	if historyURL, ok := bridgeupdate.ReleaseHistoryURL(result.Manifest.ReleaseNotesURL, prerelease); ok {
+		actions = append(actions, card.Action{ID: "update.history", Label: "发布历史", URL: historyURL})
+	}
 	title := "v" + result.Manifest.Version + " Release note"
 	if buildinfo.Version != result.Manifest.Version {
 		title = "v" + buildinfo.Version + " → v" + result.Manifest.Version + " Release note"

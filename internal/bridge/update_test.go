@@ -164,8 +164,46 @@ func TestUpdateDetailsShowsNotesAndAdminInstall(t *testing.T) {
 	if result.Event == nil || !strings.Contains(result.Event.Segments[0].Text, "safer") {
 		t.Fatalf("details result = %#v", result)
 	}
-	if len(result.Event.Actions) != 2 || result.Event.Actions[1].ID != "update.install" || result.Event.Actions[1].Confirm == nil {
+	// Actions: 返回帮助, 立即升级 (admin-only), 发布历史 (external link, all users).
+	if len(result.Event.Actions) != 3 || result.Event.Actions[1].ID != "update.install" || result.Event.Actions[1].Confirm == nil {
 		t.Fatalf("details actions = %#v", result.Event.Actions)
+	}
+	history := result.Event.Actions[2]
+	if history.ID != "update.history" || history.Label != "发布历史" || history.URL != "https://updates.example/lark-ai-agent-bridge-releases.html" {
+		t.Fatalf("release-history action = %#v", history)
+	}
+}
+
+func TestUpdateDetailsShowsReleaseHistoryForNonAdmin(t *testing.T) {
+	setUpdateTestVersion(t)
+	store, err := access.OpenStore(filepath.Join(t.TempDir(), "access.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Update(func(policy *access.Policy) { policy.AllowedUsers = []string{"user"} }); err != nil {
+		t.Fatal(err)
+	}
+	controls := access.NewRuntimeControls()
+	controls.OwnerRefreshSucceeded("owner")
+	manager := &fakeUpdateManager{checkResult: updateAvailableResult(), notes: "# Changes"}
+	svc := NewService(testConfig(t), card.NewFakeRenderer(), newFakeRunner(), audit.NewRecorder())
+	svc.Access, svc.AccessControls, svc.Updates = store, controls, manager
+	result, err := svc.HandleActionResult(t.Context(), ActionRequest{SessionID: "update", ActionID: "update.details", Value: "1.2.0", Actor: "user"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Non-admin sees 返回帮助 + 发布历史 but no admin-only 立即升级.
+	if len(result.Event.Actions) != 2 {
+		t.Fatalf("non-admin details actions = %#v", result.Event.Actions)
+	}
+	for _, a := range result.Event.Actions {
+		if a.ID == "update.install" {
+			t.Fatalf("non-admin must not see install action: %#v", result.Event.Actions)
+		}
+	}
+	history := result.Event.Actions[1]
+	if history.ID != "update.history" || history.Label != "发布历史" || history.URL != "https://updates.example/lark-ai-agent-bridge-releases.html" {
+		t.Fatalf("release-history action = %#v", history)
 	}
 }
 
