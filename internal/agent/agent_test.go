@@ -18,6 +18,45 @@ func TestBuildClaudeOneShotCommand(t *testing.T) {
 	}
 }
 
+func TestBuildClaudeOneShotCommandForksFromSourceWhenNoOwnSession(t *testing.T) {
+	cmd, err := BuildOneShotCommand(OneShotConfig{Kind: Claude, Prompt: "topic first", ForkFromAgentSessionID: "src-uuid"})
+	if err != nil {
+		t.Fatalf("one-shot command error: %v", err)
+	}
+	got := strings.Join(cmd, " ")
+	want := "claude -p --output-format stream-json --verbose --include-partial-messages --dangerously-skip-permissions --effort low --resume src-uuid --fork-session topic first"
+	if got != want {
+		t.Fatalf("fork command = %q, want %q", got, want)
+	}
+}
+
+func TestBuildClaudeOneShotCommandPrefersOwnSessionOverFork(t *testing.T) {
+	// After the seed run the forked session owns its own AgentSessionID and
+	// subsequent runs must resume it directly instead of re-forking the source.
+	cmd, err := BuildOneShotCommand(OneShotConfig{Kind: Claude, Prompt: "topic later", AgentSessionID: "own", ForkFromAgentSessionID: "src-uuid"})
+	if err != nil {
+		t.Fatalf("one-shot command error: %v", err)
+	}
+	got := strings.Join(cmd, " ")
+	want := "claude -p --output-format stream-json --verbose --include-partial-messages --dangerously-skip-permissions --effort low --resume own topic later"
+	if got != want {
+		t.Fatalf("resume command = %q, want %q", got, want)
+	}
+}
+
+func TestBuildCodexOneShotCommandIgnoresForkHint(t *testing.T) {
+	// Codex CLI has no headless fork; a stray ForkFromAgentSessionID must be
+	// silently discarded so a Codex session simply starts fresh.
+	cmd, err := BuildOneShotCommand(OneShotConfig{Kind: Codex, Prompt: "hello", ForkFromAgentSessionID: "src-uuid"})
+	if err != nil {
+		t.Fatalf("one-shot command error: %v", err)
+	}
+	got := strings.Join(cmd, " ")
+	if strings.Contains(got, "fork") || strings.Contains(got, "src-uuid") {
+		t.Fatalf("codex command leaked fork hint: %q", got)
+	}
+}
+
 func TestBuildClaudeOneShotCommandResumesInternalSession(t *testing.T) {
 	cmd, err := BuildOneShotCommand(OneShotConfig{Kind: Claude, Prompt: "next", AgentSessionID: "sess-123"})
 	if err != nil {

@@ -23,7 +23,14 @@ type OneShotConfig struct {
 	WorkDir        string
 	Prompt         string
 	AgentSessionID string
-	Model          string
+	// ForkFromAgentSessionID triggers Claude's --fork-session mode: resume
+	// from the given source id but create a brand-new session id on the fly
+	// so the source session is not modified. Only honored by Claude
+	// (Codex CLI currently has no headless fork). Ignored when both this and
+	// AgentSessionID are set — a real session id always wins because we no
+	// longer need to fork after the seed run.
+	ForkFromAgentSessionID string
+	Model                  string
 	Effort         string
 	// Home is the resolved agent home / config directory. Empty means "use the
 	// agent's default home" (no config-dir environment variable is injected).
@@ -180,6 +187,12 @@ func buildClaudeOneShotCommand(cfg OneShotConfig) ([]string, error) {
 	}
 	if sessionID := strings.TrimSpace(cfg.AgentSessionID); sessionID != "" {
 		args = append(args, "--resume", sessionID)
+	} else if forkFrom := strings.TrimSpace(cfg.ForkFromAgentSessionID); forkFrom != "" {
+		// First run of a forked session: seed the history from ForkFrom but
+		// let Claude mint a fresh session id so the source keeps evolving
+		// independently. After this run the caller stores the new id as
+		// AgentSessionID and the else branch above stops firing.
+		args = append(args, "--resume", forkFrom, "--fork-session")
 	}
 	args = append(args, prompt)
 	return args, nil

@@ -159,6 +159,11 @@ type AgentRunRequest struct {
 	Prompt                    string
 	WorkDir                   string
 	AgentSessionID            string
+	// ForkFromAgentSessionID, when non-empty, tells the runner to fork a
+	// fresh agent session from the given source id (Claude CLI's --resume
+	// <src> --fork-session) instead of resuming AgentSessionID. Runners that
+	// do not support fork (e.g. current Codex CLI) must ignore it.
+	ForkFromAgentSessionID    string
 	Model                     string
 	Effort                    string
 	Images                    []string
@@ -966,7 +971,8 @@ func (s *Service) runWithPreference(ctx context.Context, cmd Command, msg Messag
 	bin, home := s.resolveAgentBinHome(cmd.Agent, preference)
 	receivedAt := time.Now()
 	debounceWindow := DebounceFor(msg)
-	input := session.Input{ID: msg.ID, Sender: msg.Sender, Text: text, Attachments: attachments, ReplyToMessageID: msg.ID, CardSessionID: cardSessionID, WorkDir: workDir, RequestedModel: preference.Model, RequestedEffort: preference.Effort, AgentBin: bin, AgentHome: home, ReplyMode: preference.ReplyMode, ConversationMode: preference.ConversationMode, NotifyOnComplete: preference.NotifyOnComplete, BridgeInstructionsVersion: bridgeinstructions.CurrentVersion, ScheduleKind: cmd.ScheduleKind, ScheduleTargetThreadID: msg.ThreadID, IsGroup: msg.IsGroup, Time: effectiveMessageTime(msg), DebounceUntil: receivedAt.Add(debounceWindow), DebounceWindow: debounceWindow, State: session.InputDebouncing, Reset: cmd.Reset || cmd.ScheduleKind != ""}
+	forkFrom := s.forkSeedForTopicSession(cmd.Agent, key, msg, preference.ConversationMode)
+	input := session.Input{ID: msg.ID, Sender: msg.Sender, Text: text, Attachments: attachments, ReplyToMessageID: msg.ID, CardSessionID: cardSessionID, WorkDir: workDir, RequestedModel: preference.Model, RequestedEffort: preference.Effort, AgentBin: bin, AgentHome: home, ForkFromAgentSessionID: forkFrom, ReplyMode: preference.ReplyMode, ConversationMode: preference.ConversationMode, NotifyOnComplete: preference.NotifyOnComplete, BridgeInstructionsVersion: bridgeinstructions.CurrentVersion, ScheduleKind: cmd.ScheduleKind, ScheduleTargetThreadID: msg.ThreadID, IsGroup: msg.IsGroup, Time: effectiveMessageTime(msg), DebounceUntil: receivedAt.Add(debounceWindow), DebounceWindow: debounceWindow, State: session.InputDebouncing, Reset: cmd.Reset || cmd.ScheduleKind != ""}
 	accepted, queued, err := s.Sessions.AcceptAndEnqueue(key, input, receivedAt, s.dedupTTL(), s.dedupMaxEntries(), s.batchLimits())
 	if err != nil {
 		action := "queue_rejected"
@@ -1147,7 +1153,14 @@ func (s *Service) executeBatch(ctx context.Context, sess session.Session, batch 
 		defer s.ScheduleContexts.Revoke(scheduleToken)
 	}
 	runStartedAt := time.Now()
-	result, err := s.Runner.Run(ctx, AgentRunRequest{Kind: sess.Key.Agent, Bin: bin, Home: home, ContextUsageDir: contextUsageDir, Prompt: prompt, WorkDir: sess.WorkDir, Images: codexImagePaths(batch), AgentSessionID: sess.AgentSessionID, Model: batch.Inputs[0].RequestedModel, Effort: batch.Inputs[0].RequestedEffort, BridgeInstructionsVersion: sess.BridgeInstructionsVersion, ScheduleSocket: scheduleSocket, ScheduleToken: scheduleToken, OnEvent: func(update AgentStreamUpdate) {
+	// forkFrom is only meaningful before the session has any agent session
+	// id of its own; once the first (forked) run mints an id, sess.AgentSessionID
+	// takes over and later resumes stop looking at the fork seed.
+	forkFrom := ""
+	if sess.AgentSessionID == "" {
+		forkFrom = strings.TrimSpace(batch.Inputs[0].ForkFromAgentSessionID)
+	}
+	result, err := s.Runner.Run(ctx, AgentRunRequest{Kind: sess.Key.Agent, Bin: bin, Home: home, ContextUsageDir: contextUsageDir, Prompt: prompt, WorkDir: sess.WorkDir, Images: codexImagePaths(batch), AgentSessionID: sess.AgentSessionID, ForkFromAgentSessionID: forkFrom, Model: batch.Inputs[0].RequestedModel, Effort: batch.Inputs[0].RequestedEffort, BridgeInstructionsVersion: sess.BridgeInstructionsVersion, ScheduleSocket: scheduleSocket, ScheduleToken: scheduleToken, OnEvent: func(update AgentStreamUpdate) {
 		if model := strings.TrimSpace(update.Model); model != "" {
 			actualModelMu.Lock()
 			streamedActualModel = model
@@ -2607,6 +2620,36 @@ func sessionKeyForMode(kind agent.Kind, msg Message, mode config.ConversationMod
 	return key
 }
 
+// forkSeedForTopicSession decides whether a fresh topic-scoped session should
+// have its agent history seeded by forking from the chat's root session.
+// Feishu delivers the topic's opening message with an empty thread_id, so the
+// root session was already fed by that message before the user pivoted into
+// the topic; without a fork the topic session would start with no memory of
+// what the user asked in the root, breaking continuity. Only meaningful for
+// Claude (Codex CLI has no headless fork yet) and only for the first-ever
+// message on this topic session — after the seed run the session owns a real
+// AgentSessionID and executeBatch stops looking at the fork seed.
+func (s *Service) forkSeedForTopicSession(kind agent.Kind, topicKey session.Key, msg Message, mode config.ConversationMode) string {
+	if kind != agent.Claude {
+		return ""
+	}
+	if mode != config.ConversationModeTopic || msg.ThreadID == "" {
+		return ""
+	}
+	if s.Sessions == nil {
+		return ""
+	}
+	if existing, ok := s.Sessions.Get(topicKey); ok && (existing.AgentSessionID != "" || len(existing.History) > 0) {
+		return ""
+	}
+	rootKey := session.Key{Agent: topicKey.Agent, ChatID: topicKey.ChatID}
+	root, ok := s.Sessions.Get(rootKey)
+	if !ok {
+		return ""
+	}
+	return strings.TrimSpace(root.AgentSessionID)
+}
+
 func (s *Service) metaFromSession(sess session.Session) card.Meta {
 	dir := s.Config.ClaudeContextUsageDir
 	if sess.Key.Agent == agent.Codex {
@@ -2746,15 +2789,16 @@ func (r CLIExecRunner) Run(ctx context.Context, req AgentRunRequest) (AgentRunRe
 		return AgentRunResult{}, err
 	}
 	cfg := agent.OneShotConfig{
-		Kind:           req.Kind,
-		Bin:            bin,
-		WorkDir:        req.WorkDir,
-		Prompt:         req.Prompt,
-		AgentSessionID: req.AgentSessionID,
-		Model:          req.Model,
-		Effort:         req.Effort,
-		Home:           req.Home,
-		Images:         req.Images,
+		Kind:                   req.Kind,
+		Bin:                    bin,
+		WorkDir:                req.WorkDir,
+		Prompt:                 req.Prompt,
+		AgentSessionID:         req.AgentSessionID,
+		ForkFromAgentSessionID: req.ForkFromAgentSessionID,
+		Model:                  req.Model,
+		Effort:                 req.Effort,
+		Home:                   req.Home,
+		Images:                 req.Images,
 	}
 	switch req.Kind {
 	case agent.Claude:

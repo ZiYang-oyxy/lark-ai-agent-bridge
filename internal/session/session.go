@@ -59,6 +59,13 @@ type Input struct {
 	RequestedEffort           string
 	AgentBin                  string
 	AgentHome                 string
+	// ForkFromAgentSessionID marks this input as the seed run of a session
+	// whose Claude/Codex history should be forked from another session's agent
+	// session id. Only consulted at execute time when the enclosing session
+	// has no AgentSessionID of its own yet — after the first successful run
+	// the session owns a real (forked) AgentSessionID and this hint is
+	// ignored. Empty means "no fork, start fresh".
+	ForkFromAgentSessionID    string `json:",omitempty"`
 	ReplyMode                 config.ReplyMode
 	ConversationMode          config.ConversationMode
 	BridgeInstructionsVersion string `json:",omitempty"`
