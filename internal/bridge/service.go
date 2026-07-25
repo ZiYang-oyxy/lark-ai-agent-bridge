@@ -2903,6 +2903,11 @@ func (r CLIExecRunner) Run(ctx context.Context, req AgentRunRequest) (AgentRunRe
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
 	cmd := exec.CommandContext(ctx, command[0], command[1:]...)
+	// Ensure ctx cancel (stop button) kills the whole agent process tree, not
+	// just the Node wrapper — otherwise the streaming grandchild survives and
+	// our stdout scanner blocks forever, so the stop never lands. See
+	// procgroup_unix.go for the full rationale.
+	configureProcessGroup(cmd)
 	agentEnv := agent.AgentEnv(req.Kind, req.Home)
 	agentEnv = append(agentEnv, agent.ContextCacheEnv(req.Kind, req.ContextUsageDir)...)
 	if req.ScheduleSocket != "" && req.ScheduleToken != "" {
