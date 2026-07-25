@@ -2080,6 +2080,22 @@ func TestBuildLarkCardThreeSectionLayout(t *testing.T) {
 	}
 }
 
+func TestBuildLarkCardThreeSectionLayoutPutsStopBesideTitle(t *testing.T) {
+	payload := BuildLarkCard(Event{
+		Type: "stream", Streaming: true, ThreeSectionLayout: true,
+		HeaderTitle: "🧠 正在推理 · ⏱ 3s", StopButton: StopButton{Visible: true},
+		Segments: []Segment{{Kind: SegmentText, Text: "正文答复"}},
+	})
+	elements := payload["body"].(map[string]any)["elements"].([]any)
+	if len(elements) == 0 || elements[0].(map[string]any)["element_id"] != "card_title_actions" {
+		t.Fatalf("three-section title row = %#v", elements)
+	}
+	buttons := collectButtons(payload)
+	if len(buttons) != 1 || buttons[0]["element_id"] != "btn_stop" {
+		t.Fatalf("three-section stop buttons = %#v", buttons)
+	}
+}
+
 // TestThreeSectionTitleFallsBackToToolCallCount 验证工具计数在 ToolRoundCount 缺失(如终态
 // 仅从 result 拿到 ToolCallCount)时回退到 ToolCallCount。
 func TestThreeSectionTitleFallsBackToToolCallCount(t *testing.T) {
