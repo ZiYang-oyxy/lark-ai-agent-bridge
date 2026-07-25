@@ -74,7 +74,7 @@ func BuildLarkCard(e Event) map[string]any {
 	showHeader := !e.MarkdownLayout
 	// CardKit 2.0 的 header 只接受标题文本，不能挂交互 button。运行卡片
 	// 将标题和停止操作组合成正文首行，避免使用未定义的 header.extra 字段。
-	if !e.MarkdownLayout && e.StopButton.Visible {
+	if e.StopButton.Visible {
 		elements = append([]any{buildTitleActionRow(title, e)}, elements...)
 		showHeader = false
 	}

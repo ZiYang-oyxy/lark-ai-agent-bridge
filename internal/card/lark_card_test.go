@@ -94,6 +94,25 @@ func TestBuildLarkCardMarkdownLayoutIsHeaderlessAndPanelFree(t *testing.T) {
 	}
 }
 
+func TestBuildLarkCardMarkdownLayoutPutsStopBesideTitle(t *testing.T) {
+	payload := BuildLarkCard(Event{
+		Type: "stream", SessionID: "claude:chat", Streaming: true, MarkdownLayout: true,
+		HeaderTitle: "🛠️ 正在执行工具 · ⏱ 8s", Markdown: "answer",
+		StopButton: StopButton{Visible: true},
+	})
+	if _, ok := payload["header"]; ok {
+		t.Fatalf("markdown stop card unexpectedly has native header: %#v", payload["header"])
+	}
+	elements := payload["body"].(map[string]any)["elements"].([]any)
+	if len(elements) != 2 || elements[0].(map[string]any)["element_id"] != "card_title_actions" {
+		t.Fatalf("markdown title row = %#v", elements)
+	}
+	buttons := collectButtons(payload)
+	if len(buttons) != 1 || buttons[0]["element_id"] != "btn_stop" {
+		t.Fatalf("markdown stop buttons = %#v", buttons)
+	}
+}
+
 func TestBuildLarkCardInlineTimelineKeepsFullShellAndPlainTools(t *testing.T) {
 	payload := BuildLarkCard(Event{
 		Type:                 "stream",
