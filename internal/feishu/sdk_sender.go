@@ -35,6 +35,7 @@ type SDKSender struct {
 	messageDeleteAPI MessageDeleteAPI
 	reactionAPI      MessageReactionAPI
 	imageAPI         ImageAPI
+	getAPI           GetMessageAPI
 }
 
 func NewSDKSender(appID, appSecret string) *SDKSender {
@@ -44,6 +45,7 @@ func NewSDKSender(appID, appSecret string) *SDKSender {
 		messageDeleteAPI: client.Im.V1.Message,
 		reactionAPI:      client.Im.V1.MessageReaction,
 		imageAPI:         client.Im.V1.Image,
+		getAPI:           client.Im.V1.Message,
 	}
 }
 

@@ -436,6 +436,7 @@ func runServe(args []string) error {
 	svc.Reactions = sender
 	svc.OutputImages = sender
 	svc.MessageDeleter = sender
+	svc.MessageFetcher = quotedMessageFetcher{sender: sender}
 	svc.Notifier = sender
 	actionGateway := bridge.ActionGateway{Service: svc, Fencer: cardRouter}
 	actionHandler, callbackHandler := newServeActionTransports(actionGateway, cfg.CardMaxChars)
@@ -769,3 +770,24 @@ func (simulateRunner) Run(_ context.Context, req bridge.AgentRunRequest) (bridge
 }
 
 var _ bridge.AgentRunner = simulateRunner{}
+
+// quotedMessageFetcher adapts *feishu.SDKSender to bridge.MessageFetcher,
+// mapping the feishu-specific FetchedMessage into the bridge domain view so
+// bridge stays free of feishu SDK types.
+type quotedMessageFetcher struct {
+	sender *feishu.SDKSender
+}
+
+func (f quotedMessageFetcher) FetchMessage(ctx context.Context, messageID string) (bridge.QuotedMessage, error) {
+	fetched, err := f.sender.FetchMessage(ctx, messageID)
+	if err != nil {
+		return bridge.QuotedMessage{}, err
+	}
+	return bridge.QuotedMessage{
+		Text:        fetched.Text,
+		SenderID:    fetched.SenderID,
+		MessageType: fetched.MessageType,
+	}, nil
+}
+
+var _ bridge.MessageFetcher = quotedMessageFetcher{}

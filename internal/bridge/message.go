@@ -11,6 +11,7 @@ type Message struct {
 	ChatID         string
 	ThreadID       string
 	RootID         string
+	ParentID       string
 	Sender         string
 	SenderType     string
 	Text           string

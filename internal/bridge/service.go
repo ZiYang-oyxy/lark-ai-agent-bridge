@@ -72,6 +72,7 @@ type Service struct {
 	OutputImages          feishu.ImageSender
 	Notifier              feishu.Sender
 	MessageDeleter        MessageDeleter
+	MessageFetcher        MessageFetcher
 	SequenceResolver      session.RenderRefSequenceResolver
 	RestoreNotices        []session.RecoveryNotice
 	Access                *access.Store
@@ -151,15 +152,30 @@ type MessageDeleter interface {
 	DeleteMessage(context.Context, string) error
 }
 
+// QuotedMessage is the minimal view of a quoted (replied-to) message needed to
+// inline it into an agent prompt.
+type QuotedMessage struct {
+	Text        string
+	SenderID    string
+	MessageType string
+}
+
+// MessageFetcher retrieves a single message by id so bridge can inline a
+// quoted message's body into the prompt. Optional: when nil, quoted-message
+// context is silently skipped.
+type MessageFetcher interface {
+	FetchMessage(ctx context.Context, messageID string) (QuotedMessage, error)
+}
+
 type AgentRunRequest struct {
 	Kind agent.Kind
 	Bin  string
 	// ClaudeBin is retained for source compatibility with existing runners and
 	// tests. New callers populate Bin; CLIExecRunner falls back to ClaudeBin.
-	ClaudeBin                 string
-	Prompt                    string
-	WorkDir                   string
-	AgentSessionID            string
+	ClaudeBin      string
+	Prompt         string
+	WorkDir        string
+	AgentSessionID string
 	// ForkFromAgentSessionID, when non-empty, tells the runner to fork a
 	// fresh agent session from the given source id (Claude CLI's --resume
 	// <src> --fork-session) instead of resuming AgentSessionID. Runners that
@@ -973,7 +989,8 @@ func (s *Service) runWithPreference(ctx context.Context, cmd Command, msg Messag
 	receivedAt := time.Now()
 	debounceWindow := DebounceFor(msg)
 	forkFrom := s.forkSeedForTopicSession(cmd.Agent, key, msg, preference.ConversationMode)
-	input := session.Input{ID: msg.ID, Sender: msg.Sender, Text: text, Attachments: attachments, ReplyToMessageID: msg.ID, CardSessionID: cardSessionID, WorkDir: workDir, RequestedModel: preference.Model, RequestedEffort: preference.Effort, AgentBin: bin, AgentHome: home, ForkFromAgentSessionID: forkFrom, ReplyMode: preference.ReplyMode, ConversationMode: preference.ConversationMode, NotifyOnComplete: preference.NotifyOnComplete, BridgeInstructionsVersion: bridgeinstructions.CurrentVersion, ScheduleKind: cmd.ScheduleKind, ScheduleTargetThreadID: msg.ThreadID, IsGroup: msg.IsGroup, Time: effectiveMessageTime(msg), DebounceUntil: receivedAt.Add(debounceWindow), DebounceWindow: debounceWindow, State: session.InputDebouncing, Reset: cmd.Reset || cmd.ScheduleKind != ""}
+	quotedText, quotedSender := s.resolveQuotedMessage(ctx, msg)
+	input := session.Input{ID: msg.ID, Sender: msg.Sender, Text: text, QuotedText: quotedText, QuotedSender: quotedSender, Attachments: attachments, ReplyToMessageID: msg.ID, CardSessionID: cardSessionID, WorkDir: workDir, RequestedModel: preference.Model, RequestedEffort: preference.Effort, AgentBin: bin, AgentHome: home, ForkFromAgentSessionID: forkFrom, ReplyMode: preference.ReplyMode, ConversationMode: preference.ConversationMode, NotifyOnComplete: preference.NotifyOnComplete, BridgeInstructionsVersion: bridgeinstructions.CurrentVersion, ScheduleKind: cmd.ScheduleKind, ScheduleTargetThreadID: msg.ThreadID, IsGroup: msg.IsGroup, Time: effectiveMessageTime(msg), DebounceUntil: receivedAt.Add(debounceWindow), DebounceWindow: debounceWindow, State: session.InputDebouncing, Reset: cmd.Reset || cmd.ScheduleKind != ""}
 	accepted, queued, err := s.Sessions.AcceptAndEnqueue(key, input, receivedAt, s.dedupTTL(), s.dedupMaxEntries(), s.batchLimits())
 	if err != nil {
 		action := "queue_rejected"
@@ -2732,6 +2749,35 @@ func (s *Service) forkSeedForTopicSession(kind agent.Kind, topicKey session.Key,
 		return ""
 	}
 	return strings.TrimSpace(root.AgentSessionID)
+}
+
+// resolveQuotedMessage fetches the body of a message the user quoted
+// (replied to) when triggering this run, so it can be inlined into the
+// prompt. Feishu delivers only the quoted message's parent_id in the inbound
+// event; without this the agent never sees what the user was pointing at.
+//
+// It degrades gracefully: any fetch failure is audited and returns empty
+// strings rather than blocking the run. A quoted message with no plain-text
+// body (image/file/etc.) yields a short type placeholder so the agent still
+// knows a quote existed.
+func (s *Service) resolveQuotedMessage(ctx context.Context, msg Message) (text, sender string) {
+	if msg.ParentID == "" || s.MessageFetcher == nil {
+		return "", ""
+	}
+	fetched, err := s.MessageFetcher.FetchMessage(ctx, msg.ParentID)
+	if err != nil {
+		s.Audit.Record(msg.Sender, "quoted_message_fetch_failed", msg.ChatID, err.Error())
+		return "", ""
+	}
+	quoted := strings.TrimSpace(fetched.Text)
+	if quoted == "" {
+		if fetched.MessageType != "" {
+			quoted = "[" + fetched.MessageType + " 消息]"
+		} else {
+			return "", ""
+		}
+	}
+	return quoted, fetched.SenderID
 }
 
 func (s *Service) metaFromSession(sess session.Session) card.Meta {

@@ -48,17 +48,26 @@ const (
 )
 
 type Input struct {
-	ID                        string
-	Sender                    string
-	Text                      string
-	Attachments               []media.Attachment
-	ReplyToMessageID          string
-	CardSessionID             string
-	WorkDir                   string
-	RequestedModel            string
-	RequestedEffort           string
-	AgentBin                  string
-	AgentHome                 string
+	ID     string
+	Sender string
+	Text   string
+	// QuotedText carries the plain-text body of a message the user quoted
+	// (replied to) when triggering this input. Feishu delivers only the
+	// quoted message's parent_id in the inbound event, so bridge fetches its
+	// body separately and stores it here to be rendered into the prompt.
+	// Empty when the message quotes nothing or the fetch failed.
+	QuotedText string `json:",omitempty"`
+	// QuotedSender is the open_id of the quoted message's author, used only to
+	// label the quoted block in the prompt. Empty when unknown.
+	QuotedSender     string `json:",omitempty"`
+	Attachments      []media.Attachment
+	ReplyToMessageID string
+	CardSessionID    string
+	WorkDir          string
+	RequestedModel   string
+	RequestedEffort  string
+	AgentBin         string
+	AgentHome        string
 	// ForkFromAgentSessionID marks this input as the seed run of a session
 	// whose Claude/Codex history should be forked from another session's agent
 	// session id. Only consulted at execute time when the enclosing session

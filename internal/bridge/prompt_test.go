@@ -37,6 +37,43 @@ func TestBuildBatchPromptExactFormatAndOrder(t *testing.T) {
 	}
 }
 
+func TestBuildBatchPromptSingleWithQuoteRendersQuotedBlock(t *testing.T) {
+	batch := session.Batch{Inputs: []session.Input{{
+		Text:         "我是一只什么猫",
+		QuotedText:   "我是一只黑猫",
+		QuotedSender: "ou_author",
+	}}}
+	want := "[用户引用了 ou_author 的消息]\n> 我是一只黑猫\n\n我是一只什么猫"
+	if got := BuildBatchPrompt(batch); got != want {
+		t.Fatalf("prompt = %q, want %q", got, want)
+	}
+}
+
+func TestBuildBatchPromptQuoteWithoutSenderUsesGenericLabel(t *testing.T) {
+	batch := session.Batch{Inputs: []session.Input{{
+		Text:       "and this",
+		QuotedText: "first line\nsecond line",
+	}}}
+	got := BuildBatchPrompt(batch)
+	if !strings.Contains(got, "[用户引用了一条消息]") {
+		t.Fatalf("missing generic quote label: %q", got)
+	}
+	if !strings.Contains(got, "> first line\n> second line") {
+		t.Fatalf("multiline quote not prefixed per line: %q", got)
+	}
+	if !strings.Contains(got, "and this") {
+		t.Fatalf("user text dropped: %q", got)
+	}
+}
+
+func TestBuildBatchPromptSinglePlainStaysLegacyWhenNoQuote(t *testing.T) {
+	// Regression guard: a plain single message with no quote/attachment must
+	// keep the bare fast-path form (no header, no quote block).
+	if got := BuildBatchPrompt(session.Batch{Inputs: []session.Input{{Text: "hi"}}}); got != "hi" {
+		t.Fatalf("plain single prompt = %q", got)
+	}
+}
+
 func TestBuildBatchPromptIncludesTypedAttachmentPathsExactlyOnce(t *testing.T) {
 	imagePath := "/absolute/cache/sha-image.png"
 	textPath := "/absolute/cache/sha-notes.md"

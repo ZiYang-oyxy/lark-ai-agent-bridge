@@ -14,7 +14,7 @@ func BuildBatchPrompt(batch session.Batch) string {
 	if len(batch.Inputs) == 0 {
 		return ""
 	}
-	if len(batch.Inputs) == 1 && len(batch.Inputs[0].Attachments) == 0 {
+	if len(batch.Inputs) == 1 && len(batch.Inputs[0].Attachments) == 0 && batch.Inputs[0].QuotedText == "" {
 		return strings.TrimSpace(batch.Inputs[0].Text)
 	}
 
@@ -26,7 +26,10 @@ func BuildBatchPrompt(batch session.Batch) string {
 		if i > 0 || len(batch.Inputs) > 1 {
 			b.WriteByte('\n')
 		}
-		fmt.Fprintf(&b, "[消息 %d | %s | %s]\n", i+1, input.Time.Format("2006-01-02 15:04:05"), input.Sender)
+		if len(batch.Inputs) > 1 || len(input.Attachments) > 0 {
+			fmt.Fprintf(&b, "[消息 %d | %s | %s]\n", i+1, input.Time.Format("2006-01-02 15:04:05"), input.Sender)
+		}
+		writeQuotedBlock(&b, input)
 		if text := strings.TrimSpace(input.Text); text != "" {
 			b.WriteString(text)
 			b.WriteByte('\n')
@@ -36,6 +39,27 @@ func BuildBatchPrompt(batch session.Batch) string {
 		}
 	}
 	return strings.TrimSpace(b.String())
+}
+
+// writeQuotedBlock renders the message the user replied to as a clearly
+// delimited quote so the agent treats it as referenced context rather than the
+// user's own new instruction.
+func writeQuotedBlock(b *strings.Builder, input session.Input) {
+	quoted := strings.TrimSpace(input.QuotedText)
+	if quoted == "" {
+		return
+	}
+	if sender := strings.TrimSpace(input.QuotedSender); sender != "" {
+		fmt.Fprintf(b, "[用户引用了 %s 的消息]\n", sender)
+	} else {
+		b.WriteString("[用户引用了一条消息]\n")
+	}
+	for _, line := range strings.Split(quoted, "\n") {
+		b.WriteString("> ")
+		b.WriteString(line)
+		b.WriteByte('\n')
+	}
+	b.WriteByte('\n')
 }
 
 func attachmentPromptKind(attachment media.Attachment) string {
