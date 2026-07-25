@@ -447,6 +447,8 @@ func runServe(args []string) error {
 	actionGateway := bridge.ActionGateway{Service: svc, Fencer: cardRouter}
 	actionHandler, callbackHandler := newServeActionTransports(actionGateway, cfg.CardMaxChars)
 	svc.ProcessRecoveryNotices(ctx)
+	// 若本次启动是一次成功自升级的结果(env 携带升级上下文),往原对话回一条升级成功消息。
+	go svc.NotifyUpgradeSuccessIfPending(ctx)
 	mediaWiring := newServeMedia(cfg, tokens)
 	svc.MediaCache = mediaWiring.cache
 	svc.MediaDownloader = mediaWiring.downloader

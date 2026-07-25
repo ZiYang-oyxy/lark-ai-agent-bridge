@@ -210,13 +210,21 @@ func (s *Service) handleUpdateInstall(ctx context.Context, req ActionRequest) (A
 	event := card.Event{
 		Type: "update_restarting", SessionID: req.SessionID,
 		HeaderTitle: "Bridge 正在升级", HeaderTemplate: "orange",
-		Segments: []card.Segment{{Kind: card.SegmentText, Text: "升级包已验证，Bridge 正在重启。重连后可通过 /help 确认版本。"}},
+		Segments: []card.Segment{{Kind: card.SegmentText, Text: "升级包已验证，Bridge 正在重启。重连后会在此对话回复升级结果。"}},
 	}
 	actionResult, renderErr := s.renderActionEvent(event)
+	// 把升级上下文经 env 传给重启后的新进程,让它启动后主动回原对话报「升级成功」。
+	// req 里带发起升级那条卡片的 chat_id / open_message_id,足以定位并 reply 回原对话。
+	// 不做 @ 提醒:卡片回调 req 没有可靠的群/私聊信号,新消息本身已产生红点,足够。
+	restartEnv := appendUpgradeNotifyEnv(os.Environ(), upgradeNotifyContext{
+		Version:   result.Manifest.Version,
+		ChatID:    req.ChatID,
+		MessageID: req.OpenMessageID,
+	})
 	go func() {
 		// On success the current process exits inside Restart (detach launcher),
 		// so anything past this call only runs when the restart genuinely failed.
-		restartErr := prepared.Restart(os.Args, os.Environ())
+		restartErr := prepared.Restart(os.Args, restartEnv)
 		if restartErr != nil {
 			s.Audit.Record(req.Actor, "update_exec_failed", req.SessionID, restartErr.Error())
 			// The "正在重启" card is now a lie — the process did not restart and the
