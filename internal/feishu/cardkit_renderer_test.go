@@ -31,6 +31,33 @@ type fakeCardKitClient struct {
 	elementErr  error
 }
 
+type blockingCardKitClient struct{}
+
+func (blockingCardKitClient) CreateCard(ctx context.Context, _ CardKitCreateRequest) (CardKitCreateResult, error) {
+	<-ctx.Done()
+	return CardKitCreateResult{}, ctx.Err()
+}
+
+func (blockingCardKitClient) ReplyCard(ctx context.Context, _ CardKitReplyRequest) (CardKitReplyResult, error) {
+	<-ctx.Done()
+	return CardKitReplyResult{}, ctx.Err()
+}
+
+func (blockingCardKitClient) UpdateCard(ctx context.Context, _ CardKitUpdateCardRequest) error {
+	<-ctx.Done()
+	return ctx.Err()
+}
+
+func (blockingCardKitClient) UpdateSettings(ctx context.Context, _ CardKitUpdateSettingsRequest) error {
+	<-ctx.Done()
+	return ctx.Err()
+}
+
+func (blockingCardKitClient) UpdateElementContent(ctx context.Context, _ CardKitUpdateElementContentRequest) error {
+	<-ctx.Done()
+	return ctx.Err()
+}
+
 type fakeCardKitObserver struct {
 	actions []string
 	details []string
@@ -175,6 +202,22 @@ func (f *fakeCardKitClient) UpdateSettings(context.Context, CardKitUpdateSetting
 func (f *fakeCardKitClient) UpdateElementContent(_ context.Context, req CardKitUpdateElementContentRequest) error {
 	f.elementReqs = append(f.elementReqs, req)
 	return f.elementErr
+}
+
+func TestCardKitRendererRenderHasBoundedRequestContext(t *testing.T) {
+	previous := cardKitRenderTimeout
+	cardKitRenderTimeout = 20 * time.Millisecond
+	t.Cleanup(func() { cardKitRenderTimeout = previous })
+
+	renderer := NewCardKitRenderer(blockingCardKitClient{}, "source-message")
+	started := time.Now()
+	err := renderer.Render(card.Event{Type: "stream", SessionID: "run"})
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("render error = %v, want context deadline exceeded", err)
+	}
+	if elapsed := time.Since(started); elapsed > time.Second {
+		t.Fatalf("bounded render took %s", elapsed)
+	}
 }
 
 type fakeNativeJournal struct {

@@ -48,6 +48,12 @@ type cardSnapshot struct {
 	nativeDisabled    bool
 }
 
+// Render is called from the agent stream callback. Keep a stalled CardKit
+// request from blocking that callback (and eventually back-pressuring the
+// agent's stdout pipe) forever. Callers that need a tighter deadline can use
+// RenderContext directly.
+var cardKitRenderTimeout = 15 * time.Second
+
 func (r *CardKitRouterRenderer) BeginCardInteraction(sessionID string) func() {
 	if r == nil || sessionID == "" {
 		return func() {}
@@ -215,7 +221,13 @@ var _ card.Renderer = (*CardKitRouterRenderer)(nil)
 var _ card.Renderer = (*CardKitRenderer)(nil)
 
 func (r *CardKitRenderer) Render(e card.Event) error {
-	return r.renderContext(context.Background(), e)
+	ctx := context.Background()
+	if cardKitRenderTimeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, cardKitRenderTimeout)
+		defer cancel()
+	}
+	return r.renderContext(ctx, e)
 }
 
 func (r *CardKitRenderer) RenderContext(ctx context.Context, e card.Event) error {
