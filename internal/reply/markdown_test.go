@@ -33,7 +33,7 @@ func TestRenderMarkdownHidesThinkingAndCollapsesToolLifecycle(t *testing.T) {
 		},
 		Meta: card.Meta{Agent: "codex", RunTokens: 107600, TotalTokens: 107600},
 	})
-	want := "checking\n\n> ✅ **Bash** · git status\n\ndone"
+	want := "checking\n\n> ✅ **Bash** — git status\n\ndone"
 	if got != want {
 		t.Fatalf("markdown = %q, want %q", got, want)
 	}
@@ -54,7 +54,7 @@ func TestRenderMarkdownShowsOneDerivedRunningStatus(t *testing.T) {
 		},
 		Meta: card.Meta{Agent: "claude", RunTokens: 9, TotalTokens: 10},
 	})
-	want := "> ⏳ **Read** · README.md\n\n_🧰 正在调用工具…_"
+	want := "> ⏳ **Read** — README.md\n\n_🧰 正在调用工具…_"
 	if got != want {
 		t.Fatalf("markdown = %q, want %q", got, want)
 	}
@@ -116,7 +116,7 @@ func TestRenderMarkdownBoundsInlineToolSummary(t *testing.T) {
 					Tool: &card.ToolMeta{ID: "t1", Name: "Bash", Summary: tt.summary, Phase: "use"},
 				}},
 			})
-			if !strings.Contains(got, "· "+tt.want+"\n\n_🧰 正在调用工具…_") {
+			if !strings.Contains(got, "— "+tt.want+"\n\n_🧰 正在调用工具…_") {
 				t.Fatalf("markdown = %q, want summary %q", got, tt.want)
 			}
 		})
@@ -142,7 +142,7 @@ func TestRenderMarkdownKeepsBoundedSummaryAcrossToolLifecycle(t *testing.T) {
 					{Kind: card.SegmentTool, Tool: &card.ToolMeta{ID: "t1", Phase: "result", IsError: test.isError}},
 				},
 			})
-			want := "> " + test.status + " **Bash** · " + wantSummary
+			want := "> " + test.status + " **Bash** — " + wantSummary
 			if got != want {
 				t.Fatalf("markdown = %q, want %q", got, want)
 			}
@@ -159,7 +159,7 @@ func TestRenderMarkdownShowsFailedToolAndTerminalState(t *testing.T) {
 		},
 		Meta: card.Meta{Agent: "claude"},
 	})
-	want := "> ❌ **Bash** · false\n\n_⏹ 已停止_"
+	want := "> ❌ **Bash** — false\n\n_⏹ 已停止_"
 	if got != want {
 		t.Fatalf("markdown = %q, want %q", got, want)
 	}
@@ -186,11 +186,11 @@ func TestRenderInlineTimelineOrdersRepliesAndPlainTextTools(t *testing.T) {
 			{Kind: card.SegmentTool, Text: "secret output", Tool: &card.ToolMeta{ID: "t1", Phase: "result"}},
 		},
 	})
-	want := "先检查配置。\n\n> ✅ **Bash** · git status\n\n配置正常。"
+	want := "先检查配置。\n\n> ✅ **Bash** — git status\n\n配置正常。\n\n_🧠 正在思考…_"
 	if got != want {
 		t.Fatalf("timeline = %q, want %q", got, want)
 	}
-	for _, forbidden := range []string{"private reasoning", "private input", "secret output", "正在输出", "tokens:"} {
+	for _, forbidden := range []string{"private reasoning", "private input", "secret output", "tokens:"} {
 		if strings.Contains(got, forbidden) {
 			t.Fatalf("timeline leaked %q: %q", forbidden, got)
 		}
@@ -199,13 +199,13 @@ func TestRenderInlineTimelineOrdersRepliesAndPlainTextTools(t *testing.T) {
 
 func TestRenderInlineTimelineMapsPendingToolsAtTerminal(t *testing.T) {
 	base := []card.Segment{{Kind: card.SegmentTool, Tool: &card.ToolMeta{ID: "t1", Name: "Bash", Summary: "sleep 8", Phase: "use"}}}
-	if got := RenderInlineTimeline(card.Event{Type: "stopped", Segments: base}); got != "> ⏹ **Bash** · sleep 8" {
+	if got := RenderInlineTimeline(card.Event{Type: "stopped", Segments: base}); got != "> ⏳ **Bash** — sleep 8\n\n_⏹ 已被中断_" {
 		t.Fatalf("stopped = %q", got)
 	}
-	if got := RenderInlineTimeline(card.Event{Type: "error", Segments: base}); got != "> ⚠️ **Bash** · sleep 8" {
+	if got := RenderInlineTimeline(card.Event{Type: "error", Segments: base}); got != "> ⏳ **Bash** — sleep 8\n\n_⚠️ 执行失败_" {
 		t.Fatalf("failed = %q", got)
 	}
-	if got := RenderInlineTimeline(card.Event{Type: "stream", Streaming: true, Segments: base}); got != "> ⏳ **Bash** · sleep 8" {
+	if got := RenderInlineTimeline(card.Event{Type: "stream", Streaming: true, Activity: "tool", Segments: base}); got != "> ⏳ **Bash** — sleep 8\n\n_🧰 正在调用工具…_" {
 		t.Fatalf("stream = %q", got)
 	}
 }
@@ -217,7 +217,7 @@ func TestRenderInlineTimelineDeduplicatesResultsAndUsesSafeFallbacks(t *testing.
 		{Kind: card.SegmentTool, Tool: &card.ToolMeta{ID: "t1", Phase: "result"}, Text: "first secret"},
 		{Kind: card.SegmentTool, Tool: &card.ToolMeta{ID: "t1", Phase: "result"}, Text: "second secret"},
 	}})
-	if got != "> ✅ **Tool** · safe" {
+	if got != "> ✅ **Tool** — safe" {
 		t.Fatalf("timeline = %q", got)
 	}
 	for _, forbidden := range []string{"orphan", "private input", "first secret", "second secret"} {
@@ -233,7 +233,7 @@ func TestRenderInlineTimelineBoundsAndRedactsToolSummary(t *testing.T) {
 		Kind: card.SegmentTool,
 		Tool: &card.ToolMeta{ID: "t1", Name: "Bash", Summary: summary, Phase: "use"},
 	}}})
-	const prefix = "> ⏳ **Bash** · "
+	const prefix = "> ⏳ **Bash** — "
 	if !strings.HasPrefix(got, prefix) {
 		t.Fatalf("tool line = %q", got)
 	}
@@ -262,37 +262,35 @@ func TestRenderInlineTimelineDropsOldEntriesAndKeepsFinalReply(t *testing.T) {
 	if strings.Contains(got, strings.Repeat("旧", 100)) {
 		t.Fatalf("old entry survived: %q", got)
 	}
-	if !strings.Contains(got, "> ⏳ **Bash** · status") {
+	if !strings.Contains(got, "> ⏳ **Bash** — status") {
 		t.Fatalf("complete tool line was not preserved: %q", got)
 	}
 }
 
-func TestMarkdownCardRendererBoundsThinkingProjectionWithoutMutatingCaller(t *testing.T) {
+func TestMarkdownCardRendererHidesThinkingWithoutMutatingCaller(t *testing.T) {
 	inner := &fakeMarkdownCardRenderer{}
 	renderer := NewMarkdownCardRenderer(inner)
-	original := strings.Repeat("旧", 100) + strings.Repeat("新", inlineThinkingMaxRunes)
-	event := card.Event{Type: "stream", Streaming: true, Segments: []card.Segment{{Kind: card.SegmentThought, Text: original}}}
+	original := "private reasoning"
+	event := card.Event{Type: "stream", Streaming: true, Activity: "reasoning", Segments: []card.Segment{{Kind: card.SegmentThought, Text: original}}}
 	if err := renderer.Render(event); err != nil {
 		t.Fatal(err)
 	}
-	got := inner.events[0].Segments[0].Text
-	if utf8.RuneCountInString(got) > inlineThinkingMaxRunes {
-		t.Fatalf("thinking exceeds budget: runes=%d", utf8.RuneCountInString(got))
+	got := inner.events[0]
+	if got.Markdown != "_🧠 正在思考…_" || strings.Contains(got.Markdown, original) {
+		t.Fatalf("thinking projection = %#v", got)
 	}
-	if !strings.Contains(got, "较早思考已省略") || !strings.HasSuffix(got, strings.Repeat("新", 100)) {
-		t.Fatalf("thinking projection = %q", got)
-	}
-	if event.Segments[0].Text != original {
+	if got.Segments[0].Text != original || event.Segments[0].Text != original {
 		t.Fatal("adapter mutated caller segments")
 	}
 }
 
-func TestMarkdownCardRendererKeepsFullCardStateAndUsesInlineTimeline(t *testing.T) {
+func TestMarkdownCardRendererKeepsStateAndUsesLightweightMarkdownLayout(t *testing.T) {
 	inner := &fakeMarkdownCardRenderer{ref: session.RenderRef{CardID: "card-1", ReplyMessageID: "reply-1"}}
 	renderer := NewMarkdownCardRenderer(inner)
 	input := card.Event{
 		Type:           "stream",
 		Streaming:      true,
+		Activity:       "tool",
 		HeaderTitle:    "正在执行工具 · ⏱ 8s",
 		HeaderTemplate: "blue",
 		Segments: []card.Segment{
@@ -311,7 +309,7 @@ func TestMarkdownCardRendererKeepsFullCardStateAndUsesInlineTimeline(t *testing.
 		t.Fatalf("events = %#v", inner.events)
 	}
 	got := inner.events[0]
-	if !got.InlineTimelineLayout || got.MarkdownLayout || got.OrderedLayout || got.Markdown != "> ⏳ **Bash** · pwd\n\ndone" {
+	if got.InlineTimelineLayout || !got.MarkdownLayout || got.OrderedLayout || got.Markdown != "> ⏳ **Bash** — pwd\n\ndone\n\n_🧰 正在调用工具…_" {
 		t.Fatalf("markdown event = %#v", got)
 	}
 	if len(got.Segments) != len(input.Segments) || got.StopButton != input.StopButton || got.Meta != input.Meta ||
@@ -320,6 +318,14 @@ func TestMarkdownCardRendererKeepsFullCardStateAndUsesInlineTimeline(t *testing.
 	}
 	if strings.Contains(got.Markdown, "reasoning") || strings.Contains(got.Markdown, "secret") || strings.Contains(got.Markdown, "tokens:") {
 		t.Fatalf("inline timeline leaked shell/private state: %#v", got)
+	}
+	payload := card.BuildLarkCard(got)
+	if _, exists := payload["header"]; exists {
+		t.Fatalf("lightweight append card unexpectedly has a header: %#v", payload)
+	}
+	elements := payload["body"].(map[string]any)["elements"].([]any)
+	if len(elements) != 1 || elements[0].(map[string]any)["tag"] != "markdown" || elements[0].(map[string]any)["content"] != got.Markdown {
+		t.Fatalf("lightweight append elements = %#v, want one markdown element", elements)
 	}
 	if ref := renderer.RenderRef(); ref.CardID != "card-1" || ref.ReplyMessageID != "reply-1" {
 		t.Fatalf("render ref = %#v", ref)

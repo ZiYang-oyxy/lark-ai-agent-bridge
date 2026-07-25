@@ -96,10 +96,7 @@ func consumeCodexEvent(event map[string]any, result *AgentRunResult, state *code
 		}
 		state.startedItems[id] = struct{}{}
 		command := codexString(item["command"])
-		segment := card.Segment{Kind: card.SegmentTool, Text: command, Tool: &card.ToolMeta{
-			ID: id, Name: "Bash", Summary: command, Phase: "use",
-			Input: map[string]any{"command": command},
-		}}
+		segment := card.Segment{Kind: card.SegmentTool, Text: command, Tool: &card.ToolMeta{ID: id, Name: "Bash", Summary: command, Phase: "use"}}
 		appendCodexSegment(result, segment)
 		emitCodexSegment(onEvent, segment, streamActivityTool, false)
 	case "item.completed":
@@ -170,9 +167,7 @@ func consumeCodexCompletedItem(item map[string]any, result *AgentRunResult, stat
 			output = codexString(item["stdout"])
 		}
 		isError := codexInt(item["exit_code"]) != 0
-		segment := card.Segment{Kind: card.SegmentTool, Text: output, Tool: &card.ToolMeta{
-			ID: id, Name: "Bash", Phase: "result", IsError: isError, Output: output,
-		}}
+		segment := card.Segment{Kind: card.SegmentTool, Text: output, Tool: &card.ToolMeta{ID: id, Name: "Bash", Phase: "result", IsError: isError}}
 		appendCodexSegment(result, segment)
 		emitCodexSegment(onEvent, segment, streamActivityTool, false)
 	}
@@ -220,16 +215,17 @@ func appendCodexAnswer(result *AgentRunResult, state *codexParseState, text stri
 
 func appendCodexSegment(result *AgentRunResult, segment card.Segment) {
 	text := strings.TrimSpace(segment.Text)
-	if text != "" {
-		segment.Text = text
-		result.Segments = append(result.Segments, segment)
-		result.OrderedSegments = append(result.OrderedSegments, segment)
+	if text == "" && (segment.Kind != card.SegmentTool || segment.Tool == nil) {
+		return
 	}
+	segment.Text = text
+	result.Segments = append(result.Segments, segment)
+	result.OrderedSegments = append(result.OrderedSegments, segment)
 }
 
 func emitCodexSegment(onEvent func(AgentStreamUpdate), segment card.Segment, activity string, answerSnapshot bool) {
 	text := strings.TrimSpace(segment.Text)
-	if text == "" {
+	if text == "" && (segment.Kind != card.SegmentTool || segment.Tool == nil) {
 		return
 	}
 	segment.Text = text

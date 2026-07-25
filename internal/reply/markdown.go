@@ -9,7 +9,6 @@ import (
 
 const (
 	toolHeaderSummaryMaxRunes = 80
-	inlineThinkingMaxRunes    = 3000
 	inlineTimelineMaxRunes    = 9000
 )
 
@@ -73,6 +72,7 @@ func RenderInlineTimeline(event card.Event) string {
 	parts := make([]string, 0, len(event.Segments))
 	toolParts := make(map[string]int)
 	pendingTools := make(map[string]bool)
+	hasError := false
 	for _, segment := range event.Segments {
 		text := strings.TrimSpace(segment.Text)
 		switch segment.Kind {
@@ -101,7 +101,8 @@ func RenderInlineTimeline(event card.Event) string {
 			}
 		case card.SegmentError:
 			if text != "" {
-				parts = append(parts, "⚠️ Agent 执行失败："+text)
+				hasError = true
+				parts = append(parts, "⚠️ agent 失败："+text)
 			}
 		default:
 			if text != "" {
@@ -110,17 +111,15 @@ func RenderInlineTimeline(event card.Event) string {
 		}
 	}
 
-	marker := ""
-	switch event.Type {
-	case "stopped", "interrupted":
-		marker = "⏹"
-	case "error":
-		marker = "⚠️"
-	}
-	if marker != "" {
-		for id, pending := range pendingTools {
-			if pending {
-				parts[toolParts[id]] = strings.Replace(parts[toolParts[id]], "⏳", marker, 1)
+	if event.Streaming {
+		parts = append(parts, runningStatusLine(event.Activity))
+	} else {
+		switch event.Type {
+		case "stopped", "interrupted":
+			parts = append(parts, "_⏹ 已被中断_")
+		case "error":
+			if !hasError {
+				parts = append(parts, "_⚠️ 执行失败_")
 			}
 		}
 	}
@@ -138,7 +137,7 @@ func renderToolUse(meta *card.ToolMeta) string {
 	}
 	line := "> ⏳ **" + name + "**"
 	if summary := safeInlineSummary(meta.Summary, toolHeaderSummaryMaxRunes); summary != "" {
-		line += " · " + summary
+		line += " — " + summary
 	}
 	return line
 }
@@ -204,19 +203,6 @@ func limitHeadWithSuffix(value string, maxRunes int) string {
 		return string(suffixRunes[:maxRunes])
 	}
 	return string(runes[:maxRunes-len(suffixRunes)]) + suffix
-}
-
-func limitThinkingProjection(value string, maxRunes int) string {
-	runes := []rune(value)
-	if maxRunes <= 0 || len(runes) <= maxRunes {
-		return value
-	}
-	const notice = "_较早思考已省略_\n\n"
-	noticeRunes := []rune(notice)
-	if maxRunes <= len(noticeRunes) {
-		return string(noticeRunes[:maxRunes])
-	}
-	return notice + string(runes[len(runes)-(maxRunes-len(noticeRunes)):])
 }
 
 func runningStatusLine(activity string) string {

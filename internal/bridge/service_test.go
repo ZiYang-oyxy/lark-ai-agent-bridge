@@ -1232,7 +1232,7 @@ func TestServiceRoutesBatchThroughReplyPolicyAndPersistsActiveRenderRef(t *testi
 	}
 }
 
-func TestServiceRoutesAppendToReferenceMessageCard(t *testing.T) {
+func TestServiceRoutesAppendToLightweightMarkdownCard(t *testing.T) {
 	cfg := testConfig(t)
 	cfg.ReplyMode = config.ReplyModeAppend
 	runner := newFakeRunner()
@@ -1259,8 +1259,11 @@ func TestServiceRoutesAppendToReferenceMessageCard(t *testing.T) {
 		t.Fatalf("append card events = %#v", events)
 	}
 	last := events[len(events)-1]
-	if !last.ReferenceCardLayout || last.InlineTimelineLayout || last.MarkdownLayout || last.OrderedLayout || !last.StopButton.Visible || !last.Streaming || last.Meta.Agent == "" {
-		t.Fatalf("append card event = %#v, want reference message card layout", last)
+	if !last.MarkdownLayout || last.InlineTimelineLayout || last.OrderedLayout || !last.StopButton.Visible || !last.Streaming || last.Meta.Agent == "" {
+		t.Fatalf("append card event = %#v, want lightweight markdown card layout", last)
+	}
+	if last.Markdown != "_🧠 正在思考…_" {
+		t.Fatalf("append markdown = %q, want reference-style thinking status", last.Markdown)
 	}
 	sess, ok := svc.Sessions.Get(session.Key{Agent: agent.Claude, ChatID: "chat"})
 	if !ok || sess.ActiveBatch == nil || sess.ActiveBatch.RenderRef == nil || sess.ActiveBatch.RenderRef.CardID != "new-card" {
@@ -2288,7 +2291,7 @@ func TestServiceStreamsRunnerUpdatesIntoSameCard(t *testing.T) {
 	if last.Meta.RunTokens != 3 || last.Meta.TotalTokens != 3 {
 		t.Fatalf("last meta = %#v, want run and total tokens", last.Meta)
 	}
-	if !last.ReferenceCardLayout || len(last.Segments) != 3 ||
+	if !last.OrderedLayout || len(last.Segments) != 3 ||
 		last.Segments[0].Kind != card.SegmentThought || !containsAll(last.Segments[0].Text, "plan") ||
 		last.Segments[1].Kind != card.SegmentTool || !containsAll(last.Segments[1].Text, "Bash(ls)") ||
 		last.Segments[2].Kind != card.SegmentText || !containsAll(last.Segments[2].Text, "answer") {
@@ -2925,8 +2928,11 @@ func TestServiceStopCancelsActiveOneShotRun(t *testing.T) {
 			break
 		}
 	}
-	if button != nil {
-		t.Fatalf("sync stop card elements = %#v, terminal reference card must remove stop button", elements)
+	if button == nil {
+		t.Fatalf("sync stop card elements = %#v, want stop button", elements)
+	}
+	if button["disabled"] != true {
+		t.Fatalf("sync stop button = %#v, want disabled", button)
 	}
 	waitForSessionNoActiveBatch(t, svc, session.Key{Agent: agent.Claude, ChatID: "chat"})
 	events := renderer.Events()

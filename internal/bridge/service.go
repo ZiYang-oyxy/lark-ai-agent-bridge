@@ -1176,7 +1176,11 @@ func (s *Service) startBatch(parent context.Context, sess session.Session, batch
 			_ = s.Cards.Render(card.Event{Type: "error", SessionID: id, ReplyToMessageID: anchor.ReplyToMessageID, ReplyInThread: anchor.ConversationMode == config.ConversationModeTopic, Segments: []card.Segment{{Kind: card.SegmentError, Text: "回复卡片初始化失败，请重试。"}}})
 			return
 		}
-		stream = newAgentCardStreamWithRenderer(s, id, sess, anchor, card.NewLimitRenderer(policyRun, s.Config.CardMaxChars), policyRun)
+		var renderer card.Renderer = policyRun
+		if mode == config.ReplyModeAppend {
+			renderer = reply.NewMarkdownCardRenderer(policyRun)
+		}
+		stream = newAgentCardStreamWithRenderer(s, id, sess, anchor, card.NewLimitRenderer(renderer, s.Config.CardMaxChars), policyRun)
 	}
 	s.storeActiveRun(id, activeRun{BaseSessionID: sess.ID, BatchID: batch.ID, SourceMessageIDs: sources, Key: sess.Key, WorkDir: sess.WorkDir, Cancel: cancel, Stream: stream, Typing: typing})
 	if s.afterStoreActiveRunHook != nil {
@@ -3660,43 +3664,59 @@ func streamSegmentsFromBlock(block map[string]any) []card.Segment {
 
 func claudeToolUseMeta(block map[string]any) *card.ToolMeta {
 	name, _ := block["name"].(string)
-	input := cloneStringMap(block["input"])
+	name = strings.TrimSpace(name)
 	return &card.ToolMeta{
 		ID:      firstString(block, "id"),
-		Name:    strings.TrimSpace(name),
-		Summary: toolInputSummary(block["input"]),
+		Name:    name,
+		Summary: toolInputSummary(name, block["input"]),
 		Phase:   "use",
-		Input:   input,
 	}
 }
 
 func claudeToolResultMeta(block map[string]any) *card.ToolMeta {
 	isError, _ := block["is_error"].(bool)
-	return &card.ToolMeta{
-		ID:      firstString(block, "tool_use_id"),
-		Phase:   "result",
-		IsError: isError,
-		Output:  toolResultText(block),
-	}
+	return &card.ToolMeta{ID: firstString(block, "tool_use_id"), Phase: "result", IsError: isError}
 }
 
-func cloneStringMap(value any) map[string]any {
+func toolInputSummary(name string, value any) string {
 	record, _ := value.(map[string]any)
-	if len(record) == 0 {
-		return nil
+	pick := func(key string, maxRunes int) string {
+		text := strings.Join(strings.Fields(firstString(record, key)), " ")
+		if maxRunes > 0 {
+			runes := []rune(text)
+			if len(runes) > maxRunes {
+				text = string(runes[:maxRunes]) + "…"
+			}
+		}
+		return text
 	}
-	cloned := make(map[string]any, len(record))
-	for key, item := range record {
-		cloned[key] = item
-	}
-	return cloned
-}
-
-func toolInputSummary(value any) string {
-	record, _ := value.(map[string]any)
-	for _, key := range []string{"command", "file_path", "path", "query", "url"} {
-		if text := firstString(record, key); text != "" {
-			return text
+	switch name {
+	case "Bash":
+		return pick("command", 0)
+	case "Read", "Edit", "Write", "NotebookEdit":
+		return pick("file_path", 0)
+	case "Grep":
+		pattern := pick("pattern", 40)
+		if path := pick("path", 30); path != "" {
+			return pattern + " in " + path
+		}
+		return pattern
+	case "Glob":
+		return pick("pattern", 0)
+	case "WebFetch":
+		return pick("url", 0)
+	case "WebSearch":
+		return pick("query", 60)
+	case "Agent", "Task":
+		if description := pick("description", 0); description != "" {
+			return description
+		}
+		return pick("subagent_type", 0)
+	default:
+		for _, key := range []string{"command", "file_path", "path", "query"} {
+			if text := pick(key, 0); text != "" {
+				return text
+			}
 		}
 	}
 	return ""

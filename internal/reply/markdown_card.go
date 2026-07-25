@@ -15,15 +15,9 @@ func NewMarkdownCardRenderer(next feishu.ResumableRenderer) feishu.ResumableRend
 }
 
 func (r *markdownCardRenderer) Render(event card.Event) error {
-	event.Segments = append([]card.Segment(nil), event.Segments...)
-	for index := range event.Segments {
-		if event.Segments[index].Kind == card.SegmentThought {
-			event.Segments[index].Text = limitThinkingProjection(event.Segments[index].Text, inlineThinkingMaxRunes)
-		}
-	}
 	event.Markdown = RenderInlineTimeline(event)
-	event.InlineTimelineLayout = true
-	event.MarkdownLayout = false
+	event.MarkdownLayout = true
+	event.InlineTimelineLayout = false
 	event.OrderedLayout = false
 	return r.next.Render(event)
 }

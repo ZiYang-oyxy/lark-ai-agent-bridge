@@ -28,10 +28,6 @@ type ToolMeta struct {
 	Summary string
 	Phase   string
 	IsError bool
-	// Input/Output carry parser-normalized tool lifecycle data for structured
-	// reply cards. Existing renderers may continue using Summary and Text.
-	Input  map[string]any
-	Output string
 }
 
 type ModelInfo struct {
@@ -272,10 +268,7 @@ type Event struct {
 	// ThreeSectionLayout 打开时(append-clean-card 运行/终态),普通分支改用三段结构:
 	// 思考推理折叠区(正文前,默认展开,只显示最新一次 COT) → 正文流式 → 工具调用折叠区
 	// (正文后,默认折叠,只显示最新一次调用)。关闭时沿用旧的单 panel_process 合并折叠区。
-	ThreeSectionLayout bool
-	// ReferenceCardLayout renders append like lark-coding-agent-bridge's
-	// showToolCalls=true + messageReply=card + cotMessages=off combination.
-	ReferenceCardLayout  bool
+	ThreeSectionLayout   bool
 	HideAgentPanels      bool
 	OrderedLayout        bool
 	InlineTimelineLayout bool
