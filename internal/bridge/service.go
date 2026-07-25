@@ -872,7 +872,11 @@ func (s *Service) runtimePreference() config.RuntimePreference {
 	if groupMessageMode == "" {
 		groupMessageMode = config.GroupMessageModeMentionOnly
 	}
-	return config.RuntimePreference{Model: model, Effort: effort, ReplyMode: mode, ConversationMode: conversationMode, GroupMessageMode: groupMessageMode, RespondToBots: s.Config.RespondToBots, Agent: config.DefaultAgentKind}
+	topicSeedMode := s.Config.TopicSeedMode
+	if topicSeedMode == "" {
+		topicSeedMode = config.TopicSeedModeQuote
+	}
+	return config.RuntimePreference{Model: model, Effort: effort, ReplyMode: mode, ConversationMode: conversationMode, TopicSeedMode: topicSeedMode, GroupMessageMode: groupMessageMode, RespondToBots: s.Config.RespondToBots, Agent: config.DefaultAgentKind}
 }
 
 // resolveAgentBinHome resolves the executable path and home/config directory
