@@ -54,24 +54,25 @@ func BuildInboundMessageFromLark(event *larkim.P2MessageReceiveV1, botOpenID str
 
 	parsedMentions := buildMentions(mentions, botOpenID)
 	return InboundMessage{
-		AppID:       appID,
-		ChatID:      chatID,
-		MessageID:   messageID,
-		RootID:      rootID,
-		ParentID:    parentID,
-		TopicID:     topicID,
-		ChatType:    chatType,
-		MessageType: messageType,
-		RawContent:  content,
-		UserAgent:   userAgent,
-		SenderID:    senderID,
-		SenderType:  senderType,
-		TenantKey:   tenantKey,
-		Text:        parseMessageText(content),
-		Attachments: parseMessageAttachments(messageID, messageType, content),
-		MentionsBot: mentionsIncludeBot(parsedMentions, botOpenID),
-		Mentions:    parsedMentions,
-		OccurredAt:  parseCreateTime(createTime, eventHeader(event)),
+		AppID:              appID,
+		ChatID:             chatID,
+		MessageID:          messageID,
+		RootID:             rootID,
+		ParentID:           parentID,
+		TopicID:            topicID,
+		ChatType:           chatType,
+		MessageType:        messageType,
+		RawContent:         content,
+		UserAgent:          userAgent,
+		SenderID:           senderID,
+		SenderType:         senderType,
+		TenantKey:          tenantKey,
+		Text:               parseMessageText(content),
+		Attachments:        parseMessageAttachments(messageID, messageType, content),
+		MentionsBot:        mentionsIncludeBot(parsedMentions, botOpenID),
+		ExplicitBotMention: hasExplicitBotMention(messageType, content, parsedMentions),
+		Mentions:           parsedMentions,
+		OccurredAt:         parseCreateTime(createTime, eventHeader(event)),
 	}
 }
 
@@ -303,6 +304,64 @@ func mentionsIncludeBot(mentions []Mention, botOpenID string) bool {
 	for _, mention := range mentions {
 		if mention.OpenID == botOpenID {
 			return true
+		}
+	}
+	return false
+}
+
+func hasExplicitBotMention(messageType, content string, mentions []Mention) bool {
+	botMentions := make([]Mention, 0, len(mentions))
+	for _, mention := range mentions {
+		if mention.IsBot {
+			botMentions = append(botMentions, mention)
+		}
+	}
+	if len(botMentions) == 0 {
+		return false
+	}
+
+	switch messageType {
+	case "text":
+		text := parseMessageText(content)
+		for _, mention := range botMentions {
+			if mention.Key != "" && strings.Contains(text, mention.Key) {
+				return true
+			}
+		}
+	case "post":
+		var payload any
+		if json.Unmarshal([]byte(content), &payload) != nil {
+			return false
+		}
+		botIDs := make(map[string]struct{}, len(botMentions))
+		for _, mention := range botMentions {
+			botIDs[mention.OpenID] = struct{}{}
+		}
+		return postContainsAtUser(payload, botIDs)
+	}
+	return false
+}
+
+func postContainsAtUser(v any, userIDs map[string]struct{}) bool {
+	switch typed := v.(type) {
+	case map[string]any:
+		if tag, _ := typed["tag"].(string); tag == "at" {
+			if userID, _ := typed["user_id"].(string); userID != "" {
+				if _, ok := userIDs[userID]; ok {
+					return true
+				}
+			}
+		}
+		for _, child := range typed {
+			if postContainsAtUser(child, userIDs) {
+				return true
+			}
+		}
+	case []any:
+		for _, child := range typed {
+			if postContainsAtUser(child, userIDs) {
+				return true
+			}
 		}
 	}
 	return false

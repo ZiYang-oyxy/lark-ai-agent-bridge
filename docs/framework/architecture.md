@@ -69,7 +69,7 @@ Agent 只通过单次 token 和私有 Unix socket 提交 `cron`/`timer` 规则�
 Conversation mode 决定会话 key 和飞书回复位置：
 
 - `chat`（默认）：key 为 `{Agent, ChatID}`，忽略入站 `ThreadID`，回复显式使用 `reply_in_thread=false`。
-- `topic`：key 为 `{Agent, ChatID, ThreadID?}`，非空 thread/topic id 进入 key，回复显式使用 `reply_in_thread=true`。
+- `topic`：key 为 `{Agent, ChatID, ThreadID?}`，非空 thread/topic id 进入 key，回复显式使用 `reply_in_thread=true`；P2P 或群聊主会话只有正文中显式可见的 `@bot` 才 mint `@bot:<message_id>` synthetic topic key，否则沿用 `{Agent, ChatID}` chat root key。
 
 `E2E_CONVERSATION_MODE=chat|topic` 提供环境默认；`/config` override 持久化到 `preferences.json`。mode 切换只影响保存成功后接收的新消息，不迁移或删除旧 session。input 入队时冻结 mode，pending workdir 确认也保存当时 preference，因此排队或等待按钮期间的配置变化不会改变该输入的回复位置。
 

@@ -7,10 +7,13 @@ import (
 )
 
 func TestBuildEventCopiesMentionsAndInfersKind(t *testing.T) {
-	msg := InboundMessage{ChatID: "chat", MessageID: "m1", MentionsBot: true, Mentions: []Mention{{Key: "@bot", OpenID: "bot"}}}
+	msg := InboundMessage{ChatID: "chat", MessageID: "m1", MentionsBot: true, ExplicitBotMention: true, Mentions: []Mention{{Key: "@bot", OpenID: "bot"}}}
 	event := BuildEvent(msg)
 	if event.Kind != EventKindMessageMention {
 		t.Fatalf("kind = %s, want mention", event.Kind)
+	}
+	if !event.ExplicitBotMention {
+		t.Fatal("explicit bot mention was not copied")
 	}
 	msg.Mentions[0].OpenID = "changed"
 	if event.Mentions[0].OpenID != "bot" {

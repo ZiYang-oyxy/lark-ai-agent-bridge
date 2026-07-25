@@ -41,7 +41,7 @@ func TestLocalConfigInDirectMessageGuidesToConfig(t *testing.T) {
 	svc, store := localConfigService(t)
 	msg := Message{ID: "m1", IsGroup: false, ChatID: "dm", Sender: "ou_user"}
 	cmd := Command{Type: CommandLocalConfig}
-	if err := svc.handleLocalConfigCommand(context.Background(), msg, cmd, store.Get()); err != nil {
+	if err := svc.handleLocalConfigCommand(context.Background(), msg, cmd, store.Get().ConversationMode); err != nil {
 		t.Fatal(err)
 	}
 	if _, ok := store.ChatOverride("dm"); ok {
@@ -111,7 +111,7 @@ func TestLocalConfigResetClearsOnlyCurrentGroup(t *testing.T) {
 	}
 	msg := Message{ID: "m1", IsGroup: true, ChatID: "oc-a", Sender: "ou_user"}
 	cmd := Command{Type: CommandLocalConfig, Text: "reset"}
-	if err := svc.handleLocalConfigCommand(context.Background(), msg, cmd, store.GetForChat("oc-a")); err != nil {
+	if err := svc.handleLocalConfigCommand(context.Background(), msg, cmd, store.GetForChat("oc-a").ConversationMode); err != nil {
 		t.Fatal(err)
 	}
 	if _, ok := store.ChatOverride("oc-a"); ok {

@@ -162,12 +162,13 @@ func runSimulateAction(args []string) error {
 	loadAgentsInto(svc, cfg, recorder)
 	if *primeText != "" {
 		msg := bridge.Message{
-			ID:        "local-id",
-			ChatID:    "chat-demo",
-			Sender:    *actor,
-			Text:      *primeText,
-			Mentioned: true,
-			Time:      time.Now(),
+			ID:                 "local-id",
+			ChatID:             "chat-demo",
+			Sender:             *actor,
+			Text:               *primeText,
+			Mentioned:          true,
+			ExplicitBotMention: true,
+			Time:               time.Now(),
 		}
 		if err := svc.HandleMessage(context.Background(), msg); err != nil {
 			return err
@@ -257,14 +258,15 @@ func runSimulate(args []string) error {
 	renderer := card.NewFakeRenderer()
 	recorder := audit.NewRecorder()
 	baseMsg := bridge.Message{
-		ChatID:     *chat,
-		ThreadID:   *thread,
-		Sender:     *sender,
-		SenderType: *senderType,
-		Text:       *text,
-		IsGroup:    *group,
-		Mentioned:  *mentioned,
-		Time:       time.Now(),
+		ChatID:             *chat,
+		ThreadID:           *thread,
+		Sender:             *sender,
+		SenderType:         *senderType,
+		Text:               *text,
+		IsGroup:            *group,
+		Mentioned:          *mentioned,
+		ExplicitBotMention: *mentioned,
+		Time:               time.Now(),
 	}
 	svc := bridge.NewService(cfg, renderer, simulateRunner{}, recorder)
 	topics, err := openParticipationStore(cfg)
@@ -274,30 +276,32 @@ func runSimulate(args []string) error {
 	svc.TopicParticipation = topics
 	loadAgentsInto(svc, cfg, recorder)
 	msg := bridge.Message{
-		ID:         fmt.Sprintf("local-%d", time.Now().UnixNano()),
-		ChatID:     *chat,
-		ThreadID:   *thread,
-		Sender:     *sender,
-		SenderType: *senderType,
-		Text:       *text,
-		IsGroup:    *group,
-		Mentioned:  *mentioned,
-		Time:       baseMsg.Time,
+		ID:                 fmt.Sprintf("local-%d", time.Now().UnixNano()),
+		ChatID:             *chat,
+		ThreadID:           *thread,
+		Sender:             *sender,
+		SenderType:         *senderType,
+		Text:               *text,
+		IsGroup:            *group,
+		Mentioned:          *mentioned,
+		ExplicitBotMention: *mentioned,
+		Time:               baseMsg.Time,
 	}
 	if err := svc.HandleMessage(context.Background(), msg); err != nil {
 		return err
 	}
 	for _, nextText := range nextMessages {
 		nextMsg := bridge.Message{
-			ID:         fmt.Sprintf("local-%d", time.Now().UnixNano()),
-			ChatID:     *chat,
-			ThreadID:   *thread,
-			Sender:     *sender,
-			SenderType: *senderType,
-			Text:       nextText,
-			IsGroup:    *group,
-			Mentioned:  *mentioned,
-			Time:       time.Now(),
+			ID:                 fmt.Sprintf("local-%d", time.Now().UnixNano()),
+			ChatID:             *chat,
+			ThreadID:           *thread,
+			Sender:             *sender,
+			SenderType:         *senderType,
+			Text:               nextText,
+			IsGroup:            *group,
+			Mentioned:          *mentioned,
+			ExplicitBotMention: *mentioned,
+			Time:               time.Now(),
 		}
 		if err := svc.HandleMessage(context.Background(), nextMsg); err != nil {
 			return err

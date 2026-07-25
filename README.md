@@ -138,7 +138,7 @@ owner 或管理员可在飞书中管理名单：
 `/config` 的 **Conversation mode** 控制回复位置和 session scope：
 
 - `chat`（默认）：CardKit/文本回复使用 `reply_in_thread=false`，session key 为 `{Agent, ChatID}`。
-- `topic`：回复使用 `reply_in_thread=true`，非空 `ThreadID` 会进入 session key。
+- `topic`：回复使用 `reply_in_thread=true`，非空 `ThreadID` 会进入 session key；P2P 或群聊主会话中，只有正文里显式可见的 `@bot` 才创建独立 topic session，未显式 `@bot` 的消息继续使用 chat root session。
 
 该设置与 Reply mode（`append`、`append-clean-card`、`latest-card`）相互独立。保存成功后只影响新接收的消息；已有 session 不迁移、不删除，已经排队或停在 workdir 确认阶段的输入继续使用接收时的 mode。启动环境可用 `E2E_CONVERSATION_MODE=chat|topic` 设置 `/config reset` 恢复的默认值。
 

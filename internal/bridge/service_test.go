@@ -748,6 +748,54 @@ func TestServiceTopicConversationModeIsolatesSessionsAndRepliesInThread(t *testi
 	}
 }
 
+func TestServiceTopicMainMessageWithoutExplicitMentionUsesChatBehavior(t *testing.T) {
+	cfg := testConfig(t)
+	cfg.ConversationMode = config.ConversationModeTopic
+	renderer := card.NewFakeRenderer()
+	runner := newFakeRunner()
+	svc := NewService(cfg, renderer, runner, audit.NewRecorder())
+	now := time.Now()
+
+	msg := Message{ID: "plain", ChatID: "chat", Sender: "user", Text: "hello", Mentioned: true, Time: now}
+	if err := svc.HandleMessage(context.Background(), msg); err != nil {
+		t.Fatal(err)
+	}
+	list := svc.Sessions.List()
+	if len(list) != 1 || list[0].ID != "claude:chat" || len(list[0].Queue) != 1 {
+		t.Fatalf("metadata-only topic message sessions = %#v, want chat root queue", list)
+	}
+	if got := list[0].Queue[0].ConversationMode; got != config.ConversationModeChat {
+		t.Fatalf("queued conversation mode = %q, want chat", got)
+	}
+	if err := svc.DrainReady(now.Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	waitForCalls(t, runner, 1)
+	waitForEvents(t, renderer, 1)
+	for _, event := range renderer.Events() {
+		if event.ReplyToMessageID == msg.ID && event.ReplyInThread {
+			t.Fatalf("metadata-only topic message opened a thread: %#v", event)
+		}
+	}
+}
+
+func TestServiceTopicConfigWithoutExplicitMentionRepliesInChatButShowsConfiguredTopic(t *testing.T) {
+	cfg := testConfig(t)
+	cfg.ConversationMode = config.ConversationModeTopic
+	renderer := card.NewFakeRenderer()
+	svc := NewService(cfg, renderer, newFakeRunner(), audit.NewRecorder())
+	if err := svc.HandleMessage(context.Background(), Message{ID: "config", ChatID: "chat", Sender: "user", Text: "/config", Mentioned: true, Time: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	events := renderer.Events()
+	if len(events) != 1 || events[0].ReplyInThread {
+		t.Fatalf("config event = %#v, want chat reply", events)
+	}
+	if events[0].ConfigForm == nil || events[0].ConfigForm.ConversationMode != string(config.ConversationModeTopic) {
+		t.Fatalf("config form = %#v, want configured topic mode preserved", events[0].ConfigForm)
+	}
+}
+
 func TestServiceFreezesConversationModeAtEnqueueTime(t *testing.T) {
 	cfg := testConfig(t)
 	cfg.ConversationMode = config.ConversationModeTopic
@@ -1987,8 +2035,8 @@ func TestServiceGroupTopicMentionsRunConcurrently(t *testing.T) {
 	svc := NewService(cfg, renderer, runner, audit.NewRecorder())
 	now := time.Now()
 	for _, msg := range []Message{
-		{ID: "m1", ChatID: "chat", Sender: "u", Text: "first", Time: now, IsGroup: true, Mentioned: true},
-		{ID: "m2", ChatID: "chat", Sender: "u", Text: "second", Time: now.Add(50 * time.Millisecond), IsGroup: true, Mentioned: true},
+		{ID: "m1", ChatID: "chat", Sender: "u", Text: "first", Time: now, IsGroup: true, Mentioned: true, ExplicitBotMention: true},
+		{ID: "m2", ChatID: "chat", Sender: "u", Text: "second", Time: now.Add(50 * time.Millisecond), IsGroup: true, Mentioned: true, ExplicitBotMention: true},
 	} {
 		if err := svc.HandleMessage(context.Background(), msg); err != nil {
 			t.Fatalf("handle %s: %v", msg.ID, err)
@@ -2027,11 +2075,11 @@ func TestServiceGroupTopicMentionsRunConcurrently(t *testing.T) {
 // msg.IsGroup, so multiple @bots in a DM all collapsed onto the chat root and
 // serialised. Users on topic mode want the same "independent parallel topics
 // per @mention" behaviour regardless of chat kind, so the gate now looks at
-// Mentioned + ID only. Two P2P @bots with IsGroup=false must produce
+// ExplicitBotMention + ID only. Two P2P @bots with IsGroup=false must produce
 // distinct synthetic thread keys.
 func TestServiceP2PTopicMentionsMintDistinctSyntheticKeys(t *testing.T) {
-	msgA := Message{ID: "m1", ChatID: "chat", Sender: "u", IsGroup: false, Mentioned: true}
-	msgB := Message{ID: "m2", ChatID: "chat", Sender: "u", IsGroup: false, Mentioned: true}
+	msgA := Message{ID: "m1", ChatID: "chat", Sender: "u", IsGroup: false, Mentioned: true, ExplicitBotMention: true}
+	msgB := Message{ID: "m2", ChatID: "chat", Sender: "u", IsGroup: false, Mentioned: true, ExplicitBotMention: true}
 	keyA := sessionKeyForModeWithAlias(agent.Claude, msgA, config.ConversationModeTopic, nil)
 	keyB := sessionKeyForModeWithAlias(agent.Claude, msgB, config.ConversationModeTopic, nil)
 	if keyA.Thread != SyntheticTopicThreadPrefix+"m1" {
@@ -2045,6 +2093,39 @@ func TestServiceP2PTopicMentionsMintDistinctSyntheticKeys(t *testing.T) {
 	}
 }
 
+func TestServiceTopicMetadataOnlyMentionStaysOnChatRoot(t *testing.T) {
+	for _, isGroup := range []bool{false, true} {
+		msg := Message{ID: "m1", ChatID: "chat", Sender: "u", IsGroup: isGroup, Mentioned: true}
+		key := sessionKeyForModeWithAlias(agent.Claude, msg, config.ConversationModeTopic, nil)
+		if key.Thread != "" {
+			t.Fatalf("isGroup=%v metadata-only mention thread = %q, want chat root", isGroup, key.Thread)
+		}
+	}
+}
+
+func TestConversationModeForMessage(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		msg  Message
+		want config.ConversationMode
+	}{
+		{name: "chat unchanged", msg: Message{}, want: config.ConversationModeChat},
+		{name: "topic main metadata only", msg: Message{Mentioned: true}, want: config.ConversationModeChat},
+		{name: "topic main explicit at", msg: Message{ExplicitBotMention: true}, want: config.ConversationModeTopic},
+		{name: "topic followup", msg: Message{ThreadID: "omt_topic"}, want: config.ConversationModeTopic},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			configured := config.ConversationModeTopic
+			if tc.name == "chat unchanged" {
+				configured = config.ConversationModeChat
+			}
+			if got := conversationModeForMessage(tc.msg, configured); got != tc.want {
+				t.Fatalf("mode = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
 // After a synthetic @bot:<msg_id> session runs and CardKit reply lands with a
 // real Feishu thread_id, TopicJoinObserver binds an alias so the next reply
 // inside that topic (which arrives with the real thread_id) routes back to
@@ -2052,7 +2133,7 @@ func TestServiceP2PTopicMentionsMintDistinctSyntheticKeys(t *testing.T) {
 func TestServiceTopicAliasRoutesFollowUpIntoSyntheticSession(t *testing.T) {
 	aliases := NewTopicAliasStore()
 	aliases.Bind("chat", "omt_real", SyntheticTopicThreadPrefix+"m1")
-	mention := Message{ID: "m1", ChatID: "chat", Sender: "u", IsGroup: true, Mentioned: true}
+	mention := Message{ID: "m1", ChatID: "chat", Sender: "u", IsGroup: true, Mentioned: true, ExplicitBotMention: true}
 	mentionKey := sessionKeyForModeWithAlias(agent.Claude, mention, config.ConversationModeTopic, aliases)
 	if mentionKey.Thread != SyntheticTopicThreadPrefix+"m1" {
 		t.Fatalf("mention key = %+v, want thread=%s", mentionKey, SyntheticTopicThreadPrefix+"m1")
@@ -2113,7 +2194,7 @@ func TestSessionKeyRootIDIgnoredOutsideTopicThread(t *testing.T) {
 	}
 	// Topic mode, top-level @bot (no thread_id): mints @bot:<msg_id>, root_id
 	// branch is not reached.
-	mention := Message{ID: "m1", ChatID: "chat", RootID: "ignored", Sender: "u", IsGroup: true, Mentioned: true}
+	mention := Message{ID: "m1", ChatID: "chat", RootID: "ignored", Sender: "u", IsGroup: true, Mentioned: true, ExplicitBotMention: true}
 	key = sessionKeyForModeWithAlias(agent.Claude, mention, config.ConversationModeTopic, nil)
 	if key.Thread != SyntheticTopicThreadPrefix+"m1" {
 		t.Fatalf("top-level @bot key = %+v, want thread=%s", key, SyntheticTopicThreadPrefix+"m1")
@@ -2542,7 +2623,9 @@ func TestServiceMissingWorkdirAsksThenRunsAfterCreate(t *testing.T) {
 	renderer := card.NewFakeRenderer()
 	runner := newFakeRunner()
 	svc := NewService(cfg, renderer, runner, audit.NewRecorder())
-	msg := Message{ID: "msg-1", ChatID: "chat", Sender: "u1", Text: "/new --workdir " + missing + " hello", Time: time.Now()}
+	msg := Message{ID: "msg-1", ChatID: "chat", Sender: "u1", Text: "/new --workdir " + missing + " hello", ExplicitBotMention: true, Time: time.Now()}
+	key := session.Key{Agent: agent.Claude, ChatID: "chat", Thread: SyntheticTopicThreadPrefix + msg.ID}
+	pendingSessionID := runID(key.ID(), msg.ID)
 	if err := svc.HandleMessage(context.Background(), msg); err != nil {
 		t.Fatalf("handle message error: %v", err)
 	}
@@ -2550,18 +2633,18 @@ func TestServiceMissingWorkdirAsksThenRunsAfterCreate(t *testing.T) {
 	if len(events) != 1 || events[0].Type != "workdir_confirm" {
 		t.Fatalf("events = %#v, want workdir confirm", events)
 	}
-	if events[0].SessionID != "claude:chat:message:msg-1" {
+	if events[0].SessionID != pendingSessionID {
 		t.Fatalf("confirm session id = %q", events[0].SessionID)
 	}
 	if !events[0].ReplyInThread {
 		t.Fatalf("workdir confirmation did not freeze topic reply mode: %#v", events[0])
 	}
 	svc.Config.ConversationMode = config.ConversationModeChat
-	result, err := svc.HandleActionResult(context.Background(), ActionRequest{SessionID: "claude:chat:message:msg-1", ActionID: "create_workdir", Actor: "u1"})
+	result, err := svc.HandleActionResult(context.Background(), ActionRequest{SessionID: pendingSessionID, ActionID: "create_workdir", Actor: "u1"})
 	if err != nil {
 		t.Fatalf("create action error: %v", err)
 	}
-	if result.Event == nil || result.Event.Type != "workdir_created" || result.Event.SessionID != "claude:chat:message:msg-1" {
+	if result.Event == nil || result.Event.Type != "workdir_created" || result.Event.SessionID != pendingSessionID {
 		t.Fatalf("action result = %#v, want workdir_created on confirm card", result.Event)
 	}
 	if len(result.Event.Actions) != 2 || !result.Event.Actions[0].Disabled || !result.Event.Actions[1].Disabled {
@@ -2577,9 +2660,9 @@ func TestServiceMissingWorkdirAsksThenRunsAfterCreate(t *testing.T) {
 	if got := runner.Calls()[0].WorkDir; got != missing {
 		t.Fatalf("runner workdir = %q, want %q", got, missing)
 	}
-	waitForSessionNoActiveBatch(t, svc, session.Key{Agent: agent.Claude, ChatID: "chat"})
+	waitForSessionNoActiveBatch(t, svc, key)
 	events = renderer.Events()
-	if events[1].Type != "workdir_created" || events[1].SessionID != "claude:chat:message:msg-1" {
+	if events[1].Type != "workdir_created" || events[1].SessionID != pendingSessionID {
 		t.Fatalf("terminal confirm event = %#v", events[1])
 	}
 	runEvent := events[2]

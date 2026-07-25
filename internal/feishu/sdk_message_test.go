@@ -140,3 +140,50 @@ func TestBuildInboundMessagePreservesSenderTypeAndMentionAll(t *testing.T) {
 		t.Fatalf("mentions = %#v", got.Mentions)
 	}
 }
+
+func TestBuildInboundMessageDistinguishesExplicitAndImplicitBotMentions(t *testing.T) {
+	botOpenID, botKey, botName := "ou_bot", "@_user_1", "Bridge"
+	messageType := "text"
+	mention := &larkim.MentionEvent{Key: &botKey, Id: &larkim.UserId{OpenId: &botOpenID}, Name: &botName}
+
+	for _, tc := range []struct {
+		name    string
+		content string
+		want    bool
+	}{
+		{name: "visible at", content: `{"text":"@_user_1 hello"}`, want: true},
+		{name: "metadata only", content: `{"text":"hello"}`, want: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			event := &larkim.P2MessageReceiveV1{Event: &larkim.P2MessageReceiveV1Data{Message: &larkim.EventMessage{
+				MessageType: &messageType,
+				Content:     &tc.content,
+				Mentions:    []*larkim.MentionEvent{mention},
+			}}}
+			got := BuildInboundMessageFromLark(event, botOpenID)
+			if !got.MentionsBot {
+				t.Fatal("MentionsBot = false, want metadata preserved")
+			}
+			if got.ExplicitBotMention != tc.want {
+				t.Fatalf("ExplicitBotMention = %v, want %v", got.ExplicitBotMention, tc.want)
+			}
+		})
+	}
+}
+
+func TestBuildInboundMessageDetectsExplicitBotMentionInPost(t *testing.T) {
+	botOpenID, botKey, botName := "ou_bot", "@_user_1", "Bridge"
+	messageType := "post"
+	content := `{"zh_cn":{"content":[[{"tag":"at","user_id":"ou_bot","user_name":"Bridge"},{"tag":"text","text":" hello"}]]}}`
+	event := &larkim.P2MessageReceiveV1{Event: &larkim.P2MessageReceiveV1Data{Message: &larkim.EventMessage{
+		MessageType: &messageType,
+		Content:     &content,
+		Mentions: []*larkim.MentionEvent{{
+			Key: &botKey, Id: &larkim.UserId{OpenId: &botOpenID}, Name: &botName,
+		}},
+	}}}
+	got := BuildInboundMessageFromLark(event, botOpenID)
+	if !got.ExplicitBotMention {
+		t.Fatal("ExplicitBotMention = false, want true for visible post at node")
+	}
+}

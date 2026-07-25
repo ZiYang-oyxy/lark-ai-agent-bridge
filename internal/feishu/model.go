@@ -22,24 +22,25 @@ type Mention struct {
 }
 
 type InboundMessage struct {
-	AppID       string
-	ChatID      string
-	MessageID   string
-	RootID      string
-	ParentID    string
-	TopicID     string
-	ChatType    string
-	MessageType string
-	RawContent  string
-	UserAgent   string
-	SenderID    string
-	SenderType  string
-	TenantKey   string
-	Text        string
-	Attachments []media.Ref
-	MentionsBot bool
-	Mentions    []Mention
-	OccurredAt  time.Time
+	AppID              string
+	ChatID             string
+	MessageID          string
+	RootID             string
+	ParentID           string
+	TopicID            string
+	ChatType           string
+	MessageType        string
+	RawContent         string
+	UserAgent          string
+	SenderID           string
+	SenderType         string
+	TenantKey          string
+	Text               string
+	Attachments        []media.Ref
+	MentionsBot        bool
+	ExplicitBotMention bool
+	Mentions           []Mention
+	OccurredAt         time.Time
 }
 
 type RecalledMessage struct {
@@ -52,25 +53,26 @@ type RecalledMessage struct {
 }
 
 type Event struct {
-	Kind        EventKind
-	AppID       string
-	ChatID      string
-	MessageID   string
-	RootID      string
-	ParentID    string
-	TopicID     string
-	ChatType    string
-	MessageType string
-	RawContent  string
-	UserAgent   string
-	SenderID    string
-	SenderType  string
-	TenantKey   string
-	Text        string
-	Attachments []media.Ref
-	MentionsBot bool
-	Mentions    []Mention
-	OccurredAt  time.Time
+	Kind               EventKind
+	AppID              string
+	ChatID             string
+	MessageID          string
+	RootID             string
+	ParentID           string
+	TopicID            string
+	ChatType           string
+	MessageType        string
+	RawContent         string
+	UserAgent          string
+	SenderID           string
+	SenderType         string
+	TenantKey          string
+	Text               string
+	Attachments        []media.Ref
+	MentionsBot        bool
+	ExplicitBotMention bool
+	Mentions           []Mention
+	OccurredAt         time.Time
 }
 
 func (e Event) IsTopicFollowup() bool {
@@ -83,25 +85,26 @@ func BuildEvent(msg InboundMessage) Event {
 		occurredAt = time.Now()
 	}
 	return Event{
-		Kind:        inferEventKind(msg),
-		AppID:       msg.AppID,
-		ChatID:      msg.ChatID,
-		MessageID:   msg.MessageID,
-		RootID:      msg.RootID,
-		ParentID:    msg.ParentID,
-		TopicID:     msg.TopicID,
-		ChatType:    msg.ChatType,
-		MessageType: msg.MessageType,
-		RawContent:  msg.RawContent,
-		UserAgent:   msg.UserAgent,
-		SenderID:    msg.SenderID,
-		SenderType:  msg.SenderType,
-		TenantKey:   msg.TenantKey,
-		Text:        msg.Text,
-		Attachments: append([]media.Ref(nil), msg.Attachments...),
-		MentionsBot: msg.MentionsBot,
-		Mentions:    append([]Mention(nil), msg.Mentions...),
-		OccurredAt:  occurredAt,
+		Kind:               inferEventKind(msg),
+		AppID:              msg.AppID,
+		ChatID:             msg.ChatID,
+		MessageID:          msg.MessageID,
+		RootID:             msg.RootID,
+		ParentID:           msg.ParentID,
+		TopicID:            msg.TopicID,
+		ChatType:           msg.ChatType,
+		MessageType:        msg.MessageType,
+		RawContent:         msg.RawContent,
+		UserAgent:          msg.UserAgent,
+		SenderID:           msg.SenderID,
+		SenderType:         msg.SenderType,
+		TenantKey:          msg.TenantKey,
+		Text:               msg.Text,
+		Attachments:        append([]media.Ref(nil), msg.Attachments...),
+		MentionsBot:        msg.MentionsBot,
+		ExplicitBotMention: msg.ExplicitBotMention,
+		Mentions:           append([]Mention(nil), msg.Mentions...),
+		OccurredAt:         occurredAt,
 	}
 }
 

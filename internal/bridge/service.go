@@ -524,6 +524,8 @@ func (s *Service) HandleMessage(ctx context.Context, msg Message) error {
 		return nil
 	}
 	preference := s.runtimePreferenceFor(msg)
+	configuredPreference := preference
+	preference.ConversationMode = conversationModeForMessage(msg, preference.ConversationMode)
 	if reason := senderRejectionReason(msg, preference.RespondToBots, s.BotOpenID); reason != "" {
 		action := "group_message_skipped"
 		if reason == IntakeReasonBotDisabled {
@@ -603,12 +605,16 @@ func (s *Service) HandleMessage(ctx context.Context, msg Message) error {
 		statusSessionID := runID("status", msg.ID)
 		key := s.keyForMessage(cmd.Agent, msg, preference.ConversationMode)
 		s.storeResumeContext(statusSessionID, key, session.CatalogIdentity{Agent: cmd.Agent}, effectiveMessageTime(msg))
+		groupChatID := ""
+		if msg.IsGroup {
+			groupChatID = msg.ChatID
+		}
 		return s.Cards.Render(card.Event{
 			Type:             "status",
 			SessionID:        statusSessionID,
 			ReplyToMessageID: msg.ID,
 			ReplyInThread:    preference.ConversationMode == config.ConversationModeTopic,
-			StatusCard:       s.statusCardData(cmd.Agent, msg, preference),
+			StatusCard:       s.statusCardDataForKey(cmd.Agent, key, configuredPreference, s.localOverrideFields(msg), groupChatID),
 			VersionStatus:    availableVersionStatus(s.versionStatus(ctx, statusSessionID)),
 		})
 	case CommandStop:
@@ -616,11 +622,11 @@ func (s *Service) HandleMessage(ctx context.Context, msg Message) error {
 	case CommandResume:
 		return s.handleResumeCommand(msg, cmd, preference)
 	case CommandConfig:
-		return s.handleConfigCommand(ctx, msg, cmd, preference)
+		return s.handleConfigCommand(ctx, msg, cmd, configuredPreference, preference.ConversationMode)
 	case CommandLocalConfig:
-		return s.handleLocalConfigCommand(ctx, msg, cmd, preference)
+		return s.handleLocalConfigCommand(ctx, msg, cmd, preference.ConversationMode)
 	case CommandAgentMode:
-		return s.handleAgentModeCommand(ctx, msg, cmd, preference)
+		return s.handleAgentModeCommand(ctx, msg, cmd, configuredPreference, preference.ConversationMode)
 	case CommandCron, CommandTimer:
 		return s.handleScheduleCommand(ctx, msg, cmd, preference)
 	case CommandInvite:
@@ -754,7 +760,7 @@ func resumeCardData(identity session.CatalogIdentity, entries []session.CatalogE
 	return &card.ResumeCard{Agent: string(identity.Agent), WorkDir: identity.WorkDir, Items: items}
 }
 
-func (s *Service) handleConfigCommand(ctx context.Context, msg Message, cmd Command, preference config.RuntimePreference) error {
+func (s *Service) handleConfigCommand(ctx context.Context, msg Message, cmd Command, preference config.RuntimePreference, replyMode config.ConversationMode) error {
 	switch strings.ToLower(strings.TrimSpace(cmd.Text)) {
 	case "":
 		if s.AccessInfo != nil {
@@ -773,22 +779,22 @@ func (s *Service) handleConfigCommand(ctx context.Context, msg Message, cmd Comm
 			Type:             "config",
 			SessionID:        configSessionID,
 			ReplyToMessageID: msg.ID,
-			ReplyInThread:    preference.ConversationMode == config.ConversationModeTopic,
+			ReplyInThread:    replyMode == config.ConversationModeTopic,
 			ConfigForm:       configForm,
 			VersionStatus:    availableVersionStatus(s.versionStatus(ctx, configSessionID)),
 		})
 	case "reset":
 		if s.Preferences == nil {
-			return s.renderTextWithMode("config-reset", msg.ID, card.SegmentError, "偏好存储尚未配置。", preference.ConversationMode)
+			return s.renderTextWithMode("config-reset", msg.ID, card.SegmentError, "偏好存储尚未配置。", replyMode)
 		}
 		if err := s.Preferences.Reset(); err != nil {
 			s.Audit.Record(msg.Sender, "config_reset_failed", "", err.Error())
-			return s.renderTextWithMode("config-reset", msg.ID, card.SegmentError, "偏好重置失败，请检查存储状态。", preference.ConversationMode)
+			return s.renderTextWithMode("config-reset", msg.ID, card.SegmentError, "偏好重置失败，请检查存储状态。", replyMode)
 		}
 		s.Audit.Record(msg.Sender, "config_reset", "", "runtime preferences reset")
-		return s.renderTextWithMode("config-reset", msg.ID, card.SegmentText, "已恢复环境默认的 agent / home / bin / model / effort / reply mode / conversation mode；下一条新消息开始生效。", preference.ConversationMode)
+		return s.renderTextWithMode("config-reset", msg.ID, card.SegmentText, "已恢复环境默认的 agent / home / bin / model / effort / reply mode / conversation mode；下一条新消息开始生效。", replyMode)
 	default:
-		return s.renderTextWithMode("config", msg.ID, card.SegmentError, "用法：/config 或 /config reset", preference.ConversationMode)
+		return s.renderTextWithMode("config", msg.ID, card.SegmentError, "用法：/config 或 /config reset", replyMode)
 	}
 }
 
@@ -797,9 +803,9 @@ func (s *Service) handleConfigCommand(ctx context.Context, msg Message, cmd Comm
 // user to /config (which edits the global default). The rendered form shows the
 // group's current *effective* preference (global with this group's override
 // layered on) and carries the ChatID so the save callback knows its target.
-func (s *Service) handleLocalConfigCommand(ctx context.Context, msg Message, cmd Command, preference config.RuntimePreference) error {
+func (s *Service) handleLocalConfigCommand(ctx context.Context, msg Message, cmd Command, replyMode config.ConversationMode) error {
 	if !msg.IsGroup || strings.TrimSpace(msg.ChatID) == "" {
-		return s.renderTextWithMode("local-config", msg.ID, card.SegmentText, "`/local-config` 只用于群里设置本群覆盖。私聊请用 `/config` 配置全局默认。", preference.ConversationMode)
+		return s.renderTextWithMode("local-config", msg.ID, card.SegmentText, "`/local-config` 只用于群里设置本群覆盖。私聊请用 `/config` 配置全局默认。", replyMode)
 	}
 	switch strings.ToLower(strings.TrimSpace(cmd.Text)) {
 	case "":
@@ -813,48 +819,48 @@ func (s *Service) handleLocalConfigCommand(ctx context.Context, msg Message, cmd
 			Type:                "local_config_overview",
 			SessionID:           runID("local-config", msg.ID),
 			ReplyToMessageID:    msg.ID,
-			ReplyInThread:       preference.ConversationMode == config.ConversationModeTopic,
+			ReplyInThread:       replyMode == config.ConversationModeTopic,
 			LocalConfigOverview: s.localConfigOverview(msg.ChatID),
 		})
 	case "reset":
 		if s.Preferences == nil {
-			return s.renderTextWithMode("local-config-reset", msg.ID, card.SegmentError, "偏好存储尚未配置。", preference.ConversationMode)
+			return s.renderTextWithMode("local-config-reset", msg.ID, card.SegmentError, "偏好存储尚未配置。", replyMode)
 		}
 		if err := s.Preferences.ResetChat(msg.ChatID); err != nil {
 			s.Audit.Record(msg.Sender, "local_config_reset_failed", msg.ChatID, err.Error())
-			return s.renderTextWithMode("local-config-reset", msg.ID, card.SegmentError, "本群覆盖重置失败，请检查存储状态。", preference.ConversationMode)
+			return s.renderTextWithMode("local-config-reset", msg.ID, card.SegmentError, "本群覆盖重置失败，请检查存储状态。", replyMode)
 		}
 		s.Audit.Record(msg.Sender, "local_config_reset", msg.ChatID, "chat overrides cleared")
-		return s.renderTextWithMode("local-config-reset", msg.ID, card.SegmentText, "已清空本群覆盖，全部回到继承全局 `/config`；下一条新消息开始生效。", preference.ConversationMode)
+		return s.renderTextWithMode("local-config-reset", msg.ID, card.SegmentText, "已清空本群覆盖，全部回到继承全局 `/config`；下一条新消息开始生效。", replyMode)
 	default:
-		return s.renderTextWithMode("local-config", msg.ID, card.SegmentError, "用法：/local-config 或 /local-config reset", preference.ConversationMode)
+		return s.renderTextWithMode("local-config", msg.ID, card.SegmentError, "用法：/local-config 或 /local-config reset", replyMode)
 	}
 }
 
-func (s *Service) handleAgentModeCommand(_ context.Context, msg Message, cmd Command, preference config.RuntimePreference) error {
+func (s *Service) handleAgentModeCommand(_ context.Context, msg Message, cmd Command, preference config.RuntimePreference, replyMode config.ConversationMode) error {
 	mode := strings.ToLower(strings.TrimSpace(cmd.Text))
 	if mode == "" {
 		return s.Cards.Render(card.Event{
 			Type:             "agent_mode",
 			SessionID:        runID("agent-mode", msg.ID),
 			ReplyToMessageID: msg.ID,
-			ReplyInThread:    preference.ConversationMode == config.ConversationModeTopic,
+			ReplyInThread:    replyMode == config.ConversationModeTopic,
 			AgentModeForm:    &card.AgentModeForm{Agent: orDefault(preference.Agent, config.DefaultAgentKind), Agents: toCardOptions(s.Agents.AgentOptions())},
 		})
 	}
 	if _, ok := agent.ParseKind(mode); !ok {
-		return s.renderTextWithMode("agent-mode", msg.ID, card.SegmentError, "用法：/agent-mode 或 /agent-mode claude|codex", preference.ConversationMode)
+		return s.renderTextWithMode("agent-mode", msg.ID, card.SegmentError, "用法：/agent-mode 或 /agent-mode claude|codex", replyMode)
 	}
 	if s.Preferences == nil {
-		return s.renderTextWithMode("agent-mode", msg.ID, card.SegmentError, "偏好存储尚未配置。", preference.ConversationMode)
+		return s.renderTextWithMode("agent-mode", msg.ID, card.SegmentError, "偏好存储尚未配置。", replyMode)
 	}
 	preference.Agent = mode
 	preference.AgentHome = ""
 	preference.AgentBin = ""
 	if err := s.Preferences.Set(preference); err != nil {
-		return s.renderTextWithMode("agent-mode", msg.ID, card.SegmentError, "Agent mode 保存失败，请检查配置。", preference.ConversationMode)
+		return s.renderTextWithMode("agent-mode", msg.ID, card.SegmentError, "Agent mode 保存失败，请检查配置。", replyMode)
 	}
-	return s.renderTextWithMode("agent-mode", msg.ID, card.SegmentText, fmt.Sprintf("已切换到 `%s`。`/config` 现在只显示该 Agent 可用的 home/bin。", mode), preference.ConversationMode)
+	return s.renderTextWithMode("agent-mode", msg.ID, card.SegmentText, fmt.Sprintf("已切换到 `%s`。`/config` 现在只显示该 Agent 可用的 home/bin。", mode), replyMode)
 }
 
 // runtimePreferenceFor resolves the effective preference for a specific
@@ -2862,6 +2868,13 @@ func (s *Service) keyForMessage(kind agent.Kind, msg Message, mode config.Conver
 	return sessionKeyForModeWithAlias(kind, msg, mode, s.TopicAliases)
 }
 
+func conversationModeForMessage(msg Message, configured config.ConversationMode) config.ConversationMode {
+	if configured == config.ConversationModeTopic && msg.ThreadID == "" && !msg.ExplicitBotMention {
+		return config.ConversationModeChat
+	}
+	return configured
+}
+
 // TopicAliasResolver looks up the synthetic "@bot:<msg_id>" thread key that a
 // real Feishu thread_id was bound to when the bot's first CardKit reply
 // created that topic. sessionKeyForModeWithAlias uses this to keep follow-up
@@ -2876,7 +2889,7 @@ func sessionKeyForMode(kind agent.Kind, msg Message, mode config.ConversationMod
 }
 
 // sessionKeyForModeWithAlias computes the session key for msg under mode. In
-// topic mode, when the top-level @bot delivery carries no thread_id (Feishu
+// topic mode, when a visibly explicit top-level @bot carries no thread_id (Feishu
 // only assigns one after the first reply lands), we synthesise a per-mention
 // thread key "@bot:<msg_id>" so concurrent @bots get concurrent sessions
 // instead of serialising on the chat's root key. When a real thread_id is
@@ -2904,15 +2917,17 @@ func sessionKeyForModeWithAlias(kind agent.Kind, msg Message, mode config.Conver
 		key.Thread = msg.ThreadID
 		return key
 	}
-	// Top-level @bot: mint a per-mention thread key so this mention runs
+	// Visibly explicit top-level @bot: mint a per-mention thread key so this
 	// concurrently with any other in-flight @bot on the same chat. Requires a
 	// stable msg.ID (Feishu message id) — without it we have nothing unique to
 	// key on, fall back to the chat root. Applies to both group chats and P2P
 	// DMs: users on topic mode want independent parallel topics regardless of
 	// chat kind (P2P was previously left out by an IsGroup gate, so all @bots
 	// in a DM serialised onto the chat root even though the user explicitly
-	// asked for topic mode).
-	if msg.Mentioned && msg.ID != "" {
+	// asked for topic mode). Feishu may attach bot mention metadata to a P2P
+	// delivery even when no @bot is visible in the message. Such messages stay
+	// on the chat root; only an explicit @bot starts a topic.
+	if msg.ExplicitBotMention && msg.ID != "" {
 		key.Thread = SyntheticTopicThreadPrefix + msg.ID
 	}
 	return key
