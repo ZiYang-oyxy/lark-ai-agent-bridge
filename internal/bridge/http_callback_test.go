@@ -74,3 +74,45 @@ func TestCallbackHTTPHandlerRespondsToChallenge(t *testing.T) {
 		t.Fatalf("challenge = %q, want abc123", body["challenge"])
 	}
 }
+
+func TestCallbackHTTPHandlerAcknowledgesUpdateBeforeRefresh(t *testing.T) {
+	setUpdateTestVersion(t)
+	started := make(chan struct{})
+	release := make(chan struct{})
+	prepared := &fakePreparedUpdate{restarted: make(chan struct{})}
+	manager := &fakeUpdateManager{
+		checkResult: updateAvailableResult(), prepared: prepared,
+		refreshStarted: started, refreshRelease: release,
+	}
+	cfg := updateTestConfig(t)
+	renderer := card.NewFakeRenderer()
+	service := NewService(cfg, renderer, newFakeRunner(), audit.NewRecorder())
+	service.Updates = manager
+	body := `{"operator":{"open_id":"admin"},"context":{"open_chat_id":"oc_test","open_message_id":"om_card"},"action":{"value":{"session":"help:test","action_id":"update.install","value":"1.2.0"}}}`
+	req := httptest.NewRequest(http.MethodPost, "/card/callback", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+
+	begin := time.Now()
+	NewCallbackHTTPHandler(ActionGateway{Service: service}).ServeHTTP(rec, req)
+	if elapsed := time.Since(begin); elapsed > 100*time.Millisecond {
+		t.Fatalf("HTTP callback took %s while Refresh was blocked", elapsed)
+	}
+	if rec.Code != http.StatusOK || strings.Contains(rec.Body.String(), `"card"`) {
+		t.Fatalf("status/body = %d / %s", rec.Code, rec.Body.String())
+	}
+	waitForEvents(t, renderer, 1)
+	if got := renderer.Events()[0]; got.HeaderTitle != "Bridge 正在准备升级" {
+		t.Fatalf("preparing event = %#v", got)
+	}
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("deferred Refresh did not start after the response was written")
+	}
+	close(release)
+	select {
+	case <-prepared.restarted:
+	case <-time.After(time.Second):
+		t.Fatal("deferred update did not finish")
+	}
+}

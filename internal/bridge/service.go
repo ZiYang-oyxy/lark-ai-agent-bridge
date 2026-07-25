@@ -284,7 +284,30 @@ type ActionRequest struct {
 }
 
 type ActionResult struct {
-	Event *card.Event
+	Event    *card.Event
+	deferred *deferredAction
+}
+
+type deferredAction struct {
+	once   sync.Once
+	run    func()
+	cancel func()
+}
+
+func (r ActionResult) StartDeferred() {
+	if r.deferred != nil && r.deferred.run != nil {
+		r.deferred.once.Do(func() { go r.deferred.run() })
+	}
+}
+
+func (r ActionResult) CancelDeferred() {
+	if r.deferred != nil {
+		r.deferred.once.Do(func() {
+			if r.deferred.cancel != nil {
+				r.deferred.cancel()
+			}
+		})
+	}
 }
 
 func (r ActionResult) PrepareCard(maxChars int) (card.PreparedLarkCard, error) {
@@ -1623,7 +1646,10 @@ func runCardSessionID(baseSessionID string, input session.Input) string {
 }
 
 func (s *Service) HandleAction(ctx context.Context, req ActionRequest) error {
-	_, err := s.HandleActionResult(ctx, req)
+	result, err := s.HandleActionResult(ctx, req)
+	if err == nil {
+		result.StartDeferred()
+	}
 	return err
 }
 

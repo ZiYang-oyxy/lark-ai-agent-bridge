@@ -42,13 +42,18 @@ func NewCallbackHTTPHandler(gateway ActionGateway) http.Handler {
 		}
 		prepared, err := result.PrepareCard(gateway.Service.Config.CardMaxChars)
 		if err != nil {
+			result.CancelDeferred()
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
 		if prepared.CardJSON() != nil {
 			resp["card"] = prepared.PayloadCopy()
 		}
-		_ = json.NewEncoder(w).Encode(resp)
+		if err := json.NewEncoder(w).Encode(resp); err != nil {
+			result.CancelDeferred()
+			return
+		}
+		result.StartDeferred()
 	})
 	return mux
 }

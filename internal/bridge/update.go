@@ -161,87 +161,102 @@ func (s *Service) handleUpdateInstall(ctx context.Context, req ActionRequest) (A
 	if !s.startUpgradeAttempt() {
 		return s.renderUpdateMessage(req.SessionID, card.SegmentError, "另一项升级正在进行，请稍后重试。", "orange", "⚠️ 升级已在进行")
 	}
-	keepAttempt := false
-	defer func() {
-		if !keepAttempt {
-			s.endUpgradeAttempt(false)
-		}
-	}()
+	// CardKit 动作必须快速 ACK。Refresh/Prepare 包含网络请求、下载和 SHA
+	// 校验，曾在真机耗时 4s+ 导致飞书显示「回调失败」。先用 action response
+	// 回空成功响应，不携带 replacement card。后台任务会先更新「正在准备」卡，
+	// 这样完全消除「后台终态先到，又被延迟的 action response 覆盖」的竞态。
+	result := ActionResult{}
+	result.deferred = &deferredAction{
+		run:    func() { s.runUpdateInstall(context.WithoutCancel(ctx), req) },
+		cancel: func() { s.endUpgradeAttempt(false) },
+	}
+	return result, nil
+}
+
+func (s *Service) runUpdateInstall(ctx context.Context, req ActionRequest) {
+	gateLocked := false
+	defer func() { s.endUpgradeAttempt(gateLocked) }()
+	s.renderUpdateBackgroundMessage(req.SessionID, card.SegmentText,
+		"已接收升级请求，正在下载并校验升级包。完成后 Bridge 会短暂重启，并在此对话回复结果。",
+		"orange", "Bridge 正在准备升级")
+
 	result, err := s.Updates.Refresh(ctx, buildinfo.Version)
 	if err != nil || !result.UpdateAvailable || result.Manifest.Version != strings.TrimSpace(req.Value) {
 		if err != nil {
 			s.Audit.Record(req.Actor, "update_check_failed", req.SessionID, err.Error())
 		}
-		return s.renderUpdateMessage(req.SessionID, card.SegmentError, "目标版本已变化，请重新检查更新。", "orange", "⚠️ 目标版本已变化")
+		s.renderUpdateBackgroundMessage(req.SessionID, card.SegmentError, "目标版本已变化，请重新检查更新。", "orange", "⚠️ 目标版本已变化")
+		return
 	}
 	prepared, err := s.Updates.Prepare(ctx, result.Asset)
 	if err != nil {
 		s.Audit.Record(req.Actor, "update_download_failed", req.SessionID, err.Error())
-		return s.renderUpdateMessage(req.SessionID, card.SegmentError, "升级包下载或校验失败，Bridge 未被替换。", "red", "❌ 下载或校验失败")
+		s.renderUpdateBackgroundMessage(req.SessionID, card.SegmentError, "升级包下载或校验失败，Bridge 未被替换。", "red", "❌ 下载或校验失败")
+		return
 	}
 	s.setUpgradeMaintenance(true)
 	s.upgradeGate.Lock()
+	gateLocked = true
 	if s.hasUpgradeBlockingWork() {
 		// 快照占用会话清单,让用户知道具体是哪些会话在挡升级。快照必须在 Abort/end 之前采
 		// (Sessions.HasWork 判过后,活跃 batch 完成会自然从 List 里消失,这段窗口小但有必要拿准)。
 		blocking := s.snapshotBlockingWork()
 		prepared.Abort()
-		s.endUpgradeAttempt(true)
-		keepAttempt = true
 		s.Audit.Record(req.Actor, "update_busy", req.SessionID,
 			fmt.Sprintf("active or queued work: %d session(s)", len(blocking)))
 		var extras []card.Segment
 		if md := blockingSessionsMarkdown(blocking); md != "" {
 			extras = append(extras, card.Segment{Kind: card.SegmentText, Text: md})
 		}
-		return s.renderUpdateMessage(req.SessionID, card.SegmentError,
+		s.renderUpdateBackgroundMessage(req.SessionID, card.SegmentError,
 			"当前有任务正在运行或排队，升级已暂停。等这些会话空闲后可在 /help 重试。",
 			"orange", "⚠️ 升级已暂缓：有会话在跑", extras...)
+		return
+	}
+	notify := upgradeNotifyContext{
+		Version: result.Manifest.Version, ChatID: req.ChatID, MessageID: req.OpenMessageID,
+	}
+	if err := s.persistUpgradeNotify(notify); err != nil {
+		prepared.Abort()
+		s.Audit.Record(req.Actor, "upgrade_notify_persist_failed", req.SessionID, err.Error())
+		s.renderUpdateBackgroundMessage(req.SessionID, card.SegmentError,
+			"无法保存重启后的升级结果通知，Bridge 未被替换，请稍后重试。",
+			"red", "❌ 升级准备失败")
+		return
 	}
 	if err := prepared.Replace(); err != nil {
+		s.clearUpgradeNotify()
 		prepared.Abort()
-		s.endUpgradeAttempt(true)
-		keepAttempt = true
 		s.Audit.Record(req.Actor, "update_replace_failed", req.SessionID, err.Error())
-		return s.renderUpdateMessage(req.SessionID, card.SegmentError, "替换 binary 失败，Bridge 继续使用当前版本。", "red", "❌ 替换 binary 失败")
+		s.renderUpdateBackgroundMessage(req.SessionID, card.SegmentError, "替换 binary 失败，Bridge 继续使用当前版本。", "red", "❌ 替换 binary 失败")
+		return
 	}
-	keepAttempt = true
 	s.Audit.Record(req.Actor, "update_restart_scheduled", req.SessionID, "target_version="+result.Manifest.Version)
 	event := card.Event{
 		Type: "update_restarting", SessionID: req.SessionID,
 		HeaderTitle: "Bridge 正在升级", HeaderTemplate: "orange",
 		Segments: []card.Segment{{Kind: card.SegmentText, Text: "升级包已验证，Bridge 正在重启。重连后会在此对话回复升级结果。"}},
 	}
-	actionResult, renderErr := s.renderActionEvent(event)
-	// 把升级上下文经 env 传给重启后的新进程,让它启动后主动回原对话报「升级成功」。
-	// req 里带发起升级那条卡片的 chat_id / open_message_id,足以定位并 reply 回原对话。
-	// 不做 @ 提醒:卡片回调 req 没有可靠的群/私聊信号,新消息本身已产生红点,足够。
-	restartEnv := appendUpgradeNotifyEnv(os.Environ(), upgradeNotifyContext{
-		Version:   result.Manifest.Version,
-		ChatID:    req.ChatID,
-		MessageID: req.OpenMessageID,
-	})
-	go func() {
-		// On success the current process exits inside Restart (detach launcher),
-		// so anything past this call only runs when the restart genuinely failed.
-		restartErr := prepared.Restart(os.Args, restartEnv)
-		if restartErr != nil {
-			s.Audit.Record(req.Actor, "update_exec_failed", req.SessionID, restartErr.Error())
-			// The "正在重启" card is now a lie — the process did not restart and the
-			// binary was rolled back to the previous version. Tell the user the
-			// truth and clear maintenance so a retry is possible, instead of
-			// silently leaving a stale process running under a "升级中" banner.
-			s.setUpgradeMaintenance(false)
-			_ = s.Cards.Render(card.Event{
-				Type: "update_message", SessionID: req.SessionID,
-				HeaderTitle: "Bridge 升级失败", HeaderTemplate: "red",
-				Segments: []card.Segment{{Kind: card.SegmentError, Text: fmt.Sprintf(
-					"重启失败，已回滚到当前版本 v%s，请稍后在 /help 重试。", buildinfo.Version)}},
-			})
-		}
-		s.endUpgradeAttempt(true)
-	}()
-	return actionResult, renderErr
+	_ = s.Cards.Render(event)
+
+	// 新版本只用原子文件交接，并剥离可能继承的旧 env。受托管重启时
+	// detach child 和 launchd/systemd 重拉进程可能短暂并存；若同时携带 env，
+	// 持久化 claim 的输家会 fallback 到 env，造成重复通知。
+	restartEnv := stripUpgradeNotifyEnv(os.Environ())
+	if restartErr := prepared.Restart(os.Args, restartEnv); restartErr != nil {
+		s.clearUpgradeNotify()
+		s.Audit.Record(req.Actor, "update_exec_failed", req.SessionID, restartErr.Error())
+		s.renderUpdateBackgroundMessage(req.SessionID, card.SegmentError,
+			fmt.Sprintf("重启失败，已回滚到当前版本 v%s，请稍后在 /help 重试。", buildinfo.Version),
+			"red", "Bridge 升级失败")
+	}
+}
+
+func (s *Service) renderUpdateBackgroundMessage(sessionID string, kind card.SegmentKind, text, template, title string, extraSegments ...card.Segment) {
+	segments := append([]card.Segment{{Kind: kind, Text: text}}, extraSegments...)
+	if err := s.Cards.Render(card.Event{Type: "update_message", SessionID: sessionID, HeaderTemplate: template, HeaderTitle: title, Segments: segments}); err != nil {
+		s.Audit.Record("system", "update_status_render_failed", sessionID, err.Error())
+	}
 }
 
 // renderUpdateMessage 渲染升级流程的失败/中断消息卡片。

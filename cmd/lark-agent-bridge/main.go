@@ -589,9 +589,12 @@ func newServeActionTransports(gateway bridge.ActionGateway, cardMaxChars int) (f
 		}
 		prepared, err := result.PrepareCard(cardMaxChars)
 		if err != nil {
+			result.CancelDeferred()
 			return nil, err
 		}
-		return &feishu.CardActionResponse{Card: prepared.PayloadCopy()}, nil
+		response := &feishu.CardActionResponse{Card: prepared.PayloadCopy()}
+		result.StartDeferred()
+		return response, nil
 	}
 	return actionHandler, bridge.NewCallbackHTTPHandler(gateway)
 }

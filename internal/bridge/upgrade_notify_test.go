@@ -3,8 +3,11 @@ package bridge
 import (
 	"context"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+
+	"lark-agent-bridge/internal/buildinfo"
 )
 
 func TestAppendUpgradeNotifyEnvEncodesContext(t *testing.T) {
@@ -30,8 +33,8 @@ func TestAppendUpgradeNotifyEnvEncodesContext(t *testing.T) {
 func TestAppendUpgradeNotifyEnvSkipsWhenNoAnchor(t *testing.T) {
 	// 缺 message_id 或 chat_id 时不注入(无法定位对话)
 	for _, ctx := range []upgradeNotifyContext{
-		{Version: "0.1.9", ChatID: "oc_abc"},              // 缺 message
-		{Version: "0.1.9", MessageID: "om_xyz"},           // 缺 chat
+		{Version: "0.1.9", ChatID: "oc_abc"},    // 缺 message
+		{Version: "0.1.9", MessageID: "om_xyz"}, // 缺 chat
 	} {
 		env := appendUpgradeNotifyEnv([]string{"PATH=/bin"}, ctx)
 		for _, e := range env {
@@ -63,6 +66,7 @@ func TestAppendUpgradeNotifyEnvDedupes(t *testing.T) {
 }
 
 func TestNotifyUpgradeSuccessSendsReplyWhenPending(t *testing.T) {
+	setBuildVersion(t, "0.1.9")
 	notifier := &fakeNotifier{}
 	svc := newNotifyTestService(notifier)
 	t.Setenv(upgradeNotifyEnvVar, `{"version":"0.1.9","chat_id":"oc_abc","message_id":"om_origin"}`)
@@ -85,6 +89,46 @@ func TestNotifyUpgradeSuccessSendsReplyWhenPending(t *testing.T) {
 	}
 }
 
+func TestNotifyUpgradeSuccessSurvivesManagedRestartWithoutEnv(t *testing.T) {
+	setBuildVersion(t, "0.1.9")
+	notifier := &fakeNotifier{}
+	svc := newNotifyTestService(notifier)
+	svc.Config.SessionStorePath = filepath.Join(t.TempDir(), "sessions.json")
+	t.Setenv(upgradeNotifyEnvVar, "")
+
+	if err := svc.persistUpgradeNotify(upgradeNotifyContext{Version: "0.1.9", ChatID: "oc_abc", MessageID: "om_origin"}); err != nil {
+		t.Fatal(err)
+	}
+	svc.NotifyUpgradeSuccessIfPending(context.Background())
+	svc.NotifyUpgradeSuccessIfPending(context.Background())
+
+	if len(notifier.replies) != 1 {
+		t.Fatalf("persisted notification must be consumed exactly once, got %#v", notifier.replies)
+	}
+	if _, err := os.Stat(svc.upgradeNotifyPath()); !os.IsNotExist(err) {
+		t.Fatalf("pending handoff was not consumed: %v", err)
+	}
+}
+
+func TestNotifyUpgradeSuccessRejectsVersionMismatch(t *testing.T) {
+	setBuildVersion(t, "0.1.8")
+	notifier := &fakeNotifier{}
+	svc := newNotifyTestService(notifier)
+	svc.Config.SessionStorePath = filepath.Join(t.TempDir(), "sessions.json")
+	if err := svc.persistUpgradeNotify(upgradeNotifyContext{Version: "0.1.9", ChatID: "oc_abc", MessageID: "om_origin"}); err != nil {
+		t.Fatal(err)
+	}
+
+	svc.NotifyUpgradeSuccessIfPending(context.Background())
+
+	if len(notifier.replies) != 0 {
+		t.Fatalf("old binary must not report a newer version as successful: %#v", notifier.replies)
+	}
+	if !hasAuditAction(svc.Audit.Events(), "upgrade_notify_version_mismatch") {
+		t.Fatalf("missing mismatch audit: %#v", svc.Audit.Events())
+	}
+}
+
 func TestNotifyUpgradeSuccessSilentWhenNoEnv(t *testing.T) {
 	notifier := &fakeNotifier{}
 	svc := newNotifyTestService(notifier)
@@ -102,4 +146,11 @@ func envLookup(key string) string {
 		return ""
 	}
 	return v
+}
+
+func setBuildVersion(t *testing.T, version string) {
+	t.Helper()
+	old := buildinfo.Version
+	buildinfo.Version = version
+	t.Cleanup(func() { buildinfo.Version = old })
 }
