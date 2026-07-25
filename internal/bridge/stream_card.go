@@ -59,6 +59,8 @@ type agentCardStream struct {
 	lastFlushedRunes int
 	contentRevision  uint64
 	lastFlushedRev   uint64
+	metaRevision     uint64
+	lastFlushedMeta  uint64
 	sessionID        string
 	replyTo          string
 	replyInThread    bool
@@ -139,10 +141,7 @@ func newAgentCardStreamWithClock(service *Service, sessionID string, sess sessio
 	if policy.Interval <= 0 {
 		policy.Interval = time.Second
 	}
-	ctxDir := service.Config.ClaudeContextUsageDir
-	if sess.Key.Agent == agent.Codex {
-		ctxDir = service.Config.CodexContextUsageDir
-	}
+	ctxDir := service.contextUsageDirForRun(sess.Key.Agent, input.AgentHome)
 	stopGrantID, grantErr := service.issueActionGrant(input.Sender, sess.Key.ChatID, sessionID, "stop", "", time.Now().Add(defaultActionGrantTTL))
 	stopVisible := true
 	if grantErr != nil {
@@ -161,7 +160,7 @@ func newAgentCardStreamWithClock(service *Service, sessionID string, sess sessio
 		startedAt:     startedAt,
 		status:        "running",
 		activity:      streamActivityReasoning,
-		meta:          service.metaForRun(sess, input),
+		meta:          service.metaForRunWithDir(sess, input, ctxDir),
 		totalBefore:   sess.Tokens,
 		stopVisible:   stopVisible,
 		stopGrantID:   stopGrantID,
@@ -199,6 +198,7 @@ func (s *agentCardStream) Handle(update AgentStreamUpdate) {
 		s.mu.Unlock()
 		return
 	}
+	previousMeta := s.meta
 	previousActivity := s.activity
 	if update.AgentSessionID != "" && s.meta.SessionID == "" {
 		// 首轮流式期间就把 agent 抛出来的 session id 反映到卡片 meta,让首轮卡片也能显示 Session ID。
@@ -219,6 +219,10 @@ func (s *agentCardStream) Handle(update AgentStreamUpdate) {
 	// 尽早显示真实占用而不是停留在起点估值上。读失败什么都不改,保留 metaForRun
 	// 起始时的旧值(approx)继续显示,避免出现"忽有忽无"闪烁。
 	s.refreshContextUsageLocked()
+	metadataChanged := s.meta != previousMeta
+	if metadataChanged {
+		s.metaRevision++
+	}
 	if update.Activity != "" {
 		s.activity = update.Activity
 	}
@@ -250,7 +254,7 @@ func (s *agentCardStream) Handle(update AgentStreamUpdate) {
 	if update.AnswerSnapshot || len(update.Segments) > 0 || activityChanged {
 		s.contentRevision++
 	}
-	if !update.AnswerSnapshot && !hasVisibleOrderedSegments(update.Segments) && !activityChanged {
+	if !update.AnswerSnapshot && !hasVisibleOrderedSegments(update.Segments) && !activityChanged && !metadataChanged {
 		s.mu.Unlock()
 		return
 	}
@@ -422,22 +426,44 @@ func (s *agentCardStream) refreshContextUsageLocked() {
 	s.meta.CtxUsedPercent = u.UsedPercent
 	s.meta.CtxTokens = u.TotalTokens
 	s.meta.CtxWindow = u.ContextWindow
+	if s.meta.Agent == string(agent.Codex) {
+		if model := strings.TrimSpace(u.Model); model != "" {
+			s.meta.Model = model
+		}
+	}
 }
 
 func (s *Service) metaForRun(sess session.Session, input session.Input) card.Meta {
-	meta := s.metaFromSession(sess)
+	return s.metaForRunWithDir(sess, input, s.contextUsageDirForRun(sess.Key.Agent, input.AgentHome))
+}
+
+func (s *Service) metaForRunWithDir(sess session.Session, input session.Input, ctxDir string) card.Meta {
+	meta, _ := s.metaFromSessionWithDir(sess, ctxDir)
 	// 起始 meta 里的 ctx 来自上一轮落盘的 sidecar,本轮尚未跑。标为 approx,渲染时
 	// 用 `~` 前缀与本轮真值区分;refreshContextUsageLocked 收到本轮 fresh 值后会
 	// 清掉 approx。首轮新会话(sess.AgentSessionID=="")没有旧值,CtxOK 本就为 false。
 	if meta.CtxOK {
 		meta.CtxApprox = true
 	}
-	meta.Model = ""
 	if sess.Key.Agent == agent.Codex {
 		// Bridge deliberately does not select Codex model or reasoning effort.
-		// The chosen executable and its environment own that configuration.
+		// The chosen executable and its environment own that configuration. Use
+		// only exporter-reported metadata; before a first-turn session ID exists,
+		// the sidecar contract permits the newest canonical-cwd match as an
+		// explicitly approximate starting point.
+		if !meta.CtxOK {
+			if u := contextusage.ReadLatestForWorkDir(ctxDir, sess.WorkDir); u.OK {
+				meta.CtxOK = true
+				meta.CtxApprox = true
+				meta.CtxUsedPercent = u.UsedPercent
+				meta.CtxTokens = u.TotalTokens
+				meta.CtxWindow = u.ContextWindow
+				meta.Model = strings.TrimSpace(u.Model)
+			}
+		}
 		meta.ModelInfo = card.ModelInfo{}
 	} else {
+		meta.Model = ""
 		meta.ModelInfo = card.ModelInfo{Requested: input.RequestedModel, Effort: input.RequestedEffort}
 	}
 	return meta
@@ -461,13 +487,13 @@ func (s *agentCardStream) requestPreviewLocked(force bool) (bool, uint64) {
 	if s.closed || s.stopping || s.previewDisabled || s.previewPending {
 		return false, 0
 	}
-	if s.contentRevision <= s.lastFlushedRev {
+	if s.contentRevision <= s.lastFlushedRev && s.metaRevision <= s.lastFlushedMeta {
 		return false, 0
 	}
 	currentRunes := s.previewRuneCountLocked()
 	// Whitespace-only deltas may be significant once visible text follows, but
 	// they must not replace the initial progress card with an empty body.
-	if currentRunes == 0 && s.lastFlushedRunes == 0 {
+	if currentRunes == 0 && s.lastFlushedRunes == 0 && s.metaRevision <= s.lastFlushedMeta {
 		return false, 0
 	}
 	now := s.clock.Now()
@@ -476,9 +502,10 @@ func (s *agentCardStream) requestPreviewLocked(force bool) (bool, uint64) {
 		delta = 0
 	}
 	firstVisible := s.lastFlushedRev == 0
+	firstMetadata := s.lastFlushedMeta == 0 && s.metaRevision > 0
 	contentShrank := currentRunes < s.lastFlushedRunes
 	deadlineReached := s.lastFlush.IsZero() || !now.Before(s.lastFlush.Add(s.previewPolicy.Interval))
-	if force || firstVisible || contentShrank || (delta >= s.previewPolicy.MinDeltaRunes && deadlineReached) || deadlineReached {
+	if force || firstVisible || firstMetadata || contentShrank || (delta >= s.previewPolicy.MinDeltaRunes && deadlineReached) || deadlineReached {
 		s.cancelPreviewTimerLocked()
 		s.previewPending = true
 		return true, s.previewGen
@@ -510,7 +537,7 @@ func (s *agentCardStream) onPreviewTimer(generation uint64) {
 		return
 	}
 	s.previewTimer = nil
-	if s.contentRevision <= s.lastFlushedRev {
+	if s.contentRevision <= s.lastFlushedRev && s.metaRevision <= s.lastFlushedMeta {
 		s.mu.Unlock()
 		return
 	}
@@ -528,6 +555,7 @@ func (s *agentCardStream) flushPreview(generation uint64) error {
 	event := limitPreviewEvent(s.eventLocked(false), s.previewPolicy.MaxPreviewRunes)
 	flushedRunes := s.previewRuneCountLocked()
 	flushedRevision := s.contentRevision
+	flushedMetaRevision := s.metaRevision
 	s.mu.Unlock()
 
 	err := s.renderPreview(generation, event)
@@ -546,6 +574,7 @@ func (s *agentCardStream) flushPreview(generation uint64) error {
 	s.lastFlush = s.clock.Now()
 	s.lastFlushedRunes = flushedRunes
 	s.lastFlushedRev = flushedRevision
+	s.lastFlushedMeta = flushedMetaRevision
 	immediate, nextGeneration := s.requestPreviewLocked(false)
 	s.mu.Unlock()
 	if immediate {

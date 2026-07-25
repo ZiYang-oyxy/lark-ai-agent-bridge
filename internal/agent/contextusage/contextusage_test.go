@@ -66,3 +66,24 @@ func TestRead(t *testing.T) {
 		})
 	}
 }
+
+func TestReadLatestForWorkDirSelectsNewestValidCanonicalMatch(t *testing.T) {
+	dir := t.TempDir()
+	workDir := t.TempDir()
+	alias := filepath.Join(t.TempDir(), "workspace")
+	if err := os.Symlink(workDir, alias); err != nil {
+		t.Fatal(err)
+	}
+	writeFixture(t, dir, "older.json", fmt.Sprintf(`{"session_id":"older","cwd":%q,"used_percentage":20,"model":"old","updated_at":10}`, workDir))
+	writeFixture(t, dir, "newer.json", fmt.Sprintf(`{"session_id":"newer","cwd":%q,"used_percentage":45,"context_tokens":90000,"context_window_size":200000,"model":"gpt-new","updated_at":20}`, alias))
+	writeFixture(t, dir, "other.json", `{"session_id":"other","cwd":"/other","used_percentage":99,"updated_at":30}`)
+	writeFixture(t, dir, "invalid.json", fmt.Sprintf(`{"session_id":"invalid","cwd":%q,"used_percentage":null,"updated_at":40}`, workDir))
+
+	got := ReadLatestForWorkDir(dir, workDir)
+	if !got.OK || got.UsedPercent != 45 || got.TotalTokens != 90000 || got.ContextWindow != 200000 || got.Model != "gpt-new" {
+		t.Fatalf("ReadLatestForWorkDir = %+v", got)
+	}
+	if got := ReadLatestForWorkDir(dir, t.TempDir()); got.OK || got.Reason != ReasonMissing {
+		t.Fatalf("unmatched workdir = %+v, want missing", got)
+	}
+}

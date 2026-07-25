@@ -42,6 +42,7 @@ type record struct {
 	ContextTokens  *int     `json:"context_tokens"`
 	ContextWindow  *int     `json:"context_window_size"`
 	Model          string   `json:"model"`
+	CWD            string   `json:"cwd"`
 	UpdatedAt      *int64   `json:"updated_at"`
 }
 
@@ -55,6 +56,80 @@ func Read(dir, sessionID string) Usage {
 // Millisecond precision matches the workspace sidecar contract.
 func ReadAfter(dir, sessionID string, notBefore time.Time) Usage {
 	return read(dir, sessionID, notBefore)
+}
+
+// ReadLatestForWorkDir returns the newest valid record whose canonical cwd
+// matches workDir. It is the sidecar contract's fallback for the brief period
+// before a new runtime session ID is known; callers must present it as an
+// approximate value until an exact-session record becomes available.
+func ReadLatestForWorkDir(dir, workDir string) Usage {
+	dir = strings.TrimSpace(dir)
+	wantCWD := canonicalWorkDir(workDir)
+	if dir == "" || wantCWD == "" {
+		return Usage{}
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return Usage{Reason: ReasonMissing}
+	}
+	var (
+		latest   Usage
+		latestAt int64
+	)
+	for _, entry := range entries {
+		if entry.IsDir() || entry.Type()&os.ModeSymlink != 0 || filepath.Ext(entry.Name()) != ".json" {
+			continue
+		}
+		info, err := entry.Info()
+		if err != nil || !info.Mode().IsRegular() {
+			continue
+		}
+		raw, err := os.ReadFile(filepath.Join(dir, entry.Name()))
+		if err != nil {
+			continue
+		}
+		var rec record
+		if json.Unmarshal(raw, &rec) != nil || canonicalWorkDir(rec.CWD) != wantCWD {
+			continue
+		}
+		sessionID := strings.TrimSpace(rec.SessionID)
+		if sessionID == "" || entry.Name() != sessionID+".json" {
+			continue
+		}
+		u := read(dir, sessionID, time.Time{})
+		if !u.OK {
+			continue
+		}
+		updatedAt := info.ModTime().UnixMilli()
+		if rec.UpdatedAt != nil {
+			updatedAt = *rec.UpdatedAt
+		}
+		if latest.OK && updatedAt <= latestAt {
+			continue
+		}
+		latest = u
+		latestAt = updatedAt
+	}
+	if !latest.OK {
+		return Usage{Reason: ReasonMissing}
+	}
+	return latest
+}
+
+func canonicalWorkDir(path string) string {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return ""
+	}
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return ""
+	}
+	abs = filepath.Clean(abs)
+	if resolved, err := filepath.EvalSymlinks(abs); err == nil {
+		return filepath.Clean(resolved)
+	}
+	return abs
 }
 
 func read(dir, sessionID string, notBefore time.Time) Usage {

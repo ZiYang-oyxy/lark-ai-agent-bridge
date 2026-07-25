@@ -106,6 +106,65 @@ func TestAgentCardStreamHandleAdoptsFirstTurnContextUsage(t *testing.T) {
 	}
 }
 
+func TestCodexAgentCardStreamStartsWithLatestWorkDirApproxMetadata(t *testing.T) {
+	home := t.TempDir()
+	dir := filepath.Join(home, "context-usage")
+	if err := os.Mkdir(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	workDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "prior.json"), []byte(`{"session_id":"prior","cwd":"`+workDir+`","used_percentage":31,"context_tokens":62000,"context_window_size":200000,"model":"gpt-codex"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := testConfig(t)
+	cfg.CodexContextUsageDir = ""
+	svc := NewService(cfg, card.NewFakeRenderer(), newFakeRunner(), audit.NewRecorder())
+	sess := session.Session{Key: session.Key{Agent: "codex", ChatID: "chat"}, ID: "codex:chat", WorkDir: workDir}
+
+	stream := newAgentCardStream(svc, "run", sess, session.Input{ReplyToMessageID: "source", AgentHome: home, Time: time.Now()})
+
+	if !stream.meta.CtxOK || !stream.meta.CtxApprox || stream.meta.CtxUsedPercent != 31 || stream.meta.CtxTokens != 62000 || stream.meta.Model != "gpt-codex" {
+		t.Fatalf("Codex initial metadata = %#v", stream.meta)
+	}
+	if stream.ctxDir != dir {
+		t.Fatalf("Codex stream context dir = %q, want %q", stream.ctxDir, dir)
+	}
+}
+
+func TestCodexAgentCardStreamMetadataOnlyUpdateRefreshesModelAndContext(t *testing.T) {
+	dir := t.TempDir()
+	workDir := t.TempDir()
+	cfg := testConfig(t)
+	cfg.CodexContextUsageDir = dir
+	renderer := card.NewFakeRenderer()
+	svc := NewService(cfg, renderer, newFakeRunner(), audit.NewRecorder())
+	sess := session.Session{Key: session.Key{Agent: "codex", ChatID: "chat"}, ID: "codex:chat", WorkDir: workDir}
+	started := time.Now().Add(-time.Second)
+	stream := newAgentCardStream(svc, "run", sess, session.Input{ReplyToMessageID: "source", Time: started})
+	if err := stream.Start(); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "current.json")
+	if err := os.WriteFile(path, []byte(`{"session_id":"current","cwd":"`+workDir+`","used_percentage":42,"context_tokens":84000,"context_window_size":200000,"model":"gpt-current"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	future := time.Now().Add(time.Second)
+	if err := os.Chtimes(path, future, future); err != nil {
+		t.Fatal(err)
+	}
+
+	stream.Handle(AgentStreamUpdate{AgentSessionID: "current"})
+
+	events := renderer.Events()
+	if len(events) != 2 {
+		t.Fatalf("metadata-only event count = %d, want 2: %#v", len(events), events)
+	}
+	got := events[1].Meta
+	if got.SessionID != "current" || got.Model != "gpt-current" || !got.CtxOK || got.CtxApprox || got.CtxUsedPercent != 42 {
+		t.Fatalf("metadata-only update = %#v", got)
+	}
+}
+
 func TestAgentCardStreamHandleUpgradesApproxToFresh(t *testing.T) {
 	// 续轮:sess.AgentSessionID 已存在,metaForRun 读到上一轮落盘的 sidecar,起始 meta
 	// 应该 CtxOK=true + CtxApprox=true(渲染时带 ~ 前缀)。Handle 期间本轮 sidecar

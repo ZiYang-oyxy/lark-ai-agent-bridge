@@ -107,6 +107,8 @@ Claude runner 使用 `--output-format stream-json`，通过 stdout pipe 逐行�
 
 Codex runner 逐行解析 `exec --json` 输出：`thread.started` 保存 thread id，`item.*` 映射回答、reasoning 和 command 工具段，`turn.completed` 统计 token 并收敛终态，`turn.failed` 转为错误。由于 `exec --json` 会把 commentary 与最终回答都降为不带 phase 的 `agent_message`，parser 会暂存最新消息：后续仍有活动时将上一条按原文映射为 thought，只在 `turn.completed` 时将最后一条收敛为最终回答。该路径不依赖 `model_reasoning_summary`。未知事件和协议异常会记录 audit，用于发现 CLI 升级带来的协议漂移。
 
+Codex 的实际模型和上下文占用只信任 workspace exporter 的 `context-usage` sidecar。新会话首帧尚无 thread id 时，按 sidecar 契约使用 canonical workdir 下最新记录作为 `~ctx` 近似值；`thread.started` 后优先读取当前 session 文件，并在 sidecar 可用时原子升级模型与占用。纯 metadata 变化同样进入 CardKit 预览节流，不要求同时出现正文或工具事件。Bridge 不解析 Codex transcript，也不从 executable 名称猜测模型。
+
 ## 飞书卡片职责
 
 CardKit 卡片负责展示一次 Claude 请求的状态：
