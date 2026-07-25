@@ -122,14 +122,14 @@ func TestValidateReleaseNoteEnforcesStructuredTemplate(t *testing.T) {
 	}
 
 	tests := map[string]string{
-		"wrong title":     strings.Replace(valid, "# v1.2.3", "# v1.2.4", 1),
-		"missing section": strings.Replace(valid, "\n## Bug Fixes\n\n- verify hash\n", "", 1),
+		"wrong title": strings.Replace(valid, "# v1.2.3", "# v1.2.4", 1),
 		"wrong order": strings.Replace(valid,
 			"## Breaking Changes\n\n- 无。\n\n## Features\n\n- add cards",
 			"## Features\n\n- add cards\n\n## Breaking Changes\n\n- 无。", 1),
 		"prose outside bullet":     strings.Replace(valid, "- add cards", "add cards", 1),
 		"empty mixed with content": strings.Replace(valid, "## Upgrade Notes\n\n- 无。", "## Upgrade Notes\n\n- 无。\n- restart", 1),
 		"duplicate bullet":         strings.Replace(valid, "## Upgrade Notes\n\n- 无。", "## Upgrade Notes\n\n- add cards", 1),
+		"all sections empty":       "# v1.2.3\n",
 	}
 	for name, note := range tests {
 		t.Run(name, func(t *testing.T) {
@@ -137,6 +137,22 @@ func TestValidateReleaseNoteEnforcesStructuredTemplate(t *testing.T) {
 				t.Fatalf("invalid note accepted:\n%s", note)
 			}
 		})
+	}
+}
+
+// TestValidateReleaseNoteAllowsMissingSections 校验放宽后的核心语义:缺失的 section 允许
+// 直接省略,不再强制"5 段全在 + 无内容用『无。』占位"。已出现的段仍按 releaseNoteSections
+// 顺序推进(顺序错误由 TestValidateReleaseNoteEnforcesStructuredTemplate 的 wrong-order 覆盖)。
+func TestValidateReleaseNoteAllowsMissingSections(t *testing.T) {
+	// 只有 Features 一段,其他 4 段都省略——旧版会报 "missing section",新版应通过。
+	onlyFeatures := "# v1.2.3\n\n## Features\n\n- add cards\n"
+	if err := validateReleaseNote("v1.2.3", []byte(onlyFeatures)); err != nil {
+		t.Fatalf("notes with only Features should be valid, got %v", err)
+	}
+	// Features + Bug Fixes,跳过 Breaking Changes / Upgrade Notes / Miscellaneous:仍合法。
+	partial := "# v1.2.3\n\n## Features\n\n- add cards\n\n## Bug Fixes\n\n- verify hash\n"
+	if err := validateReleaseNote("v1.2.3", []byte(partial)); err != nil {
+		t.Fatalf("notes skipping some sections should be valid, got %v", err)
 	}
 }
 

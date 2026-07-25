@@ -442,15 +442,23 @@ func validateReleaseNote(tag string, data []byte) error {
 			continue
 		}
 		if strings.HasPrefix(line, "## ") {
-			if nextSection >= len(releaseNoteSections) {
-				return fmt.Errorf("line %d has unexpected section %q", lineNumber+1, line)
+			// 允许跳过缺失的 sections:不强制全 5 段都出现,只要出现的段按 releaseNoteSections
+			// 顺序推进即可。之前"缺 section 报错 + 用『无。』占位"太啰嗦(release 常有整段无内容);
+			// 现在没内容直接省略段头,`## Xxx` 出现时校验它是当前指针之后的合法 section 名。
+			heading := strings.TrimPrefix(line, "## ")
+			matched := -1
+			for i := nextSection; i < len(releaseNoteSections); i++ {
+				if releaseNoteSections[i] == heading {
+					matched = i
+					break
+				}
 			}
-			expected := "## " + releaseNoteSections[nextSection]
-			if line != expected {
-				return fmt.Errorf("line %d must be section %q, got %q", lineNumber+1, expected, line)
+			if matched < 0 {
+				return fmt.Errorf("line %d has unexpected or out-of-order section %q (expected one of %v starting at %q)",
+					lineNumber+1, line, releaseNoteSections[nextSection:], releaseNoteSections[nextSection])
 			}
-			currentSection = nextSection
-			nextSection++
+			currentSection = matched
+			nextSection = matched + 1
 			continue
 		}
 		if strings.HasPrefix(line, "#") {
@@ -477,16 +485,20 @@ func validateReleaseNote(tag string, data []byte) error {
 	if !titleSeen {
 		return errors.New("exact release title is missing")
 	}
-	if nextSection != len(releaseNoteSections) {
-		return fmt.Errorf("missing section %q", releaseNoteSections[nextSection])
-	}
+	// 至少要出现一段(否则整篇 notes 无内容),且所有出现的段(bulletCounts>0)才检查
+	// bullet 数量与"无。"占位规则;未出现的段直接跳过,不再强制 5 段全在。
+	anyPresent := false
 	for index, section := range releaseNoteSections {
 		if bulletCounts[index] == 0 {
-			return fmt.Errorf("section %q must contain at least one bullet", section)
+			continue
 		}
+		anyPresent = true
 		if hasEmptyMarker[index] && bulletCounts[index] != 1 {
 			return fmt.Errorf("section %q cannot combine %q with other bullets", section, "无。")
 		}
+	}
+	if !anyPresent {
+		return errors.New("release note must contain at least one section with content")
 	}
 	return nil
 }
