@@ -8,7 +8,7 @@ import (
 	"lark-agent-bridge/internal/reply"
 )
 
-func TestAppendMarkdownClaudeAndCodexToolParity(t *testing.T) {
+func TestAppendMarkdownClaudeAndCodexToolProjection(t *testing.T) {
 	claudeInput := strings.Join([]string{
 		`{"type":"assistant","message":{"role":"assistant","content":[{"type":"thinking","thinking":"private plan"},{"type":"tool_use","id":"claude-tool","name":"Bash","input":{"command":"pwd"}}]}}`,
 		`{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"claude-tool","content":"/repo"}]}}`,
@@ -35,9 +35,10 @@ func TestAppendMarkdownClaudeAndCodexToolParity(t *testing.T) {
 
 	claudeMarkdown := reply.RenderInlineTimeline(card.Event{Type: "result", Segments: claudeResult.OrderedSegments})
 	codexMarkdown := reply.RenderInlineTimeline(card.Event{Type: "result", Segments: codexResult.OrderedSegments})
-	want := "> ✅ **Bash** — pwd\n\ndone"
-	if claudeMarkdown != want || codexMarkdown != want {
-		t.Fatalf("append markdown parity:\nClaude: %q\nCodex:  %q\nWant:   %q", claudeMarkdown, codexMarkdown, want)
+	claudeWant := "> ✅ **Bash** — pwd\n\ndone"
+	codexWant := "> ✅ **command\\_execution** — pwd\n\ndone"
+	if claudeMarkdown != claudeWant || codexMarkdown != codexWant {
+		t.Fatalf("append markdown projection:\nClaude: %q\nCodex:  %q\nWant Claude: %q\nWant Codex: %q", claudeMarkdown, codexMarkdown, claudeWant, codexWant)
 	}
 	for _, hidden := range []string{"private plan", "/repo"} {
 		if strings.Contains(claudeMarkdown, hidden) || strings.Contains(codexMarkdown, hidden) {
@@ -70,7 +71,7 @@ func TestAppendMarkdownCodexEmptyToolResultsReachTerminalState(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			want := "> " + test.status + " **Bash** — touch marker"
+			want := "> " + test.status + " **command\\_execution** — touch marker"
 			if got := reply.RenderInlineTimeline(card.Event{Type: "result", Segments: result.OrderedSegments}); got != want {
 				t.Fatalf("terminal markdown = %q, want %q", got, want)
 			}
