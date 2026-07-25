@@ -277,7 +277,7 @@ func buildStatusBarSection(form ConfigForm) []map[string]any {
 			"主机信息行 · 例：👤 lijun.996 · 🖥️ 192.0.2.42 · 📁 /home/<USER>/ws",
 			form.ShowMetaRowRuntime),
 		checker("cfg_bar_dev_ck", "show_meta_row_developer",
-			"开发者行 · 例：🐞 v0.1.8-rc.5 · ⬆️ 最新 v0.1.8-rc.6（🐞 rc / 🦋 stable）",
+			"开发者行 · 例：🐛 v0.1.8-rc.5 · ⬆️ 最新 v0.1.8-rc.6（🐛 rc / 🦋 stable）",
 			form.ShowMetaRowDeveloper),
 	}
 }
@@ -921,14 +921,14 @@ func MetaRows(meta Meta) []MetaRow {
 }
 
 // metaDeveloperText 渲染开发者行内容:<emoji> v<current> · 最新 v<latest>(若可用且不同)。
-// 版本号前置的 emoji 同时承担"通道指示"职责:开发者模式(rc 通道)→ 🐞 debug 昆虫,
+// 版本号前置的 emoji 同时承担"通道指示"职责:开发者模式(rc 通道)→ 🐛 debug 昆虫,
 // 正式版通道 → 🦋 蝴蝶。这样一个 emoji 传达"当前版本 + 我在哪个通道",不需要额外的
 // "开发者模式 ✅/❌"段。Version 为空但已知通道时也渲染 emoji + 空版本,让用户至少
 // 知道通道状态。
 func metaDeveloperText(meta Meta) string {
 	emoji := "🦋"
 	if meta.DeveloperMode {
-		emoji = "🐞"
+		emoji = "🐛"
 	}
 	var parts []string
 	if v := strings.TrimSpace(meta.Version); v != "" {

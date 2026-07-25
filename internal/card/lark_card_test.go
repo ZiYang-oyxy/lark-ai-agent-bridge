@@ -319,15 +319,15 @@ func TestMetaRowsGatedByIndependentToggles(t *testing.T) {
 	}
 
 	// 单独打开 developer 行:版本号前置 emoji 由 DeveloperMode 决定
-	// (开=🐞 debug、关=🦋 蝴蝶),后跟 · 最新 v<latest>。base.DeveloperMode=true 应
-	// 显示 🐞;且不再显式渲染"开发者模式 ✅/❌"段——emoji 已承担此意义。
+	// (开=🐛 debug、关=🦋 蝴蝶),后跟 · 最新 v<latest>。base.DeveloperMode=true 应
+	// 显示 🐛;且不再显式渲染"开发者模式 ✅/❌"段——emoji 已承担此意义。
 	onDev := base
 	onDev.ShowMetaRowDeveloper = true
 	rows = MetaRows(onDev)
 	if len(rows) != 1 || rows[0].ElementID != "meta_developer" {
 		t.Fatalf("developer-only MetaRows = %+v, want single meta_developer", rows)
 	}
-	for _, want := range []string{"🐞 v0.1.9", "最新 v0.1.10"} {
+	for _, want := range []string{"🐛 v0.1.9", "最新 v0.1.10"} {
 		if !strings.Contains(rows[0].Text, want) {
 			t.Fatalf("developer row %q missing %q", rows[0].Text, want)
 		}
@@ -378,8 +378,8 @@ func TestMetaRowsDeveloperFallbacks(t *testing.T) {
 	if !strings.Contains(rows[0].Text, "🦋 v0.1.9") {
 		t.Fatalf("dev mode off should render stable emoji 🦋 + version: %q", rows[0].Text)
 	}
-	if strings.Contains(rows[0].Text, "🐞") {
-		t.Fatalf("dev mode off row must not contain debug emoji 🐞: %q", rows[0].Text)
+	if strings.Contains(rows[0].Text, "🐛") {
+		t.Fatalf("dev mode off row must not contain debug emoji 🐛: %q", rows[0].Text)
 	}
 	if strings.Contains(rows[0].Text, "开发者模式") {
 		t.Fatalf("no explicit 开发者模式 label — emoji carries it: %q", rows[0].Text)
@@ -613,8 +613,8 @@ func TestBuildLarkCardStatusBarSectionChecker(t *testing.T) {
 		t.Fatalf("runtime checker label should mock 👤 + 📁 line, got %q", runtimeLabel)
 	}
 	devLabel := labelOf(checkers["show_meta_row_developer"])
-	if !strings.Contains(devLabel, "🐞") || !strings.Contains(devLabel, "🦋") {
-		t.Fatalf("developer checker label should mention both 🐞 rc / 🦋 stable emojis, got %q", devLabel)
+	if !strings.Contains(devLabel, "🐛") || !strings.Contains(devLabel, "🦋") {
+		t.Fatalf("developer checker label should mention both 🐛 rc / 🦋 stable emojis, got %q", devLabel)
 	}
 	if !strings.Contains(devLabel, "最新") {
 		t.Fatalf("developer checker label should include ⬆️ 最新 semantics, got %q", devLabel)
