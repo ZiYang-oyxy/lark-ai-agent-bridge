@@ -1704,31 +1704,48 @@ func (s *Service) HandleActionResult(ctx context.Context, req ActionRequest) (Ac
 			notifyOnComplete = parsed
 		}
 		showMetaRowAgent := current.ShowMetaRowAgent
-		if raw, ok := req.FormValues["show_meta_row_agent"]; ok {
-			parsed, err := strconv.ParseBool(strings.TrimSpace(raw))
-			if err != nil {
-				s.Audit.Record(req.Actor, "config_save_failed", req.SessionID, "invalid show_meta_row_agent")
-				return s.renderActionEvent(configSaveErrorEvent(req.SessionID))
-			}
-			showMetaRowAgent = parsed
-		}
 		showMetaRowRuntime := current.ShowMetaRowRuntime
-		if raw, ok := req.FormValues["show_meta_row_runtime"]; ok {
-			parsed, err := strconv.ParseBool(strings.TrimSpace(raw))
-			if err != nil {
-				s.Audit.Record(req.Actor, "config_save_failed", req.SessionID, "invalid show_meta_row_runtime")
-				return s.renderActionEvent(configSaveErrorEvent(req.SessionID))
-			}
-			showMetaRowRuntime = parsed
-		}
 		showMetaRowDeveloper := current.ShowMetaRowDeveloper
-		if raw, ok := req.FormValues["show_meta_row_developer"]; ok {
-			parsed, err := strconv.ParseBool(strings.TrimSpace(raw))
-			if err != nil {
-				s.Audit.Record(req.Actor, "config_save_failed", req.SessionID, "invalid show_meta_row_developer")
-				return s.renderActionEvent(configSaveErrorEvent(req.SessionID))
+		// 优先看 multi_select_static 提交的 CSV;命中时 3 个 bool 由 CSV 覆盖,
+		// 独立字段路径跳过——multi 表单里没有它们。CSV 由 cardFormValueToString
+		// 从 []any 规约而来,元素分别是 agent/runtime/developer;空 CSV = 全 false。
+		if raw, ok := req.FormValues["meta_rows_multi"]; ok {
+			showMetaRowAgent, showMetaRowRuntime, showMetaRowDeveloper = false, false, false
+			for _, tok := range strings.Split(raw, ",") {
+				switch strings.TrimSpace(tok) {
+				case "agent":
+					showMetaRowAgent = true
+				case "runtime":
+					showMetaRowRuntime = true
+				case "developer":
+					showMetaRowDeveloper = true
+				}
 			}
-			showMetaRowDeveloper = parsed
+		} else {
+			if raw, ok := req.FormValues["show_meta_row_agent"]; ok {
+				parsed, err := strconv.ParseBool(strings.TrimSpace(raw))
+				if err != nil {
+					s.Audit.Record(req.Actor, "config_save_failed", req.SessionID, "invalid show_meta_row_agent")
+					return s.renderActionEvent(configSaveErrorEvent(req.SessionID))
+				}
+				showMetaRowAgent = parsed
+			}
+			if raw, ok := req.FormValues["show_meta_row_runtime"]; ok {
+				parsed, err := strconv.ParseBool(strings.TrimSpace(raw))
+				if err != nil {
+					s.Audit.Record(req.Actor, "config_save_failed", req.SessionID, "invalid show_meta_row_runtime")
+					return s.renderActionEvent(configSaveErrorEvent(req.SessionID))
+				}
+				showMetaRowRuntime = parsed
+			}
+			if raw, ok := req.FormValues["show_meta_row_developer"]; ok {
+				parsed, err := strconv.ParseBool(strings.TrimSpace(raw))
+				if err != nil {
+					s.Audit.Record(req.Actor, "config_save_failed", req.SessionID, "invalid show_meta_row_developer")
+					return s.renderActionEvent(configSaveErrorEvent(req.SessionID))
+				}
+				showMetaRowDeveloper = parsed
+			}
 		}
 		effort := current.Effort
 		if raw, ok := req.FormValues["effort"]; ok {
@@ -1966,6 +1983,7 @@ func (s *Service) configForm(preference config.RuntimePreference) *card.ConfigFo
 		ShowMetaRowAgent:     strconv.FormatBool(preference.ShowMetaRowAgent),
 		ShowMetaRowRuntime:   strconv.FormatBool(preference.ShowMetaRowRuntime),
 		ShowMetaRowDeveloper: strconv.FormatBool(preference.ShowMetaRowDeveloper),
+		StatusBarFormStyle:   statusBarFormStyleFromEnv(),
 		Agents:               toCardOptions(s.Agents.AgentOptions()), AgentHomes: toCardOptions(s.Agents.HomeOptions(agentKind)), AgentBins: toCardOptions(s.Agents.BinOptions(agentKind)),
 		Models: s.configModelOptions(), Efforts: []string{"default", "low", "medium", "high"},
 		ReplyModes:        []string{string(config.ReplyModeAppend), string(config.ReplyModeAppendCleanCard), string(config.ReplyModeLatestCard)},
@@ -2084,19 +2102,47 @@ func chatOverrideFromForm(values map[string]string, global config.RuntimePrefere
 			override.RespondToBots = &parsed
 		}
 	}
-	if raw, ok := values["show_meta_row_agent"]; ok {
-		if parsed, err := strconv.ParseBool(strings.TrimSpace(raw)); err == nil && parsed != global.ShowMetaRowAgent {
-			override.ShowMetaRowAgent = &parsed
+	// multi_select_static UI 用一个字段 meta_rows_multi(CSV)承载三个开关。命中
+	// 则 3 个 bool 全由 CSV 决定,与独立字段互斥(表单里不会同时出现)。
+	if raw, ok := values["meta_rows_multi"]; ok {
+		var a, r, d bool
+		for _, tok := range strings.Split(raw, ",") {
+			switch strings.TrimSpace(tok) {
+			case "agent":
+				a = true
+			case "runtime":
+				r = true
+			case "developer":
+				d = true
+			}
 		}
-	}
-	if raw, ok := values["show_meta_row_runtime"]; ok {
-		if parsed, err := strconv.ParseBool(strings.TrimSpace(raw)); err == nil && parsed != global.ShowMetaRowRuntime {
-			override.ShowMetaRowRuntime = &parsed
+		if a != global.ShowMetaRowAgent {
+			ac := a
+			override.ShowMetaRowAgent = &ac
 		}
-	}
-	if raw, ok := values["show_meta_row_developer"]; ok {
-		if parsed, err := strconv.ParseBool(strings.TrimSpace(raw)); err == nil && parsed != global.ShowMetaRowDeveloper {
-			override.ShowMetaRowDeveloper = &parsed
+		if r != global.ShowMetaRowRuntime {
+			rc := r
+			override.ShowMetaRowRuntime = &rc
+		}
+		if d != global.ShowMetaRowDeveloper {
+			dc := d
+			override.ShowMetaRowDeveloper = &dc
+		}
+	} else {
+		if raw, ok := values["show_meta_row_agent"]; ok {
+			if parsed, err := strconv.ParseBool(strings.TrimSpace(raw)); err == nil && parsed != global.ShowMetaRowAgent {
+				override.ShowMetaRowAgent = &parsed
+			}
+		}
+		if raw, ok := values["show_meta_row_runtime"]; ok {
+			if parsed, err := strconv.ParseBool(strings.TrimSpace(raw)); err == nil && parsed != global.ShowMetaRowRuntime {
+				override.ShowMetaRowRuntime = &parsed
+			}
+		}
+		if raw, ok := values["show_meta_row_developer"]; ok {
+			if parsed, err := strconv.ParseBool(strings.TrimSpace(raw)); err == nil && parsed != global.ShowMetaRowDeveloper {
+				override.ShowMetaRowDeveloper = &parsed
+			}
 		}
 	}
 	if raw, ok := values["agent"]; ok {
@@ -2894,6 +2940,19 @@ func (s *Service) metaFromSessionWithDirAfter(sess session.Session, dir string, 
 		meta.Model = strings.TrimSpace(u.Model)
 	}
 	return meta, u
+}
+
+// statusBarFormStyleFromEnv 决定 /config 里 📊 元信息行 section 用哪种 UI:
+// 从 LAB_STATUSBAR_FORM_STYLE 读,合法值 "select"(默认,旧下拉)、"checker"、"multi";
+// 未设或空值走默认。这是一次 A/B 实验开关,收敛后可以整条移除。
+func statusBarFormStyleFromEnv() string {
+	v := strings.ToLower(strings.TrimSpace(os.Getenv("LAB_STATUSBAR_FORM_STYLE")))
+	switch v {
+	case "checker", "multi", "select":
+		return v
+	default:
+		return ""
+	}
 }
 
 // developerVersionText 渲染 status bar 开发者行的"当前版本"段。IsRelease()

@@ -33,6 +33,44 @@ func TestActionRequestFromCardCallback(t *testing.T) {
 	}
 }
 
+// checker 组件的 form_value 是 bool、multi_select_static 是 []any(string element)。
+// 二者过去都会被旧的 `text, ok := value.(string)` 断言直接 continue 掉,导致丢字段。
+// 新的 cardFormValueToString 把 bool 规约成 "true"/"false"、把 []any 规约成 CSV,
+// 数字/null 等仍走 default 被过滤(保持旧的严格性)。
+func TestActionRequestFromCardCallbackAcceptsBoolAndMultiSelect(t *testing.T) {
+	req, err := ActionRequestFromCardCallback([]byte(`{
+		"operator": {"open_id": "user-1"},
+		"action": {
+			"value": {"session": "claude:chat", "action_id": "config.save"},
+			"form_value": {
+				"show_meta_row_agent": true,
+				"show_meta_row_runtime": false,
+				"meta_rows_multi": ["agent", "developer"],
+				"ignored_number": 42,
+				"ignored_null": null
+			}
+		}
+	}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := req.FormValues["show_meta_row_agent"]; got != "true" {
+		t.Fatalf("bool true should be normalized to \"true\", got %q", got)
+	}
+	if got := req.FormValues["show_meta_row_runtime"]; got != "false" {
+		t.Fatalf("bool false should be normalized to \"false\", got %q", got)
+	}
+	if got := req.FormValues["meta_rows_multi"]; got != "agent,developer" {
+		t.Fatalf("multi_select array should be joined to CSV, got %q", got)
+	}
+	if _, ok := req.FormValues["ignored_number"]; ok {
+		t.Fatalf("numeric form value should still be dropped, got %q", req.FormValues["ignored_number"])
+	}
+	if _, ok := req.FormValues["ignored_null"]; ok {
+		t.Fatalf("null form value should still be dropped, got %q", req.FormValues["ignored_null"])
+	}
+}
+
 func TestActionRequestFromCardCallbackPreservesFormValues(t *testing.T) {
 	req, err := ActionRequestFromCardCallback([]byte(`{
 		"operator": {"open_id": "user-1"},

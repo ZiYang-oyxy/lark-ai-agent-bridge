@@ -3,6 +3,7 @@ package bridge
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 )
 
 func ActionRequestFromCardCallback(payload []byte) (ActionRequest, error) {
@@ -72,7 +73,7 @@ func callbackFormValues(action map[string]any) (map[string]string, error) {
 	}
 	out := make(map[string]string, len(raw))
 	for key, value := range raw {
-		text, ok := value.(string)
+		text, ok := cardFormValueToString(value)
 		if !ok {
 			continue
 		}
@@ -85,6 +86,39 @@ func callbackFormValues(action map[string]any) (map[string]string, error) {
 		return nil, nil
 	}
 	return out, nil
+}
+
+// cardFormValueToString 把飞书 CardKit 表单回调里可能出现的值都规约成字符串:
+//   - string:原样
+//   - bool(如 checker `checked` 的 form_value):"true"/"false",与 strconv.ParseBool 兼容
+//   - []any(如 multi_select_static 的 form_value):元素为字符串则拼成逗号分隔,
+//     便于 handler 用 strings.Split 拆开;非字符串元素跳过
+//   - 其它(数字、null 等):返回 false,交给 caller continue,与旧 string-only
+//     行为语义一致(过去就是 continue)
+//
+// 之所以拼 CSV 而不是保 JSON:handler 里 `respond_to_bots` 一类 bool 值走
+// strconv.ParseBool,checker 走同路径不用改;multi_select 只有 3 项,CSV 足够,
+// 也避免调用方处理两种 encoding。
+func cardFormValueToString(value any) (string, bool) {
+	switch v := value.(type) {
+	case string:
+		return v, true
+	case bool:
+		if v {
+			return "true", true
+		}
+		return "false", true
+	case []any:
+		parts := make([]string, 0, len(v))
+		for _, item := range v {
+			if s, ok := item.(string); ok {
+				parts = append(parts, s)
+			}
+		}
+		return strings.Join(parts, ","), true
+	default:
+		return "", false
+	}
 }
 
 func actionValueMap(action map[string]any) (map[string]any, error) {

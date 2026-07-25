@@ -203,21 +203,7 @@ func buildConfigFormElements(sessionID string, form ConfigForm) []any {
 		{Value: "true", Label: "完成时提醒发起人"},
 	}))...)
 
-	// element_id 上限 20 字符,fieldElements 会追加 _label/_hint,所以 prefix
-	// 必须 ≤ 14 —— 用短 slug (bar_ 代表 status bar 一族)。
-	statusBar := []map[string]any{}
-	statusBar = append(statusBar, fieldElements("cfg_bar_agent", "Agent 行", "开启后卡片底部显示：agent · 会话短号 · 模型（effort）· tokens/上下文占用", configSelectOptions("show_meta_row_agent", form.ShowMetaRowAgent, []SelectOption{
-		{Value: "false", Label: "隐藏（默认）"},
-		{Value: "true", Label: "显示 Agent 行"},
-	}))...)
-	statusBar = append(statusBar, fieldElements("cfg_bar_rt", "主机信息行", "开启后卡片底部显示：用户 · IP · 工作目录", configSelectOptions("show_meta_row_runtime", form.ShowMetaRowRuntime, []SelectOption{
-		{Value: "false", Label: "隐藏（默认）"},
-		{Value: "true", Label: "显示主机信息行"},
-	}))...)
-	statusBar = append(statusBar, fieldElements("cfg_bar_dev", "开发者行", "开启后卡片底部显示：当前版本 · 最新版本（若可用）· 开发者模式 ✅/❌", configSelectOptions("show_meta_row_developer", form.ShowMetaRowDeveloper, []SelectOption{
-		{Value: "false", Label: "隐藏（默认）"},
-		{Value: "true", Label: "显示开发者行"},
-	}))...)
+	statusBar := buildStatusBarSection(form)
 
 	saveButton := map[string]any{
 		"tag":              "button",
@@ -258,6 +244,105 @@ func buildConfigFormElements(sessionID string, form ConfigForm) []any {
 				},
 			},
 		},
+	}
+}
+
+// buildStatusBarSection 渲染 📊 元信息行 section 的三种可选紧凑形式:
+//   - "" / "select":三个 select_static 两选项下拉(旧默认,视觉最稳)
+//   - "checker":三个并列 checker 组件,每个一个复选框 + 说明,视觉最像"复选框"
+//   - "multi":一个 multi_select_static 下拉,勾选组合,视觉最紧凑(1 个控件承载 3 个开关)
+//
+// 三种形式提交回来的字段名保持一致(`show_meta_row_{agent,runtime,developer}` 三个 bool
+// 值,或 `meta_rows_multi` 一个 CSV),handler 侧按现有语义解出三个独立 bool。
+// element_id 上限 20 字符,fieldElements 会追加 _label/_hint,所以 prefix 必须 ≤ 14
+// —— 用短 slug(bar_ 代表 status bar 一族)。
+func buildStatusBarSection(form ConfigForm) []map[string]any {
+	switch strings.ToLower(strings.TrimSpace(form.StatusBarFormStyle)) {
+	case "checker":
+		return buildStatusBarSectionCheckers(form)
+	case "multi":
+		return buildStatusBarSectionMultiSelect(form)
+	default:
+		return buildStatusBarSectionSelects(form)
+	}
+}
+
+func buildStatusBarSectionSelects(form ConfigForm) []map[string]any {
+	out := []map[string]any{}
+	out = append(out, fieldElements("cfg_bar_agent", "Agent 行", "开启后卡片底部显示：agent · 会话短号 · 模型（effort）· tokens/上下文占用", configSelectOptions("show_meta_row_agent", form.ShowMetaRowAgent, []SelectOption{
+		{Value: "false", Label: "隐藏（默认）"},
+		{Value: "true", Label: "显示 Agent 行"},
+	}))...)
+	out = append(out, fieldElements("cfg_bar_rt", "主机信息行", "开启后卡片底部显示：用户 · IP · 工作目录", configSelectOptions("show_meta_row_runtime", form.ShowMetaRowRuntime, []SelectOption{
+		{Value: "false", Label: "隐藏（默认）"},
+		{Value: "true", Label: "显示主机信息行"},
+	}))...)
+	out = append(out, fieldElements("cfg_bar_dev", "开发者行", "开启后卡片底部显示：🐞/🦋 当前版本（🐞 rc 通道 / 🦋 stable 通道）· ⬆️ 最新版本（若已知）", configSelectOptions("show_meta_row_developer", form.ShowMetaRowDeveloper, []SelectOption{
+		{Value: "false", Label: "隐藏（默认）"},
+		{Value: "true", Label: "显示开发者行"},
+	}))...)
+	return out
+}
+
+// buildStatusBarSectionCheckers 用飞书 CardKit 2.0 官方 `checker` 组件呈现三个开关。
+// 每个 checker 表达一个独立 bool,并列排 3 个;比 select 更接近"复选框"的直觉。
+// 参数格式:{tag:checker, name:<field>, checked:<bool>, text:{tag:plain_text,content:label}}。
+// 放在 form 内时不加 behaviors,由 form 提交按钮统一批量回传;form_value 是 bool,
+// 已由 cardFormValueToString 规约成 "true"/"false" 字符串,handler 侧 strconv.ParseBool
+// 走原路径无需改动。
+func buildStatusBarSectionCheckers(form ConfigForm) []map[string]any {
+	checker := func(id, name, label string, checked string) map[string]any {
+		el := map[string]any{
+			"tag":     "checker",
+			"element_id": id,
+			"name":    name,
+			"checked": strings.EqualFold(strings.TrimSpace(checked), "true"),
+			"text":    map[string]any{"tag": "plain_text", "content": label},
+		}
+		return el
+	}
+	// 三个 checker 直接并排;顶部一行说明整段用途,底部无额外 hint 保持紧凑。
+	return []map[string]any{
+		markdownElement("cfg_bar_intro", "**元信息行**\n勾选要显示的行；未勾选的行不渲染。开发者行前置 emoji 表示通道（🐞 rc / 🦋 stable）。"),
+		checker("cfg_bar_agent_ck", "show_meta_row_agent", "Agent 行（agent · 会话 · 模型 · tokens）", form.ShowMetaRowAgent),
+		checker("cfg_bar_rt_ck", "show_meta_row_runtime", "主机信息行（用户 · IP · 工作目录）", form.ShowMetaRowRuntime),
+		checker("cfg_bar_dev_ck", "show_meta_row_developer", "开发者行（🐞/🦋 版本 · 最新）", form.ShowMetaRowDeveloper),
+	}
+}
+
+// buildStatusBarSectionMultiSelect 用飞书 CardKit 2.0 官方 `multi_select_static` 单控件
+// 承载三个开关。提交回来是 CSV(cardFormValueToString 规约),handler 侧需要 split 出
+// 三个 bool。用一个 name `meta_rows_multi` 承载,不与三个独立 bool 提交路径冲突;
+// 若两种字段同一次提交都存在(select 分支的兼容),handler 端 multi 优先。
+func buildStatusBarSectionMultiSelect(form ConfigForm) []map[string]any {
+	selected := []any{}
+	if strings.EqualFold(strings.TrimSpace(form.ShowMetaRowAgent), "true") {
+		selected = append(selected, "agent")
+	}
+	if strings.EqualFold(strings.TrimSpace(form.ShowMetaRowRuntime), "true") {
+		selected = append(selected, "runtime")
+	}
+	if strings.EqualFold(strings.TrimSpace(form.ShowMetaRowDeveloper), "true") {
+		selected = append(selected, "developer")
+	}
+	control := map[string]any{
+		"tag":        "multi_select_static",
+		"element_id": "cfg_bar_multi",
+		"name":       "meta_rows_multi",
+		"placeholder": map[string]any{
+			"tag":     "plain_text",
+			"content": "选择要显示的行（可多选）",
+		},
+		"selected_values": selected,
+		"options": []any{
+			map[string]any{"text": map[string]any{"tag": "plain_text", "content": "Agent 行"}, "value": "agent"},
+			map[string]any{"text": map[string]any{"tag": "plain_text", "content": "主机信息行"}, "value": "runtime"},
+			map[string]any{"text": map[string]any{"tag": "plain_text", "content": "开发者行"}, "value": "developer"},
+		},
+	}
+	return []map[string]any{
+		markdownElement("cfg_bar_intro", "**元信息行**\n下拉勾选要显示的行；开发者行前置 emoji 表示通道（🐞 rc / 🦋 stable）。"),
+		control,
 	}
 }
 

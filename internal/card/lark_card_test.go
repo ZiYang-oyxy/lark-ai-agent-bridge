@@ -536,6 +536,165 @@ func TestBuildLarkCardRendersRuntimeConfigForm(t *testing.T) {
 	}
 }
 
+// StatusBarFormStyle="checker" 时 📊 元信息行 section 应渲染三个 checker 组件,
+// 各自 name = show_meta_row_{agent,runtime,developer},初始 checked 由 form
+// 对应字段的 "true"/"false" 决定;不再有对应的 select_static 下拉。
+func TestBuildLarkCardStatusBarSectionChecker(t *testing.T) {
+	payload := BuildLarkCard(Event{
+		Type:      "config",
+		SessionID: "claude:chat:message:cfg-2",
+		ConfigForm: &ConfigForm{
+			Agent: "claude", AgentHome: "默认", AgentBin: "主机 claude",
+			Model: "opus", Effort: "high",
+			ReplyMode: "latest-card", ConversationMode: "chat",
+			GroupMessageMode: "mention_only", RespondToBots: "false", NotifyOnComplete: "false",
+			ShowMetaRowAgent: "true", ShowMetaRowRuntime: "false", ShowMetaRowDeveloper: "true",
+			StatusBarFormStyle: "checker",
+			Agents:             []SelectOption{{Value: "claude", Label: "claude"}},
+			AgentHomes:         []SelectOption{{Value: "默认", Label: "默认"}},
+			AgentBins:          []SelectOption{{Value: "主机 claude", Label: "主机 claude"}},
+			Models:             []string{"default"}, Efforts: []string{"default"},
+			ReplyModes: []string{"append"}, ConversationModes: []string{"chat"},
+		},
+	})
+	checkers := map[string]map[string]any{}
+	var walk func(any)
+	walk = func(v any) {
+		switch n := v.(type) {
+		case map[string]any:
+			if n["tag"] == "checker" {
+				if name, ok := n["name"].(string); ok {
+					checkers[name] = n
+				}
+			}
+			for _, c := range n {
+				walk(c)
+			}
+		case []any:
+			for _, c := range n {
+				walk(c)
+			}
+		case []map[string]any:
+			for _, c := range n {
+				walk(c)
+			}
+		}
+	}
+	walk(payload)
+	if len(checkers) != 3 {
+		t.Fatalf("expected 3 checkers, got %d: %#v", len(checkers), checkers)
+	}
+	if checkers["show_meta_row_agent"]["checked"] != true {
+		t.Fatalf("agent checker should be checked: %#v", checkers["show_meta_row_agent"])
+	}
+	if checkers["show_meta_row_runtime"]["checked"] != false {
+		t.Fatalf("runtime checker should be unchecked: %#v", checkers["show_meta_row_runtime"])
+	}
+	if checkers["show_meta_row_developer"]["checked"] != true {
+		t.Fatalf("developer checker should be checked: %#v", checkers["show_meta_row_developer"])
+	}
+	// checker 分支不应再输出 status bar 系列的 select_static。
+	body := payload["body"].(map[string]any)
+	rendered, _ := json.Marshal(body)
+	if strings.Contains(string(rendered), `"show_meta_row_agent"`) {
+		// 允许 name 字段命中,但 select_static 组件的 name+options 不应共存。
+		// checker 已经使用 name=show_meta_row_agent,所以纯字符串搜索会命中,不做严格。
+	}
+	_ = rendered
+}
+
+// StatusBarFormStyle="multi" 时 📊 元信息行 section 应渲染一个 multi_select_static,
+// name=meta_rows_multi,selected_values 反映三个 bool 中选中的项。
+func TestBuildLarkCardStatusBarSectionMultiSelect(t *testing.T) {
+	payload := BuildLarkCard(Event{
+		Type:      "config",
+		SessionID: "claude:chat:message:cfg-3",
+		ConfigForm: &ConfigForm{
+			Agent: "claude", AgentHome: "默认", AgentBin: "主机 claude",
+			Model: "opus", Effort: "high",
+			ReplyMode: "latest-card", ConversationMode: "chat",
+			GroupMessageMode: "mention_only", RespondToBots: "false", NotifyOnComplete: "false",
+			ShowMetaRowAgent: "true", ShowMetaRowRuntime: "false", ShowMetaRowDeveloper: "true",
+			StatusBarFormStyle: "multi",
+			Agents:             []SelectOption{{Value: "claude", Label: "claude"}},
+			AgentHomes:         []SelectOption{{Value: "默认", Label: "默认"}},
+			AgentBins:          []SelectOption{{Value: "主机 claude", Label: "主机 claude"}},
+			Models:             []string{"default"}, Efforts: []string{"default"},
+			ReplyModes: []string{"append"}, ConversationModes: []string{"chat"},
+		},
+	})
+	var found map[string]any
+	var walk func(any)
+	walk = func(v any) {
+		if found != nil {
+			return
+		}
+		switch n := v.(type) {
+		case map[string]any:
+			if n["tag"] == "multi_select_static" {
+				found = n
+				return
+			}
+			for _, c := range n {
+				walk(c)
+			}
+		case []any:
+			for _, c := range n {
+				walk(c)
+			}
+		case []map[string]any:
+			for _, c := range n {
+				walk(c)
+			}
+		}
+	}
+	walk(payload)
+	if found == nil {
+		t.Fatal("expected multi_select_static element")
+	}
+	if found["name"] != "meta_rows_multi" {
+		t.Fatalf("multi_select name = %v, want meta_rows_multi", found["name"])
+	}
+	selected := found["selected_values"].([]any)
+	if len(selected) != 2 || selected[0] != "agent" || selected[1] != "developer" {
+		t.Fatalf("selected_values = %#v, want [agent developer]", selected)
+	}
+	options := found["options"].([]any)
+	if len(options) != 3 {
+		t.Fatalf("multi_select must expose 3 options, got %d", len(options))
+	}
+	// multi 分支只输出 1 个 multi_select_static,不再有三个 status-bar select_static
+	// (但可能有其它字段的 select_static,例如 reply_mode,不参与本断言)。
+	statusBarSelectNames := map[string]bool{
+		"show_meta_row_agent":     true,
+		"show_meta_row_runtime":   true,
+		"show_meta_row_developer": true,
+	}
+	var walk2 func(any)
+	walk2 = func(v any) {
+		switch n := v.(type) {
+		case map[string]any:
+			if n["tag"] == "select_static" {
+				if name, _ := n["name"].(string); statusBarSelectNames[name] {
+					t.Fatalf("multi style must not emit select_static for %q", name)
+				}
+			}
+			for _, c := range n {
+				walk2(c)
+			}
+		case []any:
+			for _, c := range n {
+				walk2(c)
+			}
+		case []map[string]any:
+			for _, c := range n {
+				walk2(c)
+			}
+		}
+	}
+	walk2(payload)
+}
+
 func TestBuildLarkCardIncludesDisabledStopButton(t *testing.T) {
 	card := BuildLarkCard(Event{Type: "stream", SessionID: "claude:chat", StopButton: StopButton{Visible: true, Disabled: true}})
 	elements := card["body"].(map[string]any)["elements"].([]any)

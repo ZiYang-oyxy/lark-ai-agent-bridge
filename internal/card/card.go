@@ -124,6 +124,14 @@ type ConfigForm struct {
 	// the action value so the store knows which group to write. Empty means
 	// the global /config editor.
 	ChatID string
+	// StatusBarFormStyle picks which UI paints the 📊 元信息行 section:
+	//   ""       / "select" — 三个 select_static 两选项下拉(旧默认,视觉稳)
+	//   "checker"            — 三个并列 checker 组件(每行一个复选框)
+	//   "multi"              — 一个 multi_select_static 多选下拉
+	// 该字段仅决定渲染形式,底层的三个 bool 字段(ShowMetaRow{Agent,Runtime,Developer})
+	// 语义不变;checker/multi 提交回来后 service 会在 handler 里按各自格式解出这三个字段。
+	// 目的是让用户在同一个 build 里 A/B 对比两种紧凑形式,选定后再收敛。
+	StatusBarFormStyle string
 }
 
 type AgentModeForm struct {
