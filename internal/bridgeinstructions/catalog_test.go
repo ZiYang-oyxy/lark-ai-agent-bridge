@@ -7,27 +7,41 @@ import (
 	"testing"
 )
 
-func TestCatalogV1ContainsExplicitImageIntentContract(t *testing.T) {
+func TestCurrentCatalogContainsExplicitImageDeliveryCompletionContract(t *testing.T) {
 	text, ok := Content(CurrentVersion)
 	if !ok {
 		t.Fatal("current version missing")
 	}
 	for _, want := range []string{
-		"明确要求生成、展示或发送图片",
+		"明确要求生成、绘制、展示或发送图片",
+		"生成图片本身即包含通过飞书交付图片",
 		"把刚才那张图发出来",
 		"多个合理候选时先询问用户",
 		"![简短说明](./relative-path.png)",
+		"不得只说明“图片已生成”或只返回本地文件路径",
+		"发送最终回复前必须自检",
+		"如果前两项为“是”而第三项为“否”，不得结束回复",
 		"不要自行声称图片已经发送成功",
 	} {
 		if !strings.Contains(text, want) {
-			t.Fatalf("v1 missing %q", want)
+			t.Fatalf("current instructions missing %q", want)
 		}
 	}
 }
 
+func TestCatalogRetainsPinnedV2Instructions(t *testing.T) {
+	text, ok := Content("v2")
+	if !ok {
+		t.Fatal("v2 missing")
+	}
+	if !strings.Contains(text, "自然语言定时意图") || !strings.Contains(text, "![简短说明](./relative-path.png)") {
+		t.Fatal("v2 content changed unexpectedly")
+	}
+}
+
 func TestCurrentCatalogContainsScheduleProposalContract(t *testing.T) {
-	if CurrentVersion != "v2" {
-		t.Fatalf("CurrentVersion = %q, want v2", CurrentVersion)
+	if CurrentVersion != "v3" {
+		t.Fatalf("CurrentVersion = %q, want v3", CurrentVersion)
 	}
 	text, ok := Content(CurrentVersion)
 	if !ok {
@@ -45,7 +59,7 @@ func TestCurrentCatalogContainsScheduleProposalContract(t *testing.T) {
 		"严禁",
 	} {
 		if !strings.Contains(text, want) {
-			t.Fatalf("v2 missing %q", want)
+			t.Fatalf("current instructions missing %q", want)
 		}
 	}
 }
