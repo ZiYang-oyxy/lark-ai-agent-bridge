@@ -71,6 +71,13 @@ func BuildLarkCard(e Event) map[string]any {
 		elements = append(elements, buildMetaElements(e.Meta)...)
 	}
 	title := headerTitle(e)
+	showHeader := !e.MarkdownLayout
+	// CardKit 2.0 的 header 只接受标题文本，不能挂交互 button。运行卡片
+	// 将标题和停止操作组合成正文首行，避免使用未定义的 header.extra 字段。
+	if !e.MarkdownLayout && e.StopButton.Visible {
+		elements = append([]any{buildTitleActionRow(title, e)}, elements...)
+		showHeader = false
+	}
 	payload := map[string]any{
 		"schema": "2.0",
 		"config": map[string]any{
@@ -85,7 +92,7 @@ func BuildLarkCard(e Event) map[string]any {
 			"elements":         elements,
 		},
 	}
-	if !e.MarkdownLayout {
+	if showHeader {
 		payload["header"] = map[string]any{
 			"template": headerTemplate(e),
 			"title":    map[string]any{"tag": "plain_text", "content": title},
@@ -100,6 +107,51 @@ func BuildLarkCard(e Event) map[string]any {
 		}
 	}
 	return payload
+}
+
+func buildTitleActionRow(title string, e Event) map[string]any {
+	elements := []any{
+		map[string]any{
+			"tag":        "markdown",
+			"element_id": "card_title",
+			"content":    "**" + title + "**",
+			"text_align": "left",
+		},
+	}
+	if e.StopButton.Visible {
+		buttonType := "danger"
+		if e.StopButton.Disabled {
+			buttonType = "default"
+		}
+		button := map[string]any{
+			"tag":        "button",
+			"element_id": "btn_stop",
+			"text":       map[string]any{"tag": "plain_text", "content": stopButtonLabel(e)},
+			"type":       buttonType,
+			"size":       "small",
+			"width":      "default",
+			"disabled":   e.StopButton.Disabled,
+		}
+		if !e.StopButton.Disabled {
+			button["behaviors"] = callbackBehaviorWithGrant(e.SessionID, "stop", "", e.StopButton.GrantID)
+			button["confirm"] = map[string]any{
+				"title": map[string]any{"tag": "plain_text", "content": "确认停止任务？"},
+				"text":  map[string]any{"tag": "plain_text", "content": "停止后，本轮任务将立即结束，当前已生成的内容会保留。"},
+			}
+		}
+		elements = append(elements, button)
+	}
+	return map[string]any{
+		"tag":                "column_set",
+		"element_id":         "card_title_actions",
+		"flex_mode":          "none",
+		"background_style":   "default",
+		"horizontal_spacing": "8px",
+		"columns": []any{
+			map[string]any{"tag": "column", "width": "weighted", "weight": 1, "vertical_align": "center", "elements": []any{elements[0]}},
+			map[string]any{"tag": "column", "width": "auto", "vertical_align": "center", "elements": elements[1:]},
+		},
+	}
 }
 
 func buildOrderedTimelineElements(e Event) []any {
@@ -861,30 +913,6 @@ func buildButtonActions(e Event) []any {
 			button["confirm"] = map[string]any{
 				"title": map[string]any{"tag": "plain_text", "content": action.Confirm.Title},
 				"text":  map[string]any{"tag": "plain_text", "content": action.Confirm.Text},
-			}
-		}
-		buttons = append(buttons, button)
-	}
-	if e.StopButton.Visible {
-		buttonType := "danger"
-		label := stopButtonLabel(e)
-		if e.StopButton.Disabled {
-			buttonType = "default"
-		}
-		button := map[string]any{
-			"tag":        "button",
-			"element_id": "btn_stop",
-			"text":       map[string]any{"tag": "plain_text", "content": label},
-			"type":       buttonType,
-			"width":      "fill",
-			"size":       "medium",
-			"disabled":   e.StopButton.Disabled,
-		}
-		if !e.StopButton.Disabled {
-			button["behaviors"] = callbackBehaviorWithGrant(e.SessionID, "stop", "", e.StopButton.GrantID)
-			button["confirm"] = map[string]any{
-				"title": map[string]any{"tag": "plain_text", "content": "确认停止任务？"},
-				"text":  map[string]any{"tag": "plain_text", "content": "停止后，本轮任务将立即结束，当前已生成的内容会保留。"},
 			}
 		}
 		buttons = append(buttons, button)

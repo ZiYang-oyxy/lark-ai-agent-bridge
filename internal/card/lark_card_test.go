@@ -112,8 +112,8 @@ func TestBuildLarkCardInlineTimelineKeepsFullShellAndPlainTools(t *testing.T) {
 			User: "user", IP: "host", WorkDir: "/work",
 		},
 	})
-	if _, ok := payload["header"]; !ok {
-		t.Fatalf("inline timeline missing header: %#v", payload)
+	if _, ok := payload["header"]; ok {
+		t.Fatalf("inline timeline should use title action row when stop is visible: %#v", payload["header"])
 	}
 	elements := payload["body"].(map[string]any)["elements"].([]any)
 	answers := answerElements(payload)
@@ -853,8 +853,11 @@ func TestBuildLarkCardConfigSelectStaticIsFullWidth(t *testing.T) {
 
 func TestBuildLarkCardIncludesDisabledStopButton(t *testing.T) {
 	card := BuildLarkCard(Event{Type: "stream", SessionID: "claude:chat", StopButton: StopButton{Visible: true, Disabled: true}})
-	elements := card["body"].(map[string]any)["elements"].([]any)
-	button := elements[0].(map[string]any)
+	buttons := collectButtons(card)
+	if len(buttons) != 1 {
+		t.Fatalf("stop buttons = %#v, want one", buttons)
+	}
+	button := buttons[0]
 	if button["disabled"] != true {
 		t.Fatalf("button disabled = %#v, want true", button["disabled"])
 	}
@@ -875,8 +878,11 @@ func TestBuildLarkCardIncludesDisabledStopButton(t *testing.T) {
 
 func TestBuildLarkCardStopButtonRequiresConfirmation(t *testing.T) {
 	card := BuildLarkCard(Event{Type: "stream", SessionID: "claude:chat", StopButton: StopButton{Visible: true, GrantID: "grant-stop"}})
-	elements := card["body"].(map[string]any)["elements"].([]any)
-	button := elements[0].(map[string]any)
+	buttons := collectButtons(card)
+	if len(buttons) != 1 {
+		t.Fatalf("stop buttons = %#v, want one", buttons)
+	}
+	button := buttons[0]
 	confirm := button["confirm"].(map[string]any)
 	title := confirm["title"].(map[string]any)
 	text := confirm["text"].(map[string]any)
@@ -955,8 +961,11 @@ func TestBuildLarkCardUsesFinalStopButtonLabels(t *testing.T) {
 	}
 	for _, tt := range tests {
 		payload := BuildLarkCard(Event{Type: tt.eventType, SessionID: "claude:chat", StopButton: StopButton{Visible: true, Disabled: true}})
-		elements := payload["body"].(map[string]any)["elements"].([]any)
-		button := elements[len(elements)-1].(map[string]any)
+		buttons := collectButtons(payload)
+		if len(buttons) != 1 {
+			t.Fatalf("%s buttons = %#v, want one", tt.eventType, buttons)
+		}
+		button := buttons[0]
 		if button["disabled"] != true || button["type"] != "default" {
 			t.Fatalf("%s button = %#v, want disabled default", tt.eventType, button)
 		}
@@ -991,9 +1000,13 @@ func TestBuildLarkCardTerminalEventsAreNonInteractive(t *testing.T) {
 			}
 			assertDisabledButtons(t, payload)
 			if eventType == "interrupted" {
-				header := payload["header"].(map[string]any)
-				if header["template"] != "orange" || header["title"].(map[string]any)["content"] != "服务重启，任务已中断" {
-					t.Fatalf("interrupted header = %#v", header)
+				elements := payload["body"].(map[string]any)["elements"].([]any)
+				row := elements[0].(map[string]any)
+				columns := row["columns"].([]any)
+				column := columns[0].(map[string]any)
+				title := column["elements"].([]any)[0].(map[string]any)
+				if title["content"] != "**服务重启，任务已中断**" {
+					t.Fatalf("interrupted title row = %#v", row)
 				}
 			}
 		})
@@ -1135,13 +1148,12 @@ func TestBuildLarkCardSupportsStoppedGreyHeader(t *testing.T) {
 		HeaderTemplate: "grey",
 		StopButton:     StopButton{Visible: true, Disabled: true},
 	})
-	header := payload["header"].(map[string]any)
-	if header["template"] != "grey" {
-		t.Fatalf("template = %#v, want grey", header["template"])
-	}
-	title := header["title"].(map[string]any)
-	if title["content"] != "⏹ 已停止 · ⏱ 5s" {
-		t.Fatalf("title = %#v", title["content"])
+	elements := payload["body"].(map[string]any)["elements"].([]any)
+	row := elements[0].(map[string]any)
+	columns := row["columns"].([]any)
+	title := columns[0].(map[string]any)["elements"].([]any)[0].(map[string]any)
+	if title["content"] != "**⏹ 已停止 · ⏱ 5s**" {
+		t.Fatalf("title row = %#v", title["content"])
 	}
 	config := payload["config"].(map[string]any)
 	if config["streaming_mode"] != false {

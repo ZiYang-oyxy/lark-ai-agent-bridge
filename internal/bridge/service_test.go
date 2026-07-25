@@ -2921,13 +2921,7 @@ func TestServiceStopCancelsActiveOneShotRun(t *testing.T) {
 	payload := prepared.PayloadCopy()
 	elements := payload["body"].(map[string]any)["elements"].([]any)
 	var button map[string]any
-	for _, raw := range elements {
-		element := raw.(map[string]any)
-		if element["element_id"] == "btn_stop" {
-			button = element
-			break
-		}
-	}
+	button = findCardButton(elements, "btn_stop")
 	if button == nil {
 		t.Fatalf("sync stop card elements = %#v, want stop button", elements)
 	}
@@ -2943,6 +2937,27 @@ func TestServiceStopCancelsActiveOneShotRun(t *testing.T) {
 	if got := last.Segments[len(last.Segments)-1].Text; got != stopRequestedNotice {
 		t.Fatalf("terminal stop tail = %q, want %q", got, stopRequestedNotice)
 	}
+}
+
+func findCardButton(value any, elementID string) map[string]any {
+	switch node := value.(type) {
+	case map[string]any:
+		if node["tag"] == "button" && node["element_id"] == elementID {
+			return node
+		}
+		for _, child := range node {
+			if found := findCardButton(child, elementID); found != nil {
+				return found
+			}
+		}
+	case []any:
+		for _, child := range node {
+			if found := findCardButton(child, elementID); found != nil {
+				return found
+			}
+		}
+	}
+	return nil
 }
 
 func TestStopActionGrantAllowsOnlyInitiatorOrAdmin(t *testing.T) {

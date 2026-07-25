@@ -518,6 +518,23 @@ func normalizeHeaderElapsed(payload map[string]any) {
 			normalizeElapsedContent(summary)
 		}
 	}
+	normalizeTitleRowElapsed(payload)
+}
+
+func normalizeTitleRowElapsed(value any) {
+	switch node := value.(type) {
+	case map[string]any:
+		if node["element_id"] == "card_title" {
+			normalizeElapsedContent(node)
+		}
+		for _, child := range node {
+			normalizeTitleRowElapsed(child)
+		}
+	case []any:
+		for _, child := range value.([]any) {
+			normalizeTitleRowElapsed(child)
+		}
+	}
 }
 
 func normalizeElapsedContent(container map[string]any) {
