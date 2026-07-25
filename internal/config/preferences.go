@@ -19,6 +19,14 @@ type ConversationMode string
 
 type GroupMessageMode string
 
+// TopicSeedMode 决定 topic 模式下"新话题的 session 起点"如何构造:
+//   - Quote(默认):新话题从零起 session,把用户 @bot 的正文 + 引用消息(若有)
+//     作为唯一 seed prompt。上下文短、不会继承主会话历史。
+//   - Fork:走 Claude 的 --fork-session <root>,新话题从群主会话 fork 出一份,
+//     继承主会话完整历史。上下文消耗大,但语义连续。
+// 该字段仅在 ConversationMode == topic 时生效,chat 模式忽略。
+type TopicSeedMode string
+
 const (
 	ReplyModeAppend          ReplyMode = "append"
 	ReplyModeAppendCleanCard ReplyMode = "append-clean-card"
@@ -30,6 +38,9 @@ const (
 	GroupMessageModeMentionOnly        GroupMessageMode = "mention_only"
 	GroupMessageModeParticipatedTopics GroupMessageMode = "participated_topics"
 	GroupMessageModeAll                GroupMessageMode = "all_group_messages"
+
+	TopicSeedModeQuote TopicSeedMode = "quote"
+	TopicSeedModeFork  TopicSeedMode = "fork"
 )
 
 var builtinModels = []string{"default", "sonnet", "opus", "haiku"}
@@ -46,6 +57,7 @@ type RuntimePreference struct {
 	Effort           string           `json:"effort"`
 	ReplyMode        ReplyMode        `json:"reply_mode,omitempty"`
 	ConversationMode ConversationMode `json:"conversation_mode,omitempty"`
+	TopicSeedMode    TopicSeedMode    `json:"topic_seed_mode,omitempty"`
 	GroupMessageMode GroupMessageMode `json:"group_message_mode,omitempty"`
 	RespondToBots    bool             `json:"respond_to_bots,omitempty"`
 	// NotifyOnComplete, when true,补发一条 thread reply 文本消息 in the chat when a
@@ -232,6 +244,11 @@ func validateRuntimePreferenceWith(preference RuntimePreference, allowedModels [
 	default:
 		return fmt.Errorf("conversation mode %q is not allowed", preference.ConversationMode)
 	}
+	switch preference.TopicSeedMode {
+	case TopicSeedModeQuote, TopicSeedModeFork:
+	default:
+		return fmt.Errorf("topic seed mode %q is not allowed", preference.TopicSeedMode)
+	}
 	switch preference.GroupMessageMode {
 	case GroupMessageModeMentionOnly, GroupMessageModeParticipatedTopics, GroupMessageModeAll:
 	default:
@@ -276,6 +293,10 @@ func normalizeRuntimePreference(preference RuntimePreference) RuntimePreference 
 	preference.ConversationMode = ConversationMode(strings.ToLower(strings.TrimSpace(string(preference.ConversationMode))))
 	if preference.ConversationMode == "" {
 		preference.ConversationMode = ConversationModeChat
+	}
+	preference.TopicSeedMode = TopicSeedMode(strings.ToLower(strings.TrimSpace(string(preference.TopicSeedMode))))
+	if preference.TopicSeedMode == "" {
+		preference.TopicSeedMode = TopicSeedModeQuote
 	}
 	preference.GroupMessageMode = GroupMessageMode(strings.ToLower(strings.TrimSpace(string(preference.GroupMessageMode))))
 	if preference.GroupMessageMode == "" {

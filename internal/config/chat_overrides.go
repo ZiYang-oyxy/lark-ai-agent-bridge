@@ -14,6 +14,7 @@ type ChatOverride struct {
 	Effort           *string           `json:"effort,omitempty"`
 	ReplyMode        *ReplyMode        `json:"reply_mode,omitempty"`
 	ConversationMode *ConversationMode `json:"conversation_mode,omitempty"`
+	TopicSeedMode    *TopicSeedMode    `json:"topic_seed_mode,omitempty"`
 	GroupMessageMode *GroupMessageMode `json:"group_message_mode,omitempty"`
 	RespondToBots    *bool             `json:"respond_to_bots,omitempty"`
 	// ShowMetaRowAgent / ShowMetaRowRuntime / ShowMetaRowDeveloper 是新的三个独立
@@ -30,7 +31,7 @@ type ChatOverride struct {
 // IsEmpty reports whether the override sets no field at all.
 func (o ChatOverride) IsEmpty() bool {
 	return o.Model == nil && o.Effort == nil && o.ReplyMode == nil &&
-		o.ConversationMode == nil && o.GroupMessageMode == nil &&
+		o.ConversationMode == nil && o.TopicSeedMode == nil && o.GroupMessageMode == nil &&
 		o.RespondToBots == nil && o.ShowMetaRowAgent == nil &&
 		o.ShowMetaRowRuntime == nil && o.ShowMetaRowDeveloper == nil &&
 		o.ShowMetaRows == nil && o.Agent == nil &&
@@ -61,6 +62,10 @@ func normalizeChatOverride(o ChatOverride) ChatOverride {
 	if o.ConversationMode != nil {
 		v := ConversationMode(strings.ToLower(strings.TrimSpace(string(*o.ConversationMode))))
 		o.ConversationMode = &v
+	}
+	if o.TopicSeedMode != nil {
+		v := TopicSeedMode(strings.ToLower(strings.TrimSpace(string(*o.TopicSeedMode))))
+		o.TopicSeedMode = &v
 	}
 	if o.GroupMessageMode != nil {
 		v := GroupMessageMode(strings.ToLower(strings.TrimSpace(string(*o.GroupMessageMode))))
@@ -97,6 +102,9 @@ func mergeChatOverride(base RuntimePreference, o ChatOverride, allowedModels []s
 	}
 	if o.ConversationMode != nil {
 		merged.ConversationMode = *o.ConversationMode
+	}
+	if o.TopicSeedMode != nil {
+		merged.TopicSeedMode = *o.TopicSeedMode
 	}
 	if o.GroupMessageMode != nil {
 		merged.GroupMessageMode = *o.GroupMessageMode

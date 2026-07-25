@@ -24,7 +24,7 @@ func (f *fakeMessageFetcher) FetchMessage(_ context.Context, messageID string) (
 func TestResolveQuotedMessageFetchesParent(t *testing.T) {
 	fetcher := &fakeMessageFetcher{msg: QuotedMessage{Text: "我是一只黑猫", SenderID: "ou_author", MessageType: "text"}}
 	svc := &Service{Audit: audit.NewRecorder(), MessageFetcher: fetcher}
-	text, sender := svc.resolveQuotedMessage(context.Background(), Message{ParentID: "om_parent", ChatID: "oc_x"})
+	text, sender, _ := svc.resolveQuotedMessage(context.Background(), Message{ParentID: "om_parent", ChatID: "oc_x"})
 	if text != "我是一只黑猫" {
 		t.Fatalf("text = %q", text)
 	}
@@ -39,7 +39,7 @@ func TestResolveQuotedMessageFetchesParent(t *testing.T) {
 func TestResolveQuotedMessageNoParentSkips(t *testing.T) {
 	fetcher := &fakeMessageFetcher{msg: QuotedMessage{Text: "unused"}}
 	svc := &Service{Audit: audit.NewRecorder(), MessageFetcher: fetcher}
-	text, sender := svc.resolveQuotedMessage(context.Background(), Message{ParentID: ""})
+	text, sender, _ := svc.resolveQuotedMessage(context.Background(), Message{ParentID: ""})
 	if text != "" || sender != "" {
 		t.Fatalf("expected empty, got text=%q sender=%q", text, sender)
 	}
@@ -50,7 +50,7 @@ func TestResolveQuotedMessageNoParentSkips(t *testing.T) {
 
 func TestResolveQuotedMessageNilFetcherSkips(t *testing.T) {
 	svc := &Service{Audit: audit.NewRecorder()}
-	text, sender := svc.resolveQuotedMessage(context.Background(), Message{ParentID: "om_parent"})
+	text, sender, _ := svc.resolveQuotedMessage(context.Background(), Message{ParentID: "om_parent"})
 	if text != "" || sender != "" {
 		t.Fatalf("expected empty when no fetcher, got text=%q sender=%q", text, sender)
 	}
@@ -59,7 +59,7 @@ func TestResolveQuotedMessageNilFetcherSkips(t *testing.T) {
 func TestResolveQuotedMessageFetchErrorDegrades(t *testing.T) {
 	fetcher := &fakeMessageFetcher{err: errors.New("boom")}
 	svc := &Service{Audit: audit.NewRecorder(), MessageFetcher: fetcher}
-	text, sender := svc.resolveQuotedMessage(context.Background(), Message{ParentID: "om_parent", Sender: "ou_s", ChatID: "oc_x"})
+	text, sender, _ := svc.resolveQuotedMessage(context.Background(), Message{ParentID: "om_parent", Sender: "ou_s", ChatID: "oc_x"})
 	if text != "" || sender != "" {
 		t.Fatalf("fetch failure must degrade to empty, got text=%q sender=%q", text, sender)
 	}
@@ -68,7 +68,7 @@ func TestResolveQuotedMessageFetchErrorDegrades(t *testing.T) {
 func TestResolveQuotedMessageNonTextUsesPlaceholder(t *testing.T) {
 	fetcher := &fakeMessageFetcher{msg: QuotedMessage{Text: "", MessageType: "image"}}
 	svc := &Service{Audit: audit.NewRecorder(), MessageFetcher: fetcher}
-	text, _ := svc.resolveQuotedMessage(context.Background(), Message{ParentID: "om_parent"})
+	text, _, _ := svc.resolveQuotedMessage(context.Background(), Message{ParentID: "om_parent"})
 	if text != "[image 消息]" {
 		t.Fatalf("expected type placeholder, got %q", text)
 	}

@@ -103,6 +103,7 @@ type ConfigForm struct {
 	Effort           string
 	ReplyMode        string
 	ConversationMode string
+	TopicSeedMode    string
 	GroupMessageMode string
 	RespondToBots    string
 	NotifyOnComplete string
@@ -117,6 +118,7 @@ type ConfigForm struct {
 	Efforts              []string
 	ReplyModes           []string
 	ConversationModes    []string
+	TopicSeedModes       []string
 	AllowedUsers         []string
 	AllowedChats         []AccessChat
 	Admins               []string

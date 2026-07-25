@@ -161,6 +161,9 @@ type QuotedMessage struct {
 	Text        string
 	SenderID    string
 	MessageType string
+	// Attachments 是引用消息里可下载的图片/文件引用。topic seed 的 quote 模式会把
+	// 这些附件与当前消息的附件合并,喂给 agent 作 seed;fork 模式忽略。
+	Attachments []media.Ref
 }
 
 // MessageFetcher retrieves a single message by id so bridge can inline a
@@ -998,6 +1001,23 @@ func (s *Service) runWithPreference(ctx context.Context, cmd Command, msg Messag
 	if text == "" && len(msg.Attachments) == 0 && !cmd.Reset {
 		return s.renderTextWithMode("empty", msg.ID, card.SegmentError, "empty prompt", preference.ConversationMode)
 	}
+	// topic seed 的 quote 模式:先拉引用消息,把里面的图片/文件附件合并进 msg.Attachments,
+	// 一起走 resolveAttachments 下载。这样 quote 模式看到的完整 seed 是:@bot 正文 +
+	// 引用消息文本(下面 quotedText/quotedSender)+ 引用消息附件(此处并入 msg.Attachments)。
+	// fork 模式跳过合并,只走后面单独的 quotedText 内联。为避免 executeBatch 侧路径分裂,
+	// 这里两分支拿到的 quotedText 都填进 session.Input;区别只在附件合并与 forkFrom 是否传。
+	quotedText, quotedSender, quotedAttachments := s.resolveQuotedMessage(ctx, msg)
+	seedMode := preference.TopicSeedMode
+	if seedMode == "" {
+		seedMode = config.TopicSeedModeQuote
+	}
+	topicQuoteSeed := preference.ConversationMode == config.ConversationModeTopic &&
+		seedMode == config.TopicSeedModeQuote &&
+		len(quotedAttachments) > 0 &&
+		isTopicSeedFirstRun(s.Sessions, key)
+	if topicQuoteSeed {
+		msg.Attachments = append(append([]media.Ref(nil), msg.Attachments...), quotedAttachments...)
+	}
 	attachments, failures, release := s.resolveAttachments(ctx, msg.Attachments)
 	defer release()
 	var summaryErr error
@@ -1010,8 +1030,10 @@ func (s *Service) runWithPreference(ctx context.Context, cmd Command, msg Messag
 	bin, home := s.resolveAgentBinHome(cmd.Agent, preference)
 	receivedAt := time.Now()
 	debounceWindow := DebounceFor(msg)
-	forkFrom := s.forkSeedForTopicSession(cmd.Agent, key, msg, preference.ConversationMode)
-	quotedText, quotedSender := s.resolveQuotedMessage(ctx, msg)
+	var forkFrom string
+	if seedMode == config.TopicSeedModeFork {
+		forkFrom = s.forkSeedForTopicSession(cmd.Agent, key, msg, preference.ConversationMode)
+	}
 	input := session.Input{ID: msg.ID, Sender: msg.Sender, Text: text, QuotedText: quotedText, QuotedSender: quotedSender, Attachments: attachments, ReplyToMessageID: msg.ID, CardSessionID: cardSessionID, WorkDir: workDir, RequestedModel: preference.Model, RequestedEffort: preference.Effort, AgentBin: bin, AgentHome: home, ForkFromAgentSessionID: forkFrom, ReplyMode: preference.ReplyMode, ConversationMode: preference.ConversationMode, NotifyOnComplete: preference.NotifyOnComplete, BridgeInstructionsVersion: bridgeinstructions.CurrentVersion, ScheduleKind: cmd.ScheduleKind, ScheduleTargetThreadID: msg.ThreadID, IsGroup: msg.IsGroup, Time: effectiveMessageTime(msg), DebounceUntil: receivedAt.Add(debounceWindow), DebounceWindow: debounceWindow, State: session.InputDebouncing, Reset: cmd.Reset || cmd.ScheduleKind != ""}
 	accepted, queued, err := s.Sessions.AcceptAndEnqueue(key, input, receivedAt, s.dedupTTL(), s.dedupMaxEntries(), s.batchLimits())
 	if err != nil {
@@ -1770,7 +1792,7 @@ func (s *Service) HandleActionResult(ctx context.Context, req ActionRequest) (Ac
 			effort = v
 		}
 		// Model is still not editable from the /config form; preserve current value.
-		preference := config.RuntimePreference{Model: current.Model, Effort: effort, ReplyMode: config.ReplyMode(req.FormValues["reply_mode"]), ConversationMode: config.ConversationMode(req.FormValues["conversation_mode"]), GroupMessageMode: groupMessageMode, RespondToBots: respondToBots, NotifyOnComplete: notifyOnComplete, ShowMetaRowAgent: showMetaRowAgent, ShowMetaRowRuntime: showMetaRowRuntime, ShowMetaRowDeveloper: showMetaRowDeveloper, Agent: selectedAgent, AgentHome: req.FormValues["agent_home"], AgentBin: req.FormValues["agent_bin"]}
+		preference := config.RuntimePreference{Model: current.Model, Effort: effort, ReplyMode: config.ReplyMode(req.FormValues["reply_mode"]), ConversationMode: config.ConversationMode(req.FormValues["conversation_mode"]), TopicSeedMode: config.TopicSeedMode(req.FormValues["topic_seed_mode"]), GroupMessageMode: groupMessageMode, RespondToBots: respondToBots, NotifyOnComplete: notifyOnComplete, ShowMetaRowAgent: showMetaRowAgent, ShowMetaRowRuntime: showMetaRowRuntime, ShowMetaRowDeveloper: showMetaRowDeveloper, Agent: selectedAgent, AgentHome: req.FormValues["agent_home"], AgentBin: req.FormValues["agent_bin"]}
 		if !strings.EqualFold(strings.TrimSpace(current.Agent), strings.TrimSpace(preference.Agent)) {
 			if _, ok := s.Agents.HomePath(preference.Agent, preference.AgentHome); !ok {
 				preference.AgentHome = ""
@@ -1784,12 +1806,12 @@ func (s *Service) HandleActionResult(ctx context.Context, req ActionRequest) (Ac
 			return s.renderActionEvent(configSaveErrorEvent(req.SessionID))
 		}
 		preference = s.Preferences.Get()
-		s.Audit.Record(req.Actor, "config_saved", req.SessionID, fmt.Sprintf("agent=%s agent_home=%s agent_bin=%s model=%s effort=%s reply_mode=%s conversation_mode=%s group_message_mode=%s respond_to_bots=%t notify_on_complete=%t show_meta_row_agent=%t show_meta_row_runtime=%t show_meta_row_developer=%t", preference.Agent, preference.AgentHome, preference.AgentBin, preference.Model, preference.Effort, preference.ReplyMode, preference.ConversationMode, preference.GroupMessageMode, preference.RespondToBots, preference.NotifyOnComplete, preference.ShowMetaRowAgent, preference.ShowMetaRowRuntime, preference.ShowMetaRowDeveloper))
+		s.Audit.Record(req.Actor, "config_saved", req.SessionID, fmt.Sprintf("agent=%s agent_home=%s agent_bin=%s model=%s effort=%s reply_mode=%s conversation_mode=%s topic_seed_mode=%s group_message_mode=%s respond_to_bots=%t notify_on_complete=%t show_meta_row_agent=%t show_meta_row_runtime=%t show_meta_row_developer=%t", preference.Agent, preference.AgentHome, preference.AgentBin, preference.Model, preference.Effort, preference.ReplyMode, preference.ConversationMode, preference.TopicSeedMode, preference.GroupMessageMode, preference.RespondToBots, preference.NotifyOnComplete, preference.ShowMetaRowAgent, preference.ShowMetaRowRuntime, preference.ShowMetaRowDeveloper))
 		s.Audit.Record(req.Actor, "group_message_mode_saved", req.SessionID, fmt.Sprintf("mode=%s respond_to_bots=%t", preference.GroupMessageMode, preference.RespondToBots))
 		result, err := s.renderActionEvent(card.Event{
 			Type:      "config_saved",
 			SessionID: req.SessionID,
-			Segments:  []card.Segment{{Kind: card.SegmentText, Text: fmt.Sprintf("偏好已保存。\n\n**Agent**：`%s`\n**Agent 主目录**：`%s`\n**Agent 可执行文件**：`%s`\n**模型**：`%s`\n**Effort**：`%s`\n**回复模式**：`%s`\n**会话模式**：`%s`\n**群消息接收**：`%s`\n**响应其他 bot**：`%t`\n\n下一条新消息开始生效。", preference.Agent, orDefault(preference.AgentHome, config.DefaultHomeLabel), orDefault(preference.AgentBin, config.DefaultBinLabelFor(preference.Agent)), preference.Model, preference.Effort, preference.ReplyMode, preference.ConversationMode, preference.GroupMessageMode, preference.RespondToBots)}},
+			Segments:  []card.Segment{{Kind: card.SegmentText, Text: fmt.Sprintf("偏好已保存。\n\n**Agent**：`%s`\n**Agent 主目录**：`%s`\n**Agent 可执行文件**：`%s`\n**模型**：`%s`\n**Effort**：`%s`\n**回复模式**：`%s`\n**会话模式**：`%s`\n**新话题起点**：`%s`\n**群消息接收**：`%s`\n**响应其他 bot**：`%t`\n\n下一条新消息开始生效。", preference.Agent, orDefault(preference.AgentHome, config.DefaultHomeLabel), orDefault(preference.AgentBin, config.DefaultBinLabelFor(preference.Agent)), preference.Model, preference.Effort, preference.ReplyMode, preference.ConversationMode, preference.TopicSeedMode, preference.GroupMessageMode, preference.RespondToBots)}},
 		})
 		if err == nil {
 			s.ensureGroupMessageScope(req.SessionID, preference.GroupMessageMode)
@@ -1816,11 +1838,11 @@ func (s *Service) HandleActionResult(ctx context.Context, req ActionRequest) (Ac
 			return s.renderActionEvent(configSaveErrorEvent(req.SessionID))
 		}
 		effective := s.Preferences.GetForChat(chatID)
-		s.Audit.Record(req.Actor, "local_config_saved", chatID, fmt.Sprintf("agent=%s model=%s effort=%s reply_mode=%s conversation_mode=%s group_message_mode=%s respond_to_bots=%t", effective.Agent, effective.Model, effective.Effort, effective.ReplyMode, effective.ConversationMode, effective.GroupMessageMode, effective.RespondToBots))
+		s.Audit.Record(req.Actor, "local_config_saved", chatID, fmt.Sprintf("agent=%s model=%s effort=%s reply_mode=%s conversation_mode=%s topic_seed_mode=%s group_message_mode=%s respond_to_bots=%t", effective.Agent, effective.Model, effective.Effort, effective.ReplyMode, effective.ConversationMode, effective.TopicSeedMode, effective.GroupMessageMode, effective.RespondToBots))
 		return s.renderActionEvent(card.Event{
 			Type:      "local_config_saved",
 			SessionID: req.SessionID,
-			Segments:  []card.Segment{{Kind: card.SegmentText, Text: fmt.Sprintf("本群覆盖已保存 —— 仅本群生效，未改全局；未修改的项继承全局 `/config`。\n\n**Agent**：`%s`\n**模型**：`%s`\n**Effort**：`%s`\n**回复模式**：`%s`\n**会话模式**：`%s`\n**群消息接收**：`%s`\n**响应其他 bot**：`%t`\n\n下一条新消息开始生效。", effective.Agent, effective.Model, effective.Effort, effective.ReplyMode, effective.ConversationMode, effective.GroupMessageMode, effective.RespondToBots)}},
+			Segments:  []card.Segment{{Kind: card.SegmentText, Text: fmt.Sprintf("本群覆盖已保存 —— 仅本群生效，未改全局；未修改的项继承全局 `/config`。\n\n**Agent**：`%s`\n**模型**：`%s`\n**Effort**：`%s`\n**回复模式**：`%s`\n**会话模式**：`%s`\n**新话题起点**：`%s`\n**群消息接收**：`%s`\n**响应其他 bot**：`%t`\n\n下一条新消息开始生效。", effective.Agent, effective.Model, effective.Effort, effective.ReplyMode, effective.ConversationMode, effective.TopicSeedMode, effective.GroupMessageMode, effective.RespondToBots)}},
 		})
 	case "local_config.edit":
 		if s.Preferences == nil {
@@ -1991,6 +2013,7 @@ func (s *Service) configForm(preference config.RuntimePreference) *card.ConfigFo
 	form := &card.ConfigForm{
 		Agent: agentKind, AgentHome: preference.AgentHome, AgentBin: preference.AgentBin,
 		Model: preference.Model, Effort: preference.Effort, ReplyMode: string(preference.ReplyMode), ConversationMode: string(preference.ConversationMode),
+		TopicSeedMode:        string(preference.TopicSeedMode),
 		GroupMessageMode:     string(preference.GroupMessageMode),
 		RespondToBots:        strconv.FormatBool(preference.RespondToBots),
 		NotifyOnComplete:     strconv.FormatBool(preference.NotifyOnComplete),
@@ -2001,6 +2024,7 @@ func (s *Service) configForm(preference config.RuntimePreference) *card.ConfigFo
 		Models: s.configModelOptions(), Efforts: []string{"default", "low", "medium", "high"},
 		ReplyModes:        []string{string(config.ReplyModeAppend), string(config.ReplyModeAppendCleanCard), string(config.ReplyModeLatestCard)},
 		ConversationModes: []string{string(config.ConversationModeChat), string(config.ConversationModeTopic)},
+		TopicSeedModes:    []string{string(config.TopicSeedModeQuote), string(config.TopicSeedModeFork)},
 	}
 	s.populateAccessConfigForm(form)
 	return form
@@ -2043,6 +2067,7 @@ func (s *Service) localConfigOverview(chatID string) *card.LocalConfigOverview {
 		{Label: "推理深度", Value: effective.Effort, Overridden: override.Effort != nil},
 		{Label: "回复模式", Value: string(effective.ReplyMode), Overridden: override.ReplyMode != nil},
 		{Label: "会话模式", Value: string(effective.ConversationMode), Overridden: override.ConversationMode != nil},
+		{Label: "新话题起点", Value: string(effective.TopicSeedMode), Overridden: override.TopicSeedMode != nil},
 		{Label: "群消息接收", Value: groupMessageModeText(effective.GroupMessageMode), Overridden: override.GroupMessageMode != nil},
 		{Label: "响应其他 bot", Value: respondToBotsText(effective.RespondToBots), Overridden: override.RespondToBots != nil},
 	}
@@ -2103,6 +2128,11 @@ func chatOverrideFromForm(values map[string]string, global config.RuntimePrefere
 	if raw, ok := values["conversation_mode"]; ok {
 		if v := config.ConversationMode(strings.TrimSpace(raw)); v != "" && v != global.ConversationMode {
 			override.ConversationMode = &v
+		}
+	}
+	if raw, ok := values["topic_seed_mode"]; ok {
+		if v := config.TopicSeedMode(strings.TrimSpace(raw)); v != "" && v != global.TopicSeedMode {
+			override.TopicSeedMode = &v
 		}
 	}
 	if raw, ok := values["group_message_mode"]; ok {
@@ -2818,33 +2848,54 @@ func (s *Service) forkSeedForTopicSession(kind agent.Kind, topicKey session.Key,
 	return strings.TrimSpace(root.AgentSessionID)
 }
 
+// isTopicSeedFirstRun reports whether the given topic-scoped session key has
+// never run before (no AgentSessionID minted, no History rows). This is the
+// gate quote-mode uses to decide "should I fold parent-message attachments
+// into the seed" — only for the very first run on that key. On any subsequent
+// run the topic already has its own history, and re-injecting the quoted
+// attachments would duplicate them uselessly.
+func isTopicSeedFirstRun(sessions *session.Manager, key session.Key) bool {
+	if sessions == nil {
+		return false
+	}
+	if key.Thread == "" {
+		return false
+	}
+	existing, ok := sessions.Get(key)
+	if !ok {
+		return true
+	}
+	return existing.AgentSessionID == "" && len(existing.History) == 0
+}
+
 // resolveQuotedMessage fetches the body of a message the user quoted
 // (replied to) when triggering this run, so it can be inlined into the
 // prompt. Feishu delivers only the quoted message's parent_id in the inbound
 // event; without this the agent never sees what the user was pointing at.
 //
 // It degrades gracefully: any fetch failure is audited and returns empty
-// strings rather than blocking the run. A quoted message with no plain-text
+// values rather than blocking the run. A quoted message with no plain-text
 // body (image/file/etc.) yields a short type placeholder so the agent still
-// knows a quote existed.
-func (s *Service) resolveQuotedMessage(ctx context.Context, msg Message) (text, sender string) {
+// knows a quote existed. Downloadable attachments (image/file) in the parent
+// message come back as refs so callers can decide whether to pull them.
+func (s *Service) resolveQuotedMessage(ctx context.Context, msg Message) (text, sender string, attachments []media.Ref) {
 	if msg.ParentID == "" || s.MessageFetcher == nil {
-		return "", ""
+		return "", "", nil
 	}
 	fetched, err := s.MessageFetcher.FetchMessage(ctx, msg.ParentID)
 	if err != nil {
 		s.Audit.Record(msg.Sender, "quoted_message_fetch_failed", msg.ChatID, err.Error())
-		return "", ""
+		return "", "", nil
 	}
 	quoted := strings.TrimSpace(fetched.Text)
 	if quoted == "" {
 		if fetched.MessageType != "" {
 			quoted = "[" + fetched.MessageType + " 消息]"
 		} else {
-			return "", ""
+			return "", "", fetched.Attachments
 		}
 	}
-	return quoted, fetched.SenderID
+	return quoted, fetched.SenderID, fetched.Attachments
 }
 
 func (s *Service) metaFromSession(sess session.Session) card.Meta {

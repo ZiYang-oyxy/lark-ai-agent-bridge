@@ -398,6 +398,7 @@ func TestBuildLarkCardRendersRuntimeConfigForm(t *testing.T) {
 			Effort:               "high",
 			ReplyMode:            "latest-card",
 			ConversationMode:     "chat",
+			TopicSeedMode:        "quote",
 			GroupMessageMode:     "mention_only",
 			RespondToBots:        "false",
 			NotifyOnComplete:     "false",
@@ -411,6 +412,7 @@ func TestBuildLarkCardRendersRuntimeConfigForm(t *testing.T) {
 			Efforts:              []string{"default", "low", "medium", "high"},
 			ReplyModes:           []string{"append", "append-clean-card", "latest-card"},
 			ConversationModes:    []string{"chat", "topic"},
+			TopicSeedModes:       []string{"quote", "fork"},
 		},
 		Segments:  []Segment{{Kind: SegmentText, Text: "must not appear beside the form"}},
 		Streaming: true,
@@ -469,10 +471,11 @@ func TestBuildLarkCardRendersRuntimeConfigForm(t *testing.T) {
 		t.Fatalf("effort select must expose 4 options (default/low/medium/high), got %#v", opts)
 	}
 	// statusbar 三行回到 select_static 布尔下拉(checker 不是 form 字段、勾选不生效),
-	// select 总数为 8 + 3 = 11。
-	if len(selects) != 11 ||
+	// select 总数为 8 + 3 + 1(topic_seed_mode) = 12。
+	if len(selects) != 12 ||
 		selects["reply_mode"]["initial_option"] != "latest-card" ||
 		selects["conversation_mode"]["initial_option"] != "chat" ||
+		selects["topic_seed_mode"]["initial_option"] != "quote" ||
 		selects["group_message_mode"]["initial_option"] != "mention_only" ||
 		selects["respond_to_bots"]["initial_option"] != "false" ||
 		selects["notify_on_complete"]["initial_option"] != "false" {

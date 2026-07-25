@@ -486,6 +486,7 @@ func cloneEvent(event Event) Event {
 		form.Efforts = append([]string(nil), event.ConfigForm.Efforts...)
 		form.ReplyModes = append([]string(nil), event.ConfigForm.ReplyModes...)
 		form.ConversationModes = append([]string(nil), event.ConfigForm.ConversationModes...)
+		form.TopicSeedModes = append([]string(nil), event.ConfigForm.TopicSeedModes...)
 		cloned.ConfigForm = &form
 	}
 	return cloned

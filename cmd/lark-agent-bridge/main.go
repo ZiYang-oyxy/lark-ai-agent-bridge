@@ -561,6 +561,7 @@ func runtimePreferenceDefaults(cfg config.Config) config.RuntimePreference {
 		Effort:           cfg.Effort,
 		ReplyMode:        cfg.ReplyMode,
 		ConversationMode: cfg.ConversationMode,
+		TopicSeedMode:    cfg.TopicSeedMode,
 		GroupMessageMode: cfg.GroupMessageMode,
 		RespondToBots:    cfg.RespondToBots,
 	}
@@ -812,6 +813,7 @@ func (f quotedMessageFetcher) FetchMessage(ctx context.Context, messageID string
 		Text:        fetched.Text,
 		SenderID:    fetched.SenderID,
 		MessageType: fetched.MessageType,
+		Attachments: fetched.Attachments,
 	}, nil
 }
 

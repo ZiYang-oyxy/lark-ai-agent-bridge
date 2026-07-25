@@ -193,6 +193,7 @@ func buildConfigFormElements(sessionID string, form ConfigForm) []any {
 	conversation := []map[string]any{}
 	conversation = append(conversation, fieldElements("cfg_reply", "回复模式", "append 保留全过程 · clean-card 只留末答 · latest-card 复用最新卡", configSelect("reply_mode", form.ReplyMode, form.ReplyModes))...)
 	conversation = append(conversation, fieldElements("cfg_conv", "会话模式", "chat 按群共用会话 · topic 按话题隔离", configSelect("conversation_mode", form.ConversationMode, form.ConversationModes))...)
+	conversation = append(conversation, fieldElements("cfg_topic_seed", "新话题起点（topic 模式）", "quote 用当前消息+引用消息(含图片)起新会话，上下文短 · fork 从群主会话 fork 出一份，继承完整历史但上下文消耗大", configSelect("topic_seed_mode", form.TopicSeedMode, form.TopicSeedModes))...)
 
 	group := []map[string]any{}
 	group = append(group, fieldElements("cfg_group", "群消息接收", "mention_only 仅 @bot · participated_topics 已参与话题 · all 所有群消息（后两档需群消息权限）", configSelectOptions("group_message_mode", form.GroupMessageMode, []SelectOption{

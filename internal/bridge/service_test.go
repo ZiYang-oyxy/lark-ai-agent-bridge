@@ -741,7 +741,7 @@ func TestServiceConfigResetRemovesOverride(t *testing.T) {
 	cfg := testConfig(t)
 	cfg.Model, cfg.Effort = "sonnet", "low"
 	cfg.AllowedModels = []string{"default", "sonnet", "opus", "haiku"}
-	defaults := config.RuntimePreference{Model: cfg.Model, Effort: cfg.Effort, ReplyMode: config.ReplyModeAppend, ConversationMode: config.ConversationModeChat, GroupMessageMode: config.GroupMessageModeMentionOnly, Agent: config.DefaultAgentKind}
+	defaults := config.RuntimePreference{Model: cfg.Model, Effort: cfg.Effort, ReplyMode: config.ReplyModeAppend, ConversationMode: config.ConversationModeChat, TopicSeedMode: config.TopicSeedModeQuote, GroupMessageMode: config.GroupMessageModeMentionOnly, Agent: config.DefaultAgentKind}
 	store, path := testPreferenceStore(t, defaults, cfg.AllowedModels)
 	if err := store.Set(config.RuntimePreference{Model: "opus", Effort: "high", ReplyMode: config.ReplyModeLatestCard}); err != nil {
 		t.Fatal(err)
@@ -778,7 +778,7 @@ func TestServiceConfigSavePersistsValidValuesAndRejectsInvalidValues(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Event == nil || result.Event.Type != "config_saved" || store.Get() != (config.RuntimePreference{Model: "default", Effort: "medium", ReplyMode: config.ReplyModeLatestCard, ConversationMode: config.ConversationModeTopic, GroupMessageMode: config.GroupMessageModeMentionOnly, Agent: config.DefaultAgentKind}) {
+	if result.Event == nil || result.Event.Type != "config_saved" || store.Get() != (config.RuntimePreference{Model: "default", Effort: "medium", ReplyMode: config.ReplyModeLatestCard, ConversationMode: config.ConversationModeTopic, TopicSeedMode: config.TopicSeedModeQuote, GroupMessageMode: config.GroupMessageModeMentionOnly, Agent: config.DefaultAgentKind}) {
 		t.Fatalf("save result/store = %#v / %#v", result, store.Get())
 	}
 	if result.Event.ConfigForm != nil {
@@ -820,7 +820,7 @@ func TestServiceConfigSaveModelStaysStickyEffortIsEditable(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := (config.RuntimePreference{Model: "opus", Effort: "high", ReplyMode: config.ReplyModeLatestCard, ConversationMode: config.ConversationModeTopic, GroupMessageMode: config.GroupMessageModeMentionOnly, Agent: config.DefaultAgentKind}); result.Event == nil || result.Event.Type != "config_saved" || store.Get() != want {
+	if want := (config.RuntimePreference{Model: "opus", Effort: "high", ReplyMode: config.ReplyModeLatestCard, ConversationMode: config.ConversationModeTopic, TopicSeedMode: config.TopicSeedModeQuote, GroupMessageMode: config.GroupMessageModeMentionOnly, Agent: config.DefaultAgentKind}); result.Event == nil || result.Event.Type != "config_saved" || store.Get() != want {
 		t.Fatalf("save without model/effort = %#v / %#v, want %#v", result, store.Get(), want)
 	}
 
@@ -1196,7 +1196,7 @@ func TestServiceConfigPersistenceFailureShowsErrorAndAudits(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Event == nil || result.Event.Type != "error" || store.Get() != (config.RuntimePreference{Model: "sonnet", Effort: "medium", ReplyMode: config.ReplyModeAppend, ConversationMode: config.ConversationModeChat, GroupMessageMode: config.GroupMessageModeMentionOnly, Agent: config.DefaultAgentKind}) || !auditContainsAction(recorder.Events(), "config_save_failed") {
+	if result.Event == nil || result.Event.Type != "error" || store.Get() != (config.RuntimePreference{Model: "sonnet", Effort: "medium", ReplyMode: config.ReplyModeAppend, ConversationMode: config.ConversationModeChat, TopicSeedMode: config.TopicSeedModeQuote, GroupMessageMode: config.GroupMessageModeMentionOnly, Agent: config.DefaultAgentKind}) || !auditContainsAction(recorder.Events(), "config_save_failed") {
 		t.Fatalf("failure result/store/audit = %#v / %#v / %#v", result, store.Get(), recorder.Events())
 	}
 }

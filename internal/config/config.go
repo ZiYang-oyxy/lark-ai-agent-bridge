@@ -44,6 +44,7 @@ type Config struct {
 	Effort                      string
 	ReplyMode                   ReplyMode
 	ConversationMode            ConversationMode
+	TopicSeedMode               TopicSeedMode
 	GroupMessageMode            GroupMessageMode
 	RespondToBots               bool
 	AllowedModels               []string
@@ -95,6 +96,7 @@ func LoadFromEnv() Config {
 		Effort:                      "low",
 		ReplyMode:                   ReplyModeAppend,
 		ConversationMode:            ConversationModeChat,
+		TopicSeedMode:               TopicSeedModeQuote,
 		GroupMessageMode:            GroupMessageModeMentionOnly,
 		QueueMaxPending:             20,
 		BatchMaxInputs:              10,
@@ -213,6 +215,9 @@ func LoadFromEnv() Config {
 	if v := os.Getenv("E2E_CONVERSATION_MODE"); v != "" {
 		cfg.ConversationMode = ConversationMode(strings.ToLower(strings.TrimSpace(v)))
 	}
+	if v := os.Getenv("E2E_TOPIC_SEED_MODE"); v != "" {
+		cfg.TopicSeedMode = TopicSeedMode(strings.ToLower(strings.TrimSpace(v)))
+	}
 	if v := os.Getenv("E2E_GROUP_MESSAGE_MODE"); v != "" {
 		cfg.GroupMessageMode = GroupMessageMode(strings.ToLower(strings.TrimSpace(v)))
 	}
@@ -311,7 +316,7 @@ func LoadFromEnvStrict() (Config, error) {
 			return Config{}, fmt.Errorf("parse E2E_ALLOWED_MODELS: %w", err)
 		}
 	}
-	if err := ValidateRuntimePreference(RuntimePreference{Model: cfg.Model, Effort: cfg.Effort, ReplyMode: cfg.ReplyMode, ConversationMode: cfg.ConversationMode, GroupMessageMode: cfg.GroupMessageMode, RespondToBots: cfg.RespondToBots}, cfg.AllowedModels...); err != nil {
+	if err := ValidateRuntimePreference(RuntimePreference{Model: cfg.Model, Effort: cfg.Effort, ReplyMode: cfg.ReplyMode, ConversationMode: cfg.ConversationMode, TopicSeedMode: cfg.TopicSeedMode, GroupMessageMode: cfg.GroupMessageMode, RespondToBots: cfg.RespondToBots}, cfg.AllowedModels...); err != nil {
 		return Config{}, fmt.Errorf("validate runtime preference defaults: %w", err)
 	}
 	if raw, ok := os.LookupEnv("E2E_RESPOND_TO_BOTS"); ok {

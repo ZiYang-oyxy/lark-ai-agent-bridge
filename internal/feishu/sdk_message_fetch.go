@@ -6,6 +6,8 @@ import (
 
 	larkcore "github.com/larksuite/oapi-sdk-go/v3/core"
 	larkim "github.com/larksuite/oapi-sdk-go/v3/service/im/v1"
+
+	"lark-agent-bridge/internal/media"
 )
 
 // FetchedMessage carries the minimal fields bridge needs to inline a quoted
@@ -15,6 +17,9 @@ type FetchedMessage struct {
 	MessageType string
 	Text        string
 	SenderID    string
+	// Attachments 是被引用消息里可下载的图片/文件引用。上层(topic seed quote 模式)
+	// 用它把引用里的图片拉回来喂给 agent。文本消息返回 nil。
+	Attachments []media.Ref
 }
 
 // GetMessageAPI is the subset of the Feishu im.v1 message API used to fetch a
@@ -55,6 +60,7 @@ func (s *SDKSender) FetchMessage(ctx context.Context, messageID string) (Fetched
 	}
 	if item.Body != nil && item.Body.Content != nil {
 		out.Text = parseMessageText(*item.Body.Content)
+		out.Attachments = parseMessageAttachments(messageID, out.MessageType, *item.Body.Content)
 	}
 	if item.Sender != nil && item.Sender.Id != nil {
 		out.SenderID = *item.Sender.Id
