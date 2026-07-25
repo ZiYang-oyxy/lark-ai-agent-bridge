@@ -3068,6 +3068,28 @@ func (r CLIExecRunner) Run(ctx context.Context, req AgentRunRequest) (AgentRunRe
 	if err := cmd.Start(); err != nil {
 		return AgentRunResult{}, err
 	}
+	// Stop-cancel 兜底:ctx cancel 后先由 cmd.Cancel 给 pgroup 发 SIGTERM(procgroup_unix.go),
+	// 但 parseClaudeStream 阻塞在 pipe.Read,cmd.Wait 尚未启动,cmd.WaitDelay 里的 SIGKILL
+	// 升级永远进不来——历史上真实见过 Claude 刚回复 sequence=1 就被点停止,111s 才收敛出
+	// stopped 卡的案例(audit 里 stream 全静默、无 agent_run_failed)。这里在 ctx.Done 后
+	// grace 期结束时强制 Close 掉 stdout pipe,scanner 立刻 EOF 返回,parseClaudeStream 收敛,
+	// 然后 cmd.Wait 就能进入并让 WaitDelay 兜底 SIGKILL 全组。正常路径 Wait 已关 pipe,
+	// 这次 Close 幂等无副作用。
+	cancelReady := make(chan struct{})
+	defer close(cancelReady)
+	go func() {
+		select {
+		case <-ctx.Done():
+		case <-cancelReady:
+			return
+		}
+		select {
+		case <-time.After(stopGracePeriod):
+			_ = pipe.Close()
+		case <-cancelReady:
+			return
+		}
+	}()
 	var result AgentRunResult
 	var scanErr error
 	if req.Kind == agent.Codex {

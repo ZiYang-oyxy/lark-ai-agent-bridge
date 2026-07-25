@@ -5,12 +5,7 @@ package bridge
 import (
 	"os/exec"
 	"syscall"
-	"time"
 )
-
-// stopGracePeriod is how long we wait after signalling the process group with
-// SIGTERM before Go escalates to SIGKILL and forces cmd.Wait to return.
-const stopGracePeriod = 5 * time.Second
 
 // configureProcessGroup makes the agent CLI killable as a whole tree.
 //
