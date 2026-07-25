@@ -78,6 +78,48 @@ func TestNewRuntimeUpdateManagerFollowsConfiguration(t *testing.T) {
 	}
 }
 
+func TestNewRuntimeUpdateManagerWarnsWhenPrereleaseURLMissing(t *testing.T) {
+	// Only stable configured — the bridge silently only tracked stable before,
+	// so a supervisor started with just LAB_UPDATE_MANIFEST_URL got no signal
+	// that /help would ignore any published rc. Now startup must warn.
+	var buf bytes.Buffer
+	got := newRuntimeUpdateManagerTo(config.Config{
+		UpdateManifestURL: "https://updates.example/manifest.json",
+	}, nil, &buf)
+	if got == nil {
+		t.Fatalf("manager must still be built when only stable is set")
+	}
+	warn := buf.String()
+	if !strings.Contains(warn, "LAB_UPDATE_PRERELEASE_MANIFEST_URL") {
+		t.Fatalf("warning must name the missing env var, got %q", warn)
+	}
+	if !strings.Contains(warn, "/help") || !strings.Contains(warn, "rc") {
+		t.Fatalf("warning must mention /help and rc, got %q", warn)
+	}
+}
+
+func TestNewRuntimeUpdateManagerSilentWhenBothURLsSetOrUnset(t *testing.T) {
+	// Both configured — no warning: everything is wired for both channels.
+	var buf bytes.Buffer
+	newRuntimeUpdateManagerTo(config.Config{
+		UpdateManifestURL:           "https://updates.example/manifest.json",
+		UpdatePrereleaseManifestURL: "https://updates.example/prerelease.json",
+	}, nil, &buf)
+	if buf.Len() != 0 {
+		t.Fatalf("must not warn when prerelease URL is set, got %q", buf.String())
+	}
+	// Neither configured — no warning either: an unconfigured bridge already
+	// surfaces "self-upgrade disabled" through the /help card; we don't want a
+	// separate stderr line for the same fact.
+	buf.Reset()
+	if got := newRuntimeUpdateManagerTo(config.Config{}, nil, &buf); got != nil {
+		t.Fatalf("manager without stable URL = %#v", got)
+	}
+	if buf.Len() != 0 {
+		t.Fatalf("must not warn when neither URL is set, got %q", buf.String())
+	}
+}
+
 type serveCardKitClientFake struct {
 	fullUpdates    int
 	elementUpdates int

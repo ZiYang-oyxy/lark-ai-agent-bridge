@@ -59,10 +59,26 @@ GOCACHE=$PWD/.cache/go-build go run ./cmd/lark-agent-bridge serve --default-work
 
 ## 一键升级与发布物
 
-运行端只需要配置一个稳定 manifest URL：
+运行端至少需要配置 stable manifest URL；若希望在开发者模式下接收 rc 版本，另配 prerelease manifest URL：
 
 ```bash
+# 必配：stable 通道，普通用户升级路径
 export LAB_UPDATE_MANIFEST_URL=https://updates.example.com/lark-ai-agent-bridge/stable/manifest.json
+
+# 可选：prerelease 通道，供开发者模式（/.devel 1）接收 rc 版本
+export LAB_UPDATE_PRERELEASE_MANIFEST_URL=https://updates.example.com/lark-ai-agent-bridge/prerelease/manifest.json
+```
+
+只配 stable 时，即使发布了新的 rc 版本，`/help` 也不会展示——rc 只能在开发者模式（发送 `/.devel 1`）+ prerelease URL 已配置的前提下升级。若 stable URL 配了、prerelease URL 未配，Bridge 启动时会在 stderr 打印一条 `[warn] LAB_UPDATE_PRERELEASE_MANIFEST_URL 未配置` 提示，避免"发了 rc 但 /help 看不到"这类反复追根因的场景。
+
+**Linux 服务器 supervisor 推荐用 systemd user unit 托管**，避免手工 `nohup` 起时环境变量遗漏。参考模板见 `~/bridge/bridge-self-loop/config/linux-supervisor.service` 与 `linux-supervisor.env.example`（self-loop 仓）。手工临时启动示例：
+
+```bash
+export LARK_APP_ID=... LARK_APP_SECRET=... \
+       LAB_DEFAULT_WORKDIR=/path/to/workspace LAB_CLAUDE_BIN=/path/to/claude \
+       LAB_UPDATE_MANIFEST_URL=https://.../stable/manifest.json \
+       LAB_UPDATE_PRERELEASE_MANIFEST_URL=https://.../prerelease/manifest.json
+nohup ~/bin/lark-agent-bridge-<name> serve --default-workdir "$LAB_DEFAULT_WORKDIR" &
 ```
 
 `/help` 会以 10 分钟内存缓存检查版本。所有授权用户都能查看卡片内 Release note；只有 bot owner/admin 能确认升级。升级前会重新获取 manifest，下载当前平台 binary，严格校验 size 与 SHA-256；存在 active/queued 任务时拒绝升级。通过校验后 Bridge 在当前 binary 同目录保留 `.previous`、原子替换，并以原 argv/env `exec` 新版本。替换或 `exec` 失败会恢复旧 binary；新版本已经启动后再崩溃不自动回滚。

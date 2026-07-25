@@ -515,8 +515,25 @@ func runServe(args []string) error {
 }
 
 func newRuntimeUpdateManager(cfg config.Config, devMode *devmode.Store) *bridgeupdate.Manager {
+	return newRuntimeUpdateManagerTo(cfg, devMode, os.Stderr)
+}
+
+// newRuntimeUpdateManagerTo is the testable core of newRuntimeUpdateManager:
+// startup warnings go to warnOut so tests can capture them.
+//
+// Warning contract (only fires when stable is configured — an unconfigured
+// bridge already fails --help / self-upgrade with a clear message elsewhere):
+// if LAB_UPDATE_MANIFEST_URL is set but LAB_UPDATE_PRERELEASE_MANIFEST_URL is
+// not, /help升级到 rc 不可用。历史踩坑:supervisor 手工 nohup 起,只 export 了
+// stable 一条,发了 rc 后用户 /help 看不到,反复追根因才发现根本没订阅 rc 通道。
+// 这条 warning 让"配了 stable 却漏了 prerelease"在启动时立刻可见,不必等到发
+// rc 才发现。
+func newRuntimeUpdateManagerTo(cfg config.Config, devMode *devmode.Store, warnOut io.Writer) *bridgeupdate.Manager {
 	if strings.TrimSpace(cfg.UpdateManifestURL) == "" {
 		return nil
+	}
+	if strings.TrimSpace(cfg.UpdatePrereleaseManifestURL) == "" && warnOut != nil {
+		fmt.Fprintln(warnOut, "[warn] LAB_UPDATE_PRERELEASE_MANIFEST_URL 未配置：/help 升级卡将只跟踪 stable 通道，rc 版本不可见。若需接收 rc，配置该环境变量并重启，然后发送 /.devel 1 开启开发者模式。")
 	}
 	client := bridgeupdate.NewClient(cfg.UpdateManifestURL, nil)
 	client.PrereleaseURL = cfg.UpdatePrereleaseManifestURL
