@@ -40,6 +40,8 @@ func run(args []string) error {
 		return runPrepare(args[1:])
 	case "tag":
 		return runTag(args[1:])
+	case "test-evidence":
+		return runTestEvidence(args[1:])
 	case "bundle":
 		return runBundle(args[1:])
 	case "help", "-h", "--help":
@@ -124,7 +126,7 @@ func runTag(args []string) error {
 	if err := validateReleaseNoteFile(tag); err != nil {
 		return err
 	}
-	if err := command("go", "test", "./..."); err != nil {
+	if _, err := ensureReleaseTestEvidence(os.Stdout); err != nil {
 		return fmt.Errorf("release tests: %w", err)
 	}
 	return command("git", "tag", "-a", tag, "-F", note)
@@ -706,6 +708,7 @@ func releaseUsage() string {
 Usage:
   lark-bridge-release prepare vMAJOR.MINOR.PATCH[-rc.N]
   lark-bridge-release tag vMAJOR.MINOR.PATCH[-rc.N]
+  lark-bridge-release test-evidence ensure
   lark-bridge-release bundle vMAJOR.MINOR.PATCH[-rc.N] --base-url https://host/path
 `
 }

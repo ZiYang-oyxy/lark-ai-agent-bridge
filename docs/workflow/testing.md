@@ -23,6 +23,20 @@ GOCACHE=$PWD/.cache/go-build go test ./...
 `E2E_MEDIA_CACHE_DIR` 和 `E2E_SESSION_STORE`。这些变量属于 serve/supervisor 的
 durable runtime 路径，不应改变默认路径单测；脚本不会删除或修改变量原本指向的数据。
 
+## 发布 L1 测试凭证
+
+`./scripts/release.sh tag <version>` 会对最终 clean `HEAD` 执行一次发布 L1，并在 git common
+dir 的 `release-state/test-evidence/` 原子写入私有 JSON 凭证和测试日志。也可单独执行：
+
+```bash
+go run ./cmd/lark-bridge-release test-evidence ensure
+```
+
+凭证同时绑定 commit、tree、测试 suite、环境隔离契约，以及 Go binary 路径/SHA256、版本和
+关键 `go env`。完全匹配时输出 `TEST_EVIDENCE_REUSED`；缺失、日志 SHA 不符、工具链变化或
+契约升级时重新执行并输出 `TEST_EVIDENCE_CREATED`。脏 worktree 直接拒绝，失败运行只保留
+诊断日志，不写成功凭证；同一 fingerprint 的并发调用由锁收敛为一次测试。
+
 该脚本覆盖：
 
 - `go test ./...`

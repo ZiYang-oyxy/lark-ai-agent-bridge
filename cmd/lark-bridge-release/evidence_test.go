@@ -1,0 +1,311 @@
+package main
+
+import (
+	"bytes"
+	"encoding/json"
+	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+	"sync"
+	"testing"
+)
+
+func TestReleaseTestEvidenceCreatesReusesAndRejectsTamperedLog(t *testing.T) {
+	repo, goBin, countFile := releaseEvidenceFixture(t)
+	t.Chdir(repo)
+	t.Setenv("LAB_RELEASE_GO_BIN", goBin)
+	t.Setenv("FAKE_GO_COUNT", countFile)
+	t.Setenv("E2E_PREFERENCE_STORE", "/live/preferences.json")
+	t.Setenv("E2E_REPLY_STORE", "/live/replies.json")
+	t.Setenv("E2E_MEDIA_CACHE_DIR", "/live/media")
+	t.Setenv("E2E_SESSION_STORE", "/live/sessions.json")
+	t.Setenv("GOCACHE", filepath.Join(repo, ".cache-a"))
+
+	first, err := ensureReleaseTestEvidence(&bytes.Buffer{})
+	if err != nil || first.Status != "created" {
+		t.Fatalf("first ensure = %#v, %v", first, err)
+	}
+	t.Setenv("GOCACHE", filepath.Join(repo, ".cache-b"))
+	second, err := ensureReleaseTestEvidence(&bytes.Buffer{})
+	if err != nil || second.Status != "reused" || second.Path != first.Path {
+		t.Fatalf("second ensure = %#v, %v", second, err)
+	}
+	if got := releaseEvidenceRunCount(t, countFile); got != 1 {
+		t.Fatalf("go test runs = %d, want 1", got)
+	}
+
+	evidence := readReleaseTestEvidence(t, first.Path)
+	if err := os.WriteFile(evidence.LogFile, []byte("tampered\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	third, err := ensureReleaseTestEvidence(&bytes.Buffer{})
+	if err != nil || third.Status != "created" {
+		t.Fatalf("ensure after log tamper = %#v, %v", third, err)
+	}
+	if got := releaseEvidenceRunCount(t, countFile); got != 2 {
+		t.Fatalf("go test runs after tamper = %d, want 2", got)
+	}
+	for _, path := range []string{third.Path, readReleaseTestEvidence(t, third.Path).LogFile} {
+		info, statErr := os.Stat(path)
+		if statErr != nil || info.Mode().Perm()&0o077 != 0 {
+			t.Fatalf("private mode for %s = %v, %v", path, info.Mode().Perm(), statErr)
+		}
+	}
+}
+
+func TestReleaseTestEvidenceInvalidatesToolchainAndRejectsDirtyWorktree(t *testing.T) {
+	repo, goBin, countFile := releaseEvidenceFixture(t)
+	t.Chdir(repo)
+	t.Setenv("LAB_RELEASE_GO_BIN", goBin)
+	t.Setenv("FAKE_GO_COUNT", countFile)
+
+	first, err := ensureReleaseTestEvidence(&bytes.Buffer{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	f, err := os.OpenFile(goBin, os.O_APPEND|os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.WriteString("\n# toolchain changed\n"); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+	second, err := ensureReleaseTestEvidence(&bytes.Buffer{})
+	if err != nil || second.Status != "created" || second.Fingerprint == first.Fingerprint {
+		t.Fatalf("ensure after toolchain change = %#v, %v", second, err)
+	}
+	if got := releaseEvidenceRunCount(t, countFile); got != 2 {
+		t.Fatalf("go test runs after toolchain change = %d, want 2", got)
+	}
+
+	if err := os.WriteFile(filepath.Join(repo, "README.md"), []byte("dirty\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ensureReleaseTestEvidence(&bytes.Buffer{}); err == nil || !strings.Contains(err.Error(), "clean worktree") {
+		t.Fatalf("dirty worktree error = %v", err)
+	}
+	if got := releaseEvidenceRunCount(t, countFile); got != 2 {
+		t.Fatalf("dirty worktree ran tests: %d", got)
+	}
+	releaseEvidenceGit(t, repo, "add", "README.md")
+	releaseEvidenceGit(t, repo, "commit", "-qm", "test: next clean commit")
+	third, err := ensureReleaseTestEvidence(&bytes.Buffer{})
+	if err != nil || third.Status != "created" || third.Fingerprint == second.Fingerprint {
+		t.Fatalf("ensure after clean commit change = %#v, %v", third, err)
+	}
+	if got := releaseEvidenceRunCount(t, countFile); got != 3 {
+		t.Fatalf("go test runs after commit change = %d, want 3", got)
+	}
+}
+
+func TestRunTagCreatesEvidenceThatEnsureReuses(t *testing.T) {
+	repo, goBin, countFile := releaseEvidenceFixture(t)
+	t.Chdir(repo)
+	t.Setenv("LAB_RELEASE_GO_BIN", goBin)
+	t.Setenv("FAKE_GO_COUNT", countFile)
+
+	note := filepath.Join(repo, "docs", "releases", "v1.0.0.md")
+	if err := os.MkdirAll(filepath.Dir(note), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(note, []byte("# v1.0.0\n\n## Features\n\n- fixture\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	releaseEvidenceGit(t, repo, "add", "docs/releases/v1.0.0.md")
+	releaseEvidenceGit(t, repo, "commit", "-qm", "docs: add release note")
+
+	if err := runTag([]string{"v1.0.0"}); err != nil {
+		t.Fatal(err)
+	}
+	outcome, err := ensureReleaseTestEvidence(&bytes.Buffer{})
+	if err != nil || outcome.Status != "reused" {
+		t.Fatalf("ensure after tag = %#v, %v", outcome, err)
+	}
+	if got := releaseEvidenceRunCount(t, countFile); got != 1 {
+		t.Fatalf("tag + ensure go test runs = %d, want 1", got)
+	}
+	tagType := exec.Command("git", "-C", repo, "cat-file", "-t", "v1.0.0")
+	output, err := tagType.CombinedOutput()
+	if err != nil || strings.TrimSpace(string(output)) != "tag" {
+		t.Fatalf("tag type = %q, %v", output, err)
+	}
+}
+
+func TestReleaseTestEvidenceFailureDoesNotCreatePassingReceipt(t *testing.T) {
+	repo, goBin, countFile := releaseEvidenceFixture(t)
+	t.Chdir(repo)
+	t.Setenv("LAB_RELEASE_GO_BIN", goBin)
+	t.Setenv("FAKE_GO_COUNT", countFile)
+	t.Setenv("FAKE_GO_FAIL", "1")
+
+	if _, err := ensureReleaseTestEvidence(&bytes.Buffer{}); err == nil || !strings.Contains(err.Error(), "go test ./... failed") {
+		t.Fatalf("failure error = %v", err)
+	}
+	evidenceDir, err := releaseTestEvidenceDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	jsonFiles, err := filepath.Glob(filepath.Join(evidenceDir, "*.json"))
+	if err != nil || len(jsonFiles) != 0 {
+		t.Fatalf("passing evidence after failure = %v, %v", jsonFiles, err)
+	}
+	logs, err := filepath.Glob(filepath.Join(evidenceDir, "*.log"))
+	if err != nil || len(logs) != 1 {
+		t.Fatalf("diagnostic logs after failure = %v, %v", logs, err)
+	}
+}
+
+func TestReleaseTestEvidenceConcurrentEnsureRunsTestsOnce(t *testing.T) {
+	repo, goBin, countFile := releaseEvidenceFixture(t)
+	t.Chdir(repo)
+	t.Setenv("LAB_RELEASE_GO_BIN", goBin)
+	t.Setenv("FAKE_GO_COUNT", countFile)
+	t.Setenv("FAKE_GO_SLEEP", "0.3")
+
+	type result struct {
+		outcome releaseTestEvidenceOutcome
+		err     error
+	}
+	start := make(chan struct{})
+	results := make(chan result, 2)
+	var wg sync.WaitGroup
+	for range 2 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			outcome, err := ensureReleaseTestEvidence(&bytes.Buffer{})
+			results <- result{outcome: outcome, err: err}
+		}()
+	}
+	close(start)
+	wg.Wait()
+	close(results)
+	statuses := map[string]int{}
+	for result := range results {
+		if result.err != nil {
+			t.Fatal(result.err)
+		}
+		statuses[result.outcome.Status]++
+	}
+	if statuses["created"] != 1 || statuses["reused"] != 1 {
+		t.Fatalf("concurrent statuses = %#v", statuses)
+	}
+	if got := releaseEvidenceRunCount(t, countFile); got != 1 {
+		t.Fatalf("concurrent go test runs = %d, want 1", got)
+	}
+}
+
+func TestReleaseTestEvidenceLockRemovalPreservesReplacementOwner(t *testing.T) {
+	lockPath := filepath.Join(t.TempDir(), "evidence.lock")
+	if err := os.Mkdir(lockPath, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(lockPath, "owner"), []byte("new-owner\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	releaseEvidenceLock(lockPath, "old-owner\n")
+	if _, err := os.Stat(lockPath); err != nil {
+		t.Fatalf("replacement lock was removed: %v", err)
+	}
+	releaseEvidenceLock(lockPath, "new-owner\n")
+	if _, err := os.Stat(lockPath); !os.IsNotExist(err) {
+		t.Fatalf("owned lock still exists: %v", err)
+	}
+}
+
+func releaseEvidenceFixture(t *testing.T) (repo, goBin, countFile string) {
+	t.Helper()
+	repo = filepath.Join(t.TempDir(), "repo")
+	if err := os.Mkdir(repo, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	releaseEvidenceGit(t, repo, "init", "-q")
+	releaseEvidenceGit(t, repo, "config", "user.name", "release-test")
+	releaseEvidenceGit(t, repo, "config", "user.email", "release-test@example.com")
+	if err := os.WriteFile(filepath.Join(repo, "README.md"), []byte("fixture\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	releaseEvidenceGit(t, repo, "add", "README.md")
+	releaseEvidenceGit(t, repo, "commit", "-qm", "test: seed")
+
+	binDir := t.TempDir()
+	goBin = filepath.Join(binDir, "go")
+	countFile = filepath.Join(binDir, "count")
+	script := `#!/usr/bin/env bash
+set -euo pipefail
+case "$1" in
+  version)
+    echo 'go version go1.26.3 fixture/arch'
+    ;;
+  env)
+    cat <<'JSON'
+{"CGO_ENABLED":"1","GOARCH":"arm64","GOEXPERIMENT":"","GOFLAGS":"","GOOS":"darwin","GOTOOLCHAIN":"auto","GOVERSION":"go1.26.3","GOWORK":""}
+JSON
+    ;;
+  test)
+    for name in E2E_PREFERENCE_STORE E2E_REPLY_STORE E2E_MEDIA_CACHE_DIR E2E_SESSION_STORE; do
+      if [ -n "${!name+x}" ]; then
+        echo "polluted test env: $name" >&2
+        exit 42
+      fi
+    done
+    echo run >>"$FAKE_GO_COUNT"
+    sleep "${FAKE_GO_SLEEP:-0}"
+    [ "${FAKE_GO_FAIL:-0}" = 0 ] || exit 23
+    echo 'ok fixture'
+    ;;
+  *)
+    echo "unexpected fake go args: $*" >&2
+    exit 2
+    ;;
+esac
+`
+	if err := os.WriteFile(goBin, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return repo, goBin, countFile
+}
+
+func releaseEvidenceGit(t *testing.T, repo string, args ...string) {
+	t.Helper()
+	cmd := exec.Command("git", append([]string{"-C", repo}, args...)...)
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git %s: %v: %s", strings.Join(args, " "), err, output)
+	}
+}
+
+func releaseEvidenceRunCount(t *testing.T, path string) int {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if errorsIsNotExist(err) {
+		return 0
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	return strings.Count(string(data), "run\n")
+}
+
+func errorsIsNotExist(err error) bool { return err != nil && os.IsNotExist(err) }
+
+func readReleaseTestEvidence(t *testing.T, path string) releaseTestEvidence {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var evidence releaseTestEvidence
+	if err := json.Unmarshal(data, &evidence); err != nil {
+		t.Fatal(err)
+	}
+	if evidence.SchemaVersion != releaseTestEvidenceSchema {
+		t.Fatal(fmt.Errorf("schema version = %d", evidence.SchemaVersion))
+	}
+	return evidence
+}

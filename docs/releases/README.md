@@ -19,6 +19,9 @@ Release note 使用 [`TEMPLATE.md`](./TEMPLATE.md) 的固定结构，由以下�
 ./scripts/release.sh tag v1.2.3
 ```
 
+`tag` 会通过 `test-evidence ensure` 执行或复用最终 commit 的 L1 测试凭证。后续发布工具只有在
+commit/tree、Go 工具链和环境隔离契约完全一致时才能复用；不存在跳过校验的裸开关。
+
 生成 provider-neutral 静态发布目录：
 
 ```bash
