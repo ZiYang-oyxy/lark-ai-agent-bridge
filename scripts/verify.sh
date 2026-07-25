@@ -4,6 +4,11 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
+# Supervisor/serve environments inject durable state paths. They are runtime
+# inputs, not verifier inputs: leaving them set makes default-path config tests
+# read the live workspace instead of the verifier's temporary workdir.
+unset E2E_PREFERENCE_STORE E2E_REPLY_STORE E2E_MEDIA_CACHE_DIR E2E_SESSION_STORE
+
 export GOCACHE="${GOCACHE:-$ROOT/.cache/go-build}"
 mkdir -p "$GOCACHE"
 
