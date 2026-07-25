@@ -37,7 +37,7 @@ func TestRead(t *testing.T) {
 	writeFixture(t, dir, "sess-mismatch.json", `{"session_id":"different","used_percentage":30}`)
 	writeFixture(t, dir, "sess-bad.json", `{not-json`)
 	writeFixture(t, dir, "sess-nowin.json", `{"session_id":"sess-nowin","used_percentage":77,"total_tokens":null,"context_window_size":null}`)
-	writeFixture(t, dir, "codex-current.json", `{"session_id":"codex-current","used_percentage":null,"total_tokens":999999,"context_tokens":50000,"context_window_size":200000,"model":"gpt-5.6-sol"}`)
+	writeFixture(t, dir, "codex-current.json", `{"session_id":"codex-current","used_percentage":null,"total_tokens":999999,"context_tokens":50000,"context_window_size":200000,"model":"gpt-5.6-sol","reasoning_effort":"high"}`)
 
 	tests := []struct {
 		name      string
@@ -48,7 +48,7 @@ func TestRead(t *testing.T) {
 		{"ok", dir, "sess-ok", Usage{OK: true, UsedPercent: 42, TotalTokens: 84000, ContextWindow: 200000}},
 		{"null-pct-computed", dir, "sess-null-pct", Usage{OK: true, UsedPercent: 25, TotalTokens: 50000, ContextWindow: 200000}},
 		{"percent-only-no-window", dir, "sess-nowin", Usage{OK: true, UsedPercent: 77}},
-		{"codex-current-context", dir, "codex-current", Usage{OK: true, UsedPercent: 25, TotalTokens: 50000, ContextWindow: 200000, Model: "gpt-5.6-sol"}},
+		{"codex-current-context", dir, "codex-current", Usage{OK: true, UsedPercent: 25, TotalTokens: 50000, ContextWindow: 200000, Model: "gpt-5.6-sol", ReasoningEffort: "high"}},
 		{"all-null", dir, "sess-all-null", Usage{OK: false, Reason: ReasonEmpty}},
 		{"session-mismatch", dir, "sess-mismatch", Usage{OK: false, Reason: ReasonMismatch}},
 		{"bad-json", dir, "sess-bad", Usage{OK: false, Reason: ReasonInvalid}},

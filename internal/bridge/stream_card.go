@@ -467,6 +467,9 @@ func (s *agentCardStream) refreshContextUsageLocked() {
 		if model := strings.TrimSpace(u.Model); model != "" {
 			s.meta.Model = model
 		}
+		if s.meta.Model != "" {
+			s.meta.ModelInfo = card.ModelInfo{Actual: s.meta.Model, Effort: u.ReasoningEffort}
+		}
 	}
 }
 
@@ -475,7 +478,7 @@ func (s *Service) metaForRun(sess session.Session, input session.Input) card.Met
 }
 
 func (s *Service) metaForRunWithDir(sess session.Session, input session.Input, ctxDir string) card.Meta {
-	meta, _ := s.metaFromSessionWithDir(sess, ctxDir)
+	meta, usage := s.metaFromSessionWithDir(sess, ctxDir)
 	// 起始 meta 里的 ctx 来自上一轮落盘的 sidecar,本轮尚未跑。标为 approx,渲染时
 	// 用 `~` 前缀与本轮真值区分;refreshContextUsageLocked 收到本轮 fresh 值后会
 	// 清掉 approx。首轮新会话(sess.AgentSessionID=="")没有旧值,CtxOK 本就为 false。
@@ -490,6 +493,7 @@ func (s *Service) metaForRunWithDir(sess session.Session, input session.Input, c
 		// explicitly approximate starting point.
 		if !meta.CtxOK {
 			if u := contextusage.ReadLatestForWorkDir(ctxDir, sess.WorkDir); u.OK {
+				usage = u
 				meta.CtxOK = true
 				meta.CtxApprox = true
 				meta.CtxUsedPercent = u.UsedPercent
@@ -498,7 +502,9 @@ func (s *Service) metaForRunWithDir(sess session.Session, input session.Input, c
 				meta.Model = strings.TrimSpace(u.Model)
 			}
 		}
-		meta.ModelInfo = card.ModelInfo{}
+		if meta.Model != "" {
+			meta.ModelInfo = card.ModelInfo{Actual: meta.Model, Effort: usage.ReasoningEffort}
+		}
 	} else {
 		meta.Model = ""
 		meta.ModelInfo = card.ModelInfo{Requested: input.RequestedModel, Effort: input.RequestedEffort}

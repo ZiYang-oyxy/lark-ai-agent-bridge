@@ -359,6 +359,19 @@ func TestMetaRowsGatedByIndependentToggles(t *testing.T) {
 	}
 }
 
+func TestMetaRowsShowsCodexReasoningEffort(t *testing.T) {
+	rows := MetaRows(Meta{
+		Agent:            "codex",
+		SessionID:        "session-123456",
+		Model:            "gpt-5.6-terra",
+		ModelInfo:        ModelInfo{Actual: "gpt-5.6-terra", Effort: "high"},
+		ShowMetaRowAgent: true,
+	})
+	if len(rows) != 1 || !strings.Contains(rows[0].Text, "🧠 gpt-5.6-terra（high）") {
+		t.Fatalf("Codex agent row = %#v, want model with reasoning effort", rows)
+	}
+}
+
 func TestShortSessionIDUsesDiscriminatingSuffix(t *testing.T) {
 	first := "019f99ab-1234-7000-8000-000000a1b2c3"
 	second := "019f99ab-1234-7000-8000-000000d4e5f6"

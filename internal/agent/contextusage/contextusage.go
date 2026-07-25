@@ -17,12 +17,13 @@ import (
 // whenever the file is missing, unreadable, mismatched, or carries no usable
 // percentage — callers must fall back to their prior display in that case.
 type Usage struct {
-	OK            bool
-	UsedPercent   int
-	TotalTokens   int
-	ContextWindow int
-	Model         string
-	Reason        Reason
+	OK              bool
+	UsedPercent     int
+	TotalTokens     int
+	ContextWindow   int
+	Model           string
+	ReasoningEffort string
+	Reason          Reason
 }
 
 type Reason string
@@ -36,14 +37,15 @@ const (
 )
 
 type record struct {
-	SessionID      string   `json:"session_id"`
-	UsedPercentage *float64 `json:"used_percentage"`
-	TotalTokens    *int     `json:"total_tokens"`
-	ContextTokens  *int     `json:"context_tokens"`
-	ContextWindow  *int     `json:"context_window_size"`
-	Model          string   `json:"model"`
-	CWD            string   `json:"cwd"`
-	UpdatedAt      *int64   `json:"updated_at"`
+	SessionID       string   `json:"session_id"`
+	UsedPercentage  *float64 `json:"used_percentage"`
+	TotalTokens     *int     `json:"total_tokens"`
+	ContextTokens   *int     `json:"context_tokens"`
+	ContextWindow   *int     `json:"context_window_size"`
+	Model           string   `json:"model"`
+	ReasoningEffort string   `json:"reasoning_effort"`
+	CWD             string   `json:"cwd"`
+	UpdatedAt       *int64   `json:"updated_at"`
 }
 
 // Read locates <dir>/<sessionID>.json, validates its session_id, and returns a
@@ -157,6 +159,7 @@ func read(dir, sessionID string, notBefore time.Time) Usage {
 		return Usage{Reason: ReasonMismatch}
 	}
 	model := strings.TrimSpace(rec.Model)
+	reasoningEffort := strings.TrimSpace(rec.ReasoningEffort)
 	if !notBefore.IsZero() {
 		updatedAt := int64(0)
 		if rec.UpdatedAt != nil {
@@ -168,7 +171,7 @@ func read(dir, sessionID string, notBefore time.Time) Usage {
 			return Usage{Model: model, Reason: ReasonStale}
 		}
 	}
-	u := Usage{Model: model}
+	u := Usage{Model: model, ReasoningEffort: reasoningEffort}
 	if rec.ContextTokens != nil && *rec.ContextTokens > 0 {
 		u.TotalTokens = *rec.ContextTokens
 	} else if rec.TotalTokens != nil && *rec.TotalTokens > 0 {

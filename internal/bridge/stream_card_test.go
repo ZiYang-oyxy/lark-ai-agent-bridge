@@ -113,7 +113,7 @@ func TestCodexAgentCardStreamStartsWithLatestWorkDirApproxMetadata(t *testing.T)
 		t.Fatal(err)
 	}
 	workDir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, "prior.json"), []byte(`{"session_id":"prior","cwd":"`+workDir+`","used_percentage":31,"context_tokens":62000,"context_window_size":200000,"model":"gpt-codex"}`), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "prior.json"), []byte(`{"session_id":"prior","cwd":"`+workDir+`","used_percentage":31,"context_tokens":62000,"context_window_size":200000,"model":"gpt-codex","reasoning_effort":"high"}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	cfg := testConfig(t)
@@ -123,7 +123,7 @@ func TestCodexAgentCardStreamStartsWithLatestWorkDirApproxMetadata(t *testing.T)
 
 	stream := newAgentCardStream(svc, "run", sess, session.Input{ReplyToMessageID: "source", AgentHome: home, Time: time.Now()})
 
-	if !stream.meta.CtxOK || !stream.meta.CtxApprox || stream.meta.CtxUsedPercent != 31 || stream.meta.CtxTokens != 62000 || stream.meta.Model != "gpt-codex" {
+	if !stream.meta.CtxOK || !stream.meta.CtxApprox || stream.meta.CtxUsedPercent != 31 || stream.meta.CtxTokens != 62000 || stream.meta.Model != "gpt-codex" || stream.meta.ModelInfo != (card.ModelInfo{Actual: "gpt-codex", Effort: "high"}) {
 		t.Fatalf("Codex initial metadata = %#v", stream.meta)
 	}
 	if stream.ctxDir != dir {
@@ -145,7 +145,7 @@ func TestCodexAgentCardStreamMetadataOnlyUpdateRefreshesModelAndContext(t *testi
 		t.Fatal(err)
 	}
 	path := filepath.Join(dir, "current.json")
-	if err := os.WriteFile(path, []byte(`{"session_id":"current","cwd":"`+workDir+`","used_percentage":42,"context_tokens":84000,"context_window_size":200000,"model":"gpt-current"}`), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte(`{"session_id":"current","cwd":"`+workDir+`","used_percentage":42,"context_tokens":84000,"context_window_size":200000,"model":"gpt-current","reasoning_effort":"medium"}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	future := time.Now().Add(time.Second)
@@ -160,7 +160,7 @@ func TestCodexAgentCardStreamMetadataOnlyUpdateRefreshesModelAndContext(t *testi
 		t.Fatalf("metadata-only event count = %d, want 2: %#v", len(events), events)
 	}
 	got := events[1].Meta
-	if got.SessionID != "current" || got.Model != "gpt-current" || !got.CtxOK || got.CtxApprox || got.CtxUsedPercent != 42 {
+	if got.SessionID != "current" || got.Model != "gpt-current" || got.ModelInfo != (card.ModelInfo{Actual: "gpt-current", Effort: "medium"}) || !got.CtxOK || got.CtxApprox || got.CtxUsedPercent != 42 {
 		t.Fatalf("metadata-only update = %#v", got)
 	}
 }

@@ -3119,6 +3119,9 @@ func (s *Service) metaFromSessionWithDirAfter(sess session.Session, dir string, 
 	if sess.Key.Agent == agent.Codex && meta.Model == "" {
 		meta.Model = strings.TrimSpace(u.Model)
 	}
+	if sess.Key.Agent == agent.Codex && meta.Model != "" {
+		meta.ModelInfo = card.ModelInfo{Actual: meta.Model, Effort: u.ReasoningEffort}
+	}
 	return meta, u
 }
 
