@@ -210,7 +210,7 @@ func buildConfigFormElements(sessionID string, form ConfigForm) []any {
 		{Value: "true", Label: "完成时提醒发起人"},
 	}))...)
 
-	statusBar := buildStatusBarSection(form)
+	statusBar := buildStatusBarSection(sessionID, form)
 
 	saveButton := map[string]any{
 		"tag":              "button",
@@ -270,42 +270,73 @@ func buildConfigFormElements(sessionID string, form ConfigForm) []any {
 	return elements
 }
 
-// buildStatusBarSection 用三个 `select_static` 布尔下拉呈现三个元信息行开关。
+// buildStatusBarSection 呈现「📊 元信息行」section 的三个开关。
 //
-// 曾经用过飞书 CardKit `checker` 组件——视觉上是复选框、贴合语义,但实测
-// checker 并不是 form 输入字段:即便放在 form 内,勾选状态也**不会**被 form.submit
-// 批量收集,用户点了但保存后回到旧值。回到 select_static 两选项("隐藏"/"显示")
-// 的做法:与本卡片其他布尔字段(respond_to_bots/notify_on_complete)保持一致,
-// handler 侧无需改动,提交行为可靠。
+// **全局 `/config` 卡**（form.ChatID 为空）走飞书 CardKit `checker` 组件 +
+// 独立 callback behavior：点击即触发 `config.toggle_meta_row` action、bridge
+// 侧当场翻转对应字段并持久化，不依赖 `form.submit`。
 //
-// 每行的 hint 里带一段**带 mock 数据的示例行**,让用户一眼看到"开启后卡片底部
-// 会长什么样",比只列字段名(agent/会话/模型)直觉得多。
+// **群覆盖 `/local-config` 卡**（form.ChatID 非空）仍回退到 `select_static`
+// 两选项下拉：群覆盖多一层"删覆盖恢复继承"的语义（`ChatOverride.ShowMetaRow*`
+// 是 `*bool`，nil 表示继承），"点击即生效"的三态 UX 需要单独设计，本轮先
+// 保守走 form.submit 路径不动，功能与语义等价于既有 rc.10 行为。
 //
-// element_id 上限 20 字符,fieldElements 追加 _label/_hint 要 prefix ≤ 14——用短 slug
-// bar_(status bar 一族)。
-func buildStatusBarSection(form ConfigForm) []map[string]any {
-	boolOpts := func(onLabel string) []SelectOption {
-		return []SelectOption{
-			{Value: "false", Label: "隐藏（默认）"},
-			{Value: "true", Label: onLabel},
+// 为什么全局要脱离 form:曾经把 checker 放进 form 内、复用现有 form.submit 收集，
+// 但飞书 CardKit 的 checker **不是 form 输入字段**——即便放在 form 内也不会
+// 被 form.submit 收集,用户点了保存后回旧值(v0.1.8-rc.10 修复这个 bug 时
+// 曾把 checker 换回 select_static 下拉)。现在改成每个 checker 独立走
+// `card.action.trigger` 事件即时提交,保留 checker 视觉的同时使操作真正生效。
+//
+// checker 的 `value` 字段用来传字段名(`show_meta_row_agent` / `..._runtime` /
+// `..._developer`),bridge 端收到 action 后读当前偏好、翻转对应字段、写回;
+// admin 校验、错误反馈复用现有 config action 通路。
+//
+// element_id 上限 20 字符,checker 自带 label 不走 fieldElements,直接给
+// 三个 checker 分配 `cfg_bar_{agent,rt,dev}_ck` 即可。
+func buildStatusBarSection(sessionID string, form ConfigForm) []map[string]any {
+	intro := "**元信息行**\n勾选要显示的行；未勾选的行不渲染。点击即生效，无需保存。示例展示了开启后卡片底部的样子（示例数据）。"
+	if form.ChatID != "" {
+		// 群覆盖场景：保留旧 select_static 下拉，走 form.submit。
+		intro = "**元信息行（本群覆盖）**\n选择要显示的行；未勾选的行不渲染。示例展示了开启后卡片底部的样子（示例数据）。"
+		boolOpts := func(onLabel string) []SelectOption {
+			return []SelectOption{
+				{Value: "false", Label: "隐藏（默认）"},
+				{Value: "true", Label: onLabel},
+			}
+		}
+		out := []map[string]any{markdownElement("cfg_bar_intro", intro)}
+		out = append(out, fieldElements("cfg_bar_agent", "Agent 行",
+			"例：🍊 535a99 · 🧠 claude-opus-4-7[1m]（high） · 🟢 ctx: 35% (354.5k/1000k)",
+			configSelectOptions("show_meta_row_agent", form.ShowMetaRowAgent, boolOpts("显示 Agent 行")))...)
+		out = append(out, fieldElements("cfg_bar_rt", "主机信息行",
+			"例：👤 lijun.996 · 🖥️ 192.0.2.42 · 📁 /home/<USER>/ws",
+			configSelectOptions("show_meta_row_runtime", form.ShowMetaRowRuntime, boolOpts("显示主机信息行")))...)
+		out = append(out, fieldElements("cfg_bar_dev", "开发者行",
+			"例：🐛 v0.1.8-rc.5 · ⬆️ 最新 v0.1.8-rc.6（🐛 rc / 🦋 stable）",
+			configSelectOptions("show_meta_row_developer", form.ShowMetaRowDeveloper, boolOpts("显示开发者行")))...)
+		return out
+	}
+	checker := func(elementID, field, label, checked string) map[string]any {
+		return map[string]any{
+			"tag":        "checker",
+			"element_id": elementID,
+			"checked":    strings.EqualFold(strings.TrimSpace(checked), "true"),
+			"text":       map[string]any{"tag": "plain_text", "content": label},
+			"behaviors":  callbackBehavior(sessionID, "config.toggle_meta_row", field),
 		}
 	}
-	out := []map[string]any{
-		markdownElement("cfg_bar_intro", "**元信息行**\n选择要显示的行；未勾选的行不渲染。示例展示了开启后卡片底部的样子（示例数据）。"),
+	return []map[string]any{
+		markdownElement("cfg_bar_intro", intro),
+		checker("cfg_bar_agent_ck", "show_meta_row_agent",
+			"Agent 行 · 例：🍊 535a99 · 🧠 claude-opus-4-7[1m]（high） · 🟢 ctx: 35% (354.5k/1000k)",
+			form.ShowMetaRowAgent),
+		checker("cfg_bar_rt_ck", "show_meta_row_runtime",
+			"主机信息行 · 例：👤 lijun.996 · 🖥️ 192.0.2.42 · 📁 /home/<USER>/ws",
+			form.ShowMetaRowRuntime),
+		checker("cfg_bar_dev_ck", "show_meta_row_developer",
+			"开发者行 · 例：🐛 v0.1.8-rc.5 · ⬆️ 最新 v0.1.8-rc.6（🐛 rc / 🦋 stable）",
+			form.ShowMetaRowDeveloper),
 	}
-	out = append(out, fieldElements("cfg_bar_agent",
-		"Agent 行",
-		"例：🍊 535a99 · 🧠 claude-opus-4-7[1m]（high） · 🟢 ctx: 35% (354.5k/1000k)",
-		configSelectOptions("show_meta_row_agent", form.ShowMetaRowAgent, boolOpts("显示 Agent 行")))...)
-	out = append(out, fieldElements("cfg_bar_rt",
-		"主机信息行",
-		"例：👤 lijun.996 · 🖥️ 192.0.2.42 · 📁 /home/<USER>/ws",
-		configSelectOptions("show_meta_row_runtime", form.ShowMetaRowRuntime, boolOpts("显示主机信息行")))...)
-	out = append(out, fieldElements("cfg_bar_dev",
-		"开发者行",
-		"例：🐛 v0.1.8-rc.5 · ⬆️ 最新 v0.1.8-rc.6（🐛 rc / 🦋 stable）",
-		configSelectOptions("show_meta_row_developer", form.ShowMetaRowDeveloper, boolOpts("显示开发者行")))...)
-	return out
 }
 
 func buildAgentModeFormElements(sessionID string, form AgentModeForm) []any {
