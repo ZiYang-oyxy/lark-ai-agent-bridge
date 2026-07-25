@@ -142,6 +142,37 @@ func TestOwnerCanInviteUsersAndAdminGateConfig(t *testing.T) {
 	}
 }
 
+func TestUserAllowlistMutationRepliesClarifyPrivateChatScope(t *testing.T) {
+	store, err := access.OpenStore(filepath.Join(t.TempDir(), "access.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	controls := access.NewRuntimeControls()
+	controls.OwnerRefreshSucceeded("ou_owner")
+	renderer := card.NewFakeRenderer()
+	svc := NewService(testConfig(t), renderer, newFakeRunner(), audit.NewRecorder())
+	svc.Access = store
+	svc.AccessControls = controls
+
+	for _, command := range []string{"/invite user @Alice", "/remove user @Alice"} {
+		msg := Message{
+			ID:       command,
+			ChatID:   "dm",
+			Sender:   "ou_owner",
+			Text:     command,
+			Mentions: []Mention{{OpenID: "ou_alice", Name: "Alice"}},
+		}
+		if err := svc.HandleMessage(context.Background(), msg); err != nil {
+			t.Fatal(err)
+		}
+		events := renderer.Events()
+		got := events[len(events)-1].Segments[0].Text
+		if !strings.Contains(got, "私聊用户白名单") {
+			t.Fatalf("%s reply = %q", command, got)
+		}
+	}
+}
+
 type assertBridgeErr string
 
 func (e assertBridgeErr) Error() string { return string(e) }

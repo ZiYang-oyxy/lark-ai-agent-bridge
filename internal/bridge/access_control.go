@@ -207,7 +207,7 @@ func (s *Service) mutateMentionList(msg Message, preference config.RuntimePrefer
 	if err != nil {
 		return s.accessSaveFailed(msg, preference, err)
 	}
-	label := "用户白名单"
+	label := "私聊用户白名单"
 	if kind == "admin" {
 		label = "管理员"
 	}
