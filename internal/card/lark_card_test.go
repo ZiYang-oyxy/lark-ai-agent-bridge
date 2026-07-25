@@ -359,6 +359,23 @@ func TestMetaRowsGatedByIndependentToggles(t *testing.T) {
 	}
 }
 
+func TestShortSessionIDUsesDiscriminatingSuffix(t *testing.T) {
+	first := "019f99ab-1234-7000-8000-000000a1b2c3"
+	second := "019f99ab-1234-7000-8000-000000d4e5f6"
+	if got := shortSessionID(first, "claude"); got != "a1b2c3" {
+		t.Fatalf("shortSessionID(first) = %q, want %q", got, "a1b2c3")
+	}
+	if got := shortSessionID(second, "claude"); got != "d4e5f6" {
+		t.Fatalf("shortSessionID(second) = %q, want %q", got, "d4e5f6")
+	}
+	if got := shortSessionID("short", "claude"); got != "short" {
+		t.Fatalf("shortSessionID(short) = %q, want %q", got, "short")
+	}
+	if got := shortSessionID("", "claude"); got != "Claude" {
+		t.Fatalf("shortSessionID(empty) = %q, want %q", got, "Claude")
+	}
+}
+
 // LatestVersion 为空(peek cache miss)时,开发者行只显示 emoji + 当前版本,
 // 不显示"最新"段。开发者模式 false 时 emoji 用 🦋(正式版通道)。
 func TestMetaRowsDeveloperFallbacks(t *testing.T) {

@@ -1099,16 +1099,17 @@ func agentEmoji(agent string) string {
 	}
 }
 
-// shortSessionID returns the first 6 characters of the session id for the
-// footer. It falls back to the agent display name when no session id is known
-// yet (e.g. before the first turn establishes one).
+// shortSessionID returns the last 6 characters of the session id for the
+// footer. UUIDv7-style session ids share a time-ordered prefix, so keeping the
+// suffix makes concurrently created sessions distinguishable. It falls back
+// to the agent display name when no session id is known yet.
 func shortSessionID(sessionID, agent string) string {
 	id := strings.TrimSpace(sessionID)
 	if id == "" {
 		return displayAgent(agent)
 	}
 	if len(id) > 6 {
-		return id[:6]
+		return id[len(id)-6:]
 	}
 	return id
 }
