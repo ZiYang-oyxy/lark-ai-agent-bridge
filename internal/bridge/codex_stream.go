@@ -17,6 +17,7 @@ type codexParseState struct {
 	lastError      string
 	startedItems   map[string]struct{}
 	answerSegments []string
+	pendingMessage string
 	unknownEvents  int
 	anomalies      int
 }
@@ -55,6 +56,7 @@ func parseCodexStream(input io.Reader, copyTo *bytes.Buffer, onEvent func(AgentS
 	result.ProtocolUnknown = state.unknownEvents
 	result.ProtocolAnomalies = state.anomalies
 	if !state.terminal {
+		flushPendingCodexMessage(&result, state, onEvent, card.SegmentThought)
 		detail := ""
 		if state.lastError != "" {
 			detail = ": " + state.lastError
@@ -82,6 +84,7 @@ func consumeCodexEvent(event map[string]any, result *AgentRunResult, state *code
 	case "turn.started":
 		return nil
 	case "item.started":
+		flushPendingCodexMessage(result, state, onEvent, card.SegmentThought)
 		item := codexRecord(event["item"])
 		if codexString(item["type"]) != "command_execution" {
 			return nil
@@ -103,9 +106,9 @@ func consumeCodexEvent(event map[string]any, result *AgentRunResult, state *code
 		if text == "" {
 			text = codexString(event["text"])
 		}
-		appendCodexAnswer(result, state, text)
-		emitCodexSegment(onEvent, card.Segment{Kind: card.SegmentText, Text: text}, streamActivityAnswering, true)
+		bufferCodexAgentMessage(result, state, onEvent, text)
 	case "turn.completed":
+		flushPendingCodexMessage(result, state, onEvent, card.SegmentText)
 		state.terminal = true
 		usage := codexRecord(event["usage"])
 		tokens := codexInt(usage["input_tokens"]) + codexInt(usage["output_tokens"])
@@ -114,6 +117,7 @@ func consumeCodexEvent(event map[string]any, result *AgentRunResult, state *code
 			emitStreamUpdate(onEvent, AgentStreamUpdate{Tokens: tokens})
 		}
 	case "turn.failed":
+		flushPendingCodexMessage(result, state, onEvent, card.SegmentThought)
 		state.terminal = true
 		return fmt.Errorf("%s", codexErrorMessage(event, "codex turn failed"))
 	case "error":
@@ -127,14 +131,17 @@ func consumeCodexEvent(event map[string]any, result *AgentRunResult, state *code
 }
 
 func consumeCodexCompletedItem(item map[string]any, result *AgentRunResult, state *codexParseState, onEvent func(AgentStreamUpdate)) error {
-	switch codexString(item["type"]) {
-	case "agent_message":
+	itemType := codexString(item["type"])
+	if itemType == "agent_message" {
 		text := codexString(item["text"])
 		if text == "" {
 			text = codexString(item["message"])
 		}
-		appendCodexAnswer(result, state, text)
-		emitCodexSegment(onEvent, card.Segment{Kind: card.SegmentText, Text: text}, streamActivityAnswering, true)
+		bufferCodexAgentMessage(result, state, onEvent, text)
+		return nil
+	}
+	flushPendingCodexMessage(result, state, onEvent, card.SegmentThought)
+	switch itemType {
 	case "reasoning", "reasoning_message":
 		text := codexString(item["text"])
 		if text == "" {
@@ -165,6 +172,35 @@ func consumeCodexCompletedItem(item map[string]any, result *AgentRunResult, stat
 		emitCodexSegment(onEvent, segment, streamActivityTool, false)
 	}
 	return nil
+}
+
+// Codex records commentary and the final answer as agent_message items, while
+// exec --json currently omits their phase. Keep the newest message pending:
+// later activity proves it was commentary, and turn.completed identifies the
+// final message without synthesizing a reasoning summary.
+func bufferCodexAgentMessage(result *AgentRunResult, state *codexParseState, onEvent func(AgentStreamUpdate), text string) {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return
+	}
+	flushPendingCodexMessage(result, state, onEvent, card.SegmentThought)
+	state.pendingMessage = text
+}
+
+func flushPendingCodexMessage(result *AgentRunResult, state *codexParseState, onEvent func(AgentStreamUpdate), kind card.SegmentKind) {
+	text := state.pendingMessage
+	state.pendingMessage = ""
+	if text == "" {
+		return
+	}
+	if kind == card.SegmentText {
+		appendCodexAnswer(result, state, text)
+		emitCodexSegment(onEvent, card.Segment{Kind: card.SegmentText, Text: text}, streamActivityAnswering, true)
+		return
+	}
+	segment := card.Segment{Kind: card.SegmentThought, Text: text}
+	appendCodexSegment(result, segment)
+	emitCodexSegment(onEvent, segment, streamActivityReasoning, false)
 }
 
 func appendCodexAnswer(result *AgentRunResult, state *codexParseState, text string) {

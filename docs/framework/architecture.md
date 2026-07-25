@@ -105,7 +105,7 @@ Claude runner 使用 `--output-format stream-json`，通过 stdout pipe 逐行�
 
 ## Codex 输出解析
 
-Codex runner 逐行解析 `exec --json` 输出：`thread.started` 保存 thread id，`item.*` 映射回答、reasoning 和 command 工具段，`turn.completed` 统计 token 并收敛终态，`turn.failed` 转为错误。未知事件和协议异常会记录 audit，用于发现 CLI 升级带来的协议漂移。
+Codex runner 逐行解析 `exec --json` 输出：`thread.started` 保存 thread id，`item.*` 映射回答、reasoning 和 command 工具段，`turn.completed` 统计 token 并收敛终态，`turn.failed` 转为错误。由于 `exec --json` 会把 commentary 与最终回答都降为不带 phase 的 `agent_message`，parser 会暂存最新消息：后续仍有活动时将上一条按原文映射为 thought，只在 `turn.completed` 时将最后一条收敛为最终回答。该路径不依赖 `model_reasoning_summary`。未知事件和协议异常会记录 audit，用于发现 CLI 升级带来的协议漂移。
 
 ## 飞书卡片职责
 

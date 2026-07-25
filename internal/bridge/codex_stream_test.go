@@ -56,6 +56,69 @@ func TestParseCodexStreamTranslatesThreadContentToolsAndUsage(t *testing.T) {
 	}
 }
 
+func TestParseCodexStreamPreservesProcessMessagesBeforeFinalAnswer(t *testing.T) {
+	input := strings.Join([]string{
+		`{"type":"thread.started","thread_id":"thread-process"}`,
+		`{"type":"turn.started"}`,
+		`{"type":"item.completed","item":{"id":"msg-1","type":"agent_message","text":"I will inspect the parser first."}}`,
+		`{"type":"item.started","item":{"id":"cmd-1","type":"command_execution","command":"rg reasoning internal/bridge"}}`,
+		`{"type":"item.completed","item":{"id":"cmd-1","type":"command_execution","aggregated_output":"one match\n","exit_code":0}}`,
+		`{"type":"item.completed","item":{"id":"msg-2","type":"agent_message","text":"The parser handles reasoning items."}}`,
+		`{"type":"turn.completed"}`,
+	}, "\n")
+	var updates []AgentStreamUpdate
+	result, err := parseCodexStream(strings.NewReader(input), nil, func(update AgentStreamUpdate) {
+		updates = append(updates, update)
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.AnswerSegments) != 1 || result.AnswerSegments[0] != "The parser handles reasoning items." {
+		t.Fatalf("answers = %#v, want only the final agent message", result.AnswerSegments)
+	}
+	wantKinds := []card.SegmentKind{card.SegmentThought, card.SegmentTool, card.SegmentTool, card.SegmentText}
+	if len(result.OrderedSegments) != len(wantKinds) {
+		t.Fatalf("ordered segments = %#v", result.OrderedSegments)
+	}
+	for i, want := range wantKinds {
+		if got := result.OrderedSegments[i].Kind; got != want {
+			t.Fatalf("ordered segment %d kind = %s, want %s", i, got, want)
+		}
+	}
+	if got := result.OrderedSegments[0].Text; got != "I will inspect the parser first." {
+		t.Fatalf("process message = %q", got)
+	}
+	processVisible := false
+	processMisclassifiedAsAnswer := false
+	for _, update := range updates {
+		if len(update.Segments) != 1 || update.Segments[0].Text != "I will inspect the parser first." {
+			continue
+		}
+		processVisible = update.Segments[0].Kind == card.SegmentThought && update.Activity == streamActivityReasoning
+		processMisclassifiedAsAnswer = update.AnswerSnapshot
+	}
+	if !processVisible || processMisclassifiedAsAnswer {
+		t.Fatalf("process message updates = %#v", updates)
+	}
+}
+
+func TestParseCodexStreamTreatsOnlyLastConsecutiveAgentMessageAsFinal(t *testing.T) {
+	input := strings.Join([]string{
+		`{"type":"item.completed","item":{"type":"agent_message","text":"First process update"}}`,
+		`{"type":"item.completed","item":{"type":"agent_message","text":"Second and final answer"}}`,
+		`{"type":"turn.completed"}`,
+	}, "\n")
+	result, err := parseCodexStream(strings.NewReader(input), nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.AnswerSegments) != 1 || result.AnswerSegments[0] != "Second and final answer" {
+		t.Fatalf("answers = %#v", result.AnswerSegments)
+	}
+	assertCodexSegment(t, result.Segments, card.SegmentThought, "First process update")
+	assertCodexSegment(t, result.Segments, card.SegmentText, "Second and final answer")
+}
+
 func TestParseCodexStreamAllowsRetryErrorBeforeCompletion(t *testing.T) {
 	input := strings.Join([]string{
 		`{"type":"thread.started","thread_id":"thread-retry"}`,

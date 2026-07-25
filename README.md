@@ -24,6 +24,7 @@ workspace：
 - `/config` 可从 `agents.json` 选择 `claude` / `codex` 及其 wrapper presets（包括 `cx1`～`cx4`）。
 - Claude 以 `claude -p --output-format stream-json --dangerously-skip-permissions --effort low` 启动。
 - Codex 以 `codex exec --json ... -` 启动，prompt 通过 stdin 传入；Bridge 不额外传 model、effort、sandbox、approval 或 profile 参数。
+- Codex 的 `exec --json` 会将过程 commentary 与最终回答都输出为 `agent_message`；Bridge 保留末答之前的过程消息原文并放入 thinking 折叠区，不依赖 reasoning summary 配置。
 - 默认使用普通聊天模式：回复进入聊天主消息流，同一 chat 按 Agent 共用 session 并串行执行。
 - `/config` 可切换为话题模式：回复进入话题，有 `ThreadID` 时每个 topic 独立 session，不同 topic 可并行执行。
 - `/local-config` 让每个群覆盖全局默认的执行类偏好（逐字段继承），从而不同群可用不同方式（如 A 群 `topic`、B 群 `chat`）；访问控制永远全局。
