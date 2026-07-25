@@ -346,8 +346,19 @@ func TestMarkdownCardRendererKeepsStateAndUsesLightweightMarkdownLayout(t *testi
 		t.Fatalf("lightweight append card unexpectedly has a header: %#v", payload)
 	}
 	elements := payload["body"].(map[string]any)["elements"].([]any)
-	if len(elements) != 1 || elements[0].(map[string]any)["tag"] != "markdown" || elements[0].(map[string]any)["content"] != got.Markdown {
-		t.Fatalf("lightweight append elements = %#v, want one markdown element", elements)
+	if len(elements) != 2 || elements[0].(map[string]any)["element_id"] != "card_title_actions" {
+		t.Fatalf("lightweight append title row = %#v", elements)
+	}
+	row := elements[0].(map[string]any)
+	columns := row["columns"].([]any)
+	buttonColumn := columns[1].(map[string]any)
+	button := buttonColumn["elements"].([]any)[0].(map[string]any)
+	if button["element_id"] != "btn_stop" || button["disabled"] != false {
+		t.Fatalf("lightweight append stop button = %#v", button)
+	}
+	answer := elements[1].(map[string]any)
+	if answer["tag"] != "markdown" || answer["content"] != got.Markdown {
+		t.Fatalf("lightweight append answer = %#v", answer)
 	}
 	if ref := renderer.RenderRef(); ref.CardID != "card-1" || ref.ReplyMessageID != "reply-1" {
 		t.Fatalf("render ref = %#v", ref)
