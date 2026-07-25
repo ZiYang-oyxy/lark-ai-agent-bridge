@@ -1226,7 +1226,20 @@ func (s *Service) finishStartingBatch(sess session.Session, batch session.Batch,
 
 func (s *Service) executeBatch(ctx context.Context, sess session.Session, batch session.Batch, id string) {
 	defer s.runWG.Done()
-	defer func() { s.clearActiveRun(id); _ = s.DrainReady(time.Now()) }()
+	defer func() {
+		if r := recover(); r != nil {
+			// Goroutine panic: record audit, render error terminal card to avoid stuck running UI
+			err := fmt.Errorf("agent run panic: %v", r)
+			s.Audit.Record("system", "agent_run_panic", sess.ID, err.Error())
+			result := AgentRunResult{Segments: []card.Segment{{Kind: card.SegmentError, Text: "执行异常：" + err.Error()}}}
+			if run, ok := s.activeRun(id); ok && run.BatchID == batch.ID && run.Stream != nil {
+				s.finishStreamAndAudit(run.Stream, "failed", s.metaFromSession(sess), result, sess.ID)
+			}
+			_, _ = s.finishBatchOrRemember(sess, batch.ID, session.BatchCompletion{Status: session.InputFailed, At: time.Now()}, "batch_panic")
+		}
+		s.clearActiveRun(id)
+		_ = s.DrainReady(time.Now())
+	}()
 	prompt := BuildBatchPrompt(batch)
 	if batch.Inputs[0].Reset && strings.TrimSpace(prompt) == "" {
 		if run, ok := s.activeRun(id); ok && run.BatchID == batch.ID && run.Stream != nil {
@@ -1708,7 +1721,15 @@ func (s *Service) HandleActionResult(ctx context.Context, req ActionRequest) (Ac
 			s.Audit.Record(req.Actor, "batch_stop_requested", run.BaseSessionID, run.BatchID)
 			return actionResultFromEvent(event), nil
 		}
-		return s.renderActionEvent(stoppedActionEvent(req.SessionID))
+		s.Audit.Record(req.Actor, "batch_stop_ignored", req.SessionID, "no active run for card action")
+		return s.renderActionEvent(card.Event{
+			Type:           "notice",
+			SessionID:      req.SessionID,
+			Segments:       []card.Segment{{Kind: card.SegmentText, Text: "当前会话没有正在运行的任务，无需停止。"}},
+			StopButton:     card.StopButton{Visible: true, Disabled: true},
+			HeaderTitle:    "⏹ 已结束",
+			HeaderTemplate: "grey",
+		})
 	case "create_workdir":
 		pending, hasPending := s.popPendingRun(req.SessionID)
 		workDir := req.Value

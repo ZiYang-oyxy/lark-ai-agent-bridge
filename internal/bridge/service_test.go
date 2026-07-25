@@ -3177,18 +3177,21 @@ func TestServiceStopIsIdempotentForAlreadyStoppedRun(t *testing.T) {
 	}
 }
 
-func TestServiceStopUnknownSessionDegradesToStoppedCard(t *testing.T) {
+func TestServiceStopUnknownSessionDegradesToNoticeCard(t *testing.T) {
 	cfg := testConfig(t)
 	renderer := card.NewFakeRenderer()
 	svc := NewService(cfg, renderer, newFakeRunner(), audit.NewRecorder())
 	// No active run exists for this session id (stale/expired action). The stop
-	// must degrade to a disabled stopped card rather than error.
+	// must show a notice saying no running task exists, with disabled stop button, rather than faking success.
 	result, err := svc.HandleActionResult(context.Background(), ActionRequest{SessionID: "claude:chat:message:missing", ActionID: "stop", Actor: "u1"})
 	if err != nil {
 		t.Fatalf("stale stop error: %v", err)
 	}
-	if result.Event == nil || result.Event.Type != "stopped" || !result.Event.StopButton.Disabled {
-		t.Fatalf("stale stop result = %#v, want disabled stopped", result.Event)
+	if result.Event == nil || result.Event.Type != "notice" || !result.Event.StopButton.Disabled {
+		t.Fatalf("stale stop result = %#v, want notice with disabled stop", result.Event)
+	}
+	if len(result.Event.Segments) == 0 || result.Event.Segments[0].Text != "当前会话没有正在运行的任务，无需停止。" {
+		t.Fatalf("stale stop missing expected notice text: %#v", result.Event.Segments)
 	}
 }
 
