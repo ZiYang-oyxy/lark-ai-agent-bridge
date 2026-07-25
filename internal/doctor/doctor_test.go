@@ -2,6 +2,7 @@ package doctor
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -346,7 +347,7 @@ func TestPreferenceStoreWritableAcceptsConfiguredCodexPreference(t *testing.T) {
 }
 
 func TestClaudeWrapperPreflightUsesBoundedHarmlessInvocation(t *testing.T) {
-	dir := t.TempDir()
+	dir := canonicalTempDir(t)
 	argsPath := filepath.Join(dir, "args")
 	pwdPath := filepath.Join(dir, "pwd")
 	bin := writeDoctorExecutable(t, dir, `#!/bin/sh
@@ -375,6 +376,71 @@ printf '%s\n' '{"type":"result","result":"PRIVATE_OUTPUT_MUST_NOT_APPEAR"}'
 	pwd, err := os.ReadFile(pwdPath)
 	if err != nil || strings.TrimSpace(string(pwd)) != dir {
 		t.Fatalf("preflight pwd = %q, err=%v, want %q", pwd, err, dir)
+	}
+}
+
+func TestEffectiveWrapperPreflightUsesSelectedCodexPreset(t *testing.T) {
+	dir := t.TempDir()
+	argsPath := filepath.Join(dir, "args")
+	stdinPath := filepath.Join(dir, "stdin")
+	homePath := filepath.Join(dir, "home")
+	codexHome := filepath.Join(dir, "codex-home")
+	if err := os.Mkdir(codexHome, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	codexBin := writeDoctorExecutable(t, dir, `#!/bin/sh
+printf '%s\n' "$@" > "$DOCTOR_ARGS_FILE"
+cat > "$DOCTOR_STDIN_FILE"
+printf '%s' "${CODEX_HOME:-}" > "$DOCTOR_HOME_FILE"
+`)
+	failingClaude := filepath.Join(dir, "failing-claude")
+	if err := os.WriteFile(failingClaude, []byte("#!/bin/sh\nexit 1\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	agentsPath := filepath.Join(dir, "agents.json")
+	agentsJSON := fmt.Sprintf(`{"schema_version":1,"agents":[{"kind":"claude"},{"kind":"codex","homes":[{"label":"workspace","path":%q}],"bins":[{"label":"cx2","path":%q}]}]}`, codexHome, codexBin)
+	if err := os.WriteFile(agentsPath, []byte(agentsJSON), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	agents, err := config.LoadAgentsConfig(agentsPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	preferencePath := filepath.Join(dir, "preferences.json")
+	store, err := config.OpenPreferenceStore(preferencePath, config.RuntimePreference{Model: "default", Effort: "low"}, nil, agents.Agents...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Set(config.RuntimePreference{Model: "default", Effort: "low", Agent: "codex", AgentHome: "workspace", AgentBin: "cx2"}); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("DOCTOR_ARGS_FILE", argsPath)
+	t.Setenv("DOCTOR_STDIN_FILE", stdinPath)
+	t.Setenv("DOCTOR_HOME_FILE", homePath)
+	cfg := doctorTestConfig(dir, filepath.Join(dir, "sessions.json"))
+	cfg.ClaudeBin = failingClaude
+	cfg.AgentsConfigPath = agentsPath
+	cfg.PreferenceStorePath = preferencePath
+
+	check := EffectiveWrapperPreflight(context.Background(), cfg)
+
+	if !check.OK || check.Warning || check.Detail != "passed: codex" {
+		t.Fatalf("Codex effective preflight = %#v", check)
+	}
+	args, err := os.ReadFile(argsPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if joined := strings.ReplaceAll(strings.TrimSpace(string(args)), "\n", " "); !strings.Contains(joined, "exec --json -") {
+		t.Fatalf("Codex preflight args = %q", joined)
+	}
+	stdin, err := os.ReadFile(stdinPath)
+	if err != nil || !strings.Contains(string(stdin), "Reply with exactly OK") {
+		t.Fatalf("Codex preflight stdin = %q, err=%v", stdin, err)
+	}
+	home, err := os.ReadFile(homePath)
+	if err != nil || string(home) != codexHome {
+		t.Fatalf("Codex preflight home = %q, err=%v", home, err)
 	}
 }
 

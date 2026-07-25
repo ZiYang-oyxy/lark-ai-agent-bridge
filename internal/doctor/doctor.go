@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"lark-agent-bridge/internal/agent"
 	"lark-agent-bridge/internal/config"
 	"lark-agent-bridge/internal/reply"
 	"lark-agent-bridge/internal/session"
@@ -45,7 +46,7 @@ func RunWithOptions(ctx context.Context, cfg config.Config, opts RunOptions) []C
 		timeout = 20 * time.Second
 	}
 	preflightCtx, cancel := context.WithTimeout(ctx, timeout)
-	check := ClaudeWrapperPreflight(preflightCtx, cfg)
+	check := EffectiveWrapperPreflight(preflightCtx, cfg)
 	cancel()
 	if opts.Strict && check.Warning {
 		check.OK = false
@@ -338,28 +339,101 @@ func agentsConfigCheck(cfg config.Config) Check {
 }
 
 func ClaudeWrapperPreflight(ctx context.Context, cfg config.Config) Check {
-	const name = "wrapper-preflight"
-	claudeBin := cfg.ClaudeBin
-	if claudeBin == "" {
-		claudeBin = "claude"
-	}
-	path, err := exec.LookPath(claudeBin)
+	return wrapperPreflight(ctx, cfg, agent.Claude, cfg.ClaudeBin, "")
+}
+
+// EffectiveWrapperPreflight probes the executable selected by the global
+// runtime preference. Doctor validates the service users will actually run;
+// an unused backend must not block deployment because its credentials or TLS
+// setup are intentionally absent from an otherwise healthy profile.
+func EffectiveWrapperPreflight(ctx context.Context, cfg config.Config) Check {
+	kind, bin, home, err := effectiveWrapperTarget(cfg)
 	if err != nil {
-		return Check{Name: name, OK: true, Warning: true, Detail: "skipped: claude executable not found"}
+		return Check{Name: "wrapper-preflight", OK: true, Warning: true, Detail: "unable to resolve effective agent"}
+	}
+	return wrapperPreflight(ctx, cfg, kind, bin, home)
+}
+
+func effectiveWrapperTarget(cfg config.Config) (agent.Kind, string, string, error) {
+	agents, agentsErr := config.LoadAgentsConfig(cfg.AgentsConfigPath)
+	if agentsErr != nil {
+		return "", "", "", agentsErr
+	}
+	defaults := config.RuntimePreference{
+		Model:            cfg.Model,
+		Effort:           cfg.Effort,
+		ReplyMode:        cfg.ReplyMode,
+		ConversationMode: cfg.ConversationMode,
+		TopicSeedMode:    cfg.TopicSeedMode,
+		GroupMessageMode: cfg.GroupMessageMode,
+		RespondToBots:    cfg.RespondToBots,
+	}
+	preferences, err := config.OpenPreferenceStore(cfg.PreferenceStorePath, defaults, cfg.AllowedModels, agents.Agents...)
+	if err != nil {
+		return "", "", "", err
+	}
+	preference := preferences.Get()
+	kind, ok := agent.ParseKind(preference.Agent)
+	if !ok {
+		return "", "", "", fmt.Errorf("unsupported effective agent")
+	}
+	bin, ok := agents.BinPath(string(kind), preference.AgentBin)
+	if !ok {
+		return "", "", "", fmt.Errorf("unknown effective agent bin")
+	}
+	home, ok := agents.HomePath(string(kind), preference.AgentHome)
+	if !ok {
+		return "", "", "", fmt.Errorf("unknown effective agent home")
+	}
+	if strings.TrimSpace(bin) == "" {
+		if kind == agent.Codex {
+			bin = cfg.CodexBin
+		} else {
+			bin = cfg.ClaudeBin
+		}
+	}
+	return kind, bin, home, nil
+}
+
+func wrapperPreflight(ctx context.Context, cfg config.Config, kind agent.Kind, bin, home string) Check {
+	const name = "wrapper-preflight"
+	bin = strings.TrimSpace(bin)
+	if bin == "" {
+		if kind == agent.Codex {
+			bin = "codex"
+		} else {
+			bin = "claude"
+		}
+	}
+	path, err := exec.LookPath(bin)
+	if err != nil {
+		return Check{Name: name, OK: true, Warning: true, Detail: "skipped: effective executable not found"}
 	}
 	if info, err := os.Stat(cfg.DefaultWorkDir); err != nil || !info.IsDir() {
 		return Check{Name: name, OK: true, Warning: true, Detail: "skipped: default workdir unavailable"}
 	}
-	cmd := exec.CommandContext(ctx, path,
-		"-p", "--output-format", "stream-json", "--verbose", "--effort", "low",
-		"Reply with exactly OK. Do not use tools.",
-	)
+	prompt := "Reply with exactly OK. Do not use tools."
+	var cmd *exec.Cmd
+	if kind == agent.Codex {
+		command, buildErr := agent.BuildOneShotCommand(agent.OneShotConfig{Kind: kind, Bin: path, Prompt: prompt})
+		if buildErr != nil {
+			return Check{Name: name, OK: true, Warning: true, Detail: "unable to build effective agent probe"}
+		}
+		cmd = exec.CommandContext(ctx, command[0], command[1:]...)
+		cmd.Stdin = strings.NewReader(prompt + "\n")
+	} else {
+		cmd = exec.CommandContext(ctx, path,
+			"-p", "--output-format", "stream-json", "--verbose", "--effort", "low",
+			prompt,
+		)
+	}
 	cmd.Dir = cfg.DefaultWorkDir
+	cmd.Env = append(os.Environ(), agent.AgentEnv(kind, home)...)
 	cmd.Stdout = io.Discard
 	cmd.Stderr = io.Discard
 	err = cmd.Run()
 	if err == nil {
-		return Check{Name: name, OK: true, Detail: "passed"}
+		return Check{Name: name, OK: true, Detail: "passed: " + string(kind)}
 	}
 	if ctx.Err() != nil {
 		return Check{Name: name, OK: true, Warning: true, Detail: "timed out"}
