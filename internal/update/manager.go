@@ -31,6 +31,17 @@ func (m *Manager) Refresh(ctx context.Context, currentVersion string) (CheckResu
 	return m.Client.Check(ctx, currentVersion)
 }
 
+// PeekManifest returns the cached latest manifest without issuing any network
+// request. Used by the developer status-bar row so the streaming card can show
+// "最新 v..." only if /help (or another live Check path) has already warmed the
+// cache — otherwise the row falls back to "current only".
+func (m *Manager) PeekManifest() (Manifest, bool) {
+	if m == nil || m.Client == nil {
+		return Manifest{}, false
+	}
+	return m.Client.PeekManifest()
+}
+
 func (m *Manager) ReleaseNotes(ctx context.Context, manifest Manifest) (string, error) {
 	if m == nil || m.Client == nil {
 		return "", errors.New("update client is unavailable")

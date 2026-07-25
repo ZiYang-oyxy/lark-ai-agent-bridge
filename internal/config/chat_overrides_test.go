@@ -58,28 +58,59 @@ func TestSetChatOverridesSingleField(t *testing.T) {
 	}
 }
 
-// ShowMetaRows 是布尔覆盖:本群可独立开启,不影响全局与其它群。
-func TestSetChatOverrideShowMetaRows(t *testing.T) {
+// 三个 status bar 独立开关都是布尔覆盖:本群可独立开启,不影响全局与其它群。
+func TestSetChatOverrideStatusBarRows(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "preferences.json")
 	store, err := OpenPreferenceStore(path, baseDefaults(), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if store.Get().ShowMetaRows {
-		t.Fatal("global ShowMetaRows should default to false")
+	global := store.Get()
+	if global.ShowMetaRowAgent || global.ShowMetaRowRuntime || global.ShowMetaRowDeveloper {
+		t.Fatal("all status-bar row toggles should default to false")
 	}
 	on := true
-	if err := store.SetChat("oc-a", ChatOverride{ShowMetaRows: &on}); err != nil {
+	if err := store.SetChat("oc-a", ChatOverride{ShowMetaRowAgent: &on, ShowMetaRowDeveloper: &on}); err != nil {
 		t.Fatal(err)
 	}
-	if !store.GetForChat("oc-a").ShowMetaRows {
-		t.Fatal("chat oc-a ShowMetaRows override not applied")
+	got := store.GetForChat("oc-a")
+	if !got.ShowMetaRowAgent {
+		t.Fatal("chat oc-a ShowMetaRowAgent override not applied")
 	}
-	if store.GetForChat("oc-b").ShowMetaRows {
+	if got.ShowMetaRowRuntime {
+		t.Fatal("chat oc-a ShowMetaRowRuntime should still be false (not overridden)")
+	}
+	if !got.ShowMetaRowDeveloper {
+		t.Fatal("chat oc-a ShowMetaRowDeveloper override not applied")
+	}
+	other := store.GetForChat("oc-b")
+	if other.ShowMetaRowAgent || other.ShowMetaRowRuntime || other.ShowMetaRowDeveloper {
 		t.Fatal("chat oc-b should still inherit global false")
 	}
-	if store.Get().ShowMetaRows {
-		t.Fatal("global ShowMetaRows must stay false")
+	after := store.Get()
+	if after.ShowMetaRowAgent || after.ShowMetaRowRuntime || after.ShowMetaRowDeveloper {
+		t.Fatal("global toggles must stay false after per-chat override")
+	}
+}
+
+// 旧字段 ShowMetaRows=true 的 override 反序列化后应迁移为 agent+runtime 两行同时打开
+// (与旧版行为一致),不引入新增的 developer 行。
+func TestChatOverrideShowMetaRowsLegacyMigrates(t *testing.T) {
+	base := baseDefaults()
+	legacy := true
+	override := ChatOverride{ShowMetaRows: &legacy}
+	merged, err := mergeChatOverride(base, override, []string{base.Model}, nil)
+	if err != nil {
+		t.Fatalf("legacy override merge: %v", err)
+	}
+	if !merged.ShowMetaRowAgent || !merged.ShowMetaRowRuntime {
+		t.Fatalf("legacy show_meta_rows=true should migrate to agent+runtime rows; got %+v", merged)
+	}
+	if merged.ShowMetaRowDeveloper {
+		t.Fatal("legacy migration must not enable the new developer row")
+	}
+	if merged.ShowMetaRows {
+		t.Fatal("legacy ShowMetaRows field should be cleared after normalize")
 	}
 }
 

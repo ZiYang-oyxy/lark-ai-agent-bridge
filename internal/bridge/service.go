@@ -23,6 +23,7 @@ import (
 	"lark-agent-bridge/internal/agent/contextusage"
 	"lark-agent-bridge/internal/audit"
 	"lark-agent-bridge/internal/bridgeinstructions"
+	"lark-agent-bridge/internal/buildinfo"
 	"lark-agent-bridge/internal/card"
 	"lark-agent-bridge/internal/config"
 	"lark-agent-bridge/internal/devmode"
@@ -1702,14 +1703,32 @@ func (s *Service) HandleActionResult(ctx context.Context, req ActionRequest) (Ac
 			}
 			notifyOnComplete = parsed
 		}
-		showMetaRows := current.ShowMetaRows
-		if raw, ok := req.FormValues["show_meta_rows"]; ok {
+		showMetaRowAgent := current.ShowMetaRowAgent
+		if raw, ok := req.FormValues["show_meta_row_agent"]; ok {
 			parsed, err := strconv.ParseBool(strings.TrimSpace(raw))
 			if err != nil {
-				s.Audit.Record(req.Actor, "config_save_failed", req.SessionID, "invalid show_meta_rows")
+				s.Audit.Record(req.Actor, "config_save_failed", req.SessionID, "invalid show_meta_row_agent")
 				return s.renderActionEvent(configSaveErrorEvent(req.SessionID))
 			}
-			showMetaRows = parsed
+			showMetaRowAgent = parsed
+		}
+		showMetaRowRuntime := current.ShowMetaRowRuntime
+		if raw, ok := req.FormValues["show_meta_row_runtime"]; ok {
+			parsed, err := strconv.ParseBool(strings.TrimSpace(raw))
+			if err != nil {
+				s.Audit.Record(req.Actor, "config_save_failed", req.SessionID, "invalid show_meta_row_runtime")
+				return s.renderActionEvent(configSaveErrorEvent(req.SessionID))
+			}
+			showMetaRowRuntime = parsed
+		}
+		showMetaRowDeveloper := current.ShowMetaRowDeveloper
+		if raw, ok := req.FormValues["show_meta_row_developer"]; ok {
+			parsed, err := strconv.ParseBool(strings.TrimSpace(raw))
+			if err != nil {
+				s.Audit.Record(req.Actor, "config_save_failed", req.SessionID, "invalid show_meta_row_developer")
+				return s.renderActionEvent(configSaveErrorEvent(req.SessionID))
+			}
+			showMetaRowDeveloper = parsed
 		}
 		effort := current.Effort
 		if raw, ok := req.FormValues["effort"]; ok {
@@ -1721,7 +1740,7 @@ func (s *Service) HandleActionResult(ctx context.Context, req ActionRequest) (Ac
 			effort = v
 		}
 		// Model is still not editable from the /config form; preserve current value.
-		preference := config.RuntimePreference{Model: current.Model, Effort: effort, ReplyMode: config.ReplyMode(req.FormValues["reply_mode"]), ConversationMode: config.ConversationMode(req.FormValues["conversation_mode"]), GroupMessageMode: groupMessageMode, RespondToBots: respondToBots, NotifyOnComplete: notifyOnComplete, ShowMetaRows: showMetaRows, Agent: selectedAgent, AgentHome: req.FormValues["agent_home"], AgentBin: req.FormValues["agent_bin"]}
+		preference := config.RuntimePreference{Model: current.Model, Effort: effort, ReplyMode: config.ReplyMode(req.FormValues["reply_mode"]), ConversationMode: config.ConversationMode(req.FormValues["conversation_mode"]), GroupMessageMode: groupMessageMode, RespondToBots: respondToBots, NotifyOnComplete: notifyOnComplete, ShowMetaRowAgent: showMetaRowAgent, ShowMetaRowRuntime: showMetaRowRuntime, ShowMetaRowDeveloper: showMetaRowDeveloper, Agent: selectedAgent, AgentHome: req.FormValues["agent_home"], AgentBin: req.FormValues["agent_bin"]}
 		if !strings.EqualFold(strings.TrimSpace(current.Agent), strings.TrimSpace(preference.Agent)) {
 			if _, ok := s.Agents.HomePath(preference.Agent, preference.AgentHome); !ok {
 				preference.AgentHome = ""
@@ -1735,7 +1754,7 @@ func (s *Service) HandleActionResult(ctx context.Context, req ActionRequest) (Ac
 			return s.renderActionEvent(configSaveErrorEvent(req.SessionID))
 		}
 		preference = s.Preferences.Get()
-		s.Audit.Record(req.Actor, "config_saved", req.SessionID, fmt.Sprintf("agent=%s agent_home=%s agent_bin=%s model=%s effort=%s reply_mode=%s conversation_mode=%s group_message_mode=%s respond_to_bots=%t notify_on_complete=%t show_meta_rows=%t", preference.Agent, preference.AgentHome, preference.AgentBin, preference.Model, preference.Effort, preference.ReplyMode, preference.ConversationMode, preference.GroupMessageMode, preference.RespondToBots, preference.NotifyOnComplete, preference.ShowMetaRows))
+		s.Audit.Record(req.Actor, "config_saved", req.SessionID, fmt.Sprintf("agent=%s agent_home=%s agent_bin=%s model=%s effort=%s reply_mode=%s conversation_mode=%s group_message_mode=%s respond_to_bots=%t notify_on_complete=%t show_meta_row_agent=%t show_meta_row_runtime=%t show_meta_row_developer=%t", preference.Agent, preference.AgentHome, preference.AgentBin, preference.Model, preference.Effort, preference.ReplyMode, preference.ConversationMode, preference.GroupMessageMode, preference.RespondToBots, preference.NotifyOnComplete, preference.ShowMetaRowAgent, preference.ShowMetaRowRuntime, preference.ShowMetaRowDeveloper))
 		s.Audit.Record(req.Actor, "group_message_mode_saved", req.SessionID, fmt.Sprintf("mode=%s respond_to_bots=%t", preference.GroupMessageMode, preference.RespondToBots))
 		result, err := s.renderActionEvent(card.Event{
 			Type:      "config_saved",
@@ -1941,10 +1960,13 @@ func (s *Service) configForm(preference config.RuntimePreference) *card.ConfigFo
 	form := &card.ConfigForm{
 		Agent: agentKind, AgentHome: preference.AgentHome, AgentBin: preference.AgentBin,
 		Model: preference.Model, Effort: preference.Effort, ReplyMode: string(preference.ReplyMode), ConversationMode: string(preference.ConversationMode),
-		GroupMessageMode: string(preference.GroupMessageMode), RespondToBots: strconv.FormatBool(preference.RespondToBots),
-		NotifyOnComplete: strconv.FormatBool(preference.NotifyOnComplete),
-		ShowMetaRows:     strconv.FormatBool(preference.ShowMetaRows),
-		Agents:           toCardOptions(s.Agents.AgentOptions()), AgentHomes: toCardOptions(s.Agents.HomeOptions(agentKind)), AgentBins: toCardOptions(s.Agents.BinOptions(agentKind)),
+		GroupMessageMode:     string(preference.GroupMessageMode),
+		RespondToBots:        strconv.FormatBool(preference.RespondToBots),
+		NotifyOnComplete:     strconv.FormatBool(preference.NotifyOnComplete),
+		ShowMetaRowAgent:     strconv.FormatBool(preference.ShowMetaRowAgent),
+		ShowMetaRowRuntime:   strconv.FormatBool(preference.ShowMetaRowRuntime),
+		ShowMetaRowDeveloper: strconv.FormatBool(preference.ShowMetaRowDeveloper),
+		Agents:               toCardOptions(s.Agents.AgentOptions()), AgentHomes: toCardOptions(s.Agents.HomeOptions(agentKind)), AgentBins: toCardOptions(s.Agents.BinOptions(agentKind)),
 		Models: s.configModelOptions(), Efforts: []string{"default", "low", "medium", "high"},
 		ReplyModes:        []string{string(config.ReplyModeAppend), string(config.ReplyModeAppendCleanCard), string(config.ReplyModeLatestCard)},
 		ConversationModes: []string{string(config.ConversationModeChat), string(config.ConversationModeTopic)},
@@ -2062,9 +2084,19 @@ func chatOverrideFromForm(values map[string]string, global config.RuntimePrefere
 			override.RespondToBots = &parsed
 		}
 	}
-	if raw, ok := values["show_meta_rows"]; ok {
-		if parsed, err := strconv.ParseBool(strings.TrimSpace(raw)); err == nil && parsed != global.ShowMetaRows {
-			override.ShowMetaRows = &parsed
+	if raw, ok := values["show_meta_row_agent"]; ok {
+		if parsed, err := strconv.ParseBool(strings.TrimSpace(raw)); err == nil && parsed != global.ShowMetaRowAgent {
+			override.ShowMetaRowAgent = &parsed
+		}
+	}
+	if raw, ok := values["show_meta_row_runtime"]; ok {
+		if parsed, err := strconv.ParseBool(strings.TrimSpace(raw)); err == nil && parsed != global.ShowMetaRowRuntime {
+			override.ShowMetaRowRuntime = &parsed
+		}
+	}
+	if raw, ok := values["show_meta_row_developer"]; ok {
+		if parsed, err := strconv.ParseBool(strings.TrimSpace(raw)); err == nil && parsed != global.ShowMetaRowDeveloper {
+			override.ShowMetaRowDeveloper = &parsed
 		}
 	}
 	if raw, ok := values["agent"]; ok {
@@ -2795,12 +2827,44 @@ func (s *Service) metaFromSessionWithDir(sess session.Session, dir string) (card
 
 func (s *Service) metaFromSessionWithDirAfter(sess session.Session, dir string, notBefore time.Time) (card.Meta, contextusage.Usage) {
 	userName, ip := runtimeIdentity()
-	// 元信息行显隐按会话所在 chat 的偏好(含本群覆盖)决定;无覆盖时 GetForChat 退回全局。
-	showMetaRows := false
+	// 三个元信息行的显隐分别按会话所在 chat 的偏好(含本群覆盖)决定;无覆盖时
+	// GetForChat 退回全局。
+	var (
+		showAgent, showRuntime, showDeveloper bool
+	)
 	if s.Preferences != nil {
-		showMetaRows = s.Preferences.GetForChat(sess.Key.ChatID).ShowMetaRows
+		pref := s.Preferences.GetForChat(sess.Key.ChatID)
+		showAgent = pref.ShowMetaRowAgent
+		showRuntime = pref.ShowMetaRowRuntime
+		showDeveloper = pref.ShowMetaRowDeveloper
 	}
-	meta := card.Meta{Agent: string(sess.Key.Agent), SessionID: sess.AgentSessionID, Model: sess.Model, Tokens: sess.Tokens, TotalTokens: sess.Tokens, User: userName, IP: ip, WorkDir: sess.WorkDir, Status: string(sess.State), ShowMetaRows: showMetaRows}
+	meta := card.Meta{
+		Agent:                string(sess.Key.Agent),
+		SessionID:            sess.AgentSessionID,
+		Model:                sess.Model,
+		Tokens:               sess.Tokens,
+		TotalTokens:          sess.Tokens,
+		User:                 userName,
+		IP:                   ip,
+		WorkDir:              sess.WorkDir,
+		Status:               string(sess.State),
+		ShowMetaRowAgent:     showAgent,
+		ShowMetaRowRuntime:   showRuntime,
+		ShowMetaRowDeveloper: showDeveloper,
+	}
+	if showDeveloper {
+		meta.Version = developerVersionText()
+		meta.DeveloperMode = s.DevMode != nil && s.DevMode.Prerelease()
+		if s.Updates != nil {
+			if manifest, ok := s.Updates.PeekManifest(); ok {
+				latest := strings.TrimSpace(manifest.Version)
+				current := strings.TrimSpace(buildinfo.Version)
+				if latest != "" && latest != current {
+					meta.LatestVersion = "v" + latest
+				}
+			}
+		}
+	}
 	// base 是不设新鲜度门槛的读取:同 session 最近一次已知占用。
 	base := contextusage.Read(dir, sess.AgentSessionID)
 	u := base
@@ -2830,6 +2894,21 @@ func (s *Service) metaFromSessionWithDirAfter(sess session.Session, dir string, 
 		meta.Model = strings.TrimSpace(u.Model)
 	}
 	return meta, u
+}
+
+// developerVersionText 渲染 status bar 开发者行的"当前版本"段。IsRelease()
+// 判断为真时补 v 前缀,否则原样(dev 构建 buildinfo.Version 就是字面 "dev")。
+// 与 helpUpdateEvent 里的 version display 保持一致,以免同一 build 在两个入口
+// 看到两个字符串。
+func developerVersionText() string {
+	v := strings.TrimSpace(buildinfo.Version)
+	if v == "" {
+		return ""
+	}
+	if buildinfo.IsRelease() {
+		return "v" + v
+	}
+	return v
 }
 
 var (

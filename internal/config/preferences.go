@@ -53,9 +53,20 @@ type RuntimePreference struct {
 	// unread notification (the terminal card is an in-place CardKit update and
 	// produces no new message). Defaults to false to avoid打扰.
 	NotifyOnComplete bool `json:"notify_on_complete,omitempty"`
-	// ShowMetaRows, when true, 在 AI 回复卡片底部渲染两行运行时元信息
-	// (agent/会话/模型/tokens 与 user/ip/workdir)。默认 false 隐藏,避免把
-	// 这些信息暴露到聊天;可在 /config 全局或 /local-config 按群开启。
+	// ShowMetaRowAgent / ShowMetaRowRuntime / ShowMetaRowDeveloper 分别控制 AI 回复
+	// 卡片底部三行运行时元信息的独立开关:
+	//   agent 行:agent/会话/模型/tokens
+	//   runtime 行:user/ip/workdir
+	//   developer 行:当前版本 · 最新版本(若有)· 开发者模式 emoji
+	// 三个都默认 false 隐藏,避免把运行时信息暴露到聊天;可在 /config 全局或
+	// /local-config 按群独立开关。
+	ShowMetaRowAgent     bool `json:"show_meta_row_agent,omitempty"`
+	ShowMetaRowRuntime   bool `json:"show_meta_row_runtime,omitempty"`
+	ShowMetaRowDeveloper bool `json:"show_meta_row_developer,omitempty"`
+	// ShowMetaRows 是旧的"元信息行总开关",拆分为三个独立开关后仅用于**读侧迁移**:
+	// 反序列化到 true 且三个新字段全 false 时,normalizeRuntimePreference 会把三个
+	// 新字段(agent/runtime,不含 developer——旧版没有 developer 行)映射为 true 并
+	// 清零 ShowMetaRows。写路径不再置 true,这样一次读+写后旧配置自然升级。
 	ShowMetaRows bool `json:"show_meta_rows,omitempty"`
 	// Agent is the selected agent kind (empty = "claude").
 	Agent string `json:"agent,omitempty"`
@@ -282,6 +293,15 @@ func normalizeRuntimePreference(preference RuntimePreference) RuntimePreference 
 			break
 		}
 	}
+	// 旧字段 ShowMetaRows 迁移为新的独立开关:旧值 true 且三个新开关全 false 时,
+	// 说明这是从旧版本读上来的偏好——把 agent/runtime 行都打开(与旧版行为等价,
+	// 旧版本没有 developer 行,保持不打开),然后清零旧字段。这样后续 Set() 落盘
+	// 时新配置形态干净,旧字段自然消失。
+	if preference.ShowMetaRows && !preference.ShowMetaRowAgent && !preference.ShowMetaRowRuntime && !preference.ShowMetaRowDeveloper {
+		preference.ShowMetaRowAgent = true
+		preference.ShowMetaRowRuntime = true
+	}
+	preference.ShowMetaRows = false
 	return preference
 }
 

@@ -75,6 +75,33 @@ func (c *Client) Invalidate() {
 	c.mu.Unlock()
 }
 
+// PeekManifest returns the cached manifest for the current channel without ever
+// hitting the network. It returns (manifest, true) only if a previous Check has
+// populated the cache and the entry is still within CacheTTL. Callers that just
+// want a "if we happen to know what latest is, use it" read path (e.g. rendering
+// the developer status-bar row inline in a hot streaming path) should prefer
+// this over Check, which may issue an HTTP request on miss and blocks up to 3s.
+func (c *Client) PeekManifest() (Manifest, bool) {
+	if c == nil {
+		return Manifest{}, false
+	}
+	url := c.activeURL()
+	now := c.Now()
+	if now.IsZero() {
+		now = time.Now()
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	entry, ok := c.cached[url]
+	if !ok {
+		return Manifest{}, false
+	}
+	if now.Sub(entry.at) >= c.cacheTTL() {
+		return Manifest{}, false
+	}
+	return entry.manifest, true
+}
+
 // prerelease reports whether the opt-in prerelease channel is currently active.
 func (c *Client) prerelease() bool {
 	return c.Prerelease != nil && c.Prerelease()

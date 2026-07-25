@@ -243,13 +243,15 @@ func terminalStatusLine(eventType string, hasError bool) string {
 }
 
 func markdownMetaFooter(meta card.Meta) string {
-	primary, runtime := card.MetaRows(meta)
-	rows := make([]string, 0, 2)
-	if primary != "" {
-		rows = append(rows, primary)
+	metaRows := card.MetaRows(meta)
+	if len(metaRows) == 0 {
+		return ""
 	}
-	if runtime != "" {
-		rows = append(rows, runtime)
+	rows := make([]string, 0, len(metaRows))
+	for _, r := range metaRows {
+		if r.Text != "" {
+			rows = append(rows, r.Text)
+		}
 	}
 	return strings.Join(rows, "\n")
 }

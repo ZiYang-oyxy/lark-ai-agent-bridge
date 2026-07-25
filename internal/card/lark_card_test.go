@@ -267,9 +267,10 @@ func TestBuildLarkCardIncludesActionsAndHidesMeta(t *testing.T) {
 	}
 }
 
-// meta 两行(agent/会话ID/模型/tokens · user/ip/workdir)已整体停用,
-// MetaRows 受 ShowMetaRows 开关控制:默认(false)返回空,开启后渲染两行。
-func TestMetaRowsGatedByShowMetaRows(t *testing.T) {
+// meta 三行(agent/会话ID/模型/tokens · user/ip/workdir · 版本/最新/开发者模式)
+// 由三个独立开关 ShowMetaRow{Agent,Runtime,Developer} 控制:全 false 时返回空切片
+// 与旧的"总开关关闭"视觉一致;分别打开只渲染对应行。
+func TestMetaRowsGatedByIndependentToggles(t *testing.T) {
 	base := Meta{
 		Agent:          "claude",
 		SessionID:      "a1b2c3d4-e5f6",
@@ -281,26 +282,93 @@ func TestMetaRowsGatedByShowMetaRows(t *testing.T) {
 		User:           "developer",
 		IP:             "192.0.2.10",
 		WorkDir:        "/workspace/lark-agent-workspace",
+		Version:        "v0.1.9",
+		LatestVersion:  "v0.1.10",
+		DeveloperMode:  true,
 	}
 
-	// 默认隐藏:两行都空,buildMetaElements 会连分隔线一起跳过。
-	if primary, runtime := MetaRows(base); primary != "" || runtime != "" {
-		t.Fatalf("hidden MetaRows = (%q, %q), want both empty", primary, runtime)
+	// 默认隐藏:切片为空,buildMetaElements 会连分隔线一起跳过。
+	if rows := MetaRows(base); len(rows) != 0 {
+		t.Fatalf("hidden MetaRows = %+v, want empty", rows)
 	}
 
-	// 开启后渲染:第一行含 agent/会话/模型/ctx,第二行含 user/ip/workdir。
-	on := base
-	on.ShowMetaRows = true
-	primary, runtime := MetaRows(on)
+	// 单独打开 agent 行:只返回一行,element_id 为 meta_primary。
+	onAgent := base
+	onAgent.ShowMetaRowAgent = true
+	rows := MetaRows(onAgent)
+	if len(rows) != 1 || rows[0].ElementID != "meta_primary" {
+		t.Fatalf("agent-only MetaRows = %+v, want single meta_primary", rows)
+	}
 	for _, want := range []string{"🍊", "ctx: 42%", "claude-opus-4-8[1m]"} {
-		if !strings.Contains(primary, want) {
-			t.Fatalf("shown MetaRows primary %q missing %q", primary, want)
+		if !strings.Contains(rows[0].Text, want) {
+			t.Fatalf("agent row %q missing %q", rows[0].Text, want)
 		}
+	}
+
+	// 单独打开 runtime 行:只返回一行,element_id 为 meta_runtime。
+	onRuntime := base
+	onRuntime.ShowMetaRowRuntime = true
+	rows = MetaRows(onRuntime)
+	if len(rows) != 1 || rows[0].ElementID != "meta_runtime" {
+		t.Fatalf("runtime-only MetaRows = %+v, want single meta_runtime", rows)
 	}
 	for _, want := range []string{"developer", "192.0.2.10", "/workspace/lark-agent-workspace"} {
-		if !strings.Contains(runtime, want) {
-			t.Fatalf("shown MetaRows runtime %q missing %q", runtime, want)
+		if !strings.Contains(rows[0].Text, want) {
+			t.Fatalf("runtime row %q missing %q", rows[0].Text, want)
 		}
+	}
+
+	// 单独打开 developer 行:显示当前版本 · 最新版本 · 开发者模式 ✅。
+	onDev := base
+	onDev.ShowMetaRowDeveloper = true
+	rows = MetaRows(onDev)
+	if len(rows) != 1 || rows[0].ElementID != "meta_developer" {
+		t.Fatalf("developer-only MetaRows = %+v, want single meta_developer", rows)
+	}
+	for _, want := range []string{"v0.1.9", "最新 v0.1.10", "开发者模式 ✅"} {
+		if !strings.Contains(rows[0].Text, want) {
+			t.Fatalf("developer row %q missing %q", rows[0].Text, want)
+		}
+	}
+
+	// 三个都打开:返回三行,顺序 agent → runtime → developer。
+	onAll := base
+	onAll.ShowMetaRowAgent = true
+	onAll.ShowMetaRowRuntime = true
+	onAll.ShowMetaRowDeveloper = true
+	rows = MetaRows(onAll)
+	if len(rows) != 3 {
+		t.Fatalf("all-on MetaRows len = %d, want 3", len(rows))
+	}
+	wantOrder := []string{"meta_primary", "meta_runtime", "meta_developer"}
+	for i, want := range wantOrder {
+		if rows[i].ElementID != want {
+			t.Fatalf("row %d id = %q, want %q", i, rows[i].ElementID, want)
+		}
+	}
+}
+
+// LatestVersion 为空(peek cache miss)时,开发者行只显示"当前版本 · 开发者模式",
+// 不显示"最新"段。开发者模式 false 显示 ❌。
+func TestMetaRowsDeveloperFallbacks(t *testing.T) {
+	meta := Meta{
+		ShowMetaRowDeveloper: true,
+		Version:              "v0.1.9",
+		// LatestVersion 留空,模拟 update client 尚未 warm cache
+		DeveloperMode: false,
+	}
+	rows := MetaRows(meta)
+	if len(rows) != 1 || rows[0].ElementID != "meta_developer" {
+		t.Fatalf("developer fallback rows = %+v, want single meta_developer", rows)
+	}
+	if strings.Contains(rows[0].Text, "最新") {
+		t.Fatalf("empty LatestVersion should not render 最新 segment: %q", rows[0].Text)
+	}
+	if !strings.Contains(rows[0].Text, "开发者模式 ❌") {
+		t.Fatalf("dev mode false should render ❌: %q", rows[0].Text)
+	}
+	if !strings.Contains(rows[0].Text, "v0.1.9") {
+		t.Fatalf("current version missing: %q", rows[0].Text)
 	}
 }
 
@@ -318,10 +386,12 @@ func TestBuildLarkCardRendersRuntimeConfigForm(t *testing.T) {
 			ReplyMode:         "latest-card",
 			ConversationMode:  "chat",
 			GroupMessageMode:  "mention_only",
-			RespondToBots:     "false",
-			NotifyOnComplete:  "false",
-			ShowMetaRows:      "false",
-			Agents:            []SelectOption{{Value: "claude", Label: "claude · Claude Code"}},
+			RespondToBots:        "false",
+			NotifyOnComplete:     "false",
+			ShowMetaRowAgent:     "false",
+			ShowMetaRowRuntime:   "false",
+			ShowMetaRowDeveloper: "false",
+			Agents:               []SelectOption{{Value: "claude", Label: "claude · Claude Code"}},
 			AgentHomes:        []SelectOption{{Value: "默认", Label: "默认 · 宿主默认配置目录"}, {Value: "隔离", Label: "隔离 · demo home"}},
 			AgentBins:         []SelectOption{{Value: "主机 claude", Label: "主机 claude · bridge 默认可执行"}, {Value: "ark4", Label: "ark4 · 豆包 seed-2-1-pro"}},
 			Models:            []string{"default", "sonnet", "opus", "haiku"},
@@ -373,9 +443,9 @@ func TestBuildLarkCardRendersRuntimeConfigForm(t *testing.T) {
 	submit := buttons["submit_runtime_config"]
 	closeButton := buttons["close_runtime_config"]
 	// Model stays dropped from the UI; effort is now editable again (per-chat
-	// override supported). Together with notify-on-complete and show-meta-rows
-	// this brings the total to nine selects alongside reply/conversation/group/
-	// respond-to-bots and the two agent selects.
+	// override supported). status bar 拆成 3 个独立开关(agent / runtime / developer)
+	// 后,加上 reply/conversation/group/respond-to-bots/notify-on-complete/effort +
+	// 两个 agent selects,总数从 9 个上升到 11 个。
 	if _, ok := selects["model"]; ok {
 		t.Fatalf("model select must stay removed from config form: %#v", selects)
 	}
@@ -385,7 +455,15 @@ func TestBuildLarkCardRendersRuntimeConfigForm(t *testing.T) {
 	if opts := selects["effort"]["options"].([]any); len(opts) != 4 {
 		t.Fatalf("effort select must expose 4 options (default/low/medium/high), got %#v", opts)
 	}
-	if len(selects) != 9 || selects["reply_mode"]["initial_option"] != "latest-card" || selects["conversation_mode"]["initial_option"] != "chat" || selects["group_message_mode"]["initial_option"] != "mention_only" || selects["respond_to_bots"]["initial_option"] != "false" || selects["notify_on_complete"]["initial_option"] != "false" || selects["show_meta_rows"]["initial_option"] != "false" {
+	if len(selects) != 11 ||
+		selects["reply_mode"]["initial_option"] != "latest-card" ||
+		selects["conversation_mode"]["initial_option"] != "chat" ||
+		selects["group_message_mode"]["initial_option"] != "mention_only" ||
+		selects["respond_to_bots"]["initial_option"] != "false" ||
+		selects["notify_on_complete"]["initial_option"] != "false" ||
+		selects["show_meta_row_agent"]["initial_option"] != "false" ||
+		selects["show_meta_row_runtime"]["initial_option"] != "false" ||
+		selects["show_meta_row_developer"]["initial_option"] != "false" {
 		t.Fatalf("select controls = %#v", selects)
 	}
 	if selects["agent_home"]["initial_option"] != "默认" || selects["agent_bin"]["initial_option"] != "主机 claude" {

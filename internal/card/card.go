@@ -53,8 +53,17 @@ type Meta struct {
 	WorkDir        string
 	Status         string
 	ModelInfo      ModelInfo
-	// ShowMetaRows 为 true 时才渲染底部两行元信息;默认隐藏。
-	ShowMetaRows bool
+	// 三行元信息独立开关。任一为 true 才渲染对应行;全 false 时整段 meta 段
+	// (含分隔线)不渲染,与旧的"总开关关闭"视觉一致。
+	ShowMetaRowAgent     bool
+	ShowMetaRowRuntime   bool
+	ShowMetaRowDeveloper bool
+	// Developer 行的三段数据。Version 为当前 bridge 版本(通常带 v 前缀,如
+	// v0.1.8-rc.3),LatestVersion 只在有可用且不同于 current 的最新版本时非空
+	// (读 update client 缓存,未命中不发请求),DeveloperMode 决定 emoji ✅/❌。
+	Version       string
+	LatestVersion string
+	DeveloperMode bool
 }
 
 type StopButton struct {
@@ -95,8 +104,11 @@ type ConfigForm struct {
 	GroupMessageMode  string
 	RespondToBots     string
 	NotifyOnComplete  string
-	ShowMetaRows      string
-	Agents            []SelectOption
+	// 三个元信息行独立开关的表单值,均为字符串序列化的 "true"/"false"。
+	ShowMetaRowAgent     string
+	ShowMetaRowRuntime   string
+	ShowMetaRowDeveloper string
+	Agents               []SelectOption
 	AgentHomes        []SelectOption
 	AgentBins         []SelectOption
 	Models            []string

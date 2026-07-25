@@ -202,10 +202,23 @@ func buildConfigFormElements(sessionID string, form ConfigForm) []any {
 		{Value: "false", Label: "关闭（默认）"},
 		{Value: "true", Label: "完成时提醒发起人"},
 	}))...)
-	group = append(group, fieldElements("cfg_meta", "元信息行", "开启后 AI 回复卡片底部展示 agent/会话/模型/tokens 与 user/ip/workdir 两行；默认隐藏", configSelectOptions("show_meta_rows", form.ShowMetaRows, []SelectOption{
+
+	// element_id 上限 20 字符,fieldElements 会追加 _label/_hint,所以 prefix
+	// 必须 ≤ 14 —— 用短 slug (bar_ 代表 status bar 一族)。
+	statusBar := []map[string]any{}
+	statusBar = append(statusBar, fieldElements("cfg_bar_agent", "Agent 行", "开启后卡片底部显示：agent · 会话短号 · 模型（effort）· tokens/上下文占用", configSelectOptions("show_meta_row_agent", form.ShowMetaRowAgent, []SelectOption{
 		{Value: "false", Label: "隐藏（默认）"},
-		{Value: "true", Label: "显示元信息行"},
+		{Value: "true", Label: "显示 Agent 行"},
 	}))...)
+	statusBar = append(statusBar, fieldElements("cfg_bar_rt", "主机信息行", "开启后卡片底部显示：用户 · IP · 工作目录", configSelectOptions("show_meta_row_runtime", form.ShowMetaRowRuntime, []SelectOption{
+		{Value: "false", Label: "隐藏（默认）"},
+		{Value: "true", Label: "显示主机信息行"},
+	}))...)
+	statusBar = append(statusBar, fieldElements("cfg_bar_dev", "开发者行", "开启后卡片底部显示：当前版本 · 最新版本（若可用）· 开发者模式 ✅/❌", configSelectOptions("show_meta_row_developer", form.ShowMetaRowDeveloper, []SelectOption{
+		{Value: "false", Label: "隐藏（默认）"},
+		{Value: "true", Label: "显示开发者行"},
+	}))...)
+
 	saveButton := map[string]any{
 		"tag":              "button",
 		"name":             "submit_runtime_config",
@@ -233,6 +246,7 @@ func buildConfigFormElements(sessionID string, form ConfigForm) []any {
 				sectionElement("🤖 运行参数", runtime),
 				sectionElement("💬 会话行为", conversation),
 				sectionElement("👥 群消息", group),
+				sectionElement("📊 元信息行", statusBar),
 				accessPanelElement(form),
 				map[string]any{
 					"tag":                "column_set",
@@ -819,53 +833,89 @@ func callbackBehavior(sessionID, actionID, value string) []any {
 	}
 }
 
-// buildMetaElements 以"紧凑行"呈现底部 meta(v2):
-// 第一行 agent · model(effort) · tokens,第二行 user · ip · workdir。
-// 用间隔点连接、图标前缀,避免旧的加权分栏在窄屏错行;空字段跳过,空行不渲染。
+// buildMetaElements 以"紧凑行"呈现底部 meta(v3):
+// agent 行 · agent/会话/模型/tokens,runtime 行 · user/ip/workdir,
+// developer 行 · 版本/最新版本/开发者模式。三行由独立开关控制显隐,任一开则渲
+// 分隔线。空字段跳过,空行不渲染。
 func buildMetaElements(meta Meta) []any {
-	first, second := MetaRows(meta)
-	if first == "" && second == "" {
+	rows := MetaRows(meta)
+	if len(rows) == 0 {
 		return nil
 	}
 	elements := []any{map[string]any{"tag": "hr"}}
-	if first != "" {
-		elements = append(elements, metaLineElement("meta_primary", first))
-	}
-	if second != "" {
-		elements = append(elements, metaLineElement("meta_runtime", second))
+	for _, row := range rows {
+		elements = append(elements, metaLineElement(row.ElementID, row.Text))
 	}
 	return elements
 }
 
-// MetaRows formats the two compact metadata rows shared by full CardKit and
-// lightweight append replies.
-func MetaRows(meta Meta) (string, string) {
-	// 默认隐藏:关闭时返回空串,buildMetaElements 连分隔线一起跳过,
-	// markdown 回复 footer 同样为空。仅当 /config 或 /local-config 显式开启。
-	if !meta.ShowMetaRows {
-		return "", ""
+// MetaRow 是 status bar 里一行渲染的组合:element_id 用于 CardKit 指纹稳定与
+// 精确定位,Text 是渲染出的 markdown 文本。空 Text 的行由 MetaRows 直接跳过。
+type MetaRow struct {
+	ElementID string
+	Text      string
+}
+
+// MetaRows 组装最多三行 status bar,每行由对应的 ShowMetaRow* 独立开关控制。
+// 关闭且行内容为空时不渲染;所有开关都关或所有行内容都空时返回空切片。
+// full CardKit 与 lightweight markdown 回复共用此函数,以保证两处 footer 一致。
+func MetaRows(meta Meta) []MetaRow {
+	var rows []MetaRow
+	if meta.ShowMetaRowAgent {
+		var parts []string
+		if meta.Agent != "" {
+			parts = append(parts, agentEmoji(meta.Agent)+" "+shortSessionID(meta.SessionID, meta.Agent))
+		}
+		if model := metaModelText(meta); model != "" {
+			parts = append(parts, "🧠 "+model)
+		}
+		if tokens := metaTokenText(meta); tokens != "" {
+			parts = append(parts, tokens)
+		}
+		if len(parts) > 0 {
+			rows = append(rows, MetaRow{ElementID: "meta_primary", Text: strings.Join(parts, " · ")})
+		}
 	}
-	var first []string
-	if meta.Agent != "" {
-		first = append(first, agentEmoji(meta.Agent)+" "+shortSessionID(meta.SessionID, meta.Agent))
+	if meta.ShowMetaRowRuntime {
+		var parts []string
+		if meta.User != "" {
+			parts = append(parts, "👤 "+meta.User)
+		}
+		if meta.IP != "" {
+			parts = append(parts, "🖥️ "+meta.IP)
+		}
+		if meta.WorkDir != "" {
+			parts = append(parts, "📁 `"+meta.WorkDir+"`")
+		}
+		if len(parts) > 0 {
+			rows = append(rows, MetaRow{ElementID: "meta_runtime", Text: strings.Join(parts, " · ")})
+		}
 	}
-	if model := metaModelText(meta); model != "" {
-		first = append(first, "🧠 "+model)
+	if meta.ShowMetaRowDeveloper {
+		if text := metaDeveloperText(meta); text != "" {
+			rows = append(rows, MetaRow{ElementID: "meta_developer", Text: text})
+		}
 	}
-	if tokens := metaTokenText(meta); tokens != "" {
-		first = append(first, tokens)
+	return rows
+}
+
+// metaDeveloperText 渲染开发者行内容:v<current> · 最新 v<latest>(若可用且不同)
+// · 开发者模式 ✅/❌。current 为空时只显示能显示的段;若 current 与 latest 段全空,
+// 至少显示开发者模式一段。
+func metaDeveloperText(meta Meta) string {
+	var parts []string
+	if v := strings.TrimSpace(meta.Version); v != "" {
+		parts = append(parts, "🏷️ "+v)
 	}
-	var second []string
-	if meta.User != "" {
-		second = append(second, "👤 "+meta.User)
+	if latest := strings.TrimSpace(meta.LatestVersion); latest != "" {
+		parts = append(parts, "⬆️ 最新 "+latest)
 	}
-	if meta.IP != "" {
-		second = append(second, "🖥️ "+meta.IP)
+	emoji := "❌"
+	if meta.DeveloperMode {
+		emoji = "✅"
 	}
-	if meta.WorkDir != "" {
-		second = append(second, "📁 `"+meta.WorkDir+"`")
-	}
-	return strings.Join(first, " · "), strings.Join(second, " · ")
+	parts = append(parts, "🧪 开发者模式 "+emoji)
+	return strings.Join(parts, " · ")
 }
 
 // metaModelText 用实际模型值(缺失显 unknown),effort 以括号后缀呈现。

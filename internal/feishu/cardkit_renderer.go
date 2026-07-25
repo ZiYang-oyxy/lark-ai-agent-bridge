@@ -474,12 +474,14 @@ func staticFingerprint(prepared card.PreparedLarkCard) [32]byte {
 	return sha256.Sum256(encoded)
 }
 
-// blankVolatileMeta 清空 meta 底栏两行的 content,使其运行期变化不影响静态指纹。
+// blankVolatileMeta 清空 meta 底栏三行的 content,使其运行期变化不影响静态指纹。
+// meta_developer 里的 LatestVersion 由 update client 缓存驱动,也可能逐帧变化,
+// 必须一并纳入指纹豁免。
 func blankVolatileMeta(value any) {
 	switch node := value.(type) {
 	case map[string]any:
 		if node["tag"] == "markdown" {
-			if id, _ := node["element_id"].(string); id == "meta_primary" || id == "meta_runtime" {
+			if id, _ := node["element_id"].(string); id == "meta_primary" || id == "meta_runtime" || id == "meta_developer" {
 				node["content"] = ""
 			}
 		}

@@ -16,8 +16,13 @@ type ChatOverride struct {
 	ConversationMode *ConversationMode `json:"conversation_mode,omitempty"`
 	GroupMessageMode *GroupMessageMode `json:"group_message_mode,omitempty"`
 	RespondToBots    *bool             `json:"respond_to_bots,omitempty"`
-	ShowMetaRows     *bool             `json:"show_meta_rows,omitempty"`
-	Agent            *string           `json:"agent,omitempty"`
+	// ShowMetaRowAgent / ShowMetaRowRuntime / ShowMetaRowDeveloper 是新的三个独立
+	// 元信息行开关的按群覆盖。ShowMetaRows 是旧字段,只保留读侧迁移(见 mergeChatOverride)。
+	ShowMetaRowAgent     *bool   `json:"show_meta_row_agent,omitempty"`
+	ShowMetaRowRuntime   *bool   `json:"show_meta_row_runtime,omitempty"`
+	ShowMetaRowDeveloper *bool   `json:"show_meta_row_developer,omitempty"`
+	ShowMetaRows         *bool   `json:"show_meta_rows,omitempty"`
+	Agent                *string `json:"agent,omitempty"`
 	AgentHome        *string           `json:"agent_home,omitempty"`
 	AgentBin         *string           `json:"agent_bin,omitempty"`
 }
@@ -26,7 +31,9 @@ type ChatOverride struct {
 func (o ChatOverride) IsEmpty() bool {
 	return o.Model == nil && o.Effort == nil && o.ReplyMode == nil &&
 		o.ConversationMode == nil && o.GroupMessageMode == nil &&
-		o.RespondToBots == nil && o.ShowMetaRows == nil && o.Agent == nil &&
+		o.RespondToBots == nil && o.ShowMetaRowAgent == nil &&
+		o.ShowMetaRowRuntime == nil && o.ShowMetaRowDeveloper == nil &&
+		o.ShowMetaRows == nil && o.Agent == nil &&
 		o.AgentHome == nil && o.AgentBin == nil
 }
 
@@ -97,8 +104,26 @@ func mergeChatOverride(base RuntimePreference, o ChatOverride, allowedModels []s
 	if o.RespondToBots != nil {
 		merged.RespondToBots = *o.RespondToBots
 	}
-	if o.ShowMetaRows != nil {
-		merged.ShowMetaRows = *o.ShowMetaRows
+	if o.ShowMetaRowAgent != nil {
+		merged.ShowMetaRowAgent = *o.ShowMetaRowAgent
+	}
+	if o.ShowMetaRowRuntime != nil {
+		merged.ShowMetaRowRuntime = *o.ShowMetaRowRuntime
+	}
+	if o.ShowMetaRowDeveloper != nil {
+		merged.ShowMetaRowDeveloper = *o.ShowMetaRowDeveloper
+	}
+	// 旧字段 ShowMetaRows override 的迁移:仅当新三项均未 override 且旧字段被显式
+	// 设为 true 时,把 agent+runtime 两行都打开(与旧版语义一致,不涉及新增的
+	// developer 行)。写路径不再产生 ShowMetaRows override。
+	if o.ShowMetaRows != nil && o.ShowMetaRowAgent == nil && o.ShowMetaRowRuntime == nil && o.ShowMetaRowDeveloper == nil {
+		if *o.ShowMetaRows {
+			merged.ShowMetaRowAgent = true
+			merged.ShowMetaRowRuntime = true
+		} else {
+			merged.ShowMetaRowAgent = false
+			merged.ShowMetaRowRuntime = false
+		}
 	}
 	if o.Agent != nil {
 		merged.Agent = *o.Agent

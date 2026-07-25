@@ -21,13 +21,15 @@ import (
 )
 
 type fakeUpdateManager struct {
-	checkResult bridgeupdate.CheckResult
-	checkErr    error
-	notes       string
-	notesErr    error
-	prepared    PreparedUpdate
-	prepareErr  error
-	prepareCall int
+	checkResult   bridgeupdate.CheckResult
+	checkErr      error
+	notes         string
+	notesErr      error
+	prepared      PreparedUpdate
+	prepareErr    error
+	prepareCall   int
+	peekManifest  bridgeupdate.Manifest
+	peekAvailable bool
 }
 
 func (f *fakeUpdateManager) Check(context.Context, string) (bridgeupdate.CheckResult, error) {
@@ -45,6 +47,9 @@ func (f *fakeUpdateManager) AggregatedReleaseNotes(_ context.Context, _ string, 
 func (f *fakeUpdateManager) Prepare(context.Context, bridgeupdate.Asset) (PreparedUpdate, error) {
 	f.prepareCall++
 	return f.prepared, f.prepareErr
+}
+func (f *fakeUpdateManager) PeekManifest() (bridgeupdate.Manifest, bool) {
+	return f.peekManifest, f.peekAvailable
 }
 
 type fakePreparedUpdate struct {
