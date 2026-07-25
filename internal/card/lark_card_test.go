@@ -1209,7 +1209,8 @@ func TestBuildLarkCardRendersUpdateStatusWithSectionedHelp(t *testing.T) {
 	}
 	header := updatePanel["header"].(map[string]any)
 	title := header["title"].(map[string]string)["content"]
-	if title != "✨ 发现新版本" {
+	// 版本区间 vCurrent → vLatest 已并入 section 标题（原「✨ 发现新版本」+ 独立 markdown 行合成同一行）。
+	if title != "✨ 发现新版本 v1.0.0 → v1.2.0" {
 		t.Fatalf("update panel title = %q", title)
 	}
 	data, err := json.Marshal(payload)
@@ -1217,7 +1218,7 @@ func TestBuildLarkCardRendersUpdateStatusWithSectionedHelp(t *testing.T) {
 		t.Fatal(err)
 	}
 	text := string(data)
-	if !containsAll(text, "**v1.0.0 → v1.2.0**", "update.details", "查看更新 →", "**`/new`**") {
+	if !containsAll(text, "v1.0.0 → v1.2.0", "update.details", "查看更新 →", "**`/new`**") {
 		t.Fatalf("sectioned update help missing content: %s", text)
 	}
 	if strings.Contains(text, "查看本次更新内容，确认后可升级") {
@@ -1277,6 +1278,127 @@ func TestBuildLarkCardRendersInactiveVersionStatusWithoutUpdateAction(t *testing
 			}
 		})
 	}
+}
+
+// 需求②：/status 卡在 event.VersionStatus 存在且 UpdateAvailable 时，顶部叠加
+// 与 /help 一致的「✨ 发现新版本 vX → vY」section（带 update.details 按钮）。
+func TestBuildLarkCardStatusCardPrependsAvailableVersionHint(t *testing.T) {
+	payload := BuildLarkCard(Event{
+		Type:       "status",
+		SessionID:  "status:with-update",
+		StatusCard: &StatusCard{Sections: []StatusSection{{Title: "会话概览", Fields: []StatusField{{Label: "Session", Value: "s1"}}}}},
+		VersionStatus: &HelpVersionStatus{
+			CurrentVersion:  "v1.0.0",
+			LatestVersion:   "v1.2.0",
+			UpdateAvailable: true,
+			DetailsAction:   Action{ID: "update.details", Label: "查看更新 →", Value: "1.2.0"},
+		},
+	})
+	elements := payload["body"].(map[string]any)["elements"].([]any)
+	if len(elements) < 2 {
+		t.Fatalf("status elements = %d, want >= 2 (hint + status body)", len(elements))
+	}
+	hint := elements[0].(map[string]any)
+	if hint["tag"] != "collapsible_panel" {
+		t.Fatalf("first element must be version hint panel: %#v", hint)
+	}
+	title := hint["header"].(map[string]any)["title"].(map[string]string)["content"]
+	if title != "✨ 发现新版本 v1.0.0 → v1.2.0" {
+		t.Fatalf("hint title = %q", title)
+	}
+	data, _ := json.Marshal(payload)
+	if !strings.Contains(string(data), "update.details") {
+		t.Fatalf("status card missing update.details button: %s", data)
+	}
+}
+
+// 需求②：/config 卡同样叠加升级提示。
+func TestBuildLarkCardConfigFormPrependsAvailableVersionHint(t *testing.T) {
+	payload := BuildLarkCard(Event{
+		Type:       "config",
+		SessionID:  "config:with-update",
+		ConfigForm: &ConfigForm{Agent: "claude", ReplyMode: "append"},
+		VersionStatus: &HelpVersionStatus{
+			CurrentVersion:  "v1.0.0",
+			LatestVersion:   "v1.2.0",
+			UpdateAvailable: true,
+			DetailsAction:   Action{ID: "update.details", Label: "查看更新 →", Value: "1.2.0"},
+		},
+	})
+	elements := payload["body"].(map[string]any)["elements"].([]any)
+	hint := elements[0].(map[string]any)
+	if hint["tag"] != "collapsible_panel" {
+		t.Fatalf("first element must be version hint panel: %#v", hint)
+	}
+	title := hint["header"].(map[string]any)["title"].(map[string]string)["content"]
+	if title != "✨ 发现新版本 v1.0.0 → v1.2.0" {
+		t.Fatalf("hint title = %q", title)
+	}
+}
+
+// 需求②：无 UpdateAvailable 时（nil VersionStatus）不渲染任何升级提示。
+func TestBuildLarkCardStatusCardSkipsHintWhenNoUpdate(t *testing.T) {
+	payload := BuildLarkCard(Event{
+		Type:       "status",
+		SessionID:  "status:no-update",
+		StatusCard: &StatusCard{Sections: []StatusSection{{Title: "会话概览", Fields: []StatusField{{Label: "Session", Value: "s1"}}}}},
+	})
+	data, _ := json.Marshal(payload)
+	if strings.Contains(string(data), "发现新版本") {
+		t.Fatalf("status card without version status must not show update hint: %s", data)
+	}
+}
+
+// 需求③：/config 卡的 🤖 运行参数 / 💬 会话行为 / 👥 群消息 / 📊 元信息行 四段默认收起。
+func TestBuildLarkCardConfigFormSectionsDefaultCollapsed(t *testing.T) {
+	payload := BuildLarkCard(Event{
+		Type:       "config",
+		SessionID:  "config:collapsed",
+		ConfigForm: &ConfigForm{Agent: "claude", ReplyMode: "append"},
+	})
+	form := findFirstForm(payload["body"].(map[string]any)["elements"].([]any))
+	if form == nil {
+		t.Fatal("config card must contain a form")
+	}
+	titles := map[string]bool{"🤖 运行参数": false, "💬 会话行为": false, "👥 群消息": false, "📊 元信息行": false}
+	for _, raw := range form["elements"].([]any) {
+		el, _ := raw.(map[string]any)
+		if el == nil || el["tag"] != "collapsible_panel" {
+			continue
+		}
+		title := el["header"].(map[string]any)["title"].(map[string]string)["content"]
+		if _, watched := titles[title]; !watched {
+			continue
+		}
+		titles[title] = true
+		if el["expanded"] != false {
+			t.Fatalf("config section %q must default to collapsed, got expanded=%v", title, el["expanded"])
+		}
+	}
+	for title, seen := range titles {
+		if !seen {
+			t.Fatalf("config section %q not rendered", title)
+		}
+	}
+}
+
+// findFirstForm 深度找第一个 tag=form 的元素。
+func findFirstForm(elements []any) map[string]any {
+	for _, raw := range elements {
+		el, _ := raw.(map[string]any)
+		if el == nil {
+			continue
+		}
+		if el["tag"] == "form" {
+			return el
+		}
+		if sub, ok := el["elements"].([]any); ok {
+			if f := findFirstForm(sub); f != nil {
+				return f
+			}
+		}
+	}
+	return nil
 }
 
 func collectHelpButtons(elements []any, out *[]string) {

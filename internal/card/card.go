@@ -268,6 +268,10 @@ type Event struct {
 	LocalConfigOverview  *LocalConfigOverview
 	StatusCard           *StatusCard
 	ResumeCard           *ResumeCard
+	// VersionStatus 让 /config 与 /status 卡片顶部也能展示与 /help 一致的更新提示。
+	// /help 走的是 HelpCard.VersionStatus（结构一致、渲染共用 buildHelpVersionElements）；
+	// 顶层字段仅供其他卡片模型用，不与 HelpCard.VersionStatus 同时生效。
+	VersionStatus *HelpVersionStatus
 }
 
 func WorkDirCreateActions(path string) []Action {

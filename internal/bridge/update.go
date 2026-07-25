@@ -57,24 +57,42 @@ func (s *Service) handleHelpCommand(ctx context.Context, msg Message, preference
 }
 
 func (s *Service) helpUpdateEvent(ctx context.Context, sessionID, replyToMessageID string, mode config.ConversationMode, help card.HelpCard) card.Event {
+	status := s.versionStatus(ctx, sessionID)
+	help.VersionStatus = status
+	return card.Event{
+		Type: "help", SessionID: sessionID, ReplyToMessageID: replyToMessageID,
+		ReplyInThread: mode == config.ConversationModeTopic,
+		HelpCard:      &help,
+	}
+}
+
+// availableVersionStatus 仅在真正发现可升级新版本时保留提示，用于 /config
+// 与 /status 卡顶——这两个卡片不该被「已是最新 / 未启用自升级 / 检查失败」等
+// 低价值状态挤占。/help 保留完整状态透传，不走此过滤。
+func availableVersionStatus(status *card.HelpVersionStatus) *card.HelpVersionStatus {
+	if status == nil || !status.UpdateAvailable {
+		return nil
+	}
+	return status
+}
+
+// versionStatus 生成「当前版本 / 更新可用」提示模型。/help 走 HelpCard.VersionStatus
+// 保持原链路；/config 与 /status 走 card.Event.VersionStatus 顶层字段，让渲染器
+// 在这两个卡片顶部叠加与 /help 一致的更新提示。s.Updates 未配置或未启用自升级时
+// 返回 nil，渲染器会跳过。
+func (s *Service) versionStatus(ctx context.Context, sessionID string) *card.HelpVersionStatus {
 	version := buildinfo.Version
 	display := version
 	if buildinfo.IsRelease() {
 		display = "v" + version
 	}
 	status := &card.HelpVersionStatus{CurrentVersion: display}
-	help.VersionStatus = status
-	event := card.Event{
-		Type: "help", SessionID: sessionID, ReplyToMessageID: replyToMessageID,
-		ReplyInThread: mode == config.ConversationModeTopic,
-		HelpCard:      &help,
-	}
 	if s.Updates == nil {
-		return event
+		return status
 	}
 	if !buildinfo.IsRelease() {
 		status.Status = "开发构建不可自升级"
-		return event
+		return status
 	}
 	result, err := s.Updates.Check(ctx, version)
 	if err != nil {
@@ -90,7 +108,7 @@ func (s *Service) helpUpdateEvent(ctx context.Context, sessionID, replyToMessage
 	} else {
 		status.Status = "已是最新版本"
 	}
-	return event
+	return status
 }
 
 func (s *Service) handleUpdateDetails(ctx context.Context, req ActionRequest) (ActionResult, error) {

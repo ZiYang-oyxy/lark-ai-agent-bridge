@@ -14,6 +14,9 @@ func BuildLarkCard(e Event) map[string]any {
 	} else if e.StatusCard != nil {
 		e.Streaming = false
 		elements = buildStatusElements(e.SessionID, *e.StatusCard)
+		if hint := buildHelpVersionElements(e.SessionID, e.VersionStatus); len(hint) > 0 {
+			elements = append(hint, elements...)
+		}
 	} else if e.ResumeCard != nil {
 		e.Streaming = false
 		elements = buildResumeElements(e.SessionID, *e.ResumeCard)
@@ -26,6 +29,9 @@ func BuildLarkCard(e Event) map[string]any {
 	} else if e.ConfigForm != nil {
 		e.Streaming = false
 		elements = buildConfigFormElements(e.SessionID, *e.ConfigForm)
+		if hint := buildHelpVersionElements(e.SessionID, e.VersionStatus); len(hint) > 0 {
+			elements = append(hint, elements...)
+		}
 	} else if e.MarkdownLayout {
 		elements = []any{markdownElement("answer", e.Markdown)}
 	} else {
@@ -228,11 +234,12 @@ func buildConfigFormElements(sessionID string, form ConfigForm) []any {
 		map[string]any{
 			"tag":  "form",
 			"name": "runtime_config",
+			// 各段默认收起：/config 首屏只见标题，用户按需展开。access 段本就默认收起。
 			"elements": []any{
-				sectionElement("🤖 运行参数", runtime),
-				sectionElement("💬 会话行为", conversation),
-				sectionElement("👥 群消息", group),
-				sectionElement("📊 元信息行", statusBar),
+				collapsiblePanelElement("cfg_p_runtime", "🤖 运行参数", false, runtime),
+				collapsiblePanelElement("cfg_p_conv", "💬 会话行为", false, conversation),
+				collapsiblePanelElement("cfg_p_group", "👥 群消息", false, group),
+				collapsiblePanelElement("cfg_p_bar", "📊 元信息行", false, statusBar),
 				accessPanelElement(form),
 				map[string]any{
 					"tag":                "column_set",
@@ -349,13 +356,14 @@ func buildHelpVersionElements(sessionID string, status *HelpVersionStatus) []any
 		return []any{noteElement("help_version_status", content)}
 	}
 
-	body := []map[string]any{
-		markdownElement("help_update_versions", fmt.Sprintf("**%s → %s**", status.CurrentVersion, status.LatestVersion)),
-	}
+	// 有可用更新时把版本区间「vCurrent → vLatest」并进 section 标题，
+	// 与「✨ 发现新版本」共居一行；body 只留「查看更新 →」按钮。
+	body := []map[string]any{}
 	if actionRow := buttonRowElements([]Action{status.DetailsAction}, sessionID); actionRow != nil {
 		body = append(body, actionRow)
 	}
-	panel := sectionElement("✨ 发现新版本", body)
+	title := fmt.Sprintf("✨ 发现新版本 %s → %s", status.CurrentVersion, status.LatestVersion)
+	panel := sectionElement(title, body)
 	panel["border"] = map[string]string{"color": "blue", "corner_radius": "5px"}
 	return []any{panel}
 }

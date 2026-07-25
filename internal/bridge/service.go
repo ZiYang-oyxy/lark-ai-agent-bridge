@@ -576,6 +576,7 @@ func (s *Service) HandleMessage(ctx context.Context, msg Message) error {
 			ReplyToMessageID: msg.ID,
 			ReplyInThread:    preference.ConversationMode == config.ConversationModeTopic,
 			StatusCard:       s.statusCardData(cmd.Agent, msg, preference),
+			VersionStatus:    availableVersionStatus(s.versionStatus(ctx, statusSessionID)),
 		})
 	case CommandStop:
 		return s.handleStopCommand(msg, cmd, preference)
@@ -723,12 +724,14 @@ func (s *Service) handleConfigCommand(ctx context.Context, msg Message, cmd Comm
 			}
 			_ = s.refreshKnownChats(ctx)
 		}
+		configSessionID := runID("config", msg.ID)
 		return s.Cards.Render(card.Event{
 			Type:             "config",
-			SessionID:        runID("config", msg.ID),
+			SessionID:        configSessionID,
 			ReplyToMessageID: msg.ID,
 			ReplyInThread:    preference.ConversationMode == config.ConversationModeTopic,
 			ConfigForm:       s.configForm(preference),
+			VersionStatus:    availableVersionStatus(s.versionStatus(ctx, configSessionID)),
 		})
 	case "reset":
 		if s.Preferences == nil {
@@ -1927,9 +1930,10 @@ func (s *Service) HandleActionResult(ctx context.Context, req ActionRequest) (Ac
 			kind = agent.Claude
 		}
 		return s.renderActionEvent(card.Event{
-			Type:       "status",
-			SessionID:  req.SessionID,
-			StatusCard: s.statusCardDataForKey(kind, context.Key, s.runtimePreference(), nil, ""),
+			Type:          "status",
+			SessionID:     req.SessionID,
+			StatusCard:    s.statusCardDataForKey(kind, context.Key, s.runtimePreference(), nil, ""),
+			VersionStatus: availableVersionStatus(s.versionStatus(ctx, req.SessionID)),
 		})
 	default:
 		return s.renderActionEvent(card.Event{Type: "error", SessionID: req.SessionID, Segments: []card.Segment{{Kind: card.SegmentError, Text: "unknown action: " + req.ActionID}}})
