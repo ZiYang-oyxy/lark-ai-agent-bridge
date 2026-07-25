@@ -910,3 +910,88 @@ func TestStreamWhitespaceOnlyDeltaDoesNotRenderEmptyCardOrDelayFirstText(t *test
 		t.Fatalf("first visible preview = %q, want preserved leading delta", got)
 	}
 }
+
+// TestAppendCleanThreeSectionLatestOnly 验证 append-clean-card 三段布局:思考/工具只保留
+// 最新一次,折叠区计数(× N)累计全过程,Event 携带 ThreeSectionLayout + 展开态。
+func TestAppendCleanThreeSectionLatestOnly(t *testing.T) {
+	clock := &fakeStreamClock{now: time.Unix(200, 0)}
+	renderer := card.NewFakeRenderer()
+	stream := newPreviewTestStreamForMode(t, renderer, clock, 1, 4000, config.ReplyModeAppendCleanCard)
+	if err := stream.Start(); err != nil {
+		t.Fatal(err)
+	}
+
+	// 第 1 轮:思考 delta + 一次工具调用,以 AssistantSnapshot 收尾。
+	stream.Handle(AgentStreamUpdate{Activity: streamActivityReasoning, Incremental: true,
+		Segments: []card.Segment{{Kind: card.SegmentThought, Text: "先想第一步"}}})
+	stream.Handle(AgentStreamUpdate{Activity: streamActivityTool,
+		Segments: []card.Segment{{Kind: card.SegmentTool, Text: "Bash(ls)", Tool: &card.ToolMeta{ID: "t1"}}}})
+	stream.Handle(AgentStreamUpdate{AssistantSnapshot: true,
+		Segments: []card.Segment{{Kind: card.SegmentText, Text: "中间答复"}}})
+
+	// 第 2 轮:新的思考 + 新一次工具,再 snapshot。
+	stream.Handle(AgentStreamUpdate{Activity: streamActivityReasoning, Incremental: true,
+		Segments: []card.Segment{{Kind: card.SegmentThought, Text: "再想第二步"}}})
+	stream.Handle(AgentStreamUpdate{Activity: streamActivityTool,
+		Segments: []card.Segment{{Kind: card.SegmentTool, Text: "Bash(cat x)", Tool: &card.ToolMeta{ID: "t2"}}}})
+	stream.Handle(AgentStreamUpdate{AssistantSnapshot: true,
+		Segments: []card.Segment{{Kind: card.SegmentText, Text: "最终答复"}}})
+	if err := stream.Flush(); err != nil {
+		t.Fatal(err)
+	}
+
+	ev := renderer.Events()[len(renderer.Events())-1]
+	if !ev.ThreeSectionLayout {
+		t.Fatalf("expected ThreeSectionLayout for append-clean, got %#v", ev)
+	}
+	if !ev.ThoughtExpanded || ev.ToolsExpanded {
+		t.Fatalf("running expand state wrong: thought=%v tools=%v", ev.ThoughtExpanded, ev.ToolsExpanded)
+	}
+	if ev.ThoughtRoundCount != 2 || ev.ToolRoundCount != 2 {
+		t.Fatalf("counts = thought:%d tool:%d, want 2/2", ev.ThoughtRoundCount, ev.ToolRoundCount)
+	}
+	thought := segmentTextByKind(ev, card.SegmentThought)
+	if strings.Contains(thought, "第一步") || !strings.Contains(thought, "第二步") {
+		t.Fatalf("thought should show only latest COT, got %q", thought)
+	}
+	tool := segmentTextByKind(ev, card.SegmentTool)
+	if strings.Contains(tool, "ls") || !strings.Contains(tool, "cat x") {
+		t.Fatalf("tool should show only latest call, got %q", tool)
+	}
+
+	// 终态:思考折叠,计数保持,内容仍是最新一次。
+	terminal, err := stream.Finish("completed", card.Meta{}, AgentRunResult{
+		Segments: []card.Segment{
+			{Kind: card.SegmentThought, Text: "先想第一步"},
+			{Kind: card.SegmentTool, Text: "Bash(ls)", Tool: &card.ToolMeta{ID: "t1"}},
+			{Kind: card.SegmentThought, Text: "再想第二步"},
+			{Kind: card.SegmentTool, Text: "Bash(cat x)", Tool: &card.ToolMeta{ID: "t2"}},
+			{Kind: card.SegmentText, Text: "最终答复"},
+		},
+		AnswerSegments: []string{"最终答复"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if terminal.ThoughtExpanded {
+		t.Fatalf("terminal thought should be collapsed")
+	}
+	if terminal.ThoughtRoundCount != 2 || terminal.ToolRoundCount != 2 {
+		t.Fatalf("terminal counts = thought:%d tool:%d, want 2/2", terminal.ThoughtRoundCount, terminal.ToolRoundCount)
+	}
+	if got := segmentTextByKind(terminal, card.SegmentThought); strings.Contains(got, "第一步") || !strings.Contains(got, "第二步") {
+		t.Fatalf("terminal thought latest-only failed: %q", got)
+	}
+	if got := segmentTextByKind(terminal, card.SegmentTool); strings.Contains(got, "ls") || !strings.Contains(got, "cat x") {
+		t.Fatalf("terminal tool latest-only failed: %q", got)
+	}
+}
+
+func segmentTextByKind(ev card.Event, kind card.SegmentKind) string {
+	for _, seg := range ev.Segments {
+		if seg.Kind == kind {
+			return seg.Text
+		}
+	}
+	return ""
+}

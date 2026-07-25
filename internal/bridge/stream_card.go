@@ -77,6 +77,18 @@ type agentCardStream struct {
 	toolCallCount    int
 	stopping         bool
 	stopRequested    bool
+
+	// append-clean-card 三段布局:思考/工具只显示「最新一次」,但用计数告诉用户
+	// 背后累计了多少轮。latestThought 是最新一轮 COT(每个新 assistant message 边界
+	// 重置);latestTool 是最新一次工具调用命令+输出(每来一个新 tool segment 覆盖)。
+	// thoughtRounds/toolRounds 是累计轮次/次数,渲染成折叠区标题的「× N」。
+	// 仅在 replyMode == append-clean-card 时维护与使用,不影响 append / latest-card。
+	cleanThought      strings.Builder
+	cleanTool         strings.Builder
+	thoughtRounds     int
+	toolRounds        int
+	seenToolIDs       map[string]bool
+	thoughtRoundOpen  bool
 }
 
 func newAgentCardStream(service *Service, sessionID string, sess session.Session, input session.Input) *agentCardStream {
@@ -195,6 +207,9 @@ func (s *agentCardStream) Handle(update AgentStreamUpdate) {
 		s.ordered = replaceOrderedAnswerSnapshot(s.ordered, update.Segments, s.orderedPartialAt, s.orderedPartial)
 		s.orderedPartialAt = 0
 		s.orderedPartial = false
+	}
+	if s.replyMode == config.ReplyModeAppendCleanCard {
+		s.updateCleanSectionsLocked(update.Segments, update.Incremental, assistantSnapshot)
 	}
 	activityChanged := update.Activity != "" && update.Activity != previousActivity
 	if update.AnswerSnapshot || len(update.Segments) > 0 || activityChanged {
@@ -511,6 +526,65 @@ func (s *agentCardStream) appendSegmentLocked(segment card.Segment, incremental 
 	appendSegmentToBuilders(segment, incremental, &s.answer, &s.thought, &s.tools)
 }
 
+// updateCleanSectionsLocked 维护 append-clean-card 三段布局的「只显示最新一次 + 计数」状态。
+// 思考:同一轮 assistant message 内的 thought 增量累积到 cleanThought;assistantSnapshot
+// 标志该轮结束,thoughtRounds++,下一段 thought 先 Reset 再累积(即只留最新一轮 COT)。
+// 工具:每遇到一个新的 tool_use.id 记一次调用(toolRounds++)并 Reset cleanTool 只留这一次的
+// 命令;同 id 的后续片段(如 tool_result 输出)追加到当前 cleanTool。无 id 的 tool 片段按新的
+// 一次处理(退化兜底)。所有裁剪只作用于 clean* 字段,不动 s.thought / s.tools(append 复用)。
+func (s *agentCardStream) updateCleanSectionsLocked(segments []card.Segment, incremental, assistantSnapshot bool) {
+	if s.seenToolIDs == nil {
+		s.seenToolIDs = make(map[string]bool)
+	}
+	for _, segment := range segments {
+		text := strings.TrimSpace(segment.Text)
+		switch segment.Kind {
+		case card.SegmentThought:
+			if segment.Text == "" {
+				continue
+			}
+			// 新一轮 COT 开始:上一轮已被 assistantSnapshot 结算(thoughtRoundOpen=false),
+			// 先清掉旧内容只留最新一轮。
+			if !s.thoughtRoundOpen {
+				s.cleanThought.Reset()
+				s.thoughtRoundOpen = true
+			}
+			if incremental {
+				s.cleanThought.WriteString(segment.Text)
+			} else {
+				appendToBuilder(&s.cleanThought, segment.Text)
+			}
+		case card.SegmentTool:
+			if text == "" {
+				continue
+			}
+			id := ""
+			if segment.Tool != nil {
+				id = segment.Tool.ID
+			}
+			isNewCall := id == "" || !s.seenToolIDs[id]
+			// tool_result 与其 tool_use 共享 id(claudeToolResultMeta 用 tool_use_id),
+			// 因此 result 片段的 id 已 seen,会走「追加到当前一次」分支,不重复计数。
+			if isNewCall {
+				s.toolRounds++
+				if id != "" {
+					s.seenToolIDs[id] = true
+				}
+				s.cleanTool.Reset()
+				s.cleanTool.WriteString(text)
+			} else {
+				appendToBuilder(&s.cleanTool, text)
+			}
+		}
+	}
+	// 一轮 assistant message 结束:结算本轮思考。若本轮确有 thought,轮次 +1;
+	// 关闭 thoughtRoundOpen,下一段 thought 视为新一轮(触发 Reset)。
+	if assistantSnapshot && s.thoughtRoundOpen {
+		s.thoughtRounds++
+		s.thoughtRoundOpen = false
+	}
+}
+
 func appendOrderedSegment(segments []card.Segment, segment card.Segment, incremental bool) []card.Segment {
 	if segment.Text == "" || segment.Kind == card.SegmentThought {
 		return segments
@@ -675,6 +749,65 @@ func (s *agentCardStream) mergeFinalSegmentsLocked(segments []card.Segment, answ
 		s.tools.Reset()
 		s.tools.WriteString(tools.String())
 	}
+	if s.replyMode == config.ReplyModeAppendCleanCard {
+		s.finalizeCleanSectionsLocked(segments)
+	}
+}
+
+// finalizeCleanSectionsLocked 在终态用本轮完整 result.Segments 重算 append-clean 的
+// 「最新一次」内容:最新一轮 COT = 最后一段 thought;最新一次工具 = 最后一个 tool_use.id
+// 分组的命令+输出。计数以流式期间累计的 thoughtRounds/toolRounds 为准(含全过程,更准);
+// 仅当流式没跑过(直出终态、计数为 0)时从终态 segments 兜底计数,避免「× N」缺失。
+func (s *agentCardStream) finalizeCleanSectionsLocked(segments []card.Segment) {
+	var latestThought string
+	var thoughtCount int
+	lastToolID := ""
+	var latestTool strings.Builder
+	toolIDs := make(map[string]bool)
+	uniqueTools := 0
+	for _, segment := range segments {
+		text := strings.TrimSpace(segment.Text)
+		if text == "" {
+			continue
+		}
+		switch segment.Kind {
+		case card.SegmentThought:
+			latestThought = text
+			thoughtCount++
+		case card.SegmentTool:
+			id := ""
+			if segment.Tool != nil {
+				id = segment.Tool.ID
+			}
+			if id == "" || !toolIDs[id] {
+				uniqueTools++
+				if id != "" {
+					toolIDs[id] = true
+				}
+				if id == "" || id != lastToolID {
+					latestTool.Reset()
+					latestTool.WriteString(text)
+				} else {
+					appendToBuilder(&latestTool, text)
+				}
+				lastToolID = id
+			} else {
+				// 同一次工具的后续片段(如 result)追加到当前。
+				appendToBuilder(&latestTool, text)
+				lastToolID = id
+			}
+		}
+	}
+	s.cleanThought.Reset()
+	s.cleanThought.WriteString(latestThought)
+	s.cleanTool.Reset()
+	s.cleanTool.WriteString(latestTool.String())
+	if s.thoughtRounds == 0 {
+		s.thoughtRounds = thoughtCount
+	}
+	if s.toolRounds == 0 {
+		s.toolRounds = uniqueTools
+	}
 }
 
 func appendToBuilder(b *strings.Builder, text string) {
@@ -719,9 +852,15 @@ func (s *agentCardStream) eventLocked(initial bool) card.Event {
 		Streaming:        s.status == "running",
 		Activity:         s.activity,
 		// v2:过程折叠区在运行期固定折叠,不随 activity 开合,保持骨架稳定以便 native 流式命中。
-		ProcessExpanded: false,
-		ToolCallCount:   s.toolCallCount,
-		OrderedLayout:   s.replyMode == config.ReplyModeAppend,
+		ProcessExpanded:    false,
+		ToolCallCount:      s.toolCallCount,
+		OrderedLayout:      s.replyMode == config.ReplyModeAppend,
+		ThreeSectionLayout: s.replyMode == config.ReplyModeAppendCleanCard,
+		// 三段布局:思考默认展开(用户要求),终态折叠让最终答案更清爽;工具恒默认折叠。
+		ThoughtExpanded:   s.replyMode == config.ReplyModeAppendCleanCard && s.status == "running",
+		ToolsExpanded:     false,
+		ThoughtRoundCount: s.thoughtRounds,
+		ToolRoundCount:    s.toolRounds,
 	}
 }
 
@@ -729,14 +868,22 @@ func (s *agentCardStream) segmentsLocked() []card.Segment {
 	if s.replyMode == config.ReplyModeAppend {
 		return s.withStopRequestedNoticeLocked(s.orderedSegmentsLocked())
 	}
+	// append-clean-card 三段布局只显示最新一次 COT / 工具调用,取 clean* 裁剪结果;
+	// 其余模式(latest-card 等走此分支的)保持旧的累积 thought / tools。
+	thoughtText := s.thought.String()
+	toolsText := s.tools.String()
+	if s.replyMode == config.ReplyModeAppendCleanCard {
+		thoughtText = s.cleanThought.String()
+		toolsText = s.cleanTool.String()
+	}
 	var segments []card.Segment
 	if text := stripTrailingBotSignature(s.answer.String()); strings.TrimSpace(text) != "" {
 		segments = append(segments, card.Segment{Kind: card.SegmentText, Text: text})
 	}
-	if text := strings.TrimSpace(s.thought.String()); text != "" {
+	if text := strings.TrimSpace(thoughtText); text != "" {
 		segments = append(segments, card.Segment{Kind: card.SegmentThought, Text: text})
 	}
-	if text := strings.TrimSpace(s.tools.String()); text != "" {
+	if text := strings.TrimSpace(toolsText); text != "" {
 		segments = append(segments, card.Segment{Kind: card.SegmentTool, Text: text})
 	}
 	return s.withStopRequestedNoticeLocked(segments)

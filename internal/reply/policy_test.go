@@ -321,3 +321,52 @@ func TestPolicyLatestCardReplacesOnlyStaleMapping(t *testing.T) {
 func configMode(value string) config.ReplyMode {
 	return config.ReplyMode(value)
 }
+
+// TestCleanTerminalEventKeepsPanelsForThreeSectionLayout 锁死:三段布局(append-clean-card
+// 走的新分支)在终态保留 thought/tool 的「最新一次」用于渲染折叠区,不再被 clean 清空;
+// 旧的合并 panel_process 分支(ThreeSectionLayout=false)沿用「终态只留正文」的老语义。
+func TestCleanTerminalEventKeepsPanelsForThreeSectionLayout(t *testing.T) {
+	three := card.Event{
+		Type:               "result",
+		ThreeSectionLayout: true,
+		ThoughtExpanded:    true,
+		ToolsExpanded:      true,
+		Segments: []card.Segment{
+			{Kind: card.SegmentText, Text: "最终答复"},
+			{Kind: card.SegmentThought, Text: "最新一轮思考"},
+			{Kind: card.SegmentTool, Text: "Bash(ls)"},
+		},
+	}
+	out := cleanTerminalEvent(three)
+	kinds := map[card.SegmentKind]bool{}
+	for _, s := range out.Segments {
+		kinds[s.Kind] = true
+	}
+	if !kinds[card.SegmentText] || !kinds[card.SegmentThought] || !kinds[card.SegmentTool] {
+		t.Fatalf("three-section terminal should keep text+thought+tool, got %#v", out.Segments)
+	}
+	if out.HideAgentPanels {
+		t.Fatalf("three-section terminal must not hide agent panels")
+	}
+	if out.Streaming || out.ThoughtExpanded || out.ToolsExpanded {
+		t.Fatalf("three-section terminal must be non-streaming with panels folded, got %#v", out)
+	}
+
+	legacy := card.Event{
+		Type: "result",
+		Segments: []card.Segment{
+			{Kind: card.SegmentText, Text: "最终答复"},
+			{Kind: card.SegmentThought, Text: "过程思考"},
+			{Kind: card.SegmentTool, Text: "Bash(ls)"},
+		},
+	}
+	out2 := cleanTerminalEvent(legacy)
+	for _, s := range out2.Segments {
+		if s.Kind == card.SegmentThought || s.Kind == card.SegmentTool {
+			t.Fatalf("legacy clean terminal must drop thought/tool, got %#v", out2.Segments)
+		}
+	}
+	if !out2.HideAgentPanels {
+		t.Fatalf("legacy clean terminal should set HideAgentPanels")
+	}
+}
