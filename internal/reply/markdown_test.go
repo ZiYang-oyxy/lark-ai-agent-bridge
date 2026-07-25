@@ -248,8 +248,9 @@ func TestRenderInlineTimelineBoundsAndRedactsToolSummary(t *testing.T) {
 
 func TestRenderInlineTimelineDropsOldEntriesAndKeepsFinalReply(t *testing.T) {
 	final := "FINAL_REPLY"
+	oldBeginning := "OLD_BEGINNING_MUST_BE_DROPPED"
 	got := RenderInlineTimeline(card.Event{Type: "result", Segments: []card.Segment{
-		{Kind: card.SegmentText, Text: strings.Repeat("旧", inlineTimelineMaxRunes)},
+		{Kind: card.SegmentText, Text: oldBeginning + strings.Repeat("旧", inlineTimelineMaxRunes)},
 		{Kind: card.SegmentTool, Tool: &card.ToolMeta{ID: "t1", Name: "Bash", Summary: "status", Phase: "use"}},
 		{Kind: card.SegmentText, Text: final},
 	}})
@@ -259,11 +260,32 @@ func TestRenderInlineTimelineDropsOldEntriesAndKeepsFinalReply(t *testing.T) {
 	if !strings.Contains(got, "较早过程已省略") || !strings.HasSuffix(got, final) {
 		t.Fatalf("timeline did not preserve final reply: %q", got)
 	}
-	if strings.Contains(got, strings.Repeat("旧", 100)) {
-		t.Fatalf("old entry survived: %q", got)
+	if strings.Contains(got, oldBeginning) {
+		t.Fatalf("oldest timeline prefix survived: %q", got)
 	}
 	if !strings.Contains(got, "> ⏳ **Bash** — status") {
 		t.Fatalf("complete tool line was not preserved: %q", got)
+	}
+}
+
+func TestRenderInlineTimelineKeepsTailOfOversizedLatestReply(t *testing.T) {
+	beginning := "BEGINNING_MUST_BE_DROPPED"
+	ending := "LATEST_TAIL_MUST_SURVIVE"
+	final := beginning + strings.Repeat("中", inlineTimelineMaxRunes) + ending
+	got := RenderInlineTimeline(card.Event{
+		Type:      "stream",
+		Streaming: true,
+		Activity:  "answering",
+		Segments:  []card.Segment{{Kind: card.SegmentText, Text: final}},
+	})
+	if utf8.RuneCountInString(got) > inlineTimelineMaxRunes {
+		t.Fatalf("timeline exceeds budget: runes=%d", utf8.RuneCountInString(got))
+	}
+	if !strings.Contains(got, "较早过程已省略") || strings.Contains(got, beginning) || !strings.Contains(got, ending) {
+		t.Fatalf("timeline did not keep the latest tail: %q", got)
+	}
+	if !strings.HasSuffix(got, "_✍️ 正在输出…_") {
+		t.Fatalf("timeline lost the current status footer: %q", got)
 	}
 }
 

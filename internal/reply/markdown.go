@@ -179,30 +179,37 @@ func fitTimelineParts(parts []string, maxRunes int) string {
 		return joined
 	}
 	const notice = "_较早过程已省略_"
-	for len(parts) > 1 {
-		parts = parts[1:]
-		candidate := notice + "\n\n" + strings.Join(parts, "\n\n")
-		if len([]rune(candidate)) <= maxRunes {
-			return candidate
+	noticeRunes := []rune(notice)
+	if maxRunes <= len(noticeRunes) {
+		return string(noticeRunes[:maxRunes])
+	}
+	remaining := maxRunes - len(noticeRunes) - 2
+	keptReverse := make([]string, 0, len(parts))
+	for index := len(parts) - 1; index >= 0 && remaining > 0; index-- {
+		separatorRunes := 0
+		if len(keptReverse) > 0 {
+			separatorRunes = 2
 		}
+		partRunes := []rune(parts[index])
+		if len(partRunes)+separatorRunes <= remaining {
+			keptReverse = append(keptReverse, parts[index])
+			remaining -= len(partRunes) + separatorRunes
+			continue
+		}
+		keep := remaining - separatorRunes
+		if keep > 0 {
+			keptReverse = append(keptReverse, string(partRunes[len(partRunes)-keep:]))
+		}
+		break
 	}
-	return notice + "\n\n" + limitHeadWithSuffix(parts[0], maxRunes-len([]rune(notice))-2)
-}
-
-func limitHeadWithSuffix(value string, maxRunes int) string {
-	const suffix = "\n\n[truncated]"
-	if maxRunes <= 0 {
-		return ""
+	kept := make([]string, len(keptReverse))
+	for index := range keptReverse {
+		kept[len(keptReverse)-1-index] = keptReverse[index]
 	}
-	runes := []rune(value)
-	if len(runes) <= maxRunes {
-		return value
+	if len(kept) == 0 {
+		return notice
 	}
-	suffixRunes := []rune(suffix)
-	if maxRunes <= len(suffixRunes) {
-		return string(suffixRunes[:maxRunes])
-	}
-	return string(runes[:maxRunes-len(suffixRunes)]) + suffix
+	return notice + "\n\n" + strings.Join(kept, "\n\n")
 }
 
 func runningStatusLine(activity string) string {

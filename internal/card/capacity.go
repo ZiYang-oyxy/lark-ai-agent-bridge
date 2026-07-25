@@ -134,6 +134,12 @@ func fitLarkCard(event Event) (PreparedLarkCard, bool) {
 	if prepared, err := prepareLarkCard(event, true); err == nil {
 		return prepared, true
 	}
+	if event.MarkdownLayout {
+		if prepared, ok := fitMarkdownCardTail(event); ok {
+			return prepared, true
+		}
+		return PreparedLarkCard{}, false
+	}
 	if event.InlineTimelineLayout {
 		if prepared, ok := fitInlineTimelineCard(event); ok {
 			return prepared, true
@@ -188,6 +194,32 @@ func fitLarkCard(event Event) (PreparedLarkCard, bool) {
 		}
 	}
 	return PreparedLarkCard{}, false
+}
+
+func fitMarkdownCardTail(event Event) (PreparedLarkCard, bool) {
+	original := []rune(event.Markdown)
+	if len(original) == 0 {
+		return PreparedLarkCard{}, false
+	}
+	const notice = "_较早过程已省略_\n\n"
+	var best PreparedLarkCard
+	low, high := 0, len(original)
+	for low <= high {
+		mid := (low + high) / 2
+		candidate := cloneEvent(event)
+		candidate.Markdown = notice + string(original[len(original)-mid:])
+		prepared, err := prepareLarkCard(candidate, true)
+		if err == nil {
+			best = prepared
+			low = mid + 1
+			continue
+		}
+		high = mid - 1
+	}
+	if len(best.json) == 0 {
+		return PreparedLarkCard{}, false
+	}
+	return best, true
 }
 
 func fitInlineTimelineCard(event Event) (PreparedLarkCard, bool) {

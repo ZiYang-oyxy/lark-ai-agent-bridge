@@ -211,6 +211,31 @@ func TestPrepareLarkCardMarkdownLayoutUsesMarkdownAsNativeAnswer(t *testing.T) {
 	}
 }
 
+func TestPrepareLarkCardMarkdownLayoutKeepsTailBeforeEmergencyFallback(t *testing.T) {
+	beginning := "BEGINNING_MUST_BE_DROPPED"
+	ending := "LATEST_TAIL_MUST_SURVIVE"
+	markdown := beginning + strings.Repeat("\\*_[]中文", LarkCardSoftMaxJSONBytes) + ending
+	prepared, err := PrepareLarkCard(Event{
+		Type:           "stream",
+		Streaming:      true,
+		MarkdownLayout: true,
+		Markdown:       markdown,
+	})
+	if err != nil {
+		t.Fatalf("PrepareLarkCard() error: %v", err)
+	}
+	if !prepared.NativeReady() {
+		t.Fatal("oversized markdown layout fell back to a non-native emergency card")
+	}
+	if prepared.Capacity().JSONBytes > LarkCardSoftMaxJSONBytes {
+		t.Fatalf("capacity = %#v", prepared.Capacity())
+	}
+	answer := prepared.Answer()
+	if !strings.Contains(answer, "较早过程已省略") || strings.Contains(answer, beginning) || !strings.HasSuffix(answer, ending) {
+		t.Fatalf("markdown tail was not retained: %q", answer)
+	}
+}
+
 func TestPrepareLarkCardInlineTimelineIsNativeReady(t *testing.T) {
 	prepared, err := PrepareLarkCard(Event{
 		Type:                 "stream",
