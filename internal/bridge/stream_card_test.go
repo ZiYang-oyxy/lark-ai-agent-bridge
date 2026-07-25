@@ -145,6 +145,44 @@ func TestAgentCardStreamHandleUpgradesApproxToFresh(t *testing.T) {
 	}
 }
 
+func TestAgentCardStreamHandleFallsBackToApproxWhenSidecarStale(t *testing.T) {
+	// 首轮 synthetic thread key(sess.AgentSessionID==""),metaForRun 起始拿不到
+	// 任何 sidecar,起始 meta.CtxOK=false。Handle 收到本轮 agent session id 后,
+	// 本轮 sidecar 尚未落盘(mtime < runStartedAt),但同 session_id 的旧 sidecar
+	// 已有可用占用值——refresh 应该 fall back 到 base(approx),而不是让整个流式
+	// 期间 status bar 一直显示 `🔢 tokens: ...` 累计流水。这是本次修复的目标场景。
+	dir := t.TempDir()
+	path := filepath.Join(dir, "new-session.json")
+	if err := os.WriteFile(path, []byte(`{"session_id":"new-session","used_percentage":37,"total_tokens":74000,"context_window_size":200000}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	past := time.Now().Add(-time.Hour)
+	if err := os.Chtimes(path, past, past); err != nil {
+		t.Fatal(err)
+	}
+	cfg := testConfig(t)
+	cfg.ClaudeContextUsageDir = dir
+	renderer := card.NewFakeRenderer()
+	svc := NewService(cfg, renderer, newFakeRunner(), audit.NewRecorder())
+	// 首轮 synthetic thread:session 没 AgentSessionID,metaForRun 里 CtxOK=false。
+	sess := session.Session{Key: session.Key{Agent: "claude", ChatID: "chat", Thread: "@bot:m1"}, ID: "claude:chat:thread:@bot:m1"}
+	stream := newAgentCardStream(svc, "run", sess, session.Input{ReplyToMessageID: "source", Time: time.Now()})
+	if stream.meta.CtxOK {
+		t.Fatalf("first-turn synthetic key should start with CtxOK=false, got %#v", stream.meta)
+	}
+	// Handle 携带 agent session id;本轮 sidecar 仍 stale,但 base 能读到。
+	stream.Handle(AgentStreamUpdate{AgentSessionID: "new-session"})
+	if !stream.meta.CtxOK {
+		t.Fatalf("Handle did not fall back to base sidecar: %#v", stream.meta)
+	}
+	if !stream.meta.CtxApprox {
+		t.Fatalf("stale-sidecar fallback must mark approx=true, got %#v", stream.meta)
+	}
+	if stream.meta.CtxUsedPercent != 37 || stream.meta.CtxTokens != 74000 || stream.meta.CtxWindow != 200000 {
+		t.Fatalf("approx ctx values wrong: %#v", stream.meta)
+	}
+}
+
 func TestAgentCardStreamHandleKeepsApproxWhenSidecarNotYetFresh(t *testing.T) {
 	// 续轮无本轮 fresh:sidecar 仍是上一轮的旧值(mtime < runStartedAt),
 	// ReadAfter 判 stale 返回 !OK,refreshContextUsageLocked 应该什么都不改,

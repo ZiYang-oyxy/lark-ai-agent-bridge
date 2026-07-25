@@ -390,16 +390,35 @@ func (s *agentCardStream) requestStop() card.Event {
 // gated by s.startedAt) and, if a fresh occupancy is available, overwrites the
 // running card's Ctx* fields. Must be called with s.mu held. Idempotent and cheap:
 // each call is one small file read + JSON decode against a known path.
+// refreshContextUsageLocked mirrors the freshness policy of the terminal
+// metaFromSessionWithDirAfter path: prefer a sidecar value written this run
+// (updated_at ≥ s.startedAt) and treat it as authoritative; if the sidecar for
+// this session_id exists but hasn't been re-flushed yet (Claude CLI batches
+// sidecar updates, so a running card can go minutes before the first this-run
+// flush lands), fall back to the last known value for the same session and
+// mark it CtxApprox=true (rendered with a `~` prefix). Only when neither is
+// available do we leave CtxOK=false so the caller falls back to raw token
+// counts. Fixes the earlier failure mode where a fresh synthetic-thread
+// session (sess.AgentSessionID=="") rendered `🔢 tokens: …` across the entire
+// streaming window because ReadAfter alone judged the (stale) prior sidecar
+// unusable and the initial CtxOK was never set.
 func (s *agentCardStream) refreshContextUsageLocked() {
 	if s.ctxDir == "" || s.meta.SessionID == "" {
 		return
 	}
-	u := contextusage.ReadAfter(s.ctxDir, s.meta.SessionID, s.startedAt)
-	if !u.OK {
-		return
+	fresh := contextusage.ReadAfter(s.ctxDir, s.meta.SessionID, s.startedAt)
+	u := fresh
+	approx := false
+	if !fresh.OK {
+		base := contextusage.Read(s.ctxDir, s.meta.SessionID)
+		if !base.OK {
+			return
+		}
+		u = base
+		approx = true
 	}
 	s.meta.CtxOK = true
-	s.meta.CtxApprox = false
+	s.meta.CtxApprox = approx
 	s.meta.CtxUsedPercent = u.UsedPercent
 	s.meta.CtxTokens = u.TotalTokens
 	s.meta.CtxWindow = u.ContextWindow
