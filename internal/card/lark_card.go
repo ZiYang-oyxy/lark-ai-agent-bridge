@@ -899,22 +899,25 @@ func MetaRows(meta Meta) []MetaRow {
 	return rows
 }
 
-// metaDeveloperText 渲染开发者行内容:v<current> · 最新 v<latest>(若可用且不同)
-// · 开发者模式 ✅/❌。current 为空时只显示能显示的段;若 current 与 latest 段全空,
-// 至少显示开发者模式一段。
+// metaDeveloperText 渲染开发者行内容:<emoji> v<current> · 最新 v<latest>(若可用且不同)。
+// 版本号前置的 emoji 同时承担"通道指示"职责:开发者模式(rc 通道)→ 🐞 debug 昆虫,
+// 正式版通道 → 🦋 蝴蝶。这样一个 emoji 传达"当前版本 + 我在哪个通道",不需要额外的
+// "开发者模式 ✅/❌"段。Version 为空但已知通道时也渲染 emoji + 空版本,让用户至少
+// 知道通道状态。
 func metaDeveloperText(meta Meta) string {
+	emoji := "🦋"
+	if meta.DeveloperMode {
+		emoji = "🐞"
+	}
 	var parts []string
 	if v := strings.TrimSpace(meta.Version); v != "" {
-		parts = append(parts, "🏷️ "+v)
+		parts = append(parts, emoji+" "+v)
+	} else {
+		parts = append(parts, emoji)
 	}
 	if latest := strings.TrimSpace(meta.LatestVersion); latest != "" {
 		parts = append(parts, "⬆️ 最新 "+latest)
 	}
-	emoji := "❌"
-	if meta.DeveloperMode {
-		emoji = "✅"
-	}
-	parts = append(parts, "🧪 开发者模式 "+emoji)
 	return strings.Join(parts, " · ")
 }
 

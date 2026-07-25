@@ -318,17 +318,28 @@ func TestMetaRowsGatedByIndependentToggles(t *testing.T) {
 		}
 	}
 
-	// 单独打开 developer 行:显示当前版本 · 最新版本 · 开发者模式 ✅。
+	// 单独打开 developer 行:版本号前置 emoji 由 DeveloperMode 决定
+	// (开=🐞 debug、关=🦋 蝴蝶),后跟 · 最新 v<latest>。base.DeveloperMode=true 应
+	// 显示 🐞;且不再显式渲染"开发者模式 ✅/❌"段——emoji 已承担此意义。
 	onDev := base
 	onDev.ShowMetaRowDeveloper = true
 	rows = MetaRows(onDev)
 	if len(rows) != 1 || rows[0].ElementID != "meta_developer" {
 		t.Fatalf("developer-only MetaRows = %+v, want single meta_developer", rows)
 	}
-	for _, want := range []string{"v0.1.9", "最新 v0.1.10", "开发者模式 ✅"} {
+	for _, want := range []string{"🐞 v0.1.9", "最新 v0.1.10"} {
 		if !strings.Contains(rows[0].Text, want) {
 			t.Fatalf("developer row %q missing %q", rows[0].Text, want)
 		}
+	}
+	if strings.Contains(rows[0].Text, "🦋") {
+		t.Fatalf("dev-mode-on row must not contain stable-emoji 🦋: %q", rows[0].Text)
+	}
+	if strings.Contains(rows[0].Text, "开发者模式") {
+		t.Fatalf("developer row must not render explicit 开发者模式 label (emoji-carried): %q", rows[0].Text)
+	}
+	if strings.Contains(rows[0].Text, "🏷️") {
+		t.Fatalf("legacy version tag 🏷️ must be gone: %q", rows[0].Text)
 	}
 
 	// 三个都打开:返回三行,顺序 agent → runtime → developer。
@@ -348,8 +359,8 @@ func TestMetaRowsGatedByIndependentToggles(t *testing.T) {
 	}
 }
 
-// LatestVersion 为空(peek cache miss)时,开发者行只显示"当前版本 · 开发者模式",
-// 不显示"最新"段。开发者模式 false 显示 ❌。
+// LatestVersion 为空(peek cache miss)时,开发者行只显示 emoji + 当前版本,
+// 不显示"最新"段。开发者模式 false 时 emoji 用 🦋(正式版通道)。
 func TestMetaRowsDeveloperFallbacks(t *testing.T) {
 	meta := Meta{
 		ShowMetaRowDeveloper: true,
@@ -364,11 +375,14 @@ func TestMetaRowsDeveloperFallbacks(t *testing.T) {
 	if strings.Contains(rows[0].Text, "最新") {
 		t.Fatalf("empty LatestVersion should not render 最新 segment: %q", rows[0].Text)
 	}
-	if !strings.Contains(rows[0].Text, "开发者模式 ❌") {
-		t.Fatalf("dev mode false should render ❌: %q", rows[0].Text)
+	if !strings.Contains(rows[0].Text, "🦋 v0.1.9") {
+		t.Fatalf("dev mode off should render stable emoji 🦋 + version: %q", rows[0].Text)
 	}
-	if !strings.Contains(rows[0].Text, "v0.1.9") {
-		t.Fatalf("current version missing: %q", rows[0].Text)
+	if strings.Contains(rows[0].Text, "🐞") {
+		t.Fatalf("dev mode off row must not contain debug emoji 🐞: %q", rows[0].Text)
+	}
+	if strings.Contains(rows[0].Text, "开发者模式") {
+		t.Fatalf("no explicit 开发者模式 label — emoji carries it: %q", rows[0].Text)
 	}
 }
 
