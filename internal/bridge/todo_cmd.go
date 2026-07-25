@@ -21,7 +21,7 @@ const selfLoopPromptTemplate = `收到一个「修复/改进 bridge（lark-ai-ag
 需求如下：
 %s`
 
-// handleTodoCommand implements the hidden /.todo command (absent from /help):
+// handleTodoCommand implements the hidden /.go command (absent from /help):
 // it hands the argument to the agent as a "improve bridge itself" requirement
 // and drives the self-loop workflow via a normal agent run. Admin-only (the
 // admin gate is enforced by the dispatcher before we get here) because it lets
@@ -31,7 +31,7 @@ func (s *Service) handleTodoCommand(ctx context.Context, msg Message, cmd Comman
 	requirement := strings.TrimSpace(cmd.Text)
 	if requirement == "" {
 		return s.renderTextWithMode("todo", msg.ID, card.SegmentError,
-			"用法：`/.todo <需求>`（走 self-loop 完善 bridge 自身，需求为要修复/改进的内容）", preference.ConversationMode)
+			"用法：`/.go <需求>`（走 self-loop 完善 bridge 自身，需求为要修复/改进的内容）", preference.ConversationMode)
 	}
 	s.Audit.Record(msg.Sender, "todo_selfloop", msg.ChatID, requirement)
 	runCmd := cmd

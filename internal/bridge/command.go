@@ -91,7 +91,7 @@ func ParseCommand(msg Message, defaultAgent agent.Kind) Command {
 		// Hidden developer command (not listed in /help): toggles the opt-in
 		// prerelease update channel. Text carries the raw argument ("", "0", "1").
 		return Command{Type: CommandDevel, Text: strings.TrimSpace(rest), Raw: raw}
-	case ".todo":
+	case ".go":
 		// Hidden self-loop command (not listed in /help): hands the argument to
 		// the agent as a "improve bridge itself" requirement, driving the
 		// self-loop workflow (analyse → edit source → layered verify → report).

@@ -30,7 +30,7 @@ func TestParseNewCommand(t *testing.T) {
 }
 
 func TestParseTodoCommand(t *testing.T) {
-	cmd := ParseCommand(Message{Text: "/.todo 给 /help 卡片加个版本号"}, agent.Claude)
+	cmd := ParseCommand(Message{Text: "/.go 给 /help 卡片加个版本号"}, agent.Claude)
 	if cmd.Type != CommandTodo {
 		t.Fatalf("type = %s, want todo", cmd.Type)
 	}
@@ -40,7 +40,7 @@ func TestParseTodoCommand(t *testing.T) {
 }
 
 func TestParseTodoCommandEmpty(t *testing.T) {
-	cmd := ParseCommand(Message{Text: "/.todo"}, agent.Claude)
+	cmd := ParseCommand(Message{Text: "/.go"}, agent.Claude)
 	if cmd.Type != CommandTodo {
 		t.Fatalf("type = %s, want todo", cmd.Type)
 	}
@@ -50,13 +50,13 @@ func TestParseTodoCommandEmpty(t *testing.T) {
 }
 
 func TestTodoCommandHiddenFromHelp(t *testing.T) {
-	if strings.Contains(HelpText(), ".todo") {
-		t.Fatalf("/.todo must stay hidden from /help")
+	if strings.Contains(HelpText(), ".go") {
+		t.Fatalf("/.go must stay hidden from /help")
 	}
 	for _, g := range HelpCardData().Groups {
 		for _, line := range g.Lines {
-			if strings.Contains(line, ".todo") {
-				t.Fatalf("/.todo must stay hidden from help card: %q", line)
+			if strings.Contains(line, ".go") {
+				t.Fatalf("/.go must stay hidden from help card: %q", line)
 			}
 		}
 	}
@@ -65,7 +65,7 @@ func TestTodoCommandHiddenFromHelp(t *testing.T) {
 func TestTodoCommandIsAdminOnly(t *testing.T) {
 	s := &Service{}
 	if !s.adminCommand(CommandTodo) {
-		t.Fatalf("/.todo must be admin-only")
+		t.Fatalf("/.go must be admin-only")
 	}
 }
 
