@@ -19,7 +19,7 @@ GOCACHE=$PWD/.cache/go-build go test ./...
 ./scripts/verify.sh
 ```
 
-`verify.sh` 会在自身进程中清除 `E2E_PREFERENCE_STORE`、`E2E_REPLY_STORE`、
+`verify.sh` 和 `scripts/release.sh` 会在自身进程中清除 `E2E_PREFERENCE_STORE`、`E2E_REPLY_STORE`、
 `E2E_MEDIA_CACHE_DIR` 和 `E2E_SESSION_STORE`。这些变量属于 serve/supervisor 的
 durable runtime 路径，不应改变默认路径单测；脚本不会删除或修改变量原本指向的数据。
 
