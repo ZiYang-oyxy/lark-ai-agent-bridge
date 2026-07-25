@@ -8,14 +8,28 @@ import (
 type Reason string
 
 const (
-	ReasonOwner        Reason = "owner"
-	ReasonAllowedUser  Reason = "allowed-user"
-	ReasonAllowedAdmin Reason = "allowed-admin"
-	ReasonAllowedChat  Reason = "allowed-chat"
-	ReasonDeniedUser   Reason = "denied-user"
-	ReasonDeniedChat   Reason = "denied-chat"
-	ReasonDeniedAdmin  Reason = "denied-admin"
+	ReasonOwner         Reason = "owner"
+	ReasonAllowedUser   Reason = "allowed-user"
+	ReasonAllowedAdmin  Reason = "allowed-admin"
+	ReasonAllowedChat   Reason = "allowed-chat"
+	ReasonAllowedMember Reason = "allowed-group-member"
+	ReasonDeniedUser    Reason = "denied-user"
+	ReasonDeniedChat    Reason = "denied-chat"
+	ReasonDeniedMember  Reason = "denied-group-member"
+	ReasonDeniedAdmin   Reason = "denied-admin"
 )
+
+type GroupMode string
+
+const (
+	GroupModeAllMembers      GroupMode = "all_members"
+	GroupModeSelectedMembers GroupMode = "selected_members"
+)
+
+type GroupPolicy struct {
+	Mode           GroupMode `json:"mode"`
+	AllowedMembers []string  `json:"allowed_members,omitempty"`
+}
 
 type Decision struct {
 	OK     bool
@@ -23,9 +37,10 @@ type Decision struct {
 }
 
 type Policy struct {
-	AllowedUsers []string `json:"allowed_users"`
-	AllowedChats []string `json:"allowed_chats"`
-	Admins       []string `json:"admins"`
+	AllowedUsers  []string               `json:"allowed_users"`
+	AllowedChats  []string               `json:"allowed_chats"`
+	Admins        []string               `json:"admins"`
+	GroupPolicies map[string]GroupPolicy `json:"group_policies,omitempty"`
 }
 
 type OwnerRefreshState string
@@ -112,9 +127,24 @@ func CanUseGroup(policy Policy, controls *RuntimeControls, chatID, senderID stri
 		return allow(ReasonAllowedAdmin)
 	}
 	if contains(policy.AllowedChats, chatID) {
+		group := GroupPolicyFor(policy, chatID)
+		if group.Mode == GroupModeSelectedMembers {
+			if contains(group.AllowedMembers, senderID) {
+				return allow(ReasonAllowedMember)
+			}
+			return deny(ReasonDeniedMember)
+		}
 		return allow(ReasonAllowedChat)
 	}
 	return deny(ReasonDeniedChat)
+}
+
+func GroupPolicyFor(policy Policy, chatID string) GroupPolicy {
+	group, ok := policy.GroupPolicies[chatID]
+	if !ok || group.Mode == "" {
+		return GroupPolicy{Mode: GroupModeAllMembers}
+	}
+	return GroupPolicy{Mode: group.Mode, AllowedMembers: append([]string(nil), group.AllowedMembers...)}
 }
 
 func CanRunAdminCommand(policy Policy, controls *RuntimeControls, senderID string) Decision {

@@ -69,6 +69,7 @@ type Meta struct {
 type StopButton struct {
 	Visible  bool
 	Disabled bool
+	GrantID  string
 }
 
 type Action struct {
@@ -78,6 +79,7 @@ type Action struct {
 	URL      string
 	Disabled bool
 	Confirm  *ActionConfirm
+	GrantID  string
 }
 
 type ActionConfirm struct {
@@ -94,31 +96,31 @@ type SelectOption struct {
 }
 
 type ConfigForm struct {
-	Agent             string
-	AgentHome         string
-	AgentBin          string
-	Model             string
-	Effort            string
-	ReplyMode         string
-	ConversationMode  string
-	GroupMessageMode  string
-	RespondToBots     string
-	NotifyOnComplete  string
+	Agent            string
+	AgentHome        string
+	AgentBin         string
+	Model            string
+	Effort           string
+	ReplyMode        string
+	ConversationMode string
+	GroupMessageMode string
+	RespondToBots    string
+	NotifyOnComplete string
 	// 三个元信息行独立开关的表单值,均为字符串序列化的 "true"/"false"。
 	ShowMetaRowAgent     string
 	ShowMetaRowRuntime   string
 	ShowMetaRowDeveloper string
 	Agents               []SelectOption
-	AgentHomes        []SelectOption
-	AgentBins         []SelectOption
-	Models            []string
-	Efforts           []string
-	ReplyModes        []string
-	ConversationModes []string
-	AllowedUsers      []string
-	AllowedChats      []AccessChat
-	Admins            []string
-	OwnerState        string
+	AgentHomes           []SelectOption
+	AgentBins            []SelectOption
+	Models               []string
+	Efforts              []string
+	ReplyModes           []string
+	ConversationModes    []string
+	AllowedUsers         []string
+	AllowedChats         []AccessChat
+	Admins               []string
+	OwnerState           string
 	// ChatID, when non-empty, marks this form as a per-chat override editor
 	// (the /local-config surface). It is carried back to the save callback as
 	// the action value so the store knows which group to write. Empty means
@@ -206,6 +208,7 @@ type ResumeItem struct {
 	UpdatedAt string
 	Summary   string
 	Current   bool
+	GrantID   string
 }
 
 // ResumeCard is the /resume list card model: the catalog identity (agent +
@@ -226,28 +229,30 @@ type HelpGroup struct {
 }
 
 type AccessChat struct {
-	ID   string
-	Name string
+	ID      string
+	Name    string
+	Mode    string
+	Members []string
 }
 
 type Event struct {
-	Type                 string
-	SessionID            string
-	ReplyToMessageID     string
-	ReplyInThread        bool
-	Segments             []Segment
-	Meta                 Meta
-	StopButton           StopButton
-	Actions              []Action
-	Message              string
-	HeaderTitle          string
-	HeaderTemplate       string
-	Streaming            bool
-	Activity             string
-	ThoughtExpanded      bool
-	ToolsExpanded        bool
-	ProcessExpanded      bool
-	ToolCallCount        int
+	Type             string
+	SessionID        string
+	ReplyToMessageID string
+	ReplyInThread    bool
+	Segments         []Segment
+	Meta             Meta
+	StopButton       StopButton
+	Actions          []Action
+	Message          string
+	HeaderTitle      string
+	HeaderTemplate   string
+	Streaming        bool
+	Activity         string
+	ThoughtExpanded  bool
+	ToolsExpanded    bool
+	ProcessExpanded  bool
+	ToolCallCount    int
 	// ThoughtRoundCount / ToolRoundCount 是本轮 run 累计的思考轮次 / 工具调用次数,
 	// 用于三段布局(ThreeSectionLayout)下折叠区标题的「× N」计数。卡片正文只显示最新一次,
 	// 计数让用户知道背后发生了多少轮而不必展开历史。

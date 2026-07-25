@@ -371,12 +371,14 @@ func TestActionRequestFromFeishuClonesFormValues(t *testing.T) {
 		SessionID:     "claude:chat",
 		ActionID:      "config.save",
 		Actor:         "user",
+		ChatID:        "oc_chat",
 		OpenMessageID: "om_config",
 		FormValues:    map[string]string{"model": "opus", "effort": "high"},
+		GrantID:       "grant-1",
 	}
 	req := actionRequestFromFeishu(action)
 	action.FormValues["model"] = "haiku"
-	if req.SessionID != "claude:chat" || req.ActionID != "config.save" || req.Actor != "user" || req.OpenMessageID != "om_config" || req.FormValues["model"] != "opus" || req.FormValues["effort"] != "high" {
+	if req.SessionID != "claude:chat" || req.ActionID != "config.save" || req.Actor != "user" || req.ChatID != "oc_chat" || req.OpenMessageID != "om_config" || req.FormValues["model"] != "opus" || req.FormValues["effort"] != "high" || req.GrantID != "grant-1" {
 		t.Fatalf("action request form values = %#v", req.FormValues)
 	}
 }

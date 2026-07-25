@@ -173,6 +173,75 @@ func TestUserAllowlistMutationRepliesClarifyPrivateChatScope(t *testing.T) {
 	}
 }
 
+func TestSelectedGroupMembersAreManagedPerChat(t *testing.T) {
+	store, err := access.OpenStore(filepath.Join(t.TempDir(), "access.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	controls := access.NewRuntimeControls()
+	controls.OwnerRefreshSucceeded("ou_owner")
+	renderer := card.NewFakeRenderer()
+	svc := NewService(testConfig(t), renderer, newFakeRunner(), audit.NewRecorder())
+	svc.Access = store
+	svc.AccessControls = controls
+
+	ownerMessage := func(id, text string, mentions ...Mention) {
+		t.Helper()
+		if err := svc.HandleMessage(t.Context(), Message{ID: id, ChatID: "oc_team", Sender: "ou_owner", Text: text, IsGroup: true, Mentioned: true, Mentions: mentions}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	ownerMessage("invite-group", "/invite group")
+	ownerMessage("invite-member", "/invite member @Alice", Mention{OpenID: "ou_alice", Name: "Alice"})
+	ownerMessage("selected", "/group-access selected")
+
+	policy := store.Get()
+	group := access.GroupPolicyFor(policy, "oc_team")
+	if group.Mode != access.GroupModeSelectedMembers || len(group.AllowedMembers) != 1 || group.AllowedMembers[0] != "ou_alice" {
+		t.Fatalf("group policy = %#v", group)
+	}
+	if got := access.CanUseGroup(policy, controls, "oc_team", "ou_alice"); !got.OK || got.Reason != access.ReasonAllowedMember {
+		t.Fatalf("member decision = %#v", got)
+	}
+	if got := access.CanUseGroup(policy, controls, "oc_team", "ou_stranger"); got.OK || got.Reason != access.ReasonDeniedMember {
+		t.Fatalf("stranger decision = %#v", got)
+	}
+
+	before := len(renderer.Events())
+	if err := svc.HandleMessage(t.Context(), Message{ID: "stranger", ChatID: "oc_team", Sender: "ou_stranger", Text: "/help", IsGroup: true, Mentioned: true}); err != nil {
+		t.Fatal(err)
+	}
+	events := renderer.Events()
+	if len(events) != before+1 || !strings.Contains(events[len(events)-1].Segments[0].Text, "/invite member") {
+		t.Fatalf("stranger denial = %#v", events[before:])
+	}
+
+	ownerMessage("all", "/group-access all")
+	if got := access.CanUseGroup(store.Get(), controls, "oc_team", "ou_stranger"); !got.OK || got.Reason != access.ReasonAllowedChat {
+		t.Fatalf("all-members decision = %#v", got)
+	}
+}
+
+func TestMemberManagementRequiresAllowedGroup(t *testing.T) {
+	store, err := access.OpenStore(filepath.Join(t.TempDir(), "access.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	controls := access.NewRuntimeControls()
+	controls.OwnerRefreshSucceeded("ou_owner")
+	renderer := card.NewFakeRenderer()
+	svc := NewService(testConfig(t), renderer, newFakeRunner(), audit.NewRecorder())
+	svc.Access, svc.AccessControls = store, controls
+	msg := Message{ID: "member", ChatID: "oc_missing", Sender: "ou_owner", Text: "/invite member @Alice", IsGroup: true, Mentioned: true, Mentions: []Mention{{OpenID: "ou_alice", Name: "Alice"}}}
+	if err := svc.HandleMessage(t.Context(), msg); err != nil {
+		t.Fatal(err)
+	}
+	got := renderer.Events()[0].Segments[0].Text
+	if !strings.Contains(got, "先发送 /invite group") {
+		t.Fatalf("reply = %q", got)
+	}
+}
+
 type assertBridgeErr string
 
 func (e assertBridgeErr) Error() string { return string(e) }

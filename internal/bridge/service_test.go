@@ -14,6 +14,8 @@ import (
 	"testing"
 	"time"
 
+	"lark-agent-bridge/internal/access"
+	"lark-agent-bridge/internal/actiongrant"
 	"lark-agent-bridge/internal/agent"
 	"lark-agent-bridge/internal/audit"
 	"lark-agent-bridge/internal/bridgeinstructions"
@@ -2422,6 +2424,77 @@ func TestServiceMissingWorkdirAsksThenRunsAfterCreate(t *testing.T) {
 	}
 }
 
+func TestWorkdirActionGrantRejectsForeignActorTamperingPolicyChangeAndReplay(t *testing.T) {
+	newService := func(t *testing.T) (*Service, *card.FakeRenderer, string, card.Action) {
+		t.Helper()
+		root := t.TempDir()
+		missing := filepath.Join(root, "missing")
+		renderer := card.NewFakeRenderer()
+		svc := NewService(config.Config{DefaultAgent: "claude", DefaultWorkDir: root, CardMaxChars: 1000, InteractionTimeout: time.Minute}, renderer, newFakeRunner(), audit.NewRecorder())
+		grants, err := actiongrant.OpenStore(filepath.Join(t.TempDir(), "action-grants.json"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		accessStore, err := access.OpenStore(filepath.Join(t.TempDir(), "access.json"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		controls := access.NewRuntimeControls()
+		controls.OwnerRefreshSucceeded("ou_owner")
+		svc.ActionGrants, svc.Access, svc.AccessControls = grants, accessStore, controls
+		msg := Message{ID: "msg-1", ChatID: "oc_chat", Sender: "ou_owner", Text: "/new --workdir " + missing + " hello", Time: time.Now()}
+		if err := svc.HandleMessage(t.Context(), msg); err != nil {
+			t.Fatal(err)
+		}
+		event := renderer.Events()[0]
+		if len(event.Actions) != 2 || event.Actions[0].GrantID == "" || event.Actions[1].GrantID == "" {
+			t.Fatalf("workdir actions = %#v", event.Actions)
+		}
+		return svc, renderer, missing, event.Actions[0]
+	}
+
+	t.Run("actor value and replay", func(t *testing.T) {
+		svc, _, missing, action := newService(t)
+		base := ActionRequest{ChatID: "oc_chat", SessionID: "claude:oc_chat:message:msg-1", ActionID: "create_workdir", Value: missing, GrantID: action.GrantID}
+		for _, req := range []ActionRequest{
+			{ChatID: base.ChatID, SessionID: base.SessionID, ActionID: base.ActionID, Value: base.Value, GrantID: base.GrantID, Actor: "ou_other"},
+			{ChatID: "oc_other", SessionID: base.SessionID, ActionID: base.ActionID, Value: base.Value, GrantID: base.GrantID, Actor: "ou_owner"},
+			{ChatID: base.ChatID, SessionID: base.SessionID, ActionID: base.ActionID, Value: missing + "-changed", GrantID: base.GrantID, Actor: "ou_owner"},
+		} {
+			result, err := svc.HandleActionResult(t.Context(), req)
+			if err != nil || result.Event == nil || result.Event.Type != "error" {
+				t.Fatalf("denied result/error = %#v / %v", result, err)
+			}
+			if _, err := os.Stat(missing); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("unauthorized action created directory: %v", err)
+			}
+		}
+		base.Actor = "ou_owner"
+		result, err := svc.HandleActionResult(t.Context(), base)
+		if err != nil || result.Event == nil || result.Event.Type != "workdir_created" {
+			t.Fatalf("allowed result/error = %#v / %v", result, err)
+		}
+		result, err = svc.HandleActionResult(t.Context(), base)
+		if err != nil || result.Event == nil || result.Event.Type != "error" || !strings.Contains(result.Event.Segments[0].Text, "replayed") {
+			t.Fatalf("replay result/error = %#v / %v", result, err)
+		}
+	})
+
+	t.Run("policy revision", func(t *testing.T) {
+		svc, _, missing, action := newService(t)
+		if err := svc.Access.Update(func(p *access.Policy) { p.AllowedUsers = append(p.AllowedUsers, "ou_new") }); err != nil {
+			t.Fatal(err)
+		}
+		result, err := svc.HandleActionResult(t.Context(), ActionRequest{ChatID: "oc_chat", SessionID: "claude:oc_chat:message:msg-1", ActionID: "create_workdir", Value: missing, GrantID: action.GrantID, Actor: "ou_owner"})
+		if err != nil || result.Event == nil || result.Event.Type != "error" || !strings.Contains(result.Event.Segments[0].Text, "policy-changed") {
+			t.Fatalf("policy result/error = %#v / %v", result, err)
+		}
+		if _, err := os.Stat(missing); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("stale grant created directory: %v", err)
+		}
+	})
+}
+
 // TestPlainTextAfterCreatedWorkDirKeepsWorkDir exercises the create-confirm
 // flow (a missing --workdir is created on confirmation) and then locks the
 // Task 6 authority model: the follow-up plain message runs in the topic
@@ -2619,6 +2692,51 @@ func TestServiceStopCancelsActiveOneShotRun(t *testing.T) {
 	}
 	if got := last.Segments[len(last.Segments)-1].Text; got != stopRequestedNotice {
 		t.Fatalf("terminal stop tail = %q, want %q", got, stopRequestedNotice)
+	}
+}
+
+func TestStopActionGrantAllowsOnlyInitiatorOrAdmin(t *testing.T) {
+	cfg := testConfig(t)
+	renderer := card.NewFakeRenderer()
+	runner := newFakeRunner()
+	runner.block = make(chan struct{})
+	svc := NewService(cfg, renderer, runner, audit.NewRecorder())
+	grants, err := actiongrant.OpenStore(filepath.Join(t.TempDir(), "action-grants.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	accessStore, err := access.OpenStore(filepath.Join(t.TempDir(), "access.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	controls := access.NewRuntimeControls()
+	controls.OwnerRefreshSucceeded("ou_owner")
+	svc.ActionGrants, svc.Access, svc.AccessControls = grants, accessStore, controls
+	if err := accessStore.Update(func(p *access.Policy) {
+		p.AllowedUsers = append(p.AllowedUsers, "ou_user")
+		p.Admins = append(p.Admins, "ou_admin")
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.HandleMessage(t.Context(), Message{ID: "msg-stop", ChatID: "chat", Sender: "ou_user", Text: "/new long", Time: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.DrainReady(time.Now().Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	<-runner.started
+	events := renderer.Events()
+	running := events[len(events)-1]
+	if running.StopButton.GrantID == "" {
+		t.Fatalf("running stop button = %#v", running.StopButton)
+	}
+	foreign, err := svc.HandleActionResult(t.Context(), ActionRequest{ChatID: "chat", SessionID: running.SessionID, ActionID: "stop", Actor: "ou_other", GrantID: running.StopButton.GrantID})
+	if err != nil || foreign.Event == nil || foreign.Event.Type != "error" {
+		t.Fatalf("foreign stop = %#v / %v", foreign, err)
+	}
+	allowed, err := svc.HandleActionResult(t.Context(), ActionRequest{ChatID: "chat", SessionID: running.SessionID, ActionID: "stop", Actor: "ou_admin", GrantID: running.StopButton.GrantID})
+	if err != nil || allowed.Event == nil || allowed.Event.Type != "stopped" {
+		t.Fatalf("owner stop = %#v / %v", allowed, err)
 	}
 }
 
@@ -4764,6 +4882,11 @@ func TestServiceResumeRejectsUnknownAndBusyWithoutChangingBinding(t *testing.T) 
 
 func TestServiceResumeSelectCallbackSwitchesBinding(t *testing.T) {
 	svc, renderer, _, manager, identity := newResumeTestService(t)
+	grants, err := actiongrant.OpenStore(filepath.Join(t.TempDir(), "action-grants.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc.ActionGrants = grants
 	now := time.Now()
 	for _, id := range []string{"current", "target"} {
 		if err := manager.RecordSession(session.CatalogEntry{SessionID: id, Agent: identity.Agent, WorkDir: identity.WorkDir, UpdatedAt: now, BridgeInstructionsVersion: "v1"}); err != nil {
@@ -4780,17 +4903,26 @@ func TestServiceResumeSelectCallbackSwitchesBinding(t *testing.T) {
 	if err := svc.HandleMessage(context.Background(), Message{ID: "resume-list", ChatID: "chat", Sender: "user", Text: "/resume", Time: now.Add(time.Second)}); err != nil {
 		t.Fatal(err)
 	}
-	var cardSessionID string
+	var cardSessionID, grantID string
 	for _, e := range renderer.Events() {
 		if e.ResumeCard != nil {
 			cardSessionID = e.SessionID
+			for _, item := range e.ResumeCard.Items {
+				if item.SessionID == "target" {
+					grantID = item.GrantID
+				}
+			}
 		}
 	}
-	if cardSessionID == "" {
+	if cardSessionID == "" || grantID == "" {
 		t.Fatalf("resume list did not render a card: %#v", renderer.Events())
 	}
 
-	if _, err := svc.HandleActionResult(context.Background(), ActionRequest{SessionID: cardSessionID, ActionID: "resume.select", Value: "target", Actor: "user"}); err != nil {
+	foreign, err := svc.HandleActionResult(context.Background(), ActionRequest{ChatID: "chat", SessionID: cardSessionID, ActionID: "resume.select", Value: "target", Actor: "other", GrantID: grantID})
+	if err != nil || foreign.Event == nil || foreign.Event.Type != "error" {
+		t.Fatalf("foreign resume = %#v / %v", foreign, err)
+	}
+	if _, err := svc.HandleActionResult(context.Background(), ActionRequest{ChatID: "chat", SessionID: cardSessionID, ActionID: "resume.select", Value: "target", Actor: "user", GrantID: grantID}); err != nil {
 		t.Fatal(err)
 	}
 	if !eventsContainText(renderer.Events(), "已恢复 Session `target`") {

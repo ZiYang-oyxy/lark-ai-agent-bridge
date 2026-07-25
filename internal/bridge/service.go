@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"lark-agent-bridge/internal/access"
+	"lark-agent-bridge/internal/actiongrant"
 	"lark-agent-bridge/internal/agent"
 	"lark-agent-bridge/internal/agent/contextusage"
 	"lark-agent-bridge/internal/audit"
@@ -77,6 +78,7 @@ type Service struct {
 	SequenceResolver      session.RenderRefSequenceResolver
 	RestoreNotices        []session.RecoveryNotice
 	Access                *access.Store
+	ActionGrants          *actiongrant.Store
 	DevMode               *devmode.Store
 	PrereleaseManifestURL string
 	AccessControls        *access.RuntimeControls
@@ -272,8 +274,10 @@ type ActionRequest struct {
 	ActionID      string
 	Value         string
 	Actor         string
+	ChatID        string
 	OpenMessageID string
 	FormValues    map[string]string
+	GrantID       string
 }
 
 type ActionResult struct {
@@ -507,6 +511,9 @@ func (s *Service) HandleMessage(ctx context.Context, msg Message) error {
 		if msg.IsGroup && msg.Mentioned && decision.Reason == access.ReasonDeniedChat {
 			return s.renderTextWithMode("access-denied", msg.ID, card.SegmentError, "当前群尚未加入响应列表，所以 bot 不会处理消息。\nBot owner/管理员可在本群发 /invite group 加入白名单。", preference.ConversationMode)
 		}
+		if msg.IsGroup && msg.Mentioned && decision.Reason == access.ReasonDeniedMember {
+			return s.renderTextWithMode("access-denied", msg.ID, card.SegmentError, "当前群仅允许指定成员使用 bot。\nBot owner/管理员可发 /invite member @某人 添加成员。", preference.ConversationMode)
+		}
 		return nil
 	}
 	participated := false
@@ -594,6 +601,8 @@ func (s *Service) HandleMessage(ctx context.Context, msg Message) error {
 		return s.handleInviteCommand(ctx, msg, cmd, preference)
 	case CommandRemove:
 		return s.handleRemoveCommand(msg, cmd, preference)
+	case CommandGroupAccess:
+		return s.handleGroupAccessCommand(msg, cmd, preference)
 	case CommandCd:
 		return s.handleCd(ctx, msg, cmd, preference)
 	case CommandWs:
@@ -648,12 +657,16 @@ func (s *Service) handleResumeCommand(msg Message, cmd Command, preference confi
 		}
 		cardSessionID := runID("resume", msg.ID)
 		s.storeResumeContext(cardSessionID, key, identity, effectiveMessageTime(msg))
+		resume := resumeCardData(identity, entries, currentAgentSessionID(s.Sessions, key))
+		if err := s.attachResumeGrants(resume, msg.Sender, msg.ChatID, cardSessionID, effectiveMessageTime(msg).Add(helpContextTTL)); err != nil {
+			return fmt.Errorf("issue resume action grants: %w", err)
+		}
 		return s.Cards.Render(card.Event{
 			Type:             "resume",
 			SessionID:        cardSessionID,
 			ReplyToMessageID: msg.ID,
 			ReplyInThread:    preference.ConversationMode == config.ConversationModeTopic,
-			ResumeCard:       resumeCardData(identity, entries, currentAgentSessionID(s.Sessions, key)),
+			ResumeCard:       resume,
 		})
 	}
 	resumed, err := s.Sessions.Resume(key, identity, target, effectiveMessageTime(msg))
@@ -964,7 +977,7 @@ func (s *Service) runWithPreference(ctx context.Context, cmd Command, msg Messag
 		key.Thread = "schedule-proposal:" + msg.ThreadID
 	}
 	pendingID := runID(key.ID(), msg.ID)
-	asked, err := s.ensureWorkDirOrAsk(workDir, pendingID, msg.ID, preference.ConversationMode)
+	asked, err := s.ensureWorkDirOrAsk(workDir, pendingID, msg.ID, preference.ConversationMode, msg.Sender, msg.ChatID)
 	if err != nil {
 		return err
 	}
@@ -1585,6 +1598,15 @@ func (s *Service) HandleAction(ctx context.Context, req ActionRequest) error {
 
 func (s *Service) HandleActionResult(ctx context.Context, req ActionRequest) (ActionResult, error) {
 	s.Audit.Record(req.Actor, "card_action", req.SessionID, req.ActionID+" "+req.Value)
+	decision, err := s.authorizeAction(req)
+	if err != nil {
+		s.Audit.Record(req.Actor, "action_grant_consume_failed", req.SessionID, err.Error())
+		return ActionResult{}, err
+	}
+	if !decision.OK {
+		s.Audit.Record(req.Actor, "action_grant_denied", req.SessionID, string(decision.Reason)+" action="+req.ActionID)
+		return s.renderActionEvent(actionDeniedEvent(req, decision.Reason))
+	}
 	if (req.ActionID == "config.save" || req.ActionID == "config.close" || req.ActionID == "local_config.save" || req.ActionID == "local_config.reset" || req.ActionID == "agent_mode.save" || req.ActionID == "update.install") && !s.canRunAdminCommand(req.Actor) {
 		s.Audit.Record(req.Actor, "admin_denied", req.SessionID, req.ActionID)
 		return s.renderActionEvent(card.Event{Type: "error", SessionID: req.SessionID, Segments: []card.Segment{{Kind: card.SegmentError, Text: "❌ 此操作仅管理员可用。"}}})
@@ -2438,7 +2460,7 @@ func (s *Service) duePendingRuns(now time.Time) []pendingRun {
 	return due
 }
 
-func (s *Service) ensureWorkDirOrAsk(workDir, sessionID, replyToMessageID string, mode config.ConversationMode) (bool, error) {
+func (s *Service) ensureWorkDirOrAsk(workDir, sessionID, replyToMessageID string, mode config.ConversationMode, actor, chatID string) (bool, error) {
 	if workDir == "" {
 		return false, fmt.Errorf("workdir is empty")
 	}
@@ -2452,14 +2474,18 @@ func (s *Service) ensureWorkDirOrAsk(workDir, sessionID, replyToMessageID string
 	if !os.IsNotExist(err) {
 		return false, err
 	}
-	return true, s.Cards.Render(card.Event{
+	event := card.Event{
 		Type:             "workdir_confirm",
 		SessionID:        sessionID,
 		ReplyToMessageID: replyToMessageID,
 		ReplyInThread:    mode == config.ConversationModeTopic,
 		Segments:         []card.Segment{{Kind: card.SegmentText, Text: "Workdir does not exist: " + workDir}},
 		Actions:          card.WorkDirCreateActions(workDir),
-	})
+	}
+	if err := s.attachActionGrants(&event, actor, chatID, time.Now().Add(s.Config.InteractionTimeout)); err != nil {
+		return false, fmt.Errorf("issue workdir action grants: %w", err)
+	}
+	return true, s.Cards.Render(event)
 }
 
 func (s *Service) renderText(id, replyToMessageID string, kind card.SegmentKind, text string) error {

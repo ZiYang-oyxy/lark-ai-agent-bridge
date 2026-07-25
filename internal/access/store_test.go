@@ -75,3 +75,42 @@ func TestStoreRejectsCorruptAndUnsupportedSnapshots(t *testing.T) {
 		})
 	}
 }
+
+func TestStoreLoadsLegacyAllowedChatsAsAllMembersAndPersistsSelectedMembers(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "access.json")
+	legacy := []byte(`{"schema_version":1,"revision":7,"access":{"allowed_chats":["oc_legacy"]}}`)
+	if err := os.WriteFile(path, legacy, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	store, err := OpenStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := GroupPolicyFor(store.Get(), "oc_legacy"); got.Mode != GroupModeAllMembers || store.Revision() != 7 {
+		t.Fatalf("legacy policy/revision = %#v / %d", got, store.Revision())
+	}
+	if err := store.Update(func(p *Policy) {
+		p.GroupPolicies["oc_legacy"] = GroupPolicy{Mode: GroupModeSelectedMembers, AllowedMembers: []string{"ou_b", "ou_b", "ou_a"}}
+	}); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := OpenStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	group := GroupPolicyFor(reopened.Get(), "oc_legacy")
+	if group.Mode != GroupModeSelectedMembers || len(group.AllowedMembers) != 2 || reopened.Revision() != 8 {
+		t.Fatalf("selected policy/revision = %#v / %d", group, reopened.Revision())
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var persisted snapshot
+	if err := json.Unmarshal(data, &persisted); err != nil {
+		t.Fatal(err)
+	}
+	if persisted.SchemaVersion != SchemaVersion {
+		t.Fatalf("schema version = %d, want %d", persisted.SchemaVersion, SchemaVersion)
+	}
+}

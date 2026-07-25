@@ -41,8 +41,10 @@ func ActionRequestFromCardCallback(payload []byte) (ActionRequest, error) {
 		ActionID:      stringField(value, "action_id"),
 		Value:         stringField(value, "value"),
 		Actor:         actorFromPayload(raw),
+		ChatID:        stringField(contextValue, "open_chat_id"),
 		OpenMessageID: stringField(contextValue, "open_message_id"),
 		FormValues:    formValues,
+		GrantID:       stringField(value, "grant_id"),
 	}
 	if req.ActionID == "" {
 		req.ActionID = stringField(action, "action_id")

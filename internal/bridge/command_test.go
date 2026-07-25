@@ -316,6 +316,16 @@ func TestParseStopCommand(t *testing.T) {
 	}
 }
 
+func TestParseGroupAccessCommand(t *testing.T) {
+	cmd := ParseCommand(Message{Text: "/group-access selected"}, agent.Claude)
+	if cmd.Type != CommandGroupAccess || cmd.Text != "selected" {
+		t.Fatalf("cmd = %#v", cmd)
+	}
+	if help := HelpText(); !strings.Contains(help, "/group-access all|selected") || !strings.Contains(help, "member @user") {
+		t.Fatalf("help text missing group access commands: %q", help)
+	}
+}
+
 func TestHelpTextIncludesStopQueueSemantics(t *testing.T) {
 	text := HelpText()
 	if !strings.Contains(text, "/stop") || !strings.Contains(text, "queued") {

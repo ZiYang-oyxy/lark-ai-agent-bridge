@@ -9,7 +9,11 @@ func TestPolicyMatchesLCABFailClosedSemantics(t *testing.T) {
 		AllowedUsers: []string{"ou_user"},
 		AllowedChats: []string{"oc_allowed"},
 		Admins:       []string{"ou_admin"},
+		GroupPolicies: map[string]GroupPolicy{
+			"oc_selected": {Mode: GroupModeSelectedMembers, AllowedMembers: []string{"ou_member"}},
+		},
 	}
+	policy.AllowedChats = append(policy.AllowedChats, "oc_selected")
 
 	tests := []struct {
 		name   string
@@ -24,6 +28,8 @@ func TestPolicyMatchesLCABFailClosedSemantics(t *testing.T) {
 		{"owner group", CanUseGroup(policy, owner, "oc_other", "ou_owner"), true, ReasonOwner},
 		{"admin group", CanUseGroup(policy, owner, "oc_other", "ou_admin"), true, ReasonAllowedAdmin},
 		{"allowed group", CanUseGroup(policy, owner, "oc_allowed", "ou_other"), true, ReasonAllowedChat},
+		{"selected group member", CanUseGroup(policy, owner, "oc_selected", "ou_member"), true, ReasonAllowedMember},
+		{"selected group stranger", CanUseGroup(policy, owner, "oc_selected", "ou_other"), false, ReasonDeniedMember},
 		{"denied group", CanUseGroup(policy, owner, "oc_other", "ou_other"), false, ReasonDeniedChat},
 		{"admin command", CanRunAdminCommand(policy, owner, "ou_admin"), true, ReasonAllowedAdmin},
 		{"denied command", CanRunAdminCommand(policy, owner, "ou_other"), false, ReasonDeniedAdmin},

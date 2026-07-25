@@ -70,7 +70,7 @@ func (s *Service) handleCd(ctx context.Context, msg Message, cmd Command, prefer
 		// create_workdir callback switches into the directory once created
 		// (create-and-switch semantics) instead of forcing a second /cd.
 		pendingID := runID(key.ID(), msg.ID)
-		asked, err := s.ensureWorkDirOrAsk(res.Realpath, pendingID, msg.ID, preference.ConversationMode)
+		asked, err := s.ensureWorkDirOrAsk(res.Realpath, pendingID, msg.ID, preference.ConversationMode, msg.Sender, msg.ChatID)
 		if err != nil {
 			return err
 		}

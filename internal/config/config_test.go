@@ -127,6 +127,20 @@ func TestLoadFromEnvDefaultsAuditLogUnderWorkdir(t *testing.T) {
 	}
 }
 
+func TestLoadFromEnvActionGrantStoreFollowsWorkdirAndOverride(t *testing.T) {
+	workDir := filepath.Join(t.TempDir(), "work")
+	t.Setenv("E2E_DEFAULT_WORKDIR", workDir)
+	t.Setenv("E2E_ACTION_GRANT_STORE", "")
+	if got := LoadFromEnv().ActionGrantStorePath; got != filepath.Join(workDir, ".lark-agent-bridge", "action-grants.json") {
+		t.Fatalf("action grant store = %q", got)
+	}
+	custom := filepath.Join(t.TempDir(), "grants.json")
+	t.Setenv("E2E_ACTION_GRANT_STORE", custom)
+	if got := LoadFromEnv().ActionGrantStorePath; got != custom {
+		t.Fatalf("action grant override = %q", got)
+	}
+}
+
 func TestLoadFromEnvDurableSchedulerDefaultsAndOverrides(t *testing.T) {
 	t.Setenv("E2E_DEFAULT_WORKDIR", "/tmp/lab-work")
 	t.Setenv("E2E_SESSION_STORE", "")

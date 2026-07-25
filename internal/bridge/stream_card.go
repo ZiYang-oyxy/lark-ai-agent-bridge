@@ -69,6 +69,7 @@ type agentCardStream struct {
 	meta             card.Meta
 	totalBefore      int
 	stopVisible      bool
+	stopGrantID      string
 	closed           bool
 	answer           strings.Builder
 	thought          strings.Builder
@@ -142,6 +143,12 @@ func newAgentCardStreamWithClock(service *Service, sessionID string, sess sessio
 	if sess.Key.Agent == agent.Codex {
 		ctxDir = service.Config.CodexContextUsageDir
 	}
+	stopGrantID, grantErr := service.issueActionGrant(input.Sender, sess.Key.ChatID, sessionID, "stop", "", time.Now().Add(defaultActionGrantTTL))
+	stopVisible := true
+	if grantErr != nil {
+		stopVisible = false
+		service.Audit.Record("system", "action_grant_issue_failed", sessionID, "action=stop error="+grantErr.Error())
+	}
 	return &agentCardStream{
 		renderer:      renderer,
 		refProvider:   refProvider,
@@ -156,7 +163,8 @@ func newAgentCardStreamWithClock(service *Service, sessionID string, sess sessio
 		activity:      streamActivityReasoning,
 		meta:          service.metaForRun(sess, input),
 		totalBefore:   sess.Tokens,
-		stopVisible:   true,
+		stopVisible:   stopVisible,
+		stopGrantID:   stopGrantID,
 		ctxDir:        ctxDir,
 	}
 }
@@ -1135,7 +1143,7 @@ func (s *agentCardStream) eventLocked(initial bool) card.Event {
 		ReplyInThread:    s.replyInThread,
 		Segments:         segments,
 		Meta:             s.meta,
-		StopButton:       card.StopButton{Visible: stopVisible, Disabled: stopDisabled},
+		StopButton:       card.StopButton{Visible: stopVisible, Disabled: stopDisabled, GrantID: s.stopGrantID},
 		Message:          message,
 		HeaderTitle:      s.headerTitleLocked(),
 		HeaderTemplate:   s.headerTemplateLocked(),

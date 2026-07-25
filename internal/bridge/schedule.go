@@ -348,6 +348,15 @@ func (s *Service) scheduleDraftForOrigin(originRunID string) (schedule.Draft, bo
 func (s *Service) finishScheduleConfirmation(stream *agentCardStream, status string, meta card.Meta, result AgentRunResult, draft schedule.Draft, sessionID string) {
 	_, err := stream.FinishTransformed(status, meta, result, func(event card.Event) card.Event {
 		confirmation := scheduleConfirmationEvent(event.SessionID, draft)
+		for i := range confirmation.Actions {
+			grantID, grantErr := s.issueActionGrantWithAdmin(draft.Creator, draft.Target.ChatID, confirmation.SessionID, confirmation.Actions[i].ID, confirmation.Actions[i].Value, draft.ExpiresAt, false)
+			if grantErr != nil {
+				s.Audit.Record("system", "action_grant_issue_failed", confirmation.SessionID, "action="+confirmation.Actions[i].ID+" error="+grantErr.Error())
+				confirmation.Actions = nil
+				break
+			}
+			confirmation.Actions[i].GrantID = grantID
+		}
 		confirmation.ReplyToMessageID = event.ReplyToMessageID
 		confirmation.ReplyInThread = event.ReplyInThread
 		confirmation.Meta = event.Meta

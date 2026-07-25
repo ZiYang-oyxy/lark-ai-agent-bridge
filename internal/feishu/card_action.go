@@ -11,10 +11,12 @@ type CardAction struct {
 	ActionID      string
 	Value         string
 	Actor         string
+	ChatID        string
 	OpenMessageID string
 	Tag           string
 	Option        string
 	FormValues    map[string]string
+	GrantID       string
 }
 
 func BuildCardActionFromLark(event *callback.CardActionTriggerEvent) (CardAction, error) {
@@ -33,10 +35,12 @@ func BuildCardActionFromLark(event *callback.CardActionTriggerEvent) (CardAction
 		ActionID:      anyString(value["action_id"]),
 		Value:         anyString(value["value"]),
 		Actor:         operatorActor(event.Event.Operator),
+		ChatID:        cardActionChatID(event.Event.Context),
 		OpenMessageID: cardActionOpenMessageID(event.Event.Context),
 		Tag:           action.Tag,
 		Option:        action.Option,
 		FormValues:    formValues,
+		GrantID:       anyString(value["grant_id"]),
 	}
 	if req.SessionID == "" {
 		req.SessionID = anyString(formValue["session"])
@@ -71,6 +75,13 @@ func cardActionOpenMessageID(context *callback.Context) string {
 		return ""
 	}
 	return context.OpenMessageID
+}
+
+func cardActionChatID(context *callback.Context) string {
+	if context == nil {
+		return ""
+	}
+	return context.OpenChatID
 }
 
 func boundedFormValues(values map[string]any) (map[string]string, error) {

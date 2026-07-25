@@ -386,32 +386,31 @@ func TestMetaRowsDeveloperFallbacks(t *testing.T) {
 	}
 }
 
-
 func TestBuildLarkCardRendersRuntimeConfigForm(t *testing.T) {
 	payload := BuildLarkCard(Event{
 		Type:      "config",
 		SessionID: "claude:chat:message:config-1",
 		ConfigForm: &ConfigForm{
-			Agent:             "claude",
-			AgentHome:         "默认",
-			AgentBin:          "主机 claude",
-			Model:             "opus",
-			Effort:            "high",
-			ReplyMode:         "latest-card",
-			ConversationMode:  "chat",
-			GroupMessageMode:  "mention_only",
+			Agent:                "claude",
+			AgentHome:            "默认",
+			AgentBin:             "主机 claude",
+			Model:                "opus",
+			Effort:               "high",
+			ReplyMode:            "latest-card",
+			ConversationMode:     "chat",
+			GroupMessageMode:     "mention_only",
 			RespondToBots:        "false",
 			NotifyOnComplete:     "false",
 			ShowMetaRowAgent:     "false",
 			ShowMetaRowRuntime:   "false",
 			ShowMetaRowDeveloper: "false",
 			Agents:               []SelectOption{{Value: "claude", Label: "claude · Claude Code"}},
-			AgentHomes:        []SelectOption{{Value: "默认", Label: "默认 · 宿主默认配置目录"}, {Value: "隔离", Label: "隔离 · demo home"}},
-			AgentBins:         []SelectOption{{Value: "主机 claude", Label: "主机 claude · bridge 默认可执行"}, {Value: "ark4", Label: "ark4 · 豆包 seed-2-1-pro"}},
-			Models:            []string{"default", "sonnet", "opus", "haiku"},
-			Efforts:           []string{"default", "low", "medium", "high"},
-			ReplyModes:        []string{"append", "append-clean-card", "latest-card"},
-			ConversationModes: []string{"chat", "topic"},
+			AgentHomes:           []SelectOption{{Value: "默认", Label: "默认 · 宿主默认配置目录"}, {Value: "隔离", Label: "隔离 · demo home"}},
+			AgentBins:            []SelectOption{{Value: "主机 claude", Label: "主机 claude · bridge 默认可执行"}, {Value: "ark4", Label: "ark4 · 豆包 seed-2-1-pro"}},
+			Models:               []string{"default", "sonnet", "opus", "haiku"},
+			Efforts:              []string{"default", "low", "medium", "high"},
+			ReplyModes:           []string{"append", "append-clean-card", "latest-card"},
+			ConversationModes:    []string{"chat", "topic"},
 		},
 		Segments:  []Segment{{Kind: SegmentText, Text: "must not appear beside the form"}},
 		Streaming: true,
@@ -759,7 +758,7 @@ func TestBuildLarkCardIncludesDisabledStopButton(t *testing.T) {
 }
 
 func TestBuildLarkCardStopButtonRequiresConfirmation(t *testing.T) {
-	card := BuildLarkCard(Event{Type: "stream", SessionID: "claude:chat", StopButton: StopButton{Visible: true}})
+	card := BuildLarkCard(Event{Type: "stream", SessionID: "claude:chat", StopButton: StopButton{Visible: true, GrantID: "grant-stop"}})
 	elements := card["body"].(map[string]any)["elements"].([]any)
 	button := elements[0].(map[string]any)
 	confirm := button["confirm"].(map[string]any)
@@ -773,8 +772,21 @@ func TestBuildLarkCardStopButtonRequiresConfirmation(t *testing.T) {
 	}
 	behaviors := button["behaviors"].([]any)
 	value := behaviors[0].(map[string]any)["value"].(map[string]any)
-	if value["action_id"] != "stop" || value["session"] != "claude:chat" {
+	if value["action_id"] != "stop" || value["session"] != "claude:chat" || value["grant_id"] != "grant-stop" {
 		t.Fatalf("stop callback = %#v", value)
+	}
+}
+
+func TestBuildLarkCardGenericAndResumeActionsCarryGrantIDs(t *testing.T) {
+	payload := BuildLarkCard(Event{SessionID: "s", Actions: []Action{{ID: "create_workdir", Label: "创建", Value: "/tmp/a", GrantID: "grant-workdir"}}})
+	value := collectButtons(payload)[0]["behaviors"].([]any)[0].(map[string]any)["value"].(map[string]any)
+	if value["grant_id"] != "grant-workdir" {
+		t.Fatalf("generic action value = %#v", value)
+	}
+	resume := BuildLarkCard(Event{Type: "resume", SessionID: "resume-card", ResumeCard: &ResumeCard{Agent: "claude", Items: []ResumeItem{{Index: 1, SessionID: "target", GrantID: "grant-resume"}}}})
+	resumeValue := collectButtons(resume)[0]["behaviors"].([]any)[0].(map[string]any)["value"].(map[string]any)
+	if resumeValue["grant_id"] != "grant-resume" {
+		t.Fatalf("resume action value = %#v", resumeValue)
 	}
 }
 
@@ -1861,7 +1873,6 @@ func TestBuildLarkCardResumeEmptyShowsHint(t *testing.T) {
 		t.Fatalf("empty resume card missing hint: %s", data)
 	}
 }
-
 
 // TestBuildLarkCardThreeSectionLayout 验证 append-clean 三段布局的元素顺序、展开态与标题计数:
 // 思考推理折叠区(正文前, expanded, ×N) → 正文 answer → 工具调用折叠区(正文后, folded, ×N)。

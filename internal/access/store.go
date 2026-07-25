@@ -11,7 +11,10 @@ import (
 	"sync"
 )
 
-const SchemaVersion = 1
+const (
+	legacySchemaVersion = 1
+	SchemaVersion       = 2
+)
 
 type snapshot struct {
 	SchemaVersion int    `json:"schema_version"`
@@ -42,7 +45,7 @@ func OpenStore(path string) (*Store, error) {
 	if err := json.Unmarshal(data, &saved); err != nil {
 		return nil, fmt.Errorf("decode access store: %w", err)
 	}
-	if saved.SchemaVersion != SchemaVersion {
+	if saved.SchemaVersion != legacySchemaVersion && saved.SchemaVersion != SchemaVersion {
 		return nil, fmt.Errorf("unsupported access schema %d", saved.SchemaVersion)
 	}
 	store.revision = saved.Revision
@@ -57,6 +60,15 @@ func (s *Store) Get() Policy {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return clonePolicy(s.policy)
+}
+
+func (s *Store) Revision() uint64 {
+	if s == nil {
+		return 0
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.revision
 }
 
 func (s *Store) Update(mutate func(*Policy)) error {
@@ -117,6 +129,23 @@ func normalizePolicy(policy Policy) Policy {
 	policy.AllowedUsers = uniqueStrings(policy.AllowedUsers)
 	policy.AllowedChats = uniqueStrings(policy.AllowedChats)
 	policy.Admins = uniqueStrings(policy.Admins)
+	allowedChats := make(map[string]struct{}, len(policy.AllowedChats))
+	for _, chatID := range policy.AllowedChats {
+		allowedChats[chatID] = struct{}{}
+	}
+	groups := make(map[string]GroupPolicy, len(policy.GroupPolicies))
+	for chatID, group := range policy.GroupPolicies {
+		chatID = strings.TrimSpace(chatID)
+		if _, ok := allowedChats[chatID]; !ok {
+			continue
+		}
+		if group.Mode != GroupModeSelectedMembers {
+			group.Mode = GroupModeAllMembers
+		}
+		group.AllowedMembers = uniqueStrings(group.AllowedMembers)
+		groups[chatID] = group
+	}
+	policy.GroupPolicies = groups
 	return policy
 }
 
@@ -138,9 +167,15 @@ func uniqueStrings(values []string) []string {
 }
 
 func clonePolicy(policy Policy) Policy {
+	groups := make(map[string]GroupPolicy, len(policy.GroupPolicies))
+	for chatID, group := range policy.GroupPolicies {
+		group.AllowedMembers = append([]string(nil), group.AllowedMembers...)
+		groups[chatID] = group
+	}
 	return Policy{
-		AllowedUsers: append([]string(nil), policy.AllowedUsers...),
-		AllowedChats: append([]string(nil), policy.AllowedChats...),
-		Admins:       append([]string(nil), policy.Admins...),
+		AllowedUsers:  append([]string(nil), policy.AllowedUsers...),
+		AllowedChats:  append([]string(nil), policy.AllowedChats...),
+		Admins:        append([]string(nil), policy.Admins...),
+		GroupPolicies: groups,
 	}
 }

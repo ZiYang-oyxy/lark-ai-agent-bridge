@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"lark-agent-bridge/internal/actiongrant"
 	"lark-agent-bridge/internal/agent"
 	"lark-agent-bridge/internal/audit"
 	"lark-agent-bridge/internal/bridgeinstructions"
@@ -316,6 +317,11 @@ func TestAgentProposalGetsScopedTokenAndReplacesTerminalCard(t *testing.T) {
 		Kind: schedule.KindCron, CronExpr: "0 9 * * 1-5", Timezone: "Asia/Shanghai", Description: "工作日总结", Prompt: "总结昨天的进展",
 	}}
 	service := NewService(cfg, renderer, runner, audit.NewRecorder())
+	grants, err := actiongrant.OpenStore(filepath.Join(t.TempDir(), "action-grants.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	service.ActionGrants = grants
 	store, err := schedule.NewStore(filepath.Join(t.TempDir(), "schedules.json"))
 	if err != nil {
 		t.Fatal(err)
@@ -364,7 +370,7 @@ func TestAgentProposalGetsScopedTokenAndReplacesTerminalCard(t *testing.T) {
 	}
 	events := renderer.Events()
 	last := events[len(events)-1]
-	if last.Type != "schedule_confirmation" || len(last.Actions) != 2 || strings.Contains(last.Segments[0].Text, "proposal submitted") {
+	if last.Type != "schedule_confirmation" || len(last.Actions) != 2 || last.Actions[0].GrantID == "" || last.Actions[1].GrantID == "" || strings.Contains(last.Segments[0].Text, "proposal submitted") {
 		t.Fatalf("terminal event = %#v", last)
 	}
 }

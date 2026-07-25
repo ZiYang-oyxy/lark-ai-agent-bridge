@@ -23,6 +23,8 @@ bridge 不托管交互式终端，也不通过 tmux/PTY 捕获输出。每个已
 ## 包结构
 
 - `cmd/lark-agent-bridge`：CLI 入口，包含 `doctor`、`simulate`、`simulate-action`、`serve`
+- `internal/access`：owner/admin、私聊用户白名单、响应群及群成员策略的持久化授权
+- `internal/actiongrant`：敏感 CardKit action 的一次性 capability、过期校验和原子防重放
 - `internal/agent`：Claude/Codex one-shot 命令构造
 - `internal/session`：会话 key、状态、队列、agent session id、prompt 历史
 - `internal/bridge`：消息命令解析、工作目录确认、队列、Agent runner/JSONL parser、CardStream 状态聚合、action 与定时任务桥接
@@ -45,9 +47,14 @@ bridge 不托管交互式终端，也不通过 tmux/PTY 捕获输出。每个已
 - `/status`：查看当前 chat/topic 会话状态；群聊中会额外显示当前群内已知会话数量。
 - `/stop`：停止当前所选 Agent 在当前 chat/topic scope 的 active batch；保留后续 queued 输入，空闲时返回安全提示。
 - `/config`：配置 agent、agent home、agent bin、model、effort、Reply mode 和 Conversation mode；`/config reset` 恢复环境默认。
+- `/invite user|admin|member @user`、`/remove user|admin|member @user`：管理私聊用户、管理员或当前群的指定成员；`member` 只能在已允许的目标群中管理。
+- `/invite group`、`/remove group`、`/invite all group`：管理允许响应的群；新加入的群默认采用全体成员模式。
+- `/group-access all|selected`：在当前允许群内切换全体成员或指定成员模式。owner/admin 始终可用。
 - `/help`：显示帮助。
 
 定时任务使用 `/cron`、`/timer` 及其 `add/info/run/enable/disable/del` 子命令；自然语言消息也可直接触发 Agent 提案。`/sessions`、`/history`、`/topic`、`/attach`、`/interrupt` 文本命令以及 `/claude`、`/codex` 旧入口均不属于当前范围。
+
+消息入口默认 fail-closed：私聊仅允许 owner、admin 和 `allowed_users`；群聊先要求 chat 在 `allowed_chats`，再按该群的 `all_members` 或 `selected_members` 策略判断 sender。旧 access v1 配置迁移为 v2 时，已有响应群保持 `all_members`，避免升级后意外拒绝原有成员；任一访问策略写入都会递增 policy revision。
 
 ## 定时任务边界
 
@@ -116,7 +123,7 @@ CardKit 卡片负责展示一次 Claude 请求的状态：
 
 长输出先由 `E2E_CARD_MAX_CHARS` 按 rune 截断，再经过 `internal/card.PrepareLarkCard` 的容量管线。`append` 在此之前还会把单条工具摘要限制为 **80 rune**、thinking 卡片投影限制为最近 **3000 rune**、Inline timeline 限制为 **9000 rune**；timeline 超限时按 entry 删除最旧过程并保留最终回复。容量管线以最终 JSON 字节数为准，固定限制为 **28 KiB** 和 **200 个带 `tag` 的组件**；`PreparedLarkCard` 是不透明值，renderer、同步 callback 和 CardKit HTTP client 只能消费其已验证 JSON，不能重新组装后绕过容量闸门。普通布局超限时按“最旧工具输出 → 最旧思考 → 最近工具/思考摘要 → 正文末尾”压缩；Inline 布局额外按 Markdown 段落保留最近内容并保证 fitted `Answer()` 与 payload 一致。仍无法放入时发送不含调用方内容、动作、会话或工作目录的静态 emergency 卡片。`E2E_CARD_MAX_CHARS` 保持原有可配置性，但平台容量限制不可配置。
 
-按钮处理生产路径只使用飞书长连接 `card.action.trigger`。stop/create/cancel action 会同步返回终态卡片，让飞书客户端立即置灰按钮；同时 bridge 仍通过 CardKit update 写入同一终态作为兜底和审计证据。设置 `E2E_CALLBACK_ADDR` 后，`serve` 会额外启动 `/card/callback` HTTP 兼容入口；该入口仅用于本地调试、迁移期验证和 real-Lark E2E 中对 service stop 生命周期的确定性触发，不替代生产长连接回调。
+按钮处理生产路径只使用飞书长连接 `card.action.trigger`。stop、workdir create/cancel、schedule confirm/cancel 和 resume select 在渲染时签发随机、不透明、持久化的 `ActionGrant`，绑定 actor、chat、session、action、value digest、过期时间和 access policy revision。回调在任何副作用前校验并原子消费 grant；跨 actor、跨 scope、篡改 value、过期、策略变化和重复点击均被拒绝。stop 与 workdir action 允许 owner/admin 代操作，schedule confirmation 只允许草稿创建者。同步回调返回终态卡片，同时 bridge 仍通过 CardKit update 写入同一终态作为兜底和审计证据。设置 `E2E_CALLBACK_ADDR` 后，`serve` 会额外启动 `/card/callback` HTTP 兼容入口；该入口仅用于本地调试、迁移期验证和 real-Lark E2E 中对 service stop 生命周期的确定性触发，不替代生产长连接回调。
 
 CardKit client 是最后一道本地硬闸：direct `Card` 会重新测量，`Prepared` 会校验完整性并直接发送其中的精确 JSON 字节；两者必须二选一，任何拒绝均发生在 token 获取、限流、重试和 HTTP 前。renderer 遇到意外的本地 capacity 拒绝时只用相同 sequence 重试一次 emergency 卡，成功后才推进 sequence。
 
@@ -144,6 +151,5 @@ CardKit client 是最后一道本地硬闸：direct `Card` 会重新测量，`Pr
 
 - `/resume` 命令（内部 Agent context 可由 durable snapshot 自动续接，但不开放用户命令）
 - tmux/PTY/WebTTY/共享终端
-- 权限与用户映射
 - metrics 观测
 - SQLite、全局 FIFO / 公平调度和企业级多租户队列

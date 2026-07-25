@@ -23,6 +23,7 @@ const (
 	CommandTimer       CommandType = "timer"
 	CommandInvite      CommandType = "invite"
 	CommandRemove      CommandType = "remove"
+	CommandGroupAccess CommandType = "group-access"
 	CommandCd          CommandType = "cd"
 	CommandWs          CommandType = "ws"
 	CommandDevel       CommandType = "devel"
@@ -74,6 +75,8 @@ func ParseCommand(msg Message, defaultAgent agent.Kind) Command {
 		return Command{Type: CommandInvite, Text: strings.TrimSpace(rest), Raw: raw}
 	case "remove":
 		return Command{Type: CommandRemove, Text: strings.TrimSpace(rest), Raw: raw}
+	case "group-access":
+		return Command{Type: CommandGroupAccess, Text: strings.TrimSpace(rest), Raw: raw}
 	case "cd":
 		return Command{Type: CommandCd, Agent: defaultAgent, WorkDir: strings.TrimSpace(rest), Raw: raw}
 	case "ws":
@@ -187,8 +190,9 @@ func HelpCardData() card.HelpCard {
 			{
 				Title: "🔒 权限",
 				Lines: []string{
-					"**`/invite`** user|admin @人 · group · all group",
-					"**`/remove`** user|admin @人 · group",
+					"**`/invite`** user|admin|member @人 · group · all group",
+					"**`/remove`** user|admin|member @人 · group",
+					"**`/group-access`** all|selected 设置当前群成员策略",
 				},
 			},
 		},
@@ -215,8 +219,9 @@ func HelpText() string {
 		"/timer info|del <id> - inspect or delete a one-shot task",
 		"/config - configure global defaults",
 		"/local-config [reset] - override or reset this group's inherited defaults",
-		"/invite user|admin @user, /invite group, /invite all group - grant access",
-		"/remove user|admin @user, /remove group - revoke access",
+		"/invite user|admin|member @user, /invite group, /invite all group - grant access",
+		"/remove user|admin|member @user, /remove group - revoke access",
+		"/group-access all|selected - set the current allowed group's member policy",
 		"/help - show this help",
 		"Group intake: mention only (default), participated topics, or all group messages; bot senders are ignored by default.",
 		"",

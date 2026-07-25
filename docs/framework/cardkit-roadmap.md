@@ -14,7 +14,7 @@
 2. 正文仍通过节流后的全卡替换更新，没有使用按 `element_id` 更新的原生文本流式接口。用户已能看到打字机式增量，因此这属于**网络开销优化，不是用户可感知的新能力**。
 3. 卡片引用持久化与重启恢复**已完成收尾**：`RenderRef` 保存 `CreatedAt` 与 sequence 安全字段；遗留 running 卡片收敛为 interrupted；14 天到期与 sequence unknown 引用在新请求中安全换卡。
 
-P2 原生文本流式已完成实现、远端验证与 production 收口。普通 streaming 卡使用唯一 `answer` target，native/full 共用单 sequence 与 durable two-phase journal。2026-07-18 远端验证证明 normal 流发生 2 次 native PUT 后以 1 次 full result 收敛，stop callback 用时 305ms、停止后无新 native 写入且以 full stopped 收敛，两者均无 `cardkit_sequence_unknown`。真实边界探测证明 100,000 字符成功，100,001 字符返回 `HTTP 400 / 99992402`，且拒绝不消费 sequence；client 仍保留与终态整卡一致的 28 KiB encoded-body 保守硬闸。访问控制及其下游敏感交互统一放入 P3，本轮不实施；展示组件同样暂缓。
+P2 原生文本流式已完成实现、远端验证与 production 收口。普通 streaming 卡使用唯一 `answer` target，native/full 共用单 sequence 与 durable two-phase journal。2026-07-18 远端验证证明 normal 流发生 2 次 native PUT 后以 1 次 full result 收敛，stop callback 用时 305ms、停止后无新 native 写入且以 full stopped 收敛，两者均无 `cardkit_sequence_unknown`。真实边界探测证明 100,000 字符成功，100,001 字符返回 `HTTP 400 / 99992402`，且拒绝不消费 sequence；client 仍保留与终态整卡一致的 28 KiB encoded-body 保守硬闸。P3 消息访问控制与现有敏感交互授权已经落地；新增展示组件仍按真实需求暂缓。
 
 ## 评估范围
 
@@ -228,7 +228,7 @@ AI CardKit 2.0 路径已经使用：
 
 ### P1：现有 CardKit 配置表单收口（已完成，不新增能力）
 
-当前 `/config` CardKit 2.0 表单、`form_value` 解析和全局 model/effort/reply mode 偏好持久化已经实现。此处不再作为待开发功能；在 P3 访问控制落地前，维持“仅部署在个人可控 chat/tenant”的既有适用边界，不继续扩大配置表单能力或投放范围。
+当前 `/config` CardKit 2.0 表单、`form_value` 解析和全局 model/effort/reply mode 偏好持久化已经实现。`/config` 命令和保存 action 均使用 owner/admin gate，不继续扩大配置表单能力。
 
 目标：在需要时用 `/config` 卡片承载 model、effort、回复模式等少量运行偏好。
 
@@ -240,13 +240,13 @@ AI CardKit 2.0 路径已经使用：
 - submit/cancel button
 - `form_value`
 
-后续若进入多人或不可信 chat/tenant，表单必须纳入 P3 的访问控制与 callback capability 校验，不能继续以“卡片可见即可提交”作为授权依据。
+表单不能以“卡片可见即可提交”作为授权依据；管理类保存 action 继续由服务端 owner/admin gate 判定。
 
 P3 安全收口的验收条件：
 
 - 表单值只从可信的 `form_value` 读取。
 - 点击者通过 owner/admin/access policy 校验。
-- action 绑定 scope、active run 或一次性 nonce，不能跨会话重放。
+- action 绑定 actor、chat、session、action、value 和一次性 `ActionGrant`，不能跨会话重放。
 - 提交后同步返回成功或失败终态，并禁用重复提交。
 - secret 不预填、不回显、不进入 audit。
 
@@ -289,22 +289,24 @@ P3 安全收口的验收条件：
 - 完成后增加点赞、点踩或“继续处理”按钮。
 - 通过组件级更新删除停止按钮、添加反馈区。
 
-这些新增 action 依赖可靠的 card ref 持久化（已落地）以及 P3 的访问控制、服务端 action 绑定和防重放能力。P3 前不新增反馈或“继续处理”按钮。
+这些新增 action 依赖可靠的 card ref 持久化和已落地的 `ActionGrant` 管线。实现反馈或“继续处理”时必须签发独立 grant，并从服务端上下文恢复可信状态，不能直接执行客户端提交的数据。
 
-### P3：访问控制与敏感 CardKit 交互
+### P3：访问控制与敏感 CardKit 交互（已完成）
 
-本阶段统一承接访问控制模型及其所有下游敏感 action，本轮明确不实施。
+消息入口授权和已有敏感 action 已完成收口：
 
-目标能力：
+- 私聊按 owner、admin、allowed users 做 fail-closed 授权；群聊先校验 allowed chats，再按每群 `all_members` / `selected_members` 判断 sender。
+- `/invite`、`/remove` 和 `/group-access` 管理响应群、私聊用户、管理员及每群成员策略；旧群迁移后保持全体成员模式。
+- `/config`、`/config reset` 和管理类配置 action 只允许 owner/admin。
+- stop、workdir create/cancel、schedule confirm/cancel 和 resume select 使用服务端持久化的随机 `ActionGrant`，绑定 actor、chat、session、action、value digest、过期时间和 policy revision。
+- grant 成功授权时先原子持久化消费状态；进程重启后仍拒绝重放，访问策略变化后旧 grant 自动失效。
+- schedule confirmation 严格绑定草稿创建者；stop、workdir 和 resume 允许 owner/admin 代操作。
 
-- 消息入口按 owner、admin、allowed users 和 allowed chats 做 fail-closed 授权。
-- `/config`、`/config reset` 和 `config.save` 只允许 owner/admin。
-- stop、workdir、反馈和“继续处理” action 绑定可信 actor、scope、run/card、action、过期时间和一次性 nonce。
-- callback capability 持久化并原子消费，进程重启后仍能拒绝重放；策略变化后旧 capability 失效。
-- HTTP callback 若保留生产用途，先做可信 transport/签名校验，再进入与长连接相同的授权管线。
-- “继续处理”只能从服务端保存的会话上下文创建新输入，不能把客户端任意 `value` 直接作为 prompt。
+保留边界：
 
-首版推荐采用本地显式 owner/admin/allowlist + signed nonce capability；飞书 owner 自动发现和 `/invite` 管理命令作为后续增强，不作为首版前置。
+- 生产 action transport 仍是飞书长连接；HTTP callback 只作兼容和测试入口。
+- `ActionGrant` 使用不可预测的 opaque ID 和服务端状态，不采用把授权声明交给客户端保存的 signed nonce。
+- 未来反馈和“继续处理” action 尚未实现；接入时必须复用 grant 管线，“继续处理”只能从服务端会话上下文创建输入。
 
 ### P3：按真实需求引入展示组件
 

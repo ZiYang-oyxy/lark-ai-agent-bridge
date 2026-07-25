@@ -12,7 +12,7 @@
 
 ## 结论先行
 
-主线已具备个人使用所需的完整 P0/P1 能力，并于 2026-07-20 补齐 Claude/Codex 双 backend：JSON 会话快照、按 chat/topic 串行、one-shot + resume 续接、附件输入、持久化运行偏好、三种回复展示模式、预览节流和 reaction 生命周期均已接线。
+主线已具备个人使用所需的完整 P0/P1 能力，并于 2026-07-20 补齐 Claude/Codex 双 backend：JSON 会话快照、按 chat/topic 串行、one-shot + resume 续接、附件输入、持久化运行偏好、三种回复展示模式、预览节流和 reaction 生命周期均已接线。消息入口授权和敏感 CardKit action 的一次性 capability 也已收口。
 
 gist 的企业级方案对当前体量**严重过度设计**,近期一律不进主清单,只作远期备注(见文末)。近期该做的绝大多数能从 **lcab 近乎平移**(模型同构),cc-connect 提供几个轻量补充小件。
 
@@ -23,7 +23,7 @@ gist 的企业级方案对当前体量**严重过度设计**,近期一律不进�
 | Agent | Claude/Codex one-shot 子进程（非常驻），`/config` 选择 `agents.json` preset | `internal/agent/agent.go`,`internal/bridge/codex_stream.go` |
 | 会话 | JSON v2 原子快照保存 agent context；兼容迁移 v1 `ClaudeSessionID` | `internal/session/store.go`,`internal/bridge/service.go` |
 | session key | `/config` 选择 `chat` 时为 `{Agent, ChatID}`；选择 `topic` 时为 `{Agent, ChatID, Thread?}` | `internal/config/preferences.go`,`internal/bridge/service.go` |
-| 鉴权 | **完全无鉴权** + 硬编码 `--dangerously-skip-permissions` | `internal/agent/agent.go:51` |
+| 鉴权 | owner/admin、私聊用户白名单、响应群及每群成员策略；敏感 action 使用持久化一次性 `ActionGrant` | `internal/access/`,`internal/actiongrant/`,`internal/bridge/action_grants.go` |
 | 去重 | 与 session snapshot 一起持久化,带 TTL/容量上限与启动 watermark | `internal/session/store.go`,`internal/bridge/service.go` |
 | 并发 | scope 内串行、不同 scope 并行;busy 输入有界排队并按兼容配置聚合下一批 | `internal/session/session.go`,`internal/bridge/service.go` |
 | 卡片渲染 | 已有 reducer 中间层(`agentCardStream`):流式 append + 终态 replace | `internal/bridge/stream_card.go` |
@@ -42,10 +42,12 @@ gist 的企业级方案对当前体量**严重过度设计**,近期一律不进�
 - **边界**:`/resume` 继续保持禁用;个人版不需要跨用户 catalog/nonce 选择器。
 - **证据**:`.cache/evidence/dee05c5/core-regression-green/summary.md` 的 session restart、pending cancel/interrupted、DM/group debounce、busy merge、queue full、scope parallel、stop 与 recall 十个核心 case 全部通过。
 
-### P0-2 · 访问控制(owner / allowlist / invite)
+### P0-2 · 访问控制(owner / allowlist / invite)（已完成）
 
-- **个人版决定(2026-07-18)**:⏸️ 本轮明确不做 owner/allowlist/invite/审批体系,不把企业级安全特性作为 P0/P1 完成门槛。
-- **适用边界**:部署者负责把 bot 只放在个人可控 chat/tenant 中。若未来扩大使用人群,再恢复 lcab `policy/access.ts` 的 owner/allowlist 方案。
+- **消息入口**:私聊只允许 owner/admin/allowed users；群聊要求 chat 在 allowed chats，并可按群选择全体成员或指定成员。旧配置迁移保持已有群全体可用。
+- **管理入口**:`/invite`、`/remove`、`/group-access` 由 owner/admin 执行；配置卡保存同样保留 owner/admin gate。
+- **CardKit action**:stop、workdir、schedule 和 resume 使用持久化一次性 `ActionGrant`，校验 actor/scope/value/expiry/policy revision 后原子消费，拒绝篡改、越权和重放。
+- **剩余边界**:Agent 子进程仍使用 `--dangerously-skip-permissions`，因此 allowlist 是主机执行权限边界的一部分；多租户隔离、审批和沙箱不在本次范围。
 
 ### P0-3 · 文件 / 图片输入
 
@@ -130,4 +132,4 @@ gist 的企业级方案对当前体量**严重过度设计**,近期一律不进�
 
 ## 推荐落地顺序
 
-个人版 P0/P1 已完成。下一步不再扩张本轮范围;P2 仅在确有 Codex、多人使用、审批或运营观测需求时启动。若使用范围从个人可控 chat/tenant 扩大,应优先恢复访问控制与权限收紧,再考虑其他 P2 能力。
+个人版 P0/P1 及消息/action 授权已完成。下一步不再扩张本轮范围；P2 仅在确有多人审批、运行隔离或运营观测需求时启动。若使用范围扩大到不可信多租户，下一项安全工作应是 Agent 进程隔离和最小权限，而不是继续扩展 allowlist 表面。

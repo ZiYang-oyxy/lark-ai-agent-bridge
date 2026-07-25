@@ -479,7 +479,7 @@ func buildResumeElements(sessionID string, resume ResumeCard) []any {
 			"disabled": item.Current,
 		}
 		if !item.Current {
-			button["behaviors"] = callbackBehavior(sessionID, "resume.select", item.SessionID)
+			button["behaviors"] = callbackBehaviorWithGrant(sessionID, "resume.select", item.SessionID, item.GrantID)
 		}
 		elements = append(elements, map[string]any{
 			"tag":                "column_set",
@@ -539,7 +539,11 @@ func accessPanelElement(form ConfigForm) map[string]any {
 			if len(suffix) > 6 {
 				suffix = suffix[len(suffix)-6:]
 			}
-			lines = append(lines, fmt.Sprintf("- **%s**（...%s）", name, suffix))
+			mode := "全体成员"
+			if chat.Mode == "selected_members" {
+				mode = fmt.Sprintf("指定成员 %d 人", len(chat.Members))
+			}
+			lines = append(lines, fmt.Sprintf("- **%s**（...%s）· %s", name, suffix, mode))
 		}
 		chatLine = strings.Join(lines, "\n")
 	}
@@ -547,7 +551,7 @@ func accessPanelElement(form ConfigForm) map[string]any {
 	if ownerState == "" {
 		ownerState = "unknown owner=missing"
 	}
-	content := fmt.Sprintf("_留空 = 不响应聊天消息。_\n\n**owner API**：`%s`\n\n**允许私聊的用户**（共 %d 人）\n%s\n\n_加 / 删：_ `/invite user @某人`  `/remove user @某人`\n\n**允许响应的群**（共 %d 个）\n%s\n\n_加 / 删：_ `/invite group`  `/remove group`  `/invite all group`\n\n**管理员**（共 %d 人）\n%s\n\n_加 / 删：_ `/invite admin @某人`  `/remove admin @某人`", ownerState, len(form.AllowedUsers), userLine, len(form.AllowedChats), chatLine, len(form.Admins), adminLine)
+	content := fmt.Sprintf("_留空 = 不响应聊天消息。_\n\n**owner API**：`%s`\n\n**允许私聊的用户**（共 %d 人）\n%s\n\n_加 / 删：_ `/invite user @某人`  `/remove user @某人`\n\n**允许响应的群**（共 %d 个）\n%s\n\n_群入口：_ `/invite group`  `/remove group`  `/invite all group`\n_成员策略：_ `/group-access all|selected`  `/invite member @某人`  `/remove member @某人`\n\n**管理员**（共 %d 人）\n%s\n\n_加 / 删：_ `/invite admin @某人`  `/remove admin @某人`", ownerState, len(form.AllowedUsers), userLine, len(form.AllowedChats), chatLine, len(form.Admins), adminLine)
 	return collapsiblePanelElement("panel_access", "🔒 访问控制", false, []map[string]any{markdownElement("access_summary", content)})
 }
 
@@ -801,7 +805,7 @@ func buildButtonActions(e Event) []any {
 		if !action.Disabled && action.URL != "" {
 			button["behaviors"] = []any{map[string]any{"type": "open_url", "default_url": action.URL}}
 		} else if !action.Disabled {
-			button["behaviors"] = callbackBehavior(e.SessionID, action.ID, action.Value)
+			button["behaviors"] = callbackBehaviorWithGrant(e.SessionID, action.ID, action.Value, action.GrantID)
 		}
 		if !action.Disabled && action.Confirm != nil {
 			button["confirm"] = map[string]any{
@@ -827,7 +831,7 @@ func buildButtonActions(e Event) []any {
 			"disabled":   e.StopButton.Disabled,
 		}
 		if !e.StopButton.Disabled {
-			button["behaviors"] = callbackBehavior(e.SessionID, "stop", "")
+			button["behaviors"] = callbackBehaviorWithGrant(e.SessionID, "stop", "", e.StopButton.GrantID)
 			button["confirm"] = map[string]any{
 				"title": map[string]any{"tag": "plain_text", "content": "确认停止任务？"},
 				"text":  map[string]any{"tag": "plain_text", "content": "停止后，本轮任务将立即结束，当前已生成的内容会保留。"},
@@ -857,14 +861,22 @@ func stopButtonLabel(e Event) string {
 }
 
 func callbackBehavior(sessionID, actionID, value string) []any {
+	return callbackBehaviorWithGrant(sessionID, actionID, value, "")
+}
+
+func callbackBehaviorWithGrant(sessionID, actionID, value, grantID string) []any {
+	payload := map[string]any{
+		"action_id": actionID,
+		"value":     value,
+		"session":   sessionID,
+	}
+	if grantID != "" {
+		payload["grant_id"] = grantID
+	}
 	return []any{
 		map[string]any{
-			"type": "callback",
-			"value": map[string]any{
-				"action_id": actionID,
-				"value":     value,
-				"session":   sessionID,
-			},
+			"type":  "callback",
+			"value": payload,
 		},
 	}
 }

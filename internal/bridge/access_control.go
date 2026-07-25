@@ -61,7 +61,8 @@ func (s *Service) populateAccessConfigForm(form *card.ConfigForm) {
 		names[chat.ID] = chat.Name
 	}
 	for _, id := range policy.AllowedChats {
-		form.AllowedChats = append(form.AllowedChats, card.AccessChat{ID: id, Name: names[id]})
+		group := access.GroupPolicyFor(policy, id)
+		form.AllowedChats = append(form.AllowedChats, card.AccessChat{ID: id, Name: names[id], Mode: string(group.Mode), Members: group.AllowedMembers})
 	}
 	snapshot := s.AccessControls.Snapshot()
 	owner := "missing"
@@ -83,7 +84,7 @@ func (s *Service) messageAccessDecision(msg Message) (access.Decision, bool) {
 }
 
 func (s *Service) adminCommand(kind CommandType) bool {
-	return kind == CommandConfig || kind == CommandAgentMode || kind == CommandInvite || kind == CommandRemove || kind == CommandTodo
+	return kind == CommandConfig || kind == CommandAgentMode || kind == CommandInvite || kind == CommandRemove || kind == CommandGroupAccess || kind == CommandTodo
 }
 
 func (s *Service) canRunAdminCommand(sender string) bool {
@@ -109,6 +110,10 @@ func (s *Service) handleInviteCommand(ctx context.Context, msg Message, cmd Comm
 			for _, chat := range chats {
 				if _, ok := seen[chat.ID]; !ok {
 					p.AllowedChats = append(p.AllowedChats, chat.ID)
+					if p.GroupPolicies == nil {
+						p.GroupPolicies = map[string]access.GroupPolicy{}
+					}
+					p.GroupPolicies[chat.ID] = access.GroupPolicy{Mode: access.GroupModeAllMembers}
 					seen[chat.ID] = struct{}{}
 					added++
 				}
@@ -124,7 +129,7 @@ func (s *Service) handleInviteCommand(ctx context.Context, msg Message, cmd Comm
 	}
 	kind := firstKind(tokens)
 	if kind == "" {
-		return s.accessReply(msg, preference, card.SegmentError, "用法：/invite user @某人；/invite admin @某人；/invite group；/invite all group")
+		return s.accessReply(msg, preference, card.SegmentError, "用法：/invite user|admin|member @某人；/invite group；/invite all group")
 	}
 	if kind == "group" {
 		if !msg.IsGroup {
@@ -135,6 +140,10 @@ func (s *Service) handleInviteCommand(ctx context.Context, msg Message, cmd Comm
 			already = hasString(p.AllowedChats, msg.ChatID)
 			if !already {
 				p.AllowedChats = append(p.AllowedChats, msg.ChatID)
+				if p.GroupPolicies == nil {
+					p.GroupPolicies = map[string]access.GroupPolicy{}
+				}
+				p.GroupPolicies[msg.ChatID] = access.GroupPolicy{Mode: access.GroupModeAllMembers}
 			}
 		}); err != nil {
 			return s.accessSaveFailed(msg, preference, err)
@@ -150,7 +159,7 @@ func (s *Service) handleInviteCommand(ctx context.Context, msg Message, cmd Comm
 func (s *Service) handleRemoveCommand(msg Message, cmd Command, preference config.RuntimePreference) error {
 	kind := firstKind(lowerFields(cmd.Text))
 	if kind == "" {
-		return s.accessReply(msg, preference, card.SegmentError, "用法：/remove user @某人；/remove admin @某人；/remove group")
+		return s.accessReply(msg, preference, card.SegmentError, "用法：/remove user|admin|member @某人；/remove group")
 	}
 	if kind == "group" {
 		if !msg.IsGroup {
@@ -160,6 +169,7 @@ func (s *Service) handleRemoveCommand(msg Message, cmd Command, preference confi
 		if err := s.Access.Update(func(p *access.Policy) {
 			missing = !hasString(p.AllowedChats, msg.ChatID)
 			p.AllowedChats = removeString(p.AllowedChats, msg.ChatID)
+			delete(p.GroupPolicies, msg.ChatID)
 		}); err != nil {
 			return s.accessSaveFailed(msg, preference, err)
 		}
@@ -172,6 +182,14 @@ func (s *Service) handleRemoveCommand(msg Message, cmd Command, preference confi
 }
 
 func (s *Service) mutateMentionList(msg Message, preference config.RuntimePreference, kind string, add bool) error {
+	if kind == "member" {
+		if !msg.IsGroup {
+			return s.accessReply(msg, preference, card.SegmentError, "❌ /invite member 和 /remove member 只能在目标群里使用。")
+		}
+		if !hasString(s.Access.Get().AllowedChats, msg.ChatID) {
+			return s.accessReply(msg, preference, card.SegmentError, "❌ 当前群尚未加入响应群名单，请先发送 /invite group。")
+		}
+	}
 	targets := make([]Mention, 0, len(msg.Mentions))
 	for _, mention := range msg.Mentions {
 		if !mention.IsBot && mention.OpenID != "" {
@@ -184,8 +202,12 @@ func (s *Service) mutateMentionList(msg Message, preference config.RuntimePrefer
 	changed, unchanged := []string{}, []string{}
 	err := s.Access.Update(func(p *access.Policy) {
 		list := &p.AllowedUsers
+		var group access.GroupPolicy
 		if kind == "admin" {
 			list = &p.Admins
+		} else if kind == "member" {
+			group = access.GroupPolicyFor(*p, msg.ChatID)
+			list = &group.AllowedMembers
 		}
 		for _, target := range targets {
 			name := target.Name
@@ -203,6 +225,12 @@ func (s *Service) mutateMentionList(msg Message, preference config.RuntimePrefer
 				unchanged = append(unchanged, name)
 			}
 		}
+		if kind == "member" {
+			if p.GroupPolicies == nil {
+				p.GroupPolicies = map[string]access.GroupPolicy{}
+			}
+			p.GroupPolicies[msg.ChatID] = group
+		}
 	})
 	if err != nil {
 		return s.accessSaveFailed(msg, preference, err)
@@ -210,6 +238,8 @@ func (s *Service) mutateMentionList(msg Message, preference config.RuntimePrefer
 	label := "私聊用户白名单"
 	if kind == "admin" {
 		label = "管理员"
+	} else if kind == "member" {
+		label = "当前群成员名单"
 	}
 	parts := []string{}
 	if len(changed) > 0 {
@@ -223,6 +253,44 @@ func (s *Service) mutateMentionList(msg Message, preference config.RuntimePrefer
 		parts = append(parts, fmt.Sprintf("%s 无需变更。", strings.Join(unchanged, "、")))
 	}
 	return s.accessReply(msg, preference, card.SegmentText, strings.Join(parts, "\n"))
+}
+
+func (s *Service) handleGroupAccessCommand(msg Message, cmd Command, preference config.RuntimePreference) error {
+	if !msg.IsGroup {
+		return s.accessReply(msg, preference, card.SegmentError, "❌ /group-access 只能在目标群里使用。")
+	}
+	policy := s.Access.Get()
+	if !hasString(policy.AllowedChats, msg.ChatID) {
+		return s.accessReply(msg, preference, card.SegmentError, "❌ 当前群尚未加入响应群名单，请先发送 /invite group。")
+	}
+	mode := strings.ToLower(strings.TrimSpace(cmd.Text))
+	if mode == "" {
+		current := access.GroupPolicyFor(policy, msg.ChatID)
+		return s.accessReply(msg, preference, card.SegmentText, fmt.Sprintf("当前群成员策略：`%s`，指定成员 %d 人。", current.Mode, len(current.AllowedMembers)))
+	}
+	var next access.GroupMode
+	switch mode {
+	case "all", string(access.GroupModeAllMembers):
+		next = access.GroupModeAllMembers
+	case "selected", string(access.GroupModeSelectedMembers):
+		next = access.GroupModeSelectedMembers
+	default:
+		return s.accessReply(msg, preference, card.SegmentError, "用法：/group-access all|selected")
+	}
+	if err := s.Access.Update(func(p *access.Policy) {
+		group := access.GroupPolicyFor(*p, msg.ChatID)
+		group.Mode = next
+		if p.GroupPolicies == nil {
+			p.GroupPolicies = map[string]access.GroupPolicy{}
+		}
+		p.GroupPolicies[msg.ChatID] = group
+	}); err != nil {
+		return s.accessSaveFailed(msg, preference, err)
+	}
+	if next == access.GroupModeSelectedMembers {
+		return s.accessReply(msg, preference, card.SegmentText, "✅ 当前群已切换为指定成员模式；owner/管理员始终可用，其他成员请用 /invite member @某人 添加。")
+	}
+	return s.accessReply(msg, preference, card.SegmentText, "✅ 当前群已切换为全体成员模式。")
 }
 
 func (s *Service) accessReply(msg Message, preference config.RuntimePreference, kind card.SegmentKind, text string) error {
@@ -241,7 +309,7 @@ func lowerFields(value string) []string {
 func hasToken(values []string, value string) bool { return hasString(values, value) }
 func firstKind(values []string) string {
 	for _, value := range values {
-		if value == "user" || value == "admin" || value == "group" {
+		if value == "user" || value == "admin" || value == "member" || value == "group" {
 			return value
 		}
 	}

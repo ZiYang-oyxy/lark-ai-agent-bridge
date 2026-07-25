@@ -28,6 +28,7 @@ type Config struct {
 	ReplyStorePath              string
 	AgentsConfigPath            string
 	AccessStorePath             string
+	ActionGrantStorePath        string
 	ParticipatedTopicsStorePath string
 	TopicAliasStorePath         string
 	ScheduleStorePath           string
@@ -80,6 +81,7 @@ func LoadFromEnv() Config {
 		ReplyStorePath:              filepath.Join(workDir, ".lark-agent-bridge", "replies.json"),
 		AgentsConfigPath:            filepath.Join(workDir, ".lark-agent-bridge", "agents.json"),
 		AccessStorePath:             filepath.Join(workDir, ".lark-agent-bridge", "access.json"),
+		ActionGrantStorePath:        filepath.Join(workDir, ".lark-agent-bridge", "action-grants.json"),
 		DevModeStorePath:            filepath.Join(workDir, ".lark-agent-bridge", "dev-mode.json"),
 		ParticipatedTopicsStorePath: filepath.Join(workDir, ".lark-agent-bridge", "participated-topics.json"),
 		TopicAliasStorePath:         filepath.Join(workDir, ".lark-agent-bridge", "topic-aliases.json"),
@@ -131,6 +133,7 @@ func LoadFromEnv() Config {
 		cfg.ReplyStorePath = filepath.Join(v, ".lark-agent-bridge", "replies.json")
 		cfg.AgentsConfigPath = filepath.Join(v, ".lark-agent-bridge", "agents.json")
 		cfg.AccessStorePath = filepath.Join(v, ".lark-agent-bridge", "access.json")
+		cfg.ActionGrantStorePath = filepath.Join(v, ".lark-agent-bridge", "action-grants.json")
 		cfg.DevModeStorePath = filepath.Join(v, ".lark-agent-bridge", "dev-mode.json")
 		cfg.ParticipatedTopicsStorePath = filepath.Join(v, ".lark-agent-bridge", "participated-topics.json")
 		cfg.TopicAliasStorePath = filepath.Join(v, ".lark-agent-bridge", "topic-aliases.json")
@@ -180,6 +183,9 @@ func LoadFromEnv() Config {
 	}
 	if v := os.Getenv("E2E_ACCESS_STORE"); v != "" {
 		cfg.AccessStorePath = v
+	}
+	if v := os.Getenv("E2E_ACTION_GRANT_STORE"); v != "" {
+		cfg.ActionGrantStorePath = v
 	}
 	if v := os.Getenv("E2E_PARTICIPATED_TOPICS_STORE"); v != "" {
 		cfg.ParticipatedTopicsStorePath = v

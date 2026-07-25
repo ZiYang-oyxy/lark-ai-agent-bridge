@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"lark-agent-bridge/internal/access"
+	"lark-agent-bridge/internal/actiongrant"
 	"lark-agent-bridge/internal/agent"
 	"lark-agent-bridge/internal/audit"
 	"lark-agent-bridge/internal/bridge"
@@ -385,6 +386,10 @@ func runServe(args []string) error {
 	if err != nil {
 		return fmt.Errorf("open access store: %w", err)
 	}
+	actionGrants, err := actiongrant.OpenStore(cfg.ActionGrantStorePath)
+	if err != nil {
+		return fmt.Errorf("open action grant store: %w", err)
+	}
 	devModeStore, err := devmode.OpenStore(cfg.DevModeStorePath)
 	if err != nil {
 		return fmt.Errorf("open dev-mode store: %w", err)
@@ -417,6 +422,7 @@ func runServe(args []string) error {
 	svc.TopicParticipation = topicStore
 	svc.TopicAliases = topicAliases
 	svc.Access = accessStore
+	svc.ActionGrants = actionGrants
 	svc.DevMode = devModeStore
 	svc.PrereleaseManifestURL = cfg.UpdatePrereleaseManifestURL
 	svc.Workspaces = workspaces
@@ -583,8 +589,10 @@ func actionRequestFromFeishu(action feishu.CardAction) bridge.ActionRequest {
 		ActionID:      action.ActionID,
 		Value:         action.Value,
 		Actor:         action.Actor,
+		ChatID:        action.ChatID,
 		OpenMessageID: action.OpenMessageID,
 		FormValues:    formValues,
+		GrantID:       action.GrantID,
 	}
 }
 
