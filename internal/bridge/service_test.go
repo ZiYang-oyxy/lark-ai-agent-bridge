@@ -643,6 +643,50 @@ func TestServiceConfigCommandShowsCurrentPreferencesWithoutRunningAgent(t *testi
 	}
 }
 
+func TestTodoCommandUsesEffectiveCodexPreference(t *testing.T) {
+	cfg := testConfig(t)
+	agents := config.AgentsConfig{
+		SchemaVersion: config.AgentsSchemaVersion,
+		Agents: []config.AgentDef{
+			{Kind: "claude", Homes: []config.AgentHome{{Label: config.DefaultHomeLabel}}, Bins: []config.AgentBin{{Label: config.DefaultBinLabel}}},
+			{Kind: "codex", Homes: []config.AgentHome{{Label: config.DefaultHomeLabel}}, Bins: []config.AgentBin{{Label: config.DefaultBinLabelFor("codex")}}},
+		},
+	}
+	store, err := config.OpenPreferenceStore(filepath.Join(t.TempDir(), "preferences.json"), config.RuntimePreference{
+		Model: "default", Effort: "low", ReplyMode: config.ReplyModeAppend,
+		ConversationMode: config.ConversationModeChat, Agent: string(agent.Codex),
+	}, cfg.AllowedModels, agents.Agents...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runner := newFakeRunner()
+	svc := NewService(cfg, card.NewFakeRenderer(), runner, audit.NewRecorder())
+	svc.Agents = agents
+	svc.Preferences = store
+
+	if err := svc.HandleMessage(context.Background(), Message{
+		ID: "todo-codex", ChatID: "chat", Sender: "admin",
+		Text: "/.go keep the selected agent", Time: time.Now(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	sess, ok := svc.Sessions.Get(session.Key{Agent: agent.Codex, ChatID: "chat"})
+	if !ok || len(sess.Queue) != 1 {
+		t.Fatalf("/.go codex session = %#v", sess)
+	}
+	if err := svc.DrainReady(sess.Queue[0].DebounceUntil); err != nil {
+		t.Fatal(err)
+	}
+	waitForCalls(t, runner, 1)
+	call := runner.Calls()[0]
+	if call.Kind != agent.Codex {
+		t.Fatalf("/.go runner kind = %s, want codex", call.Kind)
+	}
+	if !strings.Contains(call.Prompt, "keep the selected agent") {
+		t.Fatalf("/.go prompt = %q", call.Prompt)
+	}
+}
+
 func TestServiceStatusShowsGlobalReplyModeBeforeSessionStarts(t *testing.T) {
 	cfg := testConfig(t)
 	cfg.Model, cfg.Effort, cfg.ReplyMode = "default", "low", config.ReplyModeAppend

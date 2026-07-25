@@ -554,7 +554,7 @@ func (s *Service) HandleMessage(ctx context.Context, msg Message) error {
 	if cmd.Type == CommandIgnored {
 		return nil
 	}
-	if selected, ok := agent.ParseKind(preference.Agent); ok && (cmd.Type == CommandRun || cmd.Type == CommandStatus || cmd.Type == CommandStop || cmd.Type == CommandResume || cmd.Type == CommandCron || cmd.Type == CommandTimer) {
+	if selected, ok := agent.ParseKind(preference.Agent); ok && (cmd.Type == CommandRun || cmd.Type == CommandStatus || cmd.Type == CommandStop || cmd.Type == CommandResume || cmd.Type == CommandCron || cmd.Type == CommandTimer || cmd.Type == CommandTodo) {
 		cmd.Agent = selected
 	}
 	if s.adminCommand(cmd.Type) && !s.canRunAdminCommand(msg.Sender) {

@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"strings"
 
-	"lark-agent-bridge/internal/agent"
 	"lark-agent-bridge/internal/card"
 	"lark-agent-bridge/internal/config"
 )
@@ -25,8 +24,8 @@ const selfLoopPromptTemplate = `收到一个「修复/改进 bridge（lark-ai-ag
 // it hands the argument to the agent as a "improve bridge itself" requirement
 // and drives the self-loop workflow via a normal agent run. Admin-only (the
 // admin gate is enforced by the dispatcher before we get here) because it lets
-// the bridge modify its own source tree. Self-loop always runs as claude —
-// Steve's own capability — regardless of the conversation's default agent.
+// the bridge modify its own source tree. It inherits the effective agent
+// preference so /.go does not silently switch between Claude and Codex.
 func (s *Service) handleTodoCommand(ctx context.Context, msg Message, cmd Command, preference config.RuntimePreference) error {
 	requirement := strings.TrimSpace(cmd.Text)
 	if requirement == "" {
@@ -36,7 +35,6 @@ func (s *Service) handleTodoCommand(ctx context.Context, msg Message, cmd Comman
 	s.Audit.Record(msg.Sender, "todo_selfloop", msg.ChatID, requirement)
 	runCmd := cmd
 	runCmd.Type = CommandRun
-	runCmd.Agent = agent.Claude
 	runCmd.Text = fmt.Sprintf(selfLoopPromptTemplate, requirement)
 	return s.runWithPreference(ctx, runCmd, msg, "", preference)
 }
