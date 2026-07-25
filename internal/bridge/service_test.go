@@ -1979,6 +1979,28 @@ func TestServiceGroupTopicMentionsRunConcurrently(t *testing.T) {
 	}
 }
 
+// P2P (single-user DM) + topic mode: earlier the sessionKey mint gated on
+// msg.IsGroup, so multiple @bots in a DM all collapsed onto the chat root and
+// serialised. Users on topic mode want the same "independent parallel topics
+// per @mention" behaviour regardless of chat kind, so the gate now looks at
+// Mentioned + ID only. Two P2P @bots with IsGroup=false must produce
+// distinct synthetic thread keys.
+func TestServiceP2PTopicMentionsMintDistinctSyntheticKeys(t *testing.T) {
+	msgA := Message{ID: "m1", ChatID: "chat", Sender: "u", IsGroup: false, Mentioned: true}
+	msgB := Message{ID: "m2", ChatID: "chat", Sender: "u", IsGroup: false, Mentioned: true}
+	keyA := sessionKeyForModeWithAlias(agent.Claude, msgA, config.ConversationModeTopic, nil)
+	keyB := sessionKeyForModeWithAlias(agent.Claude, msgB, config.ConversationModeTopic, nil)
+	if keyA.Thread != SyntheticTopicThreadPrefix+"m1" {
+		t.Fatalf("P2P mention A key thread = %q, want %s", keyA.Thread, SyntheticTopicThreadPrefix+"m1")
+	}
+	if keyB.Thread != SyntheticTopicThreadPrefix+"m2" {
+		t.Fatalf("P2P mention B key thread = %q, want %s", keyB.Thread, SyntheticTopicThreadPrefix+"m2")
+	}
+	if keyA == keyB {
+		t.Fatalf("P2P mentions must land on distinct keys, both = %+v", keyA)
+	}
+}
+
 // After a synthetic @bot:<msg_id> session runs and CardKit reply lands with a
 // real Feishu thread_id, TopicJoinObserver binds an alias so the next reply
 // inside that topic (which arrives with the real thread_id) routes back to

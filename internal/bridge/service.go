@@ -2878,11 +2878,15 @@ func sessionKeyForModeWithAlias(kind agent.Kind, msg Message, mode config.Conver
 		key.Thread = msg.ThreadID
 		return key
 	}
-	// Top-level @bot in a group: mint a per-mention thread key so this
-	// mention runs concurrently with any other in-flight @bot on the same
-	// chat. Requires a stable msg.ID (Feishu message id) — without it we
-	// have nothing unique to key on, fall back to the chat root.
-	if msg.IsGroup && msg.Mentioned && msg.ID != "" {
+	// Top-level @bot: mint a per-mention thread key so this mention runs
+	// concurrently with any other in-flight @bot on the same chat. Requires a
+	// stable msg.ID (Feishu message id) — without it we have nothing unique to
+	// key on, fall back to the chat root. Applies to both group chats and P2P
+	// DMs: users on topic mode want independent parallel topics regardless of
+	// chat kind (P2P was previously left out by an IsGroup gate, so all @bots
+	// in a DM serialised onto the chat root even though the user explicitly
+	// asked for topic mode).
+	if msg.Mentioned && msg.ID != "" {
 		key.Thread = SyntheticTopicThreadPrefix + msg.ID
 	}
 	return key
