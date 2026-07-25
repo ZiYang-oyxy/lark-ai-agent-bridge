@@ -1148,8 +1148,8 @@ func TestStreamWhitespaceOnlyDeltaDoesNotRenderEmptyCardOrDelayFirstText(t *test
 	}
 }
 
-// TestAppendCleanThreeSectionLatestOnly 验证 append-clean-card 三段布局:思考/工具只保留
-// 最新一次,折叠区计数(× N)累计全过程,Event 携带 ThreeSectionLayout + 展开态。
+// TestAppendCleanThreeSectionLatestOnly 验证 append-clean-card 三段布局:思考/工具滚动保留
+// 最后两次,折叠区计数(× N)累计全过程,Event 携带 ThreeSectionLayout + 展开态。
 func TestAppendCleanThreeSectionLatestOnly(t *testing.T) {
 	clock := &fakeStreamClock{now: time.Unix(200, 0)}
 	renderer := card.NewFakeRenderer()
@@ -1203,23 +1203,32 @@ func TestAppendCleanThreeSectionLatestOnly(t *testing.T) {
 		t.Fatalf("counts = thought:%d tool:%d, want 2/2", ev.ThoughtRoundCount, ev.ToolRoundCount)
 	}
 	thought := segmentTextByKind(ev, card.SegmentThought)
-	if strings.Contains(thought, "第一步") || !strings.Contains(thought, "第二步") {
-		t.Fatalf("thought should show only latest COT, got %q", thought)
+	// 滚动保留最后两段:应该同时包含第一步和第二步,用分隔线分开
+	if !strings.Contains(thought, "第一步") || !strings.Contains(thought, "第二步") {
+		t.Fatalf("thought should show last two COTs, got %q", thought)
+	}
+	if !strings.Contains(thought, "---") {
+		t.Fatalf("thought should have separator between segments, got %q", thought)
 	}
 	// 思考区不应重复:snapshot 覆盖 delta,同一轮内不应出现两遍相同 COT。
 	if strings.Count(thought, "第二步") != 1 {
 		t.Fatalf("thought must not duplicate within a round, got %q", thought)
 	}
 	tool := segmentTextByKind(ev, card.SegmentTool)
-	// 工具区必须是人读格式:含 Name (Bash) + command (cat x) + 输出 (hello),不带 raw JSON / call_ id。
-	if !strings.Contains(tool, "Bash") || !strings.Contains(tool, "cat x") || !strings.Contains(tool, "hello") {
-		t.Fatalf("tool must show name+command+output in human form, got %q", tool)
+	// 工具区必须是人读格式:保留最后两次工具调用,含 Name (Bash) + command + 输出,不带 raw JSON / call_ id。
+	// 两次工具之间用分隔线分开,应该同时包含 ls 和 cat x 的结果
+	if !strings.Contains(tool, "Bash") || !strings.Contains(tool, "ls") || !strings.Contains(tool, "file1") ||
+		!strings.Contains(tool, "cat x") || !strings.Contains(tool, "hello") {
+		t.Fatalf("tool must show last two tools in human form, got %q", tool)
+	}
+	if !strings.Contains(tool, "---") {
+		t.Fatalf("tool should have separator between calls, got %q", tool)
 	}
 	if strings.Contains(tool, "t1") || strings.Contains(tool, "tool_result") || strings.Contains(tool, "\"command\"") {
 		t.Fatalf("tool must not leak raw id / raw json / tool_result stub, got %q", tool)
 	}
 
-	// 终态:思考折叠,计数保持,内容仍是最新一次;stop button 隐藏。
+	// 终态:思考折叠,计数保持,内容保留最后两次;stop button 隐藏。
 	terminal, err := stream.Finish("completed", card.Meta{}, AgentRunResult{
 		Segments: []card.Segment{
 			{Kind: card.SegmentThought, Text: "先想第一步"},
@@ -1248,11 +1257,14 @@ func TestAppendCleanThreeSectionLatestOnly(t *testing.T) {
 	if terminal.ThoughtRoundCount != 2 || terminal.ToolRoundCount != 2 {
 		t.Fatalf("terminal counts = thought:%d tool:%d, want 2/2", terminal.ThoughtRoundCount, terminal.ToolRoundCount)
 	}
-	if got := segmentTextByKind(terminal, card.SegmentThought); strings.Contains(got, "第一步") || !strings.Contains(got, "第二步") {
-		t.Fatalf("terminal thought latest-only failed: %q", got)
+	// 终态也保留最后两段思考
+	if got := segmentTextByKind(terminal, card.SegmentThought); !strings.Contains(got, "第一步") || !strings.Contains(got, "第二步") {
+		t.Fatalf("terminal thought should keep last two, got %q", got)
 	}
-	if got := segmentTextByKind(terminal, card.SegmentTool); !strings.Contains(got, "cat x") || !strings.Contains(got, "hello") || strings.Contains(got, "ls\n```") {
-		t.Fatalf("terminal tool latest-only failed: %q", got)
+	// 终态也保留最后两次工具调用
+	if got := segmentTextByKind(terminal, card.SegmentTool); !strings.Contains(got, "ls") || !strings.Contains(got, "file1") ||
+		!strings.Contains(got, "cat x") || !strings.Contains(got, "hello") {
+		t.Fatalf("terminal tool should keep last two, got %q", got)
 	}
 }
 
@@ -1273,12 +1285,14 @@ func TestFormatLatestToolClampsHugeOutputKeepsCommand(t *testing.T) {
 	cmd := "grep -rn func internal/bridge"
 	huge := strings.Repeat("internal/bridge/service.go:660:func resumeCardData longline\n", 2000)
 	s := &agentCardStream{
-		latestToolID:     "tu-1",
-		latestToolName:   "Bash",
-		latestToolCmd:    cmd,
-		latestToolOutput: huge,
+		currentTool: &toolCall{
+			ID:     "tu-1",
+			Name:   "Bash",
+			Cmd:    cmd,
+			Output: huge,
+		},
 	}
-	rendered := s.formatLatestToolLocked()
+	rendered := s.formatToolsLocked()
 
 	// 1) 命令与工具名必须完整在渲染结果里
 	if !strings.Contains(rendered, cmd) {
