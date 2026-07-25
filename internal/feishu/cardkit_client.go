@@ -85,6 +85,13 @@ type RenderBinding struct {
 	BatchID          string
 	LatestScope      string
 	RunCardSessionID string
+	// TopicThreadKey is the session key's Thread segment for this run — in
+	// topic mode it is the synthetic "@bot:<origin_msg_id>" thread this run was
+	// routed to (or the real omt_* thread for an in-topic follow-up). The
+	// renderer binds it as the alias target on a successful topic reply so
+	// later follow-ups route back to the same session, instead of re-deriving
+	// a (wrong) synthetic key from the current reply's message id.
+	TopicThreadKey string
 }
 
 type NativeSequenceJournal interface {

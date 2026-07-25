@@ -1904,6 +1904,56 @@ func TestServiceTopicAliasRoutesFollowUpIntoSyntheticSession(t *testing.T) {
 	}
 }
 
+// When a follow-up arrives with a real thread_id but no alias is bound (e.g.
+// after a supervisor restart dropped the in-memory alias), the message's
+// root_id — the original @bot message that minted the synthetic key — lets us
+// self-heal by routing back to "@bot:<root_id>" instead of a fresh empty
+// session on the real thread_id.
+func TestSessionKeyRootIDFallbackWhenAliasMisses(t *testing.T) {
+	// No alias store at all (nil resolver): pure root_id fallback.
+	followUp := Message{ID: "m2", ChatID: "chat", ThreadID: "omt_real", RootID: "m1", Sender: "u"}
+	key := sessionKeyForModeWithAlias(agent.Claude, followUp, config.ConversationModeTopic, nil)
+	if key.Thread != SyntheticTopicThreadPrefix+"m1" {
+		t.Fatalf("root_id fallback key = %+v, want thread=%s", key, SyntheticTopicThreadPrefix+"m1")
+	}
+
+	// With an empty alias store (miss), root_id still wins over the real thread.
+	aliases := NewTopicAliasStore()
+	key = sessionKeyForModeWithAlias(agent.Claude, followUp, config.ConversationModeTopic, aliases)
+	if key.Thread != SyntheticTopicThreadPrefix+"m1" {
+		t.Fatalf("root_id fallback with empty store = %+v, want thread=%s", key, SyntheticTopicThreadPrefix+"m1")
+	}
+}
+
+// A bound alias must take priority over the root_id fallback so an explicitly
+// recorded mapping is never overridden by the heuristic.
+func TestSessionKeyAliasBeatsRootIDFallback(t *testing.T) {
+	aliases := NewTopicAliasStore()
+	aliases.Bind("chat", "omt_real", SyntheticTopicThreadPrefix+"origin")
+	followUp := Message{ID: "m2", ChatID: "chat", ThreadID: "omt_real", RootID: "m1", Sender: "u"}
+	key := sessionKeyForModeWithAlias(agent.Claude, followUp, config.ConversationModeTopic, aliases)
+	if key.Thread != SyntheticTopicThreadPrefix+"origin" {
+		t.Fatalf("alias-hit key = %+v, want thread=%s (alias, not root_id)", key, SyntheticTopicThreadPrefix+"origin")
+	}
+}
+
+// root_id must not leak into chat mode or into the top-level @bot branch.
+func TestSessionKeyRootIDIgnoredOutsideTopicThread(t *testing.T) {
+	// Chat mode: root_id irrelevant, no thread.
+	chatMsg := Message{ID: "m2", ChatID: "chat", ThreadID: "omt_real", RootID: "m1", Sender: "u"}
+	key := sessionKeyForModeWithAlias(agent.Claude, chatMsg, config.ConversationModeChat, nil)
+	if key.Thread != "" {
+		t.Fatalf("chat-mode key = %+v, want empty thread", key)
+	}
+	// Topic mode, top-level @bot (no thread_id): mints @bot:<msg_id>, root_id
+	// branch is not reached.
+	mention := Message{ID: "m1", ChatID: "chat", RootID: "ignored", Sender: "u", IsGroup: true, Mentioned: true}
+	key = sessionKeyForModeWithAlias(agent.Claude, mention, config.ConversationModeTopic, nil)
+	if key.Thread != SyntheticTopicThreadPrefix+"m1" {
+		t.Fatalf("top-level @bot key = %+v, want thread=%s", key, SyntheticTopicThreadPrefix+"m1")
+	}
+}
+
 func TestInitialCardRenderFailureDoesNotStartRunnerOrLeakActiveRun(t *testing.T) {
 	cfg := testConfig(t)
 	fake := card.NewFakeRenderer()

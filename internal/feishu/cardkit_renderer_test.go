@@ -942,14 +942,16 @@ type topicJoinEvent struct {
 	ThreadID         string
 	ReplyToMessageID string
 	MessageID        string
+	SyntheticThread  string
 }
 
-func (c *topicJoinCapture) RecordCardReply(chatID, threadID, replyToMessageID, messageID string, _ time.Time) {
+func (c *topicJoinCapture) RecordCardReply(chatID, threadID, replyToMessageID, messageID, syntheticThread string, _ time.Time) {
 	c.joins = append(c.joins, topicJoinEvent{
 		ChatID:           chatID,
 		ThreadID:         threadID,
 		ReplyToMessageID: replyToMessageID,
 		MessageID:        messageID,
+		SyntheticThread:  syntheticThread,
 	})
 }
 
@@ -967,6 +969,26 @@ func TestCardKitRendererNotifiesTopicJoinOnReplyWithThreadID(t *testing.T) {
 	want := topicJoinEvent{ChatID: "oc_chat", ThreadID: "omt_topic", ReplyToMessageID: "om_origin", MessageID: "om_reply"}
 	if got != want {
 		t.Fatalf("topic join = %+v, want %+v", got, want)
+	}
+}
+
+func TestCardKitRendererForwardsBindingTopicThreadKey(t *testing.T) {
+	// The renderer must forward the run's synthetic thread key (from the
+	// RenderBinding, i.e. the session key Thread) to the observer, not re-derive
+	// one from the reply. This is what lets the alias bind to the same session
+	// for in-topic follow-ups whose replyTo is their own id.
+	client := &fakeCardKitClient{replyResult: CardKitReplyResult{MessageID: "om_G", ChatID: "oc_chat", ThreadID: "omt_X"}}
+	obs := &topicJoinCapture{}
+	binding := RenderBinding{RunCardSessionID: "session-d", TopicThreadKey: "@bot:om_A"}
+	renderer := newCardKitRendererWithClock(client, "om_G", obs, binding.RunCardSessionID, binding, nil, time.Now)
+	if err := renderer.Render(card.Event{Type: "stream", SessionID: "session-d", ReplyInThread: true}); err != nil {
+		t.Fatalf("render error: %v", err)
+	}
+	if got := len(obs.joins); got != 1 {
+		t.Fatalf("topic joins = %d, want 1", got)
+	}
+	if got := obs.joins[0].SyntheticThread; got != "@bot:om_A" {
+		t.Fatalf("synthetic thread = %q, want %q (the routed session key, not derived from reply om_G)", got, "@bot:om_A")
 	}
 }
 

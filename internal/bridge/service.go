@@ -1072,7 +1072,7 @@ func (s *Service) startBatch(parent context.Context, sess session.Session, batch
 		policy := reply.NewPolicy(s.CardTarget, s.Replies)
 		policy.Resolver = s.SequenceResolver
 		policyRun, err := policy.BeginBound(runCtx, mode, sess.ID, feishu.RenderBinding{
-			BaseSessionID: sess.ID, BatchID: batch.ID, LatestScope: latestScope, RunCardSessionID: id,
+			BaseSessionID: sess.ID, BatchID: batch.ID, LatestScope: latestScope, RunCardSessionID: id, TopicThreadKey: sess.Key.Thread,
 		}, anchor.ReplyToMessageID)
 		if err != nil {
 			cancel()
@@ -2680,6 +2680,12 @@ func sessionKeyForModeWithAlias(kind agent.Kind, msg Message, mode config.Conver
 				key.Thread = syn
 				return key
 			}
+		}
+		if msg.RootID != "" {
+			// 话题根消息即当初 mint synthetic key 的原始 @bot 消息；
+			// 直接路由回同一 synthetic session，重启丢 alias 也能自愈。
+			key.Thread = SyntheticTopicThreadPrefix + msg.RootID
+			return key
 		}
 		key.Thread = msg.ThreadID
 		return key

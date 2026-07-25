@@ -401,7 +401,10 @@ func runServe(args []string) error {
 	if err != nil {
 		return fmt.Errorf("open native sequence journal: %w", err)
 	}
-	topicAliases := bridge.NewTopicAliasStore()
+	topicAliases, err := bridge.OpenTopicAliasStore(cfg.TopicAliasStorePath, 10_000)
+	if err != nil {
+		return fmt.Errorf("open topic alias store: %w", err)
+	}
 	topicJoinObserver := bridge.NewTopicJoinObserver(recorder, topicStore)
 	topicJoinObserver.Aliases = topicAliases
 	cardRouter := newServeCardRouter(cardClient, topicJoinObserver, sequenceJournal)
@@ -633,6 +636,7 @@ Environment:
   E2E_REPLY_MODE         append, append-clean-card, or latest-card
   E2E_REPLY_STORE        defaults to <workdir>/.lark-agent-bridge/replies.json
   E2E_ACCESS_STORE       defaults to <workdir>/.lark-agent-bridge/access.json
+  E2E_TOPIC_ALIAS_STORE  defaults to <workdir>/.lark-agent-bridge/topic-aliases.json
   E2E_SCHEDULE_STORE     defaults to <workdir>/.lark-agent-bridge/schedules.json
   E2E_SCHEDULE_SOCKET    defaults to a private per-workspace Unix socket
   E2E_SCHEDULE_DRAFT_TTL_MIN defaults to 10
@@ -673,6 +677,9 @@ func applyDefaultWorkDir(cfg *config.Config, workDir string) error {
 	cfg.AgentsConfigPath = filepath.Join(workDir, ".lark-agent-bridge", "agents.json")
 	if os.Getenv("E2E_ACCESS_STORE") == "" {
 		cfg.AccessStorePath = filepath.Join(workDir, ".lark-agent-bridge", "access.json")
+	}
+	if os.Getenv("E2E_TOPIC_ALIAS_STORE") == "" {
+		cfg.TopicAliasStorePath = filepath.Join(workDir, ".lark-agent-bridge", "topic-aliases.json")
 	}
 	if os.Getenv("E2E_MEDIA_CACHE_DIR") == "" {
 		absoluteWorkDir, err := filepath.Abs(workDir)

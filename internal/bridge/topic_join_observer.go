@@ -1,6 +1,7 @@
 package bridge
 
 import (
+	"strings"
 	"time"
 
 	"lark-agent-bridge/internal/audit"
@@ -43,7 +44,14 @@ func (o *TopicJoinObserver) Record(actor, action, sessionID, detail string) {
 // RecordCardReply marks the topic as participated. The observer records a
 // dedicated audit event so operators can distinguish auto-join from user-@
 // participation.
-func (o *TopicJoinObserver) RecordCardReply(chatID, threadID, replyToMessageID, messageID string, at time.Time) {
+//
+// syntheticThread is the synthetic "@bot:<origin_msg_id>" thread the run was
+// actually routed to (the run's session key Thread). It is the correct alias
+// target for every reply in this topic — including in-topic follow-ups whose
+// replyToMessageID is the follow-up's own id, not the topic root. We only bind
+// when it carries the SyntheticTopicThreadPrefix, so a real omt_* thread never
+// gets aliased to itself.
+func (o *TopicJoinObserver) RecordCardReply(chatID, threadID, replyToMessageID, messageID, syntheticThread string, at time.Time) {
 	if o == nil {
 		return
 	}
@@ -60,12 +68,14 @@ func (o *TopicJoinObserver) RecordCardReply(chatID, threadID, replyToMessageID, 
 			return
 		}
 	}
-	if o.Aliases != nil && replyToMessageID != "" {
-		// Bind the real Feishu thread_id back to the synthetic session key we
-		// minted for the originating @bot message, so any later reply in this
-		// topic (which arrives with the real thread_id set) routes to the
-		// same session that ran the mention.
-		o.Aliases.Bind(chatID, threadID, SyntheticTopicThreadPrefix+replyToMessageID)
+	if o.Aliases != nil && strings.HasPrefix(syntheticThread, SyntheticTopicThreadPrefix) {
+		// Bind the real Feishu thread_id back to the synthetic session key this
+		// run was routed to, so any later reply in this topic (which arrives
+		// with the real thread_id set) routes to the same session. Using the
+		// run's own synthetic thread — not one re-derived from replyToMessageID
+		// — keeps this correct for in-topic follow-ups, matching the root_id
+		// fallback in sessionKeyForModeWithAlias so the two paths never split.
+		o.Aliases.Bind(chatID, threadID, syntheticThread)
 	}
 	if o.Recorder != nil {
 		o.Recorder.Record("system", "topic_participation_auto_joined",

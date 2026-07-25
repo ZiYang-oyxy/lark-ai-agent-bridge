@@ -10,6 +10,7 @@ type Message struct {
 	ID             string
 	ChatID         string
 	ThreadID       string
+	RootID         string
 	Sender         string
 	SenderType     string
 	Text           string

@@ -29,6 +29,7 @@ type Config struct {
 	AgentsConfigPath            string
 	AccessStorePath             string
 	ParticipatedTopicsStorePath string
+	TopicAliasStorePath         string
 	ScheduleStorePath           string
 	ScheduleSocketPath          string
 	ScheduleDraftTTL            time.Duration
@@ -81,6 +82,7 @@ func LoadFromEnv() Config {
 		AccessStorePath:             filepath.Join(workDir, ".lark-agent-bridge", "access.json"),
 		DevModeStorePath:            filepath.Join(workDir, ".lark-agent-bridge", "dev-mode.json"),
 		ParticipatedTopicsStorePath: filepath.Join(workDir, ".lark-agent-bridge", "participated-topics.json"),
+		TopicAliasStorePath:         filepath.Join(workDir, ".lark-agent-bridge", "topic-aliases.json"),
 		ScheduleStorePath:           filepath.Join(workDir, ".lark-agent-bridge", "schedules.json"),
 		ScheduleSocketPath:          DefaultScheduleSocketPath(workDir),
 		ScheduleDraftTTL:            10 * time.Minute,
@@ -131,6 +133,7 @@ func LoadFromEnv() Config {
 		cfg.AccessStorePath = filepath.Join(v, ".lark-agent-bridge", "access.json")
 		cfg.DevModeStorePath = filepath.Join(v, ".lark-agent-bridge", "dev-mode.json")
 		cfg.ParticipatedTopicsStorePath = filepath.Join(v, ".lark-agent-bridge", "participated-topics.json")
+		cfg.TopicAliasStorePath = filepath.Join(v, ".lark-agent-bridge", "topic-aliases.json")
 		cfg.ScheduleStorePath = filepath.Join(v, ".lark-agent-bridge", "schedules.json")
 		cfg.ScheduleSocketPath = DefaultScheduleSocketPath(v)
 		cfg.MediaCacheDir = defaultMediaCacheDir(v)
@@ -180,6 +183,9 @@ func LoadFromEnv() Config {
 	}
 	if v := os.Getenv("E2E_PARTICIPATED_TOPICS_STORE"); v != "" {
 		cfg.ParticipatedTopicsStorePath = v
+	}
+	if v := os.Getenv("E2E_TOPIC_ALIAS_STORE"); v != "" {
+		cfg.TopicAliasStorePath = v
 	}
 	if v := os.Getenv("E2E_SCHEDULE_STORE"); v != "" {
 		cfg.ScheduleStorePath = v

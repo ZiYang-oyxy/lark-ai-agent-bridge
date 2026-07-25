@@ -95,7 +95,7 @@ type CardKitRenderObserver interface {
 // the only path that learns the thread_id — the originating top-level @bot
 // message carries thread_id="".
 type CardKitTopicJoinObserver interface {
-	RecordCardReply(chatID, threadID, replyToMessageID, messageID string, at time.Time)
+	RecordCardReply(chatID, threadID, replyToMessageID, messageID, syntheticThread string, at time.Time)
 }
 
 func NewCardKitRouterRenderer(client CardKitClientAPI) *CardKitRouterRenderer {
@@ -562,7 +562,13 @@ func (r *CardKitRenderer) notifyTopicJoin(replied CardKitReplyResult) {
 	if chatID == "" || threadID == "" {
 		return
 	}
-	joiner.RecordCardReply(chatID, threadID, r.replyToMessageID, replied.MessageID, r.now().UTC())
+	// syntheticThread is the synthetic "@bot:<origin_msg_id>" thread this run
+	// was actually routed to, taken from the run's session key. Passing it lets
+	// the observer bind the real thread_id back to the same synthetic session
+	// for every reply in the topic — not just the first @bot — instead of
+	// re-deriving a per-reply synthetic key from replied's message id, which
+	// only happens to be correct on the originating mention.
+	joiner.RecordCardReply(chatID, threadID, r.replyToMessageID, replied.MessageID, r.binding.TopicThreadKey, r.now().UTC())
 }
 
 func (r *CardKitRenderer) renderKey(e card.Event) string {

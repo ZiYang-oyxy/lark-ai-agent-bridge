@@ -22,6 +22,7 @@ func MessageFromFeishu(in feishu.InboundMessage) Message {
 		ID:             in.MessageID,
 		ChatID:         in.ChatID,
 		ThreadID:       in.TopicID,
+		RootID:         in.RootID,
 		Sender:         in.SenderID,
 		SenderType:     normalizeSenderType(in.SenderType),
 		Text:           text,
