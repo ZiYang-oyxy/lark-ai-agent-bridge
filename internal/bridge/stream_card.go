@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"lark-agent-bridge/internal/agent"
+	"lark-agent-bridge/internal/agent/contextusage"
 	"lark-agent-bridge/internal/card"
 	"lark-agent-bridge/internal/config"
 	"lark-agent-bridge/internal/session"
@@ -100,6 +101,11 @@ type agentCardStream struct {
 	latestToolName   string
 	latestToolCmd    string
 	latestToolOutput string
+
+	// ctxDir 是本轮 agent 对应的 context-usage sidecar 目录(Claude/Codex 各一)。
+	// 流式期间用来在 Handle 中读本轮 fresh 用量,让"进行中"卡片能显示实时 ctx。
+	// 空串表示 Config 未配置或 agent 不支持,Handle 里跳过读取。
+	ctxDir string
 }
 
 func newAgentCardStream(service *Service, sessionID string, sess session.Session, input session.Input) *agentCardStream {
@@ -132,6 +138,10 @@ func newAgentCardStreamWithClock(service *Service, sessionID string, sess sessio
 	if policy.Interval <= 0 {
 		policy.Interval = time.Second
 	}
+	ctxDir := service.Config.ClaudeContextUsageDir
+	if sess.Key.Agent == agent.Codex {
+		ctxDir = service.Config.CodexContextUsageDir
+	}
 	return &agentCardStream{
 		renderer:      renderer,
 		refProvider:   refProvider,
@@ -147,6 +157,7 @@ func newAgentCardStreamWithClock(service *Service, sessionID string, sess sessio
 		meta:          service.metaForRun(sess, input),
 		totalBefore:   sess.Tokens,
 		stopVisible:   true,
+		ctxDir:        ctxDir,
 	}
 }
 
@@ -195,6 +206,11 @@ func (s *agentCardStream) Handle(update AgentStreamUpdate) {
 		s.meta.Tokens = s.meta.RunTokens
 		s.meta.TotalTokens = s.totalBefore + s.meta.RunTokens
 	}
+	// 流式期间尝试读本轮 sidecar,一旦落盘就把"进行中"卡片的 ctx 从上一轮 approx
+	// 刷新为本轮真值。Finish 的 postRunMeta 仍是权威覆盖,这里只是让运行中的卡片
+	// 尽早显示真实占用而不是停留在起点估值上。读失败什么都不改,保留 metaForRun
+	// 起始时的旧值(approx)继续显示,避免出现"忽有忽无"闪烁。
+	s.refreshContextUsageLocked()
 	if update.Activity != "" {
 		s.activity = update.Activity
 	}
@@ -274,6 +290,7 @@ func (s *agentCardStream) FinishTransformed(status string, meta card.Meta, resul
 		s.meta.TotalTokens = maxInt(s.meta.TotalTokens, meta.TotalTokens)
 	}
 	s.meta.CtxOK = meta.CtxOK
+	s.meta.CtxApprox = meta.CtxApprox
 	s.meta.CtxUsedPercent = meta.CtxUsedPercent
 	s.meta.CtxTokens = meta.CtxTokens
 	s.meta.CtxWindow = meta.CtxWindow
@@ -361,8 +378,33 @@ func (s *agentCardStream) requestStop() card.Event {
 	return event
 }
 
+// refreshContextUsageLocked reads the per-session context-usage sidecar (freshness
+// gated by s.startedAt) and, if a fresh occupancy is available, overwrites the
+// running card's Ctx* fields. Must be called with s.mu held. Idempotent and cheap:
+// each call is one small file read + JSON decode against a known path.
+func (s *agentCardStream) refreshContextUsageLocked() {
+	if s.ctxDir == "" || s.meta.SessionID == "" {
+		return
+	}
+	u := contextusage.ReadAfter(s.ctxDir, s.meta.SessionID, s.startedAt)
+	if !u.OK {
+		return
+	}
+	s.meta.CtxOK = true
+	s.meta.CtxApprox = false
+	s.meta.CtxUsedPercent = u.UsedPercent
+	s.meta.CtxTokens = u.TotalTokens
+	s.meta.CtxWindow = u.ContextWindow
+}
+
 func (s *Service) metaForRun(sess session.Session, input session.Input) card.Meta {
 	meta := s.metaFromSession(sess)
+	// 起始 meta 里的 ctx 来自上一轮落盘的 sidecar,本轮尚未跑。标为 approx,渲染时
+	// 用 `~` 前缀与本轮真值区分;refreshContextUsageLocked 收到本轮 fresh 值后会
+	// 清掉 approx。首轮新会话(sess.AgentSessionID=="")没有旧值,CtxOK 本就为 false。
+	if meta.CtxOK {
+		meta.CtxApprox = true
+	}
 	meta.Model = ""
 	if sess.Key.Agent == agent.Codex {
 		// Bridge deliberately does not select Codex model or reasoning effort.

@@ -67,6 +67,146 @@ func TestAgentCardStreamFinishBackfillsFirstTurnSessionID(t *testing.T) {
 	}
 }
 
+func TestAgentCardStreamHandleAdoptsFirstTurnContextUsage(t *testing.T) {
+	// 首轮:sess.AgentSessionID=="" 时 metaForRun 拿不到 sidecar,起始 meta.CtxOK=false;
+	// Handle 收到本轮 agent session id 后,如果 sidecar 已落盘且 mtime 晚于 runStartedAt,
+	// 应立即把 fresh 值填到 s.meta,并置 CtxApprox=false,让"进行中"卡片显示本轮真值。
+	dir := t.TempDir()
+	cfg := testConfig(t)
+	cfg.ClaudeContextUsageDir = dir
+	renderer := card.NewFakeRenderer()
+	svc := NewService(cfg, renderer, newFakeRunner(), audit.NewRecorder())
+	sess := session.Session{Key: session.Key{Agent: "claude", ChatID: "chat"}, ID: "claude:chat"}
+	runStartedAt := time.Now().Add(-time.Second)
+	stream := newAgentCardStream(svc, "run", sess, session.Input{ReplyToMessageID: "source", Time: runStartedAt})
+	if stream.meta.CtxOK {
+		t.Fatalf("first-turn initial meta unexpectedly has ctx: %#v", stream.meta)
+	}
+
+	// Sidecar 出现(晚于 runStartedAt);
+	path := filepath.Join(dir, "fresh-session.json")
+	if err := os.WriteFile(path, []byte(`{"session_id":"fresh-session","used_percentage":37,"total_tokens":74000,"context_window_size":200000}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// 显式把 mtime 推后,规避低精度文件系统上 mtime <= runStartedAt 导致的 stale 误判。
+	future := time.Now().Add(time.Second)
+	if err := os.Chtimes(path, future, future); err != nil {
+		t.Fatal(err)
+	}
+
+	stream.Handle(AgentStreamUpdate{AgentSessionID: "fresh-session"})
+	if !stream.meta.CtxOK {
+		t.Fatalf("Handle did not adopt fresh sidecar: %#v", stream.meta)
+	}
+	if stream.meta.CtxApprox {
+		t.Fatalf("fresh sidecar should not be marked approx: %#v", stream.meta)
+	}
+	if stream.meta.CtxUsedPercent != 37 || stream.meta.CtxTokens != 74000 || stream.meta.CtxWindow != 200000 {
+		t.Fatalf("fresh ctx values wrong: %#v", stream.meta)
+	}
+}
+
+func TestAgentCardStreamHandleUpgradesApproxToFresh(t *testing.T) {
+	// 续轮:sess.AgentSessionID 已存在,metaForRun 读到上一轮落盘的 sidecar,起始 meta
+	// 应该 CtxOK=true + CtxApprox=true(渲染时带 ~ 前缀)。Handle 期间本轮 sidecar
+	// 落盘后,refreshContextUsageLocked 应把值升级为本轮 fresh 并把 approx 清零。
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "sess-a.json"), []byte(`{"session_id":"sess-a","used_percentage":20,"total_tokens":40000,"context_window_size":200000}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := testConfig(t)
+	cfg.ClaudeContextUsageDir = dir
+	renderer := card.NewFakeRenderer()
+	svc := NewService(cfg, renderer, newFakeRunner(), audit.NewRecorder())
+	sess := session.Session{Key: session.Key{Agent: "claude", ChatID: "chat"}, ID: "claude:chat", AgentSessionID: "sess-a"}
+	runStartedAt := time.Now().Add(-time.Second)
+	stream := newAgentCardStream(svc, "run", sess, session.Input{ReplyToMessageID: "source", Time: runStartedAt})
+	if !stream.meta.CtxOK || !stream.meta.CtxApprox || stream.meta.CtxUsedPercent != 20 {
+		t.Fatalf("expected approx from prior sidecar, got %#v", stream.meta)
+	}
+
+	// 本轮更新 sidecar 到新值,mtime 推后。
+	path := filepath.Join(dir, "sess-a.json")
+	if err := os.WriteFile(path, []byte(`{"session_id":"sess-a","used_percentage":55,"total_tokens":110000,"context_window_size":200000}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	future := time.Now().Add(time.Second)
+	if err := os.Chtimes(path, future, future); err != nil {
+		t.Fatal(err)
+	}
+
+	// Handle 一次(update.AgentSessionID 可省,续轮 SessionID 已在 meta 里)。
+	stream.Handle(AgentStreamUpdate{Tokens: 100})
+	if !stream.meta.CtxOK || stream.meta.CtxApprox {
+		t.Fatalf("expected fresh ctx (approx=false), got %#v", stream.meta)
+	}
+	if stream.meta.CtxUsedPercent != 55 || stream.meta.CtxTokens != 110000 {
+		t.Fatalf("fresh ctx not applied: %#v", stream.meta)
+	}
+}
+
+func TestAgentCardStreamHandleKeepsApproxWhenSidecarNotYetFresh(t *testing.T) {
+	// 续轮无本轮 fresh:sidecar 仍是上一轮的旧值(mtime < runStartedAt),
+	// ReadAfter 判 stale 返回 !OK,refreshContextUsageLocked 应该什么都不改,
+	// 保留 metaForRun 起始时的 approx,不能把已有 CtxOK 抹成 false 造成闪烁。
+	dir := t.TempDir()
+	path := filepath.Join(dir, "sess-b.json")
+	if err := os.WriteFile(path, []byte(`{"session_id":"sess-b","used_percentage":18,"total_tokens":36000,"context_window_size":200000}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// sidecar mtime 明显早于 runStartedAt,模拟"本轮 sidecar 尚未落盘"。
+	past := time.Now().Add(-time.Hour)
+	if err := os.Chtimes(path, past, past); err != nil {
+		t.Fatal(err)
+	}
+	cfg := testConfig(t)
+	cfg.ClaudeContextUsageDir = dir
+	renderer := card.NewFakeRenderer()
+	svc := NewService(cfg, renderer, newFakeRunner(), audit.NewRecorder())
+	sess := session.Session{Key: session.Key{Agent: "claude", ChatID: "chat"}, ID: "claude:chat", AgentSessionID: "sess-b"}
+	stream := newAgentCardStream(svc, "run", sess, session.Input{ReplyToMessageID: "source", Time: time.Now()})
+	if !stream.meta.CtxOK || !stream.meta.CtxApprox {
+		t.Fatalf("expected approx from prior sidecar, got %#v", stream.meta)
+	}
+	stream.Handle(AgentStreamUpdate{Tokens: 50})
+	if !stream.meta.CtxOK || !stream.meta.CtxApprox {
+		t.Fatalf("Handle wrongly cleared approx despite no fresh sidecar: %#v", stream.meta)
+	}
+	if stream.meta.CtxUsedPercent != 18 {
+		t.Fatalf("approx value should be preserved: %#v", stream.meta)
+	}
+}
+
+func TestAgentCardStreamFinishOverwritesApproxWithFresh(t *testing.T) {
+	// running 期间显示 approx(上一轮值),终态 postRunMeta 拿到本轮 fresh 后应把
+	// approx 清零并写入本轮真值。防止"终态卡片仍然带 ~ 前缀"这一 UX 回归。
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "sess-c.json"), []byte(`{"session_id":"sess-c","used_percentage":22,"total_tokens":44000,"context_window_size":200000}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := testConfig(t)
+	cfg.ClaudeContextUsageDir = dir
+	renderer := card.NewFakeRenderer()
+	svc := NewService(cfg, renderer, newFakeRunner(), audit.NewRecorder())
+	sess := session.Session{Key: session.Key{Agent: "claude", ChatID: "chat"}, ID: "claude:chat", AgentSessionID: "sess-c"}
+	stream := newAgentCardStream(svc, "run", sess, session.Input{ReplyToMessageID: "source", Time: time.Now()})
+	if !stream.meta.CtxApprox {
+		t.Fatalf("initial should be approx: %#v", stream.meta)
+	}
+	// postRunMeta 模拟返回本轮真值(approx=false)。
+	fresh := card.Meta{CtxOK: true, CtxApprox: false, CtxUsedPercent: 66, CtxTokens: 132000, CtxWindow: 200000}
+	terminal, err := stream.Finish("completed", fresh, AgentRunResult{Segments: []card.Segment{{Kind: card.SegmentText, Text: "done"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !terminal.Meta.CtxOK || terminal.Meta.CtxApprox {
+		t.Fatalf("terminal should have fresh ctx, got: %#v", terminal.Meta)
+	}
+	if terminal.Meta.CtxUsedPercent != 66 || terminal.Meta.CtxTokens != 132000 {
+		t.Fatalf("terminal fresh values wrong: %#v", terminal.Meta)
+	}
+}
+
 func TestAgentCardStreamFinishClearsStaleContextUsage(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "old-session.json"), []byte(`{"session_id":"old-session","used_percentage":42,"total_tokens":84000,"context_window_size":200000}`), 0o600); err != nil {
