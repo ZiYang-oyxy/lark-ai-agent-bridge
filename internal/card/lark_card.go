@@ -254,39 +254,42 @@ func buildConfigFormElements(sessionID string, form ConfigForm) []any {
 	}
 }
 
-// buildStatusBarSection 用飞书 CardKit 2.0 官方 `checker` 组件呈现三个开关。
-// 每个 checker 表达一个独立 bool 并列排 3 个,label 后括号里是**带 mock 数据的示例行**,
-// 让用户一眼看到"开启后卡片底部会长什么样",比列字段名(agent/会话/模型)直觉得多。
+// buildStatusBarSection 用三个 `select_static` 布尔下拉呈现三个元信息行开关。
 //
-// 参数格式:{tag:checker, name:<field>, checked:<bool>, text:{tag:plain_text,content:label}}。
-// 放在 form 内时不加 behaviors,由 form 提交按钮统一批量回传;form_value 是 bool,
-// 由 cardFormValueToString 规约成 "true"/"false" 字符串,handler 侧 strconv.ParseBool
-// 走原路径无需改动。
+// 曾经用过飞书 CardKit `checker` 组件——视觉上是复选框、贴合语义,但实测
+// checker 并不是 form 输入字段:即便放在 form 内,勾选状态也**不会**被 form.submit
+// 批量收集,用户点了但保存后回到旧值。回到 select_static 两选项("隐藏"/"显示")
+// 的做法:与本卡片其他布尔字段(respond_to_bots/notify_on_complete)保持一致,
+// handler 侧无需改动,提交行为可靠。
+//
+// 每行的 hint 里带一段**带 mock 数据的示例行**,让用户一眼看到"开启后卡片底部
+// 会长什么样",比只列字段名(agent/会话/模型)直觉得多。
 //
 // element_id 上限 20 字符,fieldElements 追加 _label/_hint 要 prefix ≤ 14——用短 slug
 // bar_(status bar 一族)。
 func buildStatusBarSection(form ConfigForm) []map[string]any {
-	checker := func(id, name, label string, checked string) map[string]any {
-		return map[string]any{
-			"tag":        "checker",
-			"element_id": id,
-			"name":       name,
-			"checked":    strings.EqualFold(strings.TrimSpace(checked), "true"),
-			"text":       map[string]any{"tag": "plain_text", "content": label},
+	boolOpts := func(onLabel string) []SelectOption {
+		return []SelectOption{
+			{Value: "false", Label: "隐藏（默认）"},
+			{Value: "true", Label: onLabel},
 		}
 	}
-	return []map[string]any{
-		markdownElement("cfg_bar_intro", "**元信息行**\n勾选要显示的行；未勾选的行不渲染。示例展示了开启后卡片底部的样子（示例数据）。"),
-		checker("cfg_bar_agent_ck", "show_meta_row_agent",
-			"Agent 行 · 例：🍊 535a99 · 🧠 claude-opus-4-7[1m]（high） · 🟢 ctx: 35% (354.5k/1000k)",
-			form.ShowMetaRowAgent),
-		checker("cfg_bar_rt_ck", "show_meta_row_runtime",
-			"主机信息行 · 例：👤 lijun.996 · 🖥️ 192.0.2.42 · 📁 /home/<USER>/ws",
-			form.ShowMetaRowRuntime),
-		checker("cfg_bar_dev_ck", "show_meta_row_developer",
-			"开发者行 · 例：🐛 v0.1.8-rc.5 · ⬆️ 最新 v0.1.8-rc.6（🐛 rc / 🦋 stable）",
-			form.ShowMetaRowDeveloper),
+	out := []map[string]any{
+		markdownElement("cfg_bar_intro", "**元信息行**\n选择要显示的行；未勾选的行不渲染。示例展示了开启后卡片底部的样子（示例数据）。"),
 	}
+	out = append(out, fieldElements("cfg_bar_agent",
+		"Agent 行",
+		"例：🍊 535a99 · 🧠 claude-opus-4-7[1m]（high） · 🟢 ctx: 35% (354.5k/1000k)",
+		configSelectOptions("show_meta_row_agent", form.ShowMetaRowAgent, boolOpts("显示 Agent 行")))...)
+	out = append(out, fieldElements("cfg_bar_rt",
+		"主机信息行",
+		"例：👤 lijun.996 · 🖥️ 192.0.2.42 · 📁 /home/<USER>/ws",
+		configSelectOptions("show_meta_row_runtime", form.ShowMetaRowRuntime, boolOpts("显示主机信息行")))...)
+	out = append(out, fieldElements("cfg_bar_dev",
+		"开发者行",
+		"例：🐛 v0.1.8-rc.5 · ⬆️ 最新 v0.1.8-rc.6（🐛 rc / 🦋 stable）",
+		configSelectOptions("show_meta_row_developer", form.ShowMetaRowDeveloper, boolOpts("显示开发者行")))...)
+	return out
 }
 
 func buildAgentModeFormElements(sessionID string, form AgentModeForm) []any {
@@ -576,6 +579,8 @@ func configSelect(name, initial string, values []string) map[string]any {
 		"name":           name,
 		"initial_option": initial,
 		"options":        options,
+		// 让下拉占满卡片全宽,避免宽度跟着当前所选文字伸缩、视觉参差不齐。
+		"width": "fill",
 	}
 }
 
@@ -598,6 +603,8 @@ func configSelectOptions(name, initial string, opts []SelectOption) map[string]a
 		"name":           name,
 		"initial_option": initial,
 		"options":        options,
+		// 让下拉占满卡片全宽,避免宽度跟着当前所选文字伸缩、视觉参差不齐。
+		"width": "fill",
 	}
 }
 

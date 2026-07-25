@@ -469,8 +469,9 @@ func TestBuildLarkCardRendersRuntimeConfigForm(t *testing.T) {
 	if opts := selects["effort"]["options"].([]any); len(opts) != 4 {
 		t.Fatalf("effort select must expose 4 options (default/low/medium/high), got %#v", opts)
 	}
-	// statusbar 三行改用 checker 组件(不是 select_static),select 总数从 11 降回 8。
-	if len(selects) != 8 ||
+	// statusbar 三行回到 select_static 布尔下拉(checker 不是 form 字段、勾选不生效),
+	// select 总数为 8 + 3 = 11。
+	if len(selects) != 11 ||
 		selects["reply_mode"]["initial_option"] != "latest-card" ||
 		selects["conversation_mode"]["initial_option"] != "chat" ||
 		selects["group_message_mode"]["initial_option"] != "mention_only" ||
@@ -534,10 +535,14 @@ func TestBuildLarkCardRendersRuntimeConfigForm(t *testing.T) {
 	}
 }
 
-// 📊 元信息行 section 应渲染三个 CardKit 官方 checker 组件,name = show_meta_row_
-// {agent,runtime,developer},初始 checked 由 form 字段 "true"/"false" 决定;
-// 每个 checker 的 label 包含带 mock 数据的示例行(前缀"例:"),让用户直观看到
-// 开启后的效果——比列字段名(agent/会话/模型)更贴近真实体验。
+// 📊 元信息行 section 应渲染三个 select_static 布尔下拉,name = show_meta_row_
+// {agent,runtime,developer},初始值由 form 字段 "true"/"false" 决定。
+//
+// 曾经尝试过 CardKit `checker`(视觉是复选框),但 checker 不是 form 输入字段——
+// 勾选状态不会被 form.submit 收集,用户实测"点了但保存后回旧值"。回到 select
+// 版本(两选项"隐藏"/"显示")与 respond_to_bots / notify_on_complete 一致,提交
+// 行为可靠。示例 mock 行放在字段 hint(而非选项 label)里,让用户直观看到开启
+// 后卡片底部的样子。
 func TestBuildLarkCardStatusBarSectionChecker(t *testing.T) {
 	payload := BuildLarkCard(Event{
 		Type:      "config",
@@ -555,15 +560,15 @@ func TestBuildLarkCardStatusBarSectionChecker(t *testing.T) {
 			ReplyModes: []string{"append"}, ConversationModes: []string{"chat"},
 		},
 	})
-	checkers := map[string]map[string]any{}
+	metaSelects := map[string]map[string]any{}
 	var walk func(any)
 	walk = func(v any) {
 		switch n := v.(type) {
 		case map[string]any:
-			if n["tag"] == "checker" {
-				if name, ok := n["name"].(string); ok {
-					checkers[name] = n
-				}
+			tag, _ := n["tag"].(string)
+			name, _ := n["name"].(string)
+			if tag == "select_static" && strings.HasPrefix(name, "show_meta_row_") {
+				metaSelects[name] = n
 			}
 			for _, c := range n {
 				walk(c)
@@ -579,56 +584,87 @@ func TestBuildLarkCardStatusBarSectionChecker(t *testing.T) {
 		}
 	}
 	walk(payload)
-	if len(checkers) != 3 {
-		t.Fatalf("expected 3 checkers, got %d: %#v", len(checkers), checkers)
+	if len(metaSelects) != 3 {
+		t.Fatalf("expected 3 statusbar select_static, got %d: %#v", len(metaSelects), metaSelects)
 	}
-	if checkers["show_meta_row_agent"]["checked"] != true {
-		t.Fatalf("agent checker should be checked: %#v", checkers["show_meta_row_agent"])
+	if metaSelects["show_meta_row_agent"]["initial_option"] != "true" {
+		t.Fatalf("agent select initial = %#v, want true", metaSelects["show_meta_row_agent"]["initial_option"])
 	}
-	if checkers["show_meta_row_runtime"]["checked"] != false {
-		t.Fatalf("runtime checker should be unchecked: %#v", checkers["show_meta_row_runtime"])
+	if metaSelects["show_meta_row_runtime"]["initial_option"] != "false" {
+		t.Fatalf("runtime select initial = %#v, want false", metaSelects["show_meta_row_runtime"]["initial_option"])
 	}
-	if checkers["show_meta_row_developer"]["checked"] != true {
-		t.Fatalf("developer checker should be checked: %#v", checkers["show_meta_row_developer"])
+	if metaSelects["show_meta_row_developer"]["initial_option"] != "true" {
+		t.Fatalf("developer select initial = %#v, want true", metaSelects["show_meta_row_developer"]["initial_option"])
 	}
-	// Label 里带 mock 数据示例,可从中辨认对应行——不严格匹配整段(便于日后微调
-	// 示例文案),但要包含每行"例:"前缀 + 该行独有的关键 emoji/字段。
-	labelOf := func(n map[string]any) string {
-		if text, ok := n["text"].(map[string]any); ok {
-			if s, ok := text["content"].(string); ok {
-				return s
+	// 每个布尔下拉必有 false/true 两个选项;value 与 form 字段值一致。
+	for name, sel := range metaSelects {
+		opts, ok := sel["options"].([]any)
+		if !ok || len(opts) != 2 {
+			t.Fatalf("%s options should have 2 entries, got %#v", name, sel["options"])
+		}
+		values := map[string]bool{}
+		for _, o := range opts {
+			m := o.(map[string]any)
+			values[m["value"].(string)] = true
+		}
+		if !values["true"] || !values["false"] {
+			t.Fatalf("%s options must cover true/false, got %#v", name, opts)
+		}
+		// 需求②:所有下拉都应设 width: fill,让宽度覆盖卡片,不随文字长度伸缩。
+		if sel["width"] != "fill" {
+			t.Fatalf("%s select width = %#v, want \"fill\"", name, sel["width"])
+		}
+	}
+	// mock 示例文案改放在字段 hint(通过 fieldElements 生成的 markdownElement),
+	// 用整卡的 markdown 文本聚合搜索,验证示例行仍随卡片渲染出来。
+	var mdBuf strings.Builder
+	var walkMD func(any)
+	walkMD = func(v any) {
+		switch n := v.(type) {
+		case map[string]any:
+			if n["tag"] == "markdown" {
+				if s, ok := n["content"].(string); ok {
+					mdBuf.WriteString(s)
+					mdBuf.WriteString("\n")
+				}
+			}
+			for _, c := range n {
+				walkMD(c)
+			}
+		case []any:
+			for _, c := range n {
+				walkMD(c)
+			}
+		case []map[string]any:
+			for _, c := range n {
+				walkMD(c)
 			}
 		}
-		return ""
 	}
-	agentLabel := labelOf(checkers["show_meta_row_agent"])
-	if !strings.Contains(agentLabel, "例：") && !strings.Contains(agentLabel, "例:") {
-		t.Fatalf("agent checker label should carry 例：mock, got %q", agentLabel)
+	walkMD(payload)
+	md := mdBuf.String()
+	if !strings.Contains(md, "🍊") || !strings.Contains(md, "ctx:") {
+		t.Fatalf("agent hint should mock the status bar (🍊 + ctx:), got:\n%s", md)
 	}
-	if !strings.Contains(agentLabel, "🍊") || !strings.Contains(agentLabel, "ctx:") {
-		t.Fatalf("agent checker label should mock the real status bar (🍊 + ctx:), got %q", agentLabel)
+	if !strings.Contains(md, "👤") || !strings.Contains(md, "📁") {
+		t.Fatalf("runtime hint should mock 👤 + 📁 line, got:\n%s", md)
 	}
-	runtimeLabel := labelOf(checkers["show_meta_row_runtime"])
-	if !strings.Contains(runtimeLabel, "👤") || !strings.Contains(runtimeLabel, "📁") {
-		t.Fatalf("runtime checker label should mock 👤 + 📁 line, got %q", runtimeLabel)
+	if !strings.Contains(md, "🐛") || !strings.Contains(md, "🦋") {
+		t.Fatalf("developer hint should mention both 🐛 rc / 🦋 stable emojis, got:\n%s", md)
 	}
-	devLabel := labelOf(checkers["show_meta_row_developer"])
-	if !strings.Contains(devLabel, "🐛") || !strings.Contains(devLabel, "🦋") {
-		t.Fatalf("developer checker label should mention both 🐛 rc / 🦋 stable emojis, got %q", devLabel)
+	if !strings.Contains(md, "最新") {
+		t.Fatalf("developer hint should include ⬆️ 最新 semantics, got:\n%s", md)
 	}
-	if !strings.Contains(devLabel, "最新") {
-		t.Fatalf("developer checker label should include ⬆️ 最新 semantics, got %q", devLabel)
-	}
-	// checker 收敛为唯一形式后,不应再出现 statusbar 系列的 select_static 或
-	// multi_select_static;这是删掉旧 A/B 分支的强断言。
+	// 回到 select 后不应再残留任何 statusbar 系列的 checker,并且不能重新出现
+	// multi_select_static;这是把方向锁死在"3 个独立布尔下拉"的强断言。
 	var walkNegative func(any)
 	walkNegative = func(v any) {
 		switch n := v.(type) {
 		case map[string]any:
 			tag, _ := n["tag"].(string)
 			name, _ := n["name"].(string)
-			if tag == "select_static" && strings.HasPrefix(name, "show_meta_row_") {
-				t.Fatalf("statusbar section must not emit select_static for %q anymore", name)
+			if tag == "checker" && strings.HasPrefix(name, "show_meta_row_") {
+				t.Fatalf("statusbar section must not emit checker for %q — checker is not form-collectable", name)
 			}
 			if tag == "multi_select_static" && name == "meta_rows_multi" {
 				t.Fatal("statusbar section must not emit multi_select_static meta_rows_multi anymore")
@@ -647,6 +683,57 @@ func TestBuildLarkCardStatusBarSectionChecker(t *testing.T) {
 		}
 	}
 	walkNegative(payload)
+}
+
+// 需求②:config / agent-mode / help 一族卡片里所有 select_static 都必须 width=fill,
+// 让下拉宽度与卡片对齐,不随所选文字长度伸缩、视觉参差不齐。锁在 configSelect /
+// configSelectOptions 两个工厂里,这里做整卡 walk 断言不留漏网之鱼。
+func TestBuildLarkCardConfigSelectStaticIsFullWidth(t *testing.T) {
+	payload := BuildLarkCard(Event{
+		Type:      "config",
+		SessionID: "claude:chat:message:cfg-width",
+		ConfigForm: &ConfigForm{
+			Agent: "claude", AgentHome: "默认", AgentBin: "主机 claude",
+			Model: "opus", Effort: "high",
+			ReplyMode: "latest-card", ConversationMode: "chat",
+			GroupMessageMode: "mention_only", RespondToBots: "false", NotifyOnComplete: "false",
+			ShowMetaRowAgent: "true", ShowMetaRowRuntime: "true", ShowMetaRowDeveloper: "true",
+			Agents:     []SelectOption{{Value: "claude", Label: "claude"}},
+			AgentHomes: []SelectOption{{Value: "默认", Label: "默认"}},
+			AgentBins:  []SelectOption{{Value: "主机 claude", Label: "主机 claude"}},
+			Models:     []string{"default"}, Efforts: []string{"default"},
+			ReplyModes: []string{"append"}, ConversationModes: []string{"chat"},
+		},
+	})
+	seen := 0
+	var walk func(any)
+	walk = func(v any) {
+		switch n := v.(type) {
+		case map[string]any:
+			if n["tag"] == "select_static" {
+				seen++
+				if n["width"] != "fill" {
+					name, _ := n["name"].(string)
+					t.Fatalf("select_static %q width = %#v, want \"fill\" (需求②:下拉必须占卡片全宽)", name, n["width"])
+				}
+			}
+			for _, c := range n {
+				walk(c)
+			}
+		case []any:
+			for _, c := range n {
+				walk(c)
+			}
+		case []map[string]any:
+			for _, c := range n {
+				walk(c)
+			}
+		}
+	}
+	walk(payload)
+	if seen == 0 {
+		t.Fatal("expected config card to contain select_static elements, got 0")
+	}
 }
 
 func TestBuildLarkCardIncludesDisabledStopButton(t *testing.T) {
