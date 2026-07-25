@@ -738,12 +738,17 @@ func (s *Service) handleConfigCommand(ctx context.Context, msg Message, cmd Comm
 			_ = s.refreshKnownChats(ctx)
 		}
 		configSessionID := runID("config", msg.ID)
+		configForm := s.configForm(preference)
+		if msg.IsGroup && msg.ChatID != "" {
+			// 群里发的全局 /config:记录当前群,让卡片显示「配置本群覆盖」跳转按钮。
+			configForm.CurrentChatID = msg.ChatID
+		}
 		return s.Cards.Render(card.Event{
 			Type:             "config",
 			SessionID:        configSessionID,
 			ReplyToMessageID: msg.ID,
 			ReplyInThread:    preference.ConversationMode == config.ConversationModeTopic,
-			ConfigForm:       s.configForm(preference),
+			ConfigForm:       configForm,
 			VersionStatus:    availableVersionStatus(s.versionStatus(ctx, configSessionID)),
 		})
 	case "reset":

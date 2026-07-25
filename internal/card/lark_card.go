@@ -229,8 +229,22 @@ func buildConfigFormElements(sessionID string, form ConfigForm) []any {
 		"behaviors": callbackBehavior(sessionID, "config.close", ""),
 	}
 
-	return []any{
+	elements := []any{
 		markdownElement("config_intro", intro),
+	}
+	// 全局 /config 且当前在群里时,提供一键跳转到「本群 /local-config」的按钮
+	// (复用 local_config.edit 回调,value=当前群 chatID)。私聊或未知群时省略。
+	if form.ChatID == "" && form.CurrentChatID != "" {
+		elements = append(elements, map[string]any{
+			"tag":       "button",
+			"name":      "open_local_config",
+			"text":      map[string]any{"tag": "plain_text", "content": "🏘️ 配置本群覆盖（/local-config）"},
+			"type":      "default",
+			"width":     "fill",
+			"behaviors": callbackBehavior(sessionID, "local_config.edit", form.CurrentChatID),
+		})
+	}
+	elements = append(elements,
 		map[string]any{
 			"tag":  "form",
 			"name": "runtime_config",
@@ -251,7 +265,8 @@ func buildConfigFormElements(sessionID string, form ConfigForm) []any {
 				},
 			},
 		},
-	}
+	)
+	return elements
 }
 
 // buildStatusBarSection 用三个 `select_static` 布尔下拉呈现三个元信息行开关。
@@ -768,7 +783,10 @@ func collapsiblePanelElement(id, title string, expanded bool, elements []map[str
 			},
 			"vertical_align": "center",
 			"padding":        "4px 0px 4px 8px",
-			"width":          "auto_when_fold",
+			// fill:折叠区标题占满整行宽度,与静态 sectionElement 视觉等宽。
+			// 旧值 auto_when_fold 会让收起态的面板(如访问控制)宽度自适应标题、
+			// 明显比同排其它区窄,排版不齐(本次修复的宽度问题)。
+			"width": "fill",
 			"icon": map[string]string{
 				"tag":   "standard_icon",
 				"token": "down-small-ccm_outlined",

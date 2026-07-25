@@ -1945,3 +1945,53 @@ func TestThreeSectionTitleFallsBackToToolCallCount(t *testing.T) {
 		t.Fatalf("empty tools title = %q, want 暂无", empty)
 	}
 }
+
+// TestConfigFormPanelsCollapsedEqualWidthAndLocalConfigButton 回归三点优化:
+// 1) 全局 /config 在群里打开时,提供跳转本群 /local-config 的按钮(私聊不显示);
+// 2) 各折叠区等宽(header width=fill,无 auto_when_fold 导致的窄条);
+// 3) 四个分区默认全部收起(expanded=false)。
+func TestConfigFormPanelsCollapsedEqualWidthAndLocalConfigButton(t *testing.T) {
+	// 群场景:带 CurrentChatID
+	payload := BuildLarkCard(Event{
+		Type:       "config",
+		SessionID:  "claude:oc_grp:message:config-1",
+		ConfigForm: &ConfigForm{CurrentChatID: "oc_grp", Models: []string{"default"}, Efforts: []string{"default"}, ReplyModes: []string{"append"}, ConversationModes: []string{"chat"}},
+	})
+	blobBytes, _ := json.Marshal(payload)
+	blob := string(blobBytes)
+
+	// 点3:所有 collapsible_panel 默认收起。整张 config 卡片不应出现 expanded:true。
+	if strings.Contains(blob, "\"expanded\":true") {
+		t.Fatalf("config 卡片存在默认展开的折叠区(应全部收起): %s", blob[:min2(300, len(blob))])
+	}
+	// 至少要有若干折叠区(运行参数/会话行为/群消息/元信息行/访问控制)
+	if n := strings.Count(blob, "\"tag\":\"collapsible_panel\""); n < 5 {
+		t.Fatalf("折叠区数量 = %d, 期望 >=5", n)
+	}
+	// 点2:不再使用 auto_when_fold(它导致收起态宽度不齐)
+	if strings.Contains(blob, "auto_when_fold") {
+		t.Fatalf("折叠区仍用 auto_when_fold(宽度不齐): %s", blob[:min2(300, len(blob))])
+	}
+	// 点1:群场景有跳转按钮 + local_config.edit + 当前群 id
+	if !strings.Contains(blob, "配置本群覆盖") || !strings.Contains(blob, "local_config.edit") || !strings.Contains(blob, "oc_grp") {
+		t.Fatalf("群场景缺少本群 local-config 跳转按钮")
+	}
+
+	// 私聊场景:CurrentChatID 空,不应出现跳转按钮
+	dmPayload := BuildLarkCard(Event{
+		Type:       "config",
+		SessionID:  "claude:p2p:message:config-2",
+		ConfigForm: &ConfigForm{Models: []string{"default"}, Efforts: []string{"default"}, ReplyModes: []string{"append"}, ConversationModes: []string{"chat"}},
+	})
+	dmBytes, _ := json.Marshal(dmPayload)
+	if strings.Contains(string(dmBytes), "配置本群覆盖") {
+		t.Fatalf("私聊场景不应出现本群 local-config 按钮")
+	}
+}
+
+func min2(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}

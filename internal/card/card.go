@@ -126,6 +126,11 @@ type ConfigForm struct {
 	// the action value so the store knows which group to write. Empty means
 	// the global /config editor.
 	ChatID string
+	// CurrentChatID is set only on the GLOBAL /config form when it was opened
+	// inside a group chat. It is NOT the local-override marker (that is ChatID);
+	// it only lets the global form render a "jump to this group's /local-config"
+	// button. Empty in DMs or when unknown, so the button is simply omitted.
+	CurrentChatID string
 }
 
 type AgentModeForm struct {
