@@ -1957,6 +1957,44 @@ func TestConfigFormPanelsCollapsedEqualWidthAndLocalConfigButton(t *testing.T) {
 		SessionID:  "claude:oc_grp:message:config-1",
 		ConfigForm: &ConfigForm{CurrentChatID: "oc_grp", Models: []string{"default"}, Efforts: []string{"default"}, ReplyModes: []string{"append"}, ConversationModes: []string{"chat"}},
 	})
+	elements := payload["body"].(map[string]any)["elements"].([]any)
+	var form map[string]any
+	var localConfigButton map[string]any
+	for _, raw := range elements {
+		element, _ := raw.(map[string]any)
+		if element["tag"] == "form" {
+			form = element
+		}
+		if element["tag"] == "button" && element["element_id"] == "open_local_config" {
+			localConfigButton = element
+		}
+	}
+	if form == nil {
+		t.Fatal("config card missing form")
+	}
+	panelCount := 0
+	for _, raw := range form["elements"].([]any) {
+		panel, _ := raw.(map[string]any)
+		if panel["tag"] != "collapsible_panel" {
+			continue
+		}
+		panelCount++
+		header := panel["header"].(map[string]any)
+		if header["width"] != "fill" {
+			t.Fatalf("panel %q header width = %v, want fill", panel["element_id"], header["width"])
+		}
+	}
+	if panelCount < 5 {
+		t.Fatalf("collapsible panel count = %d, want at least 5", panelCount)
+	}
+	if localConfigButton == nil {
+		t.Fatal("group config card missing local-config button")
+	}
+	buttonBlob, _ := json.Marshal(localConfigButton)
+	if !strings.Contains(string(buttonBlob), "local_config.edit") || !strings.Contains(string(buttonBlob), "oc_grp") {
+		t.Fatalf("local-config button callback = %s", buttonBlob)
+	}
+
 	blobBytes, _ := json.Marshal(payload)
 	blob := string(blobBytes)
 

@@ -236,12 +236,12 @@ func buildConfigFormElements(sessionID string, form ConfigForm) []any {
 	// (复用 local_config.edit 回调,value=当前群 chatID)。私聊或未知群时省略。
 	if form.ChatID == "" && form.CurrentChatID != "" {
 		elements = append(elements, map[string]any{
-			"tag":       "button",
-			"name":      "open_local_config",
-			"text":      map[string]any{"tag": "plain_text", "content": "🏘️ 配置本群覆盖（/local-config）"},
-			"type":      "default",
-			"width":     "fill",
-			"behaviors": callbackBehavior(sessionID, "local_config.edit", form.CurrentChatID),
+			"tag":        "button",
+			"element_id": "open_local_config",
+			"text":       map[string]any{"tag": "plain_text", "content": "🏘️ 配置本群覆盖（/local-config）"},
+			"type":       "default",
+			"width":      "fill",
+			"behaviors":  callbackBehavior(sessionID, "local_config.edit", form.CurrentChatID),
 		})
 	}
 	elements = append(elements,
