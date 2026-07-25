@@ -245,6 +245,18 @@ func TestUpdateInstallRejectsQueuedWorkAfterStaging(t *testing.T) {
 	if result.Event == nil || !strings.Contains(result.Event.Segments[0].Text, "当前有任务") || prepared.replaced != 0 || prepared.aborted != 1 {
 		t.Fatalf("result=%#v prepared=%#v", result, prepared)
 	}
+	// busy 分支必须橙色(用户可自救,不是硬错),且附会话清单让用户看到具体是哪些会话挡了升级。
+	if result.Event.HeaderTemplate != "orange" {
+		t.Fatalf("busy header template = %q, want orange", result.Event.HeaderTemplate)
+	}
+	// 会话清单以 markdown 表格追加为额外 segment,且包含"占用中的会话"标题与至少一行 `dm` chat 摘要。
+	if len(result.Event.Segments) < 2 {
+		t.Fatalf("busy card missing blocking sessions list: %#v", result.Event.Segments)
+	}
+	tableText := result.Event.Segments[1].Text
+	if !strings.Contains(tableText, "占用中的会话") || !strings.Contains(tableText, "claude") || !strings.Contains(tableText, "dm") {
+		t.Fatalf("blocking sessions list must name the queued session, got:\n%s", tableText)
+	}
 }
 
 func TestUpdateInstallReplacesAndSchedulesRestart(t *testing.T) {

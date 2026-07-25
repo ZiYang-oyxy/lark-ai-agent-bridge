@@ -90,21 +90,21 @@ func (s *Service) helpUpdateEvent(ctx context.Context, sessionID, replyToMessage
 
 func (s *Service) handleUpdateDetails(ctx context.Context, req ActionRequest) (ActionResult, error) {
 	if s.Updates == nil || !buildinfo.IsRelease() {
-		return s.renderUpdateMessage(req.SessionID, card.SegmentError, "当前 Bridge 未启用自升级。")
+		return s.renderUpdateMessage(req.SessionID, card.SegmentError, "当前 Bridge 未启用自升级。", "red", "❌ 升级不可用")
 	}
 	result, err := s.Updates.Check(ctx, buildinfo.Version)
 	if err != nil || !result.UpdateAvailable || result.Manifest.Version != strings.TrimSpace(req.Value) {
 		if err != nil {
 			s.Audit.Record(req.Actor, "update_check_failed", req.SessionID, err.Error())
 		}
-		return s.renderUpdateMessage(req.SessionID, card.SegmentError, "该版本已不可用，请返回帮助重新检查。")
+		return s.renderUpdateMessage(req.SessionID, card.SegmentError, "该版本已不可用，请返回帮助重新检查。", "orange", "⚠️ 目标版本已变化")
 	}
 	notes, err := s.Updates.AggregatedReleaseNotes(ctx, buildinfo.Version, result.Manifest, func(version string, skipErr error) {
 		s.Audit.Record(req.Actor, "update_notes_skipped", req.SessionID, "version="+version+" err="+skipErr.Error())
 	})
 	if err != nil {
 		s.Audit.Record(req.Actor, "update_notes_failed", req.SessionID, err.Error())
-		return s.renderUpdateMessage(req.SessionID, card.SegmentError, "Release note 暂时无法读取。")
+		return s.renderUpdateMessage(req.SessionID, card.SegmentError, "Release note 暂时无法读取。", "orange", "⚠️ 暂时无法读取 Release note")
 	}
 	actions := []card.Action{{ID: "update.help", Label: "返回帮助"}}
 	if s.canRunAdminCommand(req.Actor) {
@@ -133,10 +133,10 @@ func (s *Service) handleUpdateDetails(ctx context.Context, req ActionRequest) (A
 
 func (s *Service) handleUpdateInstall(ctx context.Context, req ActionRequest) (ActionResult, error) {
 	if s.Updates == nil || !buildinfo.IsRelease() {
-		return s.renderUpdateMessage(req.SessionID, card.SegmentError, "当前 Bridge 未启用自升级。")
+		return s.renderUpdateMessage(req.SessionID, card.SegmentError, "当前 Bridge 未启用自升级。", "red", "❌ 升级不可用")
 	}
 	if !s.startUpgradeAttempt() {
-		return s.renderUpdateMessage(req.SessionID, card.SegmentError, "另一项升级正在进行。")
+		return s.renderUpdateMessage(req.SessionID, card.SegmentError, "另一项升级正在进行，请稍后重试。", "orange", "⚠️ 升级已在进行")
 	}
 	keepAttempt := false
 	defer func() {
@@ -149,28 +149,38 @@ func (s *Service) handleUpdateInstall(ctx context.Context, req ActionRequest) (A
 		if err != nil {
 			s.Audit.Record(req.Actor, "update_check_failed", req.SessionID, err.Error())
 		}
-		return s.renderUpdateMessage(req.SessionID, card.SegmentError, "目标版本已变化，请重新检查更新。")
+		return s.renderUpdateMessage(req.SessionID, card.SegmentError, "目标版本已变化，请重新检查更新。", "orange", "⚠️ 目标版本已变化")
 	}
 	prepared, err := s.Updates.Prepare(ctx, result.Asset)
 	if err != nil {
 		s.Audit.Record(req.Actor, "update_download_failed", req.SessionID, err.Error())
-		return s.renderUpdateMessage(req.SessionID, card.SegmentError, "升级包下载或校验失败，Bridge 未被替换。")
+		return s.renderUpdateMessage(req.SessionID, card.SegmentError, "升级包下载或校验失败，Bridge 未被替换。", "red", "❌ 下载或校验失败")
 	}
 	s.setUpgradeMaintenance(true)
 	s.upgradeGate.Lock()
 	if s.hasUpgradeBlockingWork() {
+		// 快照占用会话清单,让用户知道具体是哪些会话在挡升级。快照必须在 Abort/end 之前采
+		// (Sessions.HasWork 判过后,活跃 batch 完成会自然从 List 里消失,这段窗口小但有必要拿准)。
+		blocking := s.snapshotBlockingWork()
 		prepared.Abort()
 		s.endUpgradeAttempt(true)
 		keepAttempt = true
-		s.Audit.Record(req.Actor, "update_busy", req.SessionID, "active or queued work")
-		return s.renderUpdateMessage(req.SessionID, card.SegmentError, "当前有任务正在运行或排队，请稍后重试。")
+		s.Audit.Record(req.Actor, "update_busy", req.SessionID,
+			fmt.Sprintf("active or queued work: %d session(s)", len(blocking)))
+		var extras []card.Segment
+		if md := blockingSessionsMarkdown(blocking); md != "" {
+			extras = append(extras, card.Segment{Kind: card.SegmentText, Text: md})
+		}
+		return s.renderUpdateMessage(req.SessionID, card.SegmentError,
+			"当前有任务正在运行或排队，升级已暂停。等这些会话空闲后可在 /help 重试。",
+			"orange", "⚠️ 升级已暂缓：有会话在跑", extras...)
 	}
 	if err := prepared.Replace(); err != nil {
 		prepared.Abort()
 		s.endUpgradeAttempt(true)
 		keepAttempt = true
 		s.Audit.Record(req.Actor, "update_replace_failed", req.SessionID, err.Error())
-		return s.renderUpdateMessage(req.SessionID, card.SegmentError, "替换 binary 失败，Bridge 继续使用当前版本。")
+		return s.renderUpdateMessage(req.SessionID, card.SegmentError, "替换 binary 失败，Bridge 继续使用当前版本。", "red", "❌ 替换 binary 失败")
 	}
 	keepAttempt = true
 	s.Audit.Record(req.Actor, "update_restart_scheduled", req.SessionID, "target_version="+result.Manifest.Version)
@@ -203,8 +213,113 @@ func (s *Service) handleUpdateInstall(ctx context.Context, req ActionRequest) (A
 	return actionResult, renderErr
 }
 
-func (s *Service) renderUpdateMessage(sessionID string, kind card.SegmentKind, text string) (ActionResult, error) {
-	return s.renderActionEvent(card.Event{Type: "update_message", SessionID: sessionID, Segments: []card.Segment{{Kind: kind, Text: text}}})
+// renderUpdateMessage 渲染升级流程的失败/中断消息卡片。
+// template 决定 header 颜色语义:
+//   - "orange" 用户可自救(等一下重试、目标版本已变化、任务在跑挡住升级)——**这是 busy 场景**
+//   - "red"    真出错(下载/校验失败、替换失败、未启用自升级)
+//
+// title 是 header 标题(如"⚠️ 升级已暂缓" / "❌ Bridge 升级失败")。
+// extraSegments 追加到 kind/text 之后,用于 busy 场景附会话清单;通常为 nil。
+func (s *Service) renderUpdateMessage(sessionID string, kind card.SegmentKind, text, template, title string, extraSegments ...card.Segment) (ActionResult, error) {
+	segments := append([]card.Segment{{Kind: kind, Text: text}}, extraSegments...)
+	return s.renderActionEvent(card.Event{
+		Type: "update_message", SessionID: sessionID,
+		HeaderTemplate: template, HeaderTitle: title,
+		Segments: segments,
+	})
+}
+
+// blockingSession 是升级 busy 分支要展示给用户的一条占用会话摘要:标识 Agent 和工作目录,
+// 附上活跃/排队状态,让 admin 知道具体是哪个上下文在挡升级。chat_id 做前 4/后 4 缩略脱敏
+// (admin 上下文可显示但避免把完整 id 泄漏进日志/截图),thread 不显示(会带 topic 语义)。
+type blockingSession struct {
+	Agent      string
+	ChatBrief  string
+	WorkDir    string
+	State      string
+	LastActive time.Time
+}
+
+func (s *Service) snapshotBlockingWork() []blockingSession {
+	// Sessions.List 内部已加锁;bridge 本地 activeRuns/pendingRuns 用 s.mu 保护。
+	// 先按 Sessions.List 采一份 busy session(有 ActiveBatch 或 Queue 非空或 StateRunning),
+	// 再补充只在 pendingRuns 里的场景(pending workdir 确认但还没起 batch)。key 去重按 session ID。
+	sessions := s.Sessions.List()
+	seen := make(map[string]bool)
+	out := make([]blockingSession, 0)
+	for _, sess := range sessions {
+		if sess.State != session.StateRunning && sess.ActiveBatch == nil && len(sess.Queue) == 0 {
+			continue
+		}
+		seen[sess.ID] = true
+		state := string(sess.State)
+		if sess.ActiveBatch != nil && sess.State != session.StateRunning {
+			state = "running"
+		}
+		if len(sess.Queue) > 0 {
+			state = fmt.Sprintf("%s (queued=%d)", state, len(sess.Queue))
+		}
+		out = append(out, blockingSession{
+			Agent:      string(sess.Key.Agent),
+			ChatBrief:  briefChatID(sess.Key.ChatID),
+			WorkDir:    sess.WorkDir,
+			State:      state,
+			LastActive: sess.LastActive,
+		})
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, pr := range s.pendingRuns {
+		if seen[pr.SessionID] {
+			continue
+		}
+		out = append(out, blockingSession{
+			Agent:     string(pr.Command.Agent),
+			ChatBrief: briefChatID(pr.Message.ChatID),
+			WorkDir:   pr.WorkDir,
+			State:     "pending confirm",
+		})
+	}
+	return out
+}
+
+// briefChatID 缩略 chat_id 便于卡片可读,并降低隐私暴露面。太短的直接返回原值。
+func briefChatID(chatID string) string {
+	chatID = strings.TrimSpace(chatID)
+	if len(chatID) <= 12 {
+		return chatID
+	}
+	return chatID[:4] + "…" + chatID[len(chatID)-4:]
+}
+
+// blockingSessionsMarkdown 把占用会话清单渲成 markdown 表格。空列表返回空字符串。
+func blockingSessionsMarkdown(sessions []blockingSession) string {
+	if len(sessions) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString("**占用中的会话（共 ")
+	fmt.Fprintf(&b, "%d", len(sessions))
+	b.WriteString(" 个）**\n\n")
+	b.WriteString("| # | Agent | Chat | 工作目录 | 状态 | 最近活跃 |\n")
+	b.WriteString("|---|-------|------|----------|------|----------|\n")
+	for i, sess := range sessions {
+		last := "-"
+		if !sess.LastActive.IsZero() {
+			last = sess.LastActive.Format("15:04:05")
+		}
+		workdir := sess.WorkDir
+		if workdir == "" {
+			workdir = "-"
+		}
+		chat := sess.ChatBrief
+		if chat == "" {
+			chat = "-"
+		}
+		fmt.Fprintf(&b, "| %d | %s | `%s` | `%s` | %s | %s |\n",
+			i+1, sess.Agent, chat, workdir, sess.State, last)
+	}
+	return b.String()
 }
 
 func (s *Service) startUpgradeAttempt() bool {
