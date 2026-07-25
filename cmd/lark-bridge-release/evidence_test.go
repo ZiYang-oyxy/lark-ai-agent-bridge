@@ -17,6 +17,7 @@ func TestReleaseTestEvidenceCreatesReusesAndRejectsTamperedLog(t *testing.T) {
 	t.Chdir(repo)
 	t.Setenv("LAB_RELEASE_GO_BIN", goBin)
 	t.Setenv("FAKE_GO_COUNT", countFile)
+	t.Setenv("FAKE_GO_ROOT", filepath.Join(filepath.Dir(goBin), "toolchain"))
 	t.Setenv("E2E_PREFERENCE_STORE", "/live/preferences.json")
 	t.Setenv("E2E_REPLY_STORE", "/live/replies.json")
 	t.Setenv("E2E_MEDIA_CACHE_DIR", "/live/media")
@@ -60,6 +61,7 @@ func TestReleaseTestEvidenceInvalidatesToolchainAndRejectsDirtyWorktree(t *testi
 	t.Chdir(repo)
 	t.Setenv("LAB_RELEASE_GO_BIN", goBin)
 	t.Setenv("FAKE_GO_COUNT", countFile)
+	t.Setenv("FAKE_GO_ROOT", filepath.Join(filepath.Dir(goBin), "toolchain"))
 
 	first, err := ensureReleaseTestEvidence(&bytes.Buffer{})
 	if err != nil {
@@ -108,6 +110,7 @@ func TestRunTagCreatesEvidenceThatEnsureReuses(t *testing.T) {
 	t.Chdir(repo)
 	t.Setenv("LAB_RELEASE_GO_BIN", goBin)
 	t.Setenv("FAKE_GO_COUNT", countFile)
+	t.Setenv("FAKE_GO_ROOT", filepath.Join(filepath.Dir(goBin), "toolchain"))
 
 	note := filepath.Join(repo, "docs", "releases", "v1.0.0.md")
 	if err := os.MkdirAll(filepath.Dir(note), 0o755); err != nil {
@@ -141,6 +144,7 @@ func TestReleaseTestEvidenceFailureDoesNotCreatePassingReceipt(t *testing.T) {
 	t.Chdir(repo)
 	t.Setenv("LAB_RELEASE_GO_BIN", goBin)
 	t.Setenv("FAKE_GO_COUNT", countFile)
+	t.Setenv("FAKE_GO_ROOT", filepath.Join(filepath.Dir(goBin), "toolchain"))
 	t.Setenv("FAKE_GO_FAIL", "1")
 
 	if _, err := ensureReleaseTestEvidence(&bytes.Buffer{}); err == nil || !strings.Contains(err.Error(), "go test ./... failed") {
@@ -165,6 +169,7 @@ func TestReleaseTestEvidenceConcurrentEnsureRunsTestsOnce(t *testing.T) {
 	t.Chdir(repo)
 	t.Setenv("LAB_RELEASE_GO_BIN", goBin)
 	t.Setenv("FAKE_GO_COUNT", countFile)
+	t.Setenv("FAKE_GO_ROOT", filepath.Join(filepath.Dir(goBin), "toolchain"))
 	t.Setenv("FAKE_GO_SLEEP", "0.3")
 
 	type result struct {
@@ -237,6 +242,23 @@ func releaseEvidenceFixture(t *testing.T) (repo, goBin, countFile string) {
 	binDir := t.TempDir()
 	goBin = filepath.Join(binDir, "go")
 	countFile = filepath.Join(binDir, "count")
+	toolchainDir := filepath.Join(binDir, "toolchain")
+	toolDir := filepath.Join(toolchainDir, "pkg", "tool")
+	if err := os.MkdirAll(filepath.Join(toolchainDir, "bin"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(toolDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for path, content := range map[string]string{
+		filepath.Join(toolchainDir, "bin", "go"): "selected go fixture\n",
+		filepath.Join(toolDir, "compile"):        "compiler fixture\n",
+		filepath.Join(toolDir, "link"):           "linker fixture\n",
+	} {
+		if err := os.WriteFile(path, []byte(content), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
 	script := `#!/usr/bin/env bash
 set -euo pipefail
 case "$1" in
@@ -244,8 +266,8 @@ case "$1" in
     echo 'go version go1.26.3 fixture/arch'
     ;;
   env)
-    cat <<'JSON'
-{"CGO_ENABLED":"1","GOARCH":"arm64","GOEXPERIMENT":"","GOFLAGS":"","GOOS":"darwin","GOTOOLCHAIN":"auto","GOVERSION":"go1.26.3","GOWORK":""}
+    cat <<JSON
+{"CGO_ENABLED":"1","GOARCH":"arm64","GOEXPERIMENT":"","GOFLAGS":"","GOOS":"darwin","GOROOT":"$FAKE_GO_ROOT","GOTOOLDIR":"$FAKE_GO_ROOT/pkg/tool","GOTOOLCHAIN":"auto","GOVERSION":"go1.26.3","GOWORK":""}
 JSON
     ;;
   test)

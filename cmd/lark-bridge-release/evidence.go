@@ -31,10 +31,14 @@ var releaseRuntimePathVariables = []string{
 }
 
 type releaseTestToolchain struct {
-	GoBinary       string            `json:"go_binary"`
-	GoBinarySHA256 string            `json:"go_binary_sha256"`
-	GoVersion      string            `json:"go_version"`
-	GoEnv          map[string]string `json:"go_env"`
+	GoBinary               string            `json:"go_binary"`
+	GoBinarySHA256         string            `json:"go_binary_sha256"`
+	SelectedGoBinary       string            `json:"selected_go_binary"`
+	SelectedGoBinarySHA256 string            `json:"selected_go_binary_sha256"`
+	CompilerBinarySHA256   string            `json:"compiler_binary_sha256"`
+	LinkerBinarySHA256     string            `json:"linker_binary_sha256"`
+	GoVersion              string            `json:"go_version"`
+	GoEnv                  map[string]string `json:"go_env"`
 }
 
 type releaseTestIdentity struct {
@@ -235,7 +239,7 @@ func currentReleaseTestToolchain() (releaseTestToolchain, error) {
 	if err != nil {
 		return releaseTestToolchain{}, err
 	}
-	const envNames = "GOVERSION GOOS GOARCH CGO_ENABLED GOWORK GOFLAGS GOTOOLCHAIN GOEXPERIMENT"
+	const envNames = "GOVERSION GOROOT GOTOOLDIR GOOS GOARCH CGO_ENABLED GOWORK GOFLAGS GOTOOLCHAIN GOEXPERIMENT"
 	envJSON, err := releaseCommandOutput(goPath, append([]string{"env", "-json"}, strings.Fields(envNames)...)...)
 	if err != nil {
 		return releaseTestToolchain{}, err
@@ -244,12 +248,46 @@ func currentReleaseTestToolchain() (releaseTestToolchain, error) {
 	if err := json.Unmarshal([]byte(envJSON), &goEnv); err != nil {
 		return releaseTestToolchain{}, fmt.Errorf("decode go env: %w", err)
 	}
+	selectedGoPath, err := resolvedToolPath(filepath.Join(goEnv["GOROOT"], "bin", "go"))
+	if err != nil {
+		return releaseTestToolchain{}, fmt.Errorf("resolve selected go binary: %w", err)
+	}
+	selectedGoSHA, err := fileSHA256(selectedGoPath)
+	if err != nil {
+		return releaseTestToolchain{}, fmt.Errorf("hash selected go binary: %w", err)
+	}
+	compilerSHA, err := fileSHA256(filepath.Join(goEnv["GOTOOLDIR"], "compile"))
+	if err != nil {
+		return releaseTestToolchain{}, fmt.Errorf("hash selected go compiler: %w", err)
+	}
+	linkerSHA, err := fileSHA256(filepath.Join(goEnv["GOTOOLDIR"], "link"))
+	if err != nil {
+		return releaseTestToolchain{}, fmt.Errorf("hash selected go linker: %w", err)
+	}
 	return releaseTestToolchain{
-		GoBinary:       goPath,
-		GoBinarySHA256: goSHA,
-		GoVersion:      strings.TrimSpace(version),
-		GoEnv:          goEnv,
+		GoBinary:               goPath,
+		GoBinarySHA256:         goSHA,
+		SelectedGoBinary:       selectedGoPath,
+		SelectedGoBinarySHA256: selectedGoSHA,
+		CompilerBinarySHA256:   compilerSHA,
+		LinkerBinarySHA256:     linkerSHA,
+		GoVersion:              strings.TrimSpace(version),
+		GoEnv:                  goEnv,
 	}, nil
+}
+
+func resolvedToolPath(path string) (string, error) {
+	if path == "" {
+		return "", errors.New("empty tool path")
+	}
+	path, err := filepath.Abs(path)
+	if err != nil {
+		return "", err
+	}
+	if evaluated, evalErr := filepath.EvalSymlinks(path); evalErr == nil {
+		path = evaluated
+	}
+	return path, nil
 }
 
 func releaseCommandOutput(name string, args ...string) (string, error) {
