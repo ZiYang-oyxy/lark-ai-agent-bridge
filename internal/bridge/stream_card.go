@@ -129,15 +129,15 @@ type agentCardStream struct {
 	//   * 工具:同一 tool_use.id 的多次 segment(占位 input → 完整 input)覆盖 command,
 	//     不 append;tool_result(同 id)覆盖 output。切换到新 id 才 toolRounds++ 并推入 recentTools,最多保留2条。
 	recentThoughts   []string
-	currentThought    strings.Builder
+	currentThought   strings.Builder
 	thoughtRounds    int
 	thoughtRoundOpen bool
 	toolRounds       int
 	seenToolIDs      map[string]bool
 	// 工具调用的可读三元组,渲染时拼成人读格式(`**Name**` + command 围栏 + 输出围栏)。
 	// currentTool 是正在进行中的工具调用,完成后推入 recentTools。
-	recentTools      []*toolCall
-	currentTool      *toolCall
+	recentTools []*toolCall
+	currentTool *toolCall
 
 	// ctxDir 是本轮 agent 对应的 context-usage sidecar 目录(Claude/Codex 各一)。
 	// 流式期间用来在 Handle 中读本轮 fresh 用量,让"进行中"卡片能显示实时 ctx。
@@ -1016,7 +1016,7 @@ func appendOrderedSegment(segments []card.Segment, segment card.Segment, increme
 	if segment.Text == "" || segment.Kind == card.SegmentThought {
 		return segments
 	}
-	if incremental && len(segments) > 0 && segments[len(segments)-1].Kind == segment.Kind {
+	if incremental && segment.Kind != card.SegmentTool && len(segments) > 0 && segments[len(segments)-1].Kind == segment.Kind {
 		segments[len(segments)-1].Text += segment.Text
 		return segments
 	}
@@ -1378,10 +1378,10 @@ func (s *agentCardStream) eventLocked(initial bool) card.Event {
 		Streaming:        s.status == "running",
 		Activity:         s.activity,
 		// v2:过程折叠区在运行期固定折叠,不随 activity 开合,保持骨架稳定以便 native 流式命中。
-		ProcessExpanded:    false,
-		ToolCallCount:      s.toolCallCount,
-		OrderedLayout:      s.replyMode == config.ReplyModeAppend,
-		ThreeSectionLayout: s.replyMode == config.ReplyModeAppendCleanCard,
+		ProcessExpanded:     false,
+		ToolCallCount:       s.toolCallCount,
+		ReferenceCardLayout: s.replyMode == config.ReplyModeAppend,
+		ThreeSectionLayout:  s.replyMode == config.ReplyModeAppendCleanCard,
 		// 三段布局:思考默认展开(用户要求),终态折叠让最终答案更清爽;工具恒默认折叠。
 		ThoughtExpanded:   s.replyMode == config.ReplyModeAppendCleanCard && s.status == "running",
 		ToolsExpanded:     false,

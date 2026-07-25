@@ -466,8 +466,8 @@ func TestAppendStreamPreservesTimeline(t *testing.T) {
 	previewEvents := renderer.Events()
 	preview := previewEvents[len(previewEvents)-1]
 	assertSegmentKinds(t, preview, card.SegmentText, card.SegmentTool, card.SegmentText)
-	if !preview.OrderedLayout {
-		t.Fatal("append preview did not request ordered layout")
+	if !preview.ReferenceCardLayout {
+		t.Fatal("append preview did not request reference card layout")
 	}
 	terminal, err := stream.Finish("completed", card.Meta{}, AgentRunResult{OrderedSegments: []card.Segment{
 		{Kind: card.SegmentText, Text: "先检查"},
@@ -478,8 +478,8 @@ func TestAppendStreamPreservesTimeline(t *testing.T) {
 		t.Fatal(err)
 	}
 	assertSegmentKinds(t, terminal, card.SegmentText, card.SegmentTool, card.SegmentText)
-	if !terminal.OrderedLayout {
-		t.Fatal("append terminal did not request ordered layout")
+	if !terminal.ReferenceCardLayout {
+		t.Fatal("append terminal did not request reference card layout")
 	}
 }
 
@@ -748,7 +748,7 @@ func TestStreamPreviewTruncatesUnicodeButTerminalIsCompleteAndCancelsTimer(t *te
 	}
 	events := renderer.Events()
 	terminal := events[len(events)-1]
-	if terminal.Type != "result" || !terminal.OrderedLayout || len(terminal.Segments) != 2 || terminal.Segments[0].Text+terminal.Segments[1].Text != full+"尾" {
+	if terminal.Type != "result" || !terminal.ReferenceCardLayout || len(terminal.Segments) != 2 || terminal.Segments[0].Text+terminal.Segments[1].Text != full+"尾" {
 		t.Fatalf("terminal = %#v", terminal)
 	}
 	before := len(events)
@@ -904,8 +904,18 @@ func TestAppendStreamSnapshotDoesNotDuplicate(t *testing.T) {
 	if got := preview.Segments[0].Text; got != "Hello world" {
 		t.Fatalf("snapshot preview = %q, want no duplicated partial text", got)
 	}
-	if len(preview.Segments) != 1 || !preview.OrderedLayout {
-		t.Fatalf("snapshot preview = %#v, want one ordered text block", preview)
+	if len(preview.Segments) != 1 || !preview.ReferenceCardLayout {
+		t.Fatalf("snapshot preview = %#v, want one reference-card text block", preview)
+	}
+}
+
+func TestAppendOrderedToolFramesRemainDistinct(t *testing.T) {
+	use := card.Segment{Kind: card.SegmentTool, Text: "partial input", Tool: &card.ToolMeta{ID: "t1", Phase: "use"}}
+	result := card.Segment{Kind: card.SegmentTool, Text: "output", Tool: &card.ToolMeta{ID: "t1", Phase: "result"}}
+	segments := appendOrderedSegment(nil, use, true)
+	segments = appendOrderedSegment(segments, result, true)
+	if len(segments) != 2 || segments[0].Tool.Phase != "use" || segments[1].Tool.Phase != "result" {
+		t.Fatalf("tool frames = %#v, want distinct lifecycle segments", segments)
 	}
 }
 

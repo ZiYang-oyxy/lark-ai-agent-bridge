@@ -1176,11 +1176,7 @@ func (s *Service) startBatch(parent context.Context, sess session.Session, batch
 			_ = s.Cards.Render(card.Event{Type: "error", SessionID: id, ReplyToMessageID: anchor.ReplyToMessageID, ReplyInThread: anchor.ConversationMode == config.ConversationModeTopic, Segments: []card.Segment{{Kind: card.SegmentError, Text: "回复卡片初始化失败，请重试。"}}})
 			return
 		}
-		var renderer card.Renderer = policyRun
-		if mode == config.ReplyModeAppend {
-			renderer = reply.NewMarkdownCardRenderer(policyRun)
-		}
-		stream = newAgentCardStreamWithRenderer(s, id, sess, anchor, card.NewLimitRenderer(renderer, s.Config.CardMaxChars), policyRun)
+		stream = newAgentCardStreamWithRenderer(s, id, sess, anchor, card.NewLimitRenderer(policyRun, s.Config.CardMaxChars), policyRun)
 	}
 	s.storeActiveRun(id, activeRun{BaseSessionID: sess.ID, BatchID: batch.ID, SourceMessageIDs: sources, Key: sess.Key, WorkDir: sess.WorkDir, Cancel: cancel, Stream: stream, Typing: typing})
 	if s.afterStoreActiveRunHook != nil {
@@ -3664,17 +3660,36 @@ func streamSegmentsFromBlock(block map[string]any) []card.Segment {
 
 func claudeToolUseMeta(block map[string]any) *card.ToolMeta {
 	name, _ := block["name"].(string)
+	input := cloneStringMap(block["input"])
 	return &card.ToolMeta{
 		ID:      firstString(block, "id"),
 		Name:    strings.TrimSpace(name),
 		Summary: toolInputSummary(block["input"]),
 		Phase:   "use",
+		Input:   input,
 	}
 }
 
 func claudeToolResultMeta(block map[string]any) *card.ToolMeta {
 	isError, _ := block["is_error"].(bool)
-	return &card.ToolMeta{ID: firstString(block, "tool_use_id"), Phase: "result", IsError: isError}
+	return &card.ToolMeta{
+		ID:      firstString(block, "tool_use_id"),
+		Phase:   "result",
+		IsError: isError,
+		Output:  toolResultText(block),
+	}
+}
+
+func cloneStringMap(value any) map[string]any {
+	record, _ := value.(map[string]any)
+	if len(record) == 0 {
+		return nil
+	}
+	cloned := make(map[string]any, len(record))
+	for key, item := range record {
+		cloned[key] = item
+	}
+	return cloned
 }
 
 func toolInputSummary(value any) string {

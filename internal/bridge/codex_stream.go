@@ -96,7 +96,10 @@ func consumeCodexEvent(event map[string]any, result *AgentRunResult, state *code
 		}
 		state.startedItems[id] = struct{}{}
 		command := codexString(item["command"])
-		segment := card.Segment{Kind: card.SegmentTool, Text: command, Tool: &card.ToolMeta{ID: id, Name: "Bash", Summary: command, Phase: "use"}}
+		segment := card.Segment{Kind: card.SegmentTool, Text: command, Tool: &card.ToolMeta{
+			ID: id, Name: "Bash", Summary: command, Phase: "use",
+			Input: map[string]any{"command": command},
+		}}
 		appendCodexSegment(result, segment)
 		emitCodexSegment(onEvent, segment, streamActivityTool, false)
 	case "item.completed":
@@ -167,7 +170,9 @@ func consumeCodexCompletedItem(item map[string]any, result *AgentRunResult, stat
 			output = codexString(item["stdout"])
 		}
 		isError := codexInt(item["exit_code"]) != 0
-		segment := card.Segment{Kind: card.SegmentTool, Text: output, Tool: &card.ToolMeta{ID: id, Name: "Bash", Phase: "result", IsError: isError}}
+		segment := card.Segment{Kind: card.SegmentTool, Text: output, Tool: &card.ToolMeta{
+			ID: id, Name: "Bash", Phase: "result", IsError: isError, Output: output,
+		}}
 		appendCodexSegment(result, segment)
 		emitCodexSegment(onEvent, segment, streamActivityTool, false)
 	}

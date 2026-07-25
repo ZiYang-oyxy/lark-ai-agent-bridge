@@ -34,6 +34,8 @@ func BuildLarkCard(e Event) map[string]any {
 		}
 	} else if e.MarkdownLayout {
 		elements = []any{markdownElement("answer", e.Markdown)}
+	} else if e.ReferenceCardLayout {
+		elements = buildReferenceCardElements(e)
 	} else {
 		elements = make([]any, 0, len(e.Segments)+5)
 		if e.InlineTimelineLayout {
@@ -71,6 +73,9 @@ func BuildLarkCard(e Event) map[string]any {
 		elements = append(elements, buildMetaElements(e.Meta)...)
 	}
 	title := headerTitle(e)
+	if e.ReferenceCardLayout {
+		title = referenceSummary(e)
+	}
 	payload := map[string]any{
 		"schema": "2.0",
 		"config": map[string]any{
@@ -85,7 +90,7 @@ func BuildLarkCard(e Event) map[string]any {
 			"elements":         elements,
 		},
 	}
-	if !e.MarkdownLayout {
+	if !e.MarkdownLayout && !e.ReferenceCardLayout {
 		payload["header"] = map[string]any{
 			"template": headerTemplate(e),
 			"title":    map[string]any{"tag": "plain_text", "content": title},

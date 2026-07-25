@@ -35,11 +35,11 @@ func TestParseCodexStreamTranslatesThreadContentToolsAndUsage(t *testing.T) {
 	assertCodexSegment(t, result.Segments, card.SegmentTool, "pwd")
 	assertCodexSegment(t, result.Segments, card.SegmentTool, "/repo")
 	toolUse := findCodexSegment(t, result.Segments, card.SegmentTool, "pwd")
-	if got := toolUse.Tool; got == nil || got.ID != "cmd-1" || got.Name != "Bash" || got.Phase != "use" || got.Summary != "pwd" {
+	if got := toolUse.Tool; got == nil || got.ID != "cmd-1" || got.Name != "Bash" || got.Phase != "use" || got.Summary != "pwd" || got.Input["command"] != "pwd" {
 		t.Fatalf("tool use metadata = %#v", got)
 	}
 	toolResult := findCodexSegment(t, result.Segments, card.SegmentTool, "/repo")
-	if got := toolResult.Tool; got == nil || got.ID != "cmd-1" || got.Name != "Bash" || got.Phase != "result" || got.Summary != "" || got.IsError {
+	if got := toolResult.Tool; got == nil || got.ID != "cmd-1" || got.Name != "Bash" || got.Phase != "result" || got.Summary != "" || got.IsError || got.Output != "/repo" {
 		t.Fatalf("tool result metadata = %#v", got)
 	}
 	if len(updates) == 0 || updates[0].AgentSessionID != "thread-1" {
