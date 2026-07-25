@@ -66,12 +66,12 @@ func (t *toolCall) format() string {
 	b.WriteString(name)
 	b.WriteString("**")
 	if t.Cmd != "" {
-		b.WriteString("\n\n```\n")
+		b.WriteString("\n```\n")
 		b.WriteString(t.Cmd)
 		b.WriteString("\n```")
 	}
 	if t.Output != "" {
-		b.WriteString("\n\n**输出**:\n\n```\n")
+		b.WriteString("\n**输出**:\n```\n")
 		b.WriteString(clampToolOutput(t.Output))
 		b.WriteString("\n```")
 	}
@@ -921,10 +921,15 @@ func extractToolResultOutput(raw string) string {
 }
 
 // formatToolsLocked 把 recentTools + currentTool(正在进行的)按时间顺序渲染成人读 markdown,
-// 最近的在最下面。每个工具调用格式: **<Name>**\n\n```\n<command>\n```\n\n**输出**:\n```\n<output>\n```
+// 最近的在最下面。每个工具调用格式: **<Name>**\n```\n<command>\n```\n**输出**:\n```\n<output>\n```
 // 缺 name / cmd / output 都会跳过对应段,不显示 call_xxx id、不暴露 raw JSON payload。
+// 当工具调用总次数超过 maxVisibleSegments 时,顶部添加省略提示说明仅显示最近2次。
 func (s *agentCardStream) formatToolsLocked() string {
 	var b strings.Builder
+	// 超过2次时顶部添加省略提示
+	if s.toolRounds > maxVisibleSegments {
+		b.WriteString(fmt.Sprintf("*（已省略前面 %d 次工具调用，仅显示最近 %d 次）*\n\n", s.toolRounds-maxVisibleSegments, maxVisibleSegments))
+	}
 	// 先渲染历史工具调用
 	for _, t := range s.recentTools {
 		if formatted := t.format(); formatted != "" {
@@ -948,8 +953,13 @@ func (s *agentCardStream) formatToolsLocked() string {
 
 // formatThoughtsLocked 把 recentThoughts + currentThought(正在进行的)按时间顺序渲染成 markdown,
 // 最近的在最下面,段之间用分隔线分开,实现滚动显示效果。
+// 当思考总轮次超过 maxVisibleSegments 时,顶部添加省略提示说明仅显示最近2轮。
 func (s *agentCardStream) formatThoughtsLocked() string {
 	var b strings.Builder
+	// 超过2轮时顶部添加省略提示
+	if s.thoughtRounds > maxVisibleSegments {
+		b.WriteString(fmt.Sprintf("*（已省略前面 %d 轮思考过程，仅显示最近 %d 轮）*\n\n", s.thoughtRounds-maxVisibleSegments, maxVisibleSegments))
+	}
 	// 先渲染历史思考
 	for _, t := range s.recentThoughts {
 		if text := strings.TrimSpace(t); text != "" {
