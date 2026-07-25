@@ -319,7 +319,7 @@ func TestNonAppendStreamsKeepAggregateLayout(t *testing.T) {
 				t.Fatal(err)
 			}
 			stream.Handle(AgentStreamUpdate{Segments: []card.Segment{{Kind: card.SegmentText, Text: "先检查"}}})
-			stream.Handle(AgentStreamUpdate{Segments: []card.Segment{{Kind: card.SegmentTool, Text: "Bash(ls)"}}})
+			stream.Handle(AgentStreamUpdate{Segments: []card.Segment{{Kind: card.SegmentTool, Text: "Bash(ls)", Tool: &card.ToolMeta{ID: "t1", Name: "Bash", Summary: "ls", Phase: "use"}}}})
 			stream.Handle(AgentStreamUpdate{Segments: []card.Segment{{Kind: card.SegmentText, Text: "最终答案"}}})
 			if err := stream.Flush(); err != nil {
 				t.Fatal(err)
@@ -921,21 +921,36 @@ func TestAppendCleanThreeSectionLatestOnly(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// 第 1 轮:思考 delta + 一次工具调用,以 AssistantSnapshot 收尾。
+	// 第 1 轮:思考 delta + 一次工具调用(tool_use → tool_result),以 AssistantSnapshot 收尾。
+	// 注意 snapshot 会带完整 thought;delta 阶段的中间态会被 snapshot 权威覆盖,避免重复。
 	stream.Handle(AgentStreamUpdate{Activity: streamActivityReasoning, Incremental: true,
 		Segments: []card.Segment{{Kind: card.SegmentThought, Text: "先想第一步"}}})
 	stream.Handle(AgentStreamUpdate{Activity: streamActivityTool,
-		Segments: []card.Segment{{Kind: card.SegmentTool, Text: "Bash(ls)", Tool: &card.ToolMeta{ID: "t1"}}}})
+		Segments: []card.Segment{{Kind: card.SegmentTool, Text: "- Bash `t1`\n\n```json\n{\"command\":\"ls\"}\n```",
+			Tool: &card.ToolMeta{ID: "t1", Name: "Bash", Summary: "ls", Phase: "use"}}}})
+	stream.Handle(AgentStreamUpdate{
+		Segments: []card.Segment{{Kind: card.SegmentTool, Text: "- tool_result `t1`\n\n```\nfile1\nfile2\n```",
+			Tool: &card.ToolMeta{ID: "t1", Phase: "result"}}}})
 	stream.Handle(AgentStreamUpdate{AssistantSnapshot: true,
-		Segments: []card.Segment{{Kind: card.SegmentText, Text: "中间答复"}}})
+		Segments: []card.Segment{
+			{Kind: card.SegmentThought, Text: "先想第一步"},
+			{Kind: card.SegmentText, Text: "中间答复"},
+		}})
 
 	// 第 2 轮:新的思考 + 新一次工具,再 snapshot。
 	stream.Handle(AgentStreamUpdate{Activity: streamActivityReasoning, Incremental: true,
 		Segments: []card.Segment{{Kind: card.SegmentThought, Text: "再想第二步"}}})
 	stream.Handle(AgentStreamUpdate{Activity: streamActivityTool,
-		Segments: []card.Segment{{Kind: card.SegmentTool, Text: "Bash(cat x)", Tool: &card.ToolMeta{ID: "t2"}}}})
+		Segments: []card.Segment{{Kind: card.SegmentTool, Text: "- Bash `t2`\n\n```json\n{\"command\":\"cat x\"}\n```",
+			Tool: &card.ToolMeta{ID: "t2", Name: "Bash", Summary: "cat x", Phase: "use"}}}})
+	stream.Handle(AgentStreamUpdate{
+		Segments: []card.Segment{{Kind: card.SegmentTool, Text: "- tool_result `t2`\n\n```\nhello\n```",
+			Tool: &card.ToolMeta{ID: "t2", Phase: "result"}}}})
 	stream.Handle(AgentStreamUpdate{AssistantSnapshot: true,
-		Segments: []card.Segment{{Kind: card.SegmentText, Text: "最终答复"}}})
+		Segments: []card.Segment{
+			{Kind: card.SegmentThought, Text: "再想第二步"},
+			{Kind: card.SegmentText, Text: "最终答复"},
+		}})
 	if err := stream.Flush(); err != nil {
 		t.Fatal(err)
 	}
@@ -954,18 +969,32 @@ func TestAppendCleanThreeSectionLatestOnly(t *testing.T) {
 	if strings.Contains(thought, "第一步") || !strings.Contains(thought, "第二步") {
 		t.Fatalf("thought should show only latest COT, got %q", thought)
 	}
+	// 思考区不应重复:snapshot 覆盖 delta,同一轮内不应出现两遍相同 COT。
+	if strings.Count(thought, "第二步") != 1 {
+		t.Fatalf("thought must not duplicate within a round, got %q", thought)
+	}
 	tool := segmentTextByKind(ev, card.SegmentTool)
-	if strings.Contains(tool, "ls") || !strings.Contains(tool, "cat x") {
-		t.Fatalf("tool should show only latest call, got %q", tool)
+	// 工具区必须是人读格式:含 Name (Bash) + command (cat x) + 输出 (hello),不带 raw JSON / call_ id。
+	if !strings.Contains(tool, "Bash") || !strings.Contains(tool, "cat x") || !strings.Contains(tool, "hello") {
+		t.Fatalf("tool must show name+command+output in human form, got %q", tool)
+	}
+	if strings.Contains(tool, "t1") || strings.Contains(tool, "tool_result") || strings.Contains(tool, "\"command\"") {
+		t.Fatalf("tool must not leak raw id / raw json / tool_result stub, got %q", tool)
 	}
 
-	// 终态:思考折叠,计数保持,内容仍是最新一次。
+	// 终态:思考折叠,计数保持,内容仍是最新一次;stop button 隐藏。
 	terminal, err := stream.Finish("completed", card.Meta{}, AgentRunResult{
 		Segments: []card.Segment{
 			{Kind: card.SegmentThought, Text: "先想第一步"},
-			{Kind: card.SegmentTool, Text: "Bash(ls)", Tool: &card.ToolMeta{ID: "t1"}},
+			{Kind: card.SegmentTool, Text: "- Bash `t1`\n\n```json\n{\"command\":\"ls\"}\n```",
+				Tool: &card.ToolMeta{ID: "t1", Name: "Bash", Summary: "ls", Phase: "use"}},
+			{Kind: card.SegmentTool, Text: "- tool_result `t1`\n\n```\nfile1\nfile2\n```",
+				Tool: &card.ToolMeta{ID: "t1", Phase: "result"}},
 			{Kind: card.SegmentThought, Text: "再想第二步"},
-			{Kind: card.SegmentTool, Text: "Bash(cat x)", Tool: &card.ToolMeta{ID: "t2"}},
+			{Kind: card.SegmentTool, Text: "- Bash `t2`\n\n```json\n{\"command\":\"cat x\"}\n```",
+				Tool: &card.ToolMeta{ID: "t2", Name: "Bash", Summary: "cat x", Phase: "use"}},
+			{Kind: card.SegmentTool, Text: "- tool_result `t2`\n\n```\nhello\n```",
+				Tool: &card.ToolMeta{ID: "t2", Phase: "result"}},
 			{Kind: card.SegmentText, Text: "最终答复"},
 		},
 		AnswerSegments: []string{"最终答复"},
@@ -976,13 +1005,16 @@ func TestAppendCleanThreeSectionLatestOnly(t *testing.T) {
 	if terminal.ThoughtExpanded {
 		t.Fatalf("terminal thought should be collapsed")
 	}
+	if terminal.StopButton.Visible {
+		t.Fatalf("terminal must hide stop button, got %#v", terminal.StopButton)
+	}
 	if terminal.ThoughtRoundCount != 2 || terminal.ToolRoundCount != 2 {
 		t.Fatalf("terminal counts = thought:%d tool:%d, want 2/2", terminal.ThoughtRoundCount, terminal.ToolRoundCount)
 	}
 	if got := segmentTextByKind(terminal, card.SegmentThought); strings.Contains(got, "第一步") || !strings.Contains(got, "第二步") {
 		t.Fatalf("terminal thought latest-only failed: %q", got)
 	}
-	if got := segmentTextByKind(terminal, card.SegmentTool); strings.Contains(got, "ls") || !strings.Contains(got, "cat x") {
+	if got := segmentTextByKind(terminal, card.SegmentTool); !strings.Contains(got, "cat x") || !strings.Contains(got, "hello") || strings.Contains(got, "ls\n```") {
 		t.Fatalf("terminal tool latest-only failed: %q", got)
 	}
 }

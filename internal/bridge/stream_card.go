@@ -1,6 +1,7 @@
 package bridge
 
 import (
+	"encoding/json"
 	"fmt"
 	"regexp"
 	"strings"
@@ -79,16 +80,26 @@ type agentCardStream struct {
 	stopRequested    bool
 
 	// append-clean-card 三段布局:思考/工具只显示「最新一次」,但用计数告诉用户
-	// 背后累计了多少轮。latestThought 是最新一轮 COT(每个新 assistant message 边界
-	// 重置);latestTool 是最新一次工具调用命令+输出(每来一个新 tool segment 覆盖)。
-	// thoughtRounds/toolRounds 是累计轮次/次数,渲染成折叠区标题的「× N」。
-	// 仅在 replyMode == append-clean-card 时维护与使用,不影响 append / latest-card。
-	cleanThought      strings.Builder
-	cleanTool         strings.Builder
-	thoughtRounds     int
-	toolRounds        int
-	seenToolIDs       map[string]bool
-	thoughtRoundOpen  bool
+	// 背后累计了多少轮。cleanThought 是最新一轮 COT;latestToolName/Command/Output
+	// 是最新一次工具调用的可读三元组(不是 raw segment text);thoughtRounds/toolRounds
+	// 是累计轮次/次数,渲染成折叠区标题的「× N」。仅在 append-clean-card 生效。
+	//
+	// 关键约束:
+	//   * 思考:同一轮的 delta 增量拼接到 cleanThought,直到该轮 AssistantSnapshot 到达;
+	//     snapshot 会带该轮完整 thinking(权威版),用它覆盖 cleanThought,避免"delta 已拼过、
+	//     snapshot 又拼一次"的重复。
+	//   * 工具:同一 tool_use.id 的多次 segment(占位 input → 完整 input)覆盖 command,
+	//     不 append;tool_result(同 id)覆盖 output。切换到新 id 才 toolRounds++ + Reset。
+	cleanThought     strings.Builder
+	thoughtRounds    int
+	thoughtRoundOpen bool
+	toolRounds       int
+	seenToolIDs      map[string]bool
+	// 最新一次工具调用的三元组;渲染时拼成人读格式(`**Name**` + command 围栏 + 输出围栏)。
+	latestToolID     string
+	latestToolName   string
+	latestToolCmd    string
+	latestToolOutput string
 }
 
 func newAgentCardStream(service *Service, sessionID string, sess session.Session, input session.Input) *agentCardStream {
@@ -284,7 +295,7 @@ func (s *agentCardStream) FinishTransformed(status string, meta card.Meta, resul
 	if s.replyMode == config.ReplyModeAppend {
 		s.mergeAppendFinalSegmentsLocked(result)
 	} else if len(result.Segments) > 0 {
-		s.mergeFinalSegmentsLocked(result.Segments, result.AnswerSegments)
+		s.mergeFinalSegmentsLocked(result.Segments, result.AnswerSegments, result.OrderedSegments)
 	}
 	if status == "stopped" {
 		s.stopVisible = true
@@ -527,62 +538,214 @@ func (s *agentCardStream) appendSegmentLocked(segment card.Segment, incremental 
 }
 
 // updateCleanSectionsLocked 维护 append-clean-card 三段布局的「只显示最新一次 + 计数」状态。
-// 思考:同一轮 assistant message 内的 thought 增量累积到 cleanThought;assistantSnapshot
-// 标志该轮结束,thoughtRounds++,下一段 thought 先 Reset 再累积(即只留最新一轮 COT)。
-// 工具:每遇到一个新的 tool_use.id 记一次调用(toolRounds++)并 Reset cleanTool 只留这一次的
-// 命令;同 id 的后续片段(如 tool_result 输出)追加到当前 cleanTool。无 id 的 tool 片段按新的
-// 一次处理(退化兜底)。所有裁剪只作用于 clean* 字段,不动 s.thought / s.tools(append 复用)。
+//
+// 思考:同一轮的 delta 拼到 cleanThought(流式期间逐字出现);该轮 AssistantSnapshot 到达时,
+// 用 snapshot 里的完整 thought 权威覆盖 cleanThought,消除「delta 已拼过、snapshot 又拼一次」
+// 的重复。thoughtRounds 在 assistantSnapshot 结算时 +1;下一段 delta 视为新一轮,先 Reset。
+//
+// 工具:tool_use 与 tool_result 共享 tool_use.id(claudeToolResultMeta),按 id 归到一次调用。
+// 同 id 的 tool_use segment 多次到达(占位 input → 完整 input)覆盖 command,不 append;
+// 同 id 的 tool_result 覆盖 output。新 id 才 toolRounds++ 并 Reset 三元组。
+// 用 ToolMeta 提取 Name / Summary(command 摘要)作为人读展示,不再暴露 call_xxx id 与 raw JSON。
 func (s *agentCardStream) updateCleanSectionsLocked(segments []card.Segment, incremental, assistantSnapshot bool) {
 	if s.seenToolIDs == nil {
 		s.seenToolIDs = make(map[string]bool)
 	}
+	// snapshot 到来时,收集该 update 里的最后一段完整 thought(权威版)用于覆盖 delta 中间态。
+	// 一轮 assistant message 内即使有多段 thinking,视觉上只保留最后一段(用户视角=同一次思考的最终版)。
+	latestSnapshotThought := ""
+	if assistantSnapshot {
+		for _, segment := range segments {
+			if segment.Kind == card.SegmentThought {
+				if t := strings.TrimSpace(segment.Text); t != "" {
+					latestSnapshotThought = t
+				}
+			}
+		}
+	}
+	// 兜底轮次边界:某些 Claude vendor 不发标准 assistant message snapshot,`assistantSnapshot`
+	// 永不会为 true。此时依赖"tool 到来即上一轮 thought 结束"的语义:一轮 flow 是
+	// thinking → tool_use → tool_result;见到 tool 段就把之前累积的 thought 视为一轮定稿,
+	// 下一段 thought 视为新一轮(触发 Reset)。避免"两轮 thinking 全部累积成一大段"。
+	sawTool := false
 	for _, segment := range segments {
-		text := strings.TrimSpace(segment.Text)
+		if segment.Kind == card.SegmentTool {
+			sawTool = true
+			break
+		}
+	}
+	for _, segment := range segments {
 		switch segment.Kind {
 		case card.SegmentThought:
-			if segment.Text == "" {
+			if segment.Text == "" || assistantSnapshot {
+				// snapshot 帧的 thought 交给下面一次性权威覆盖,不再在这里逐段拼。
 				continue
 			}
-			// 新一轮 COT 开始:上一轮已被 assistantSnapshot 结算(thoughtRoundOpen=false),
-			// 先清掉旧内容只留最新一轮。
-			if !s.thoughtRoundOpen {
+			// 判定新 thought 段:非 incremental(即 content_block_start 的完整 thinking 首帧或
+			// 一整段快照)一定视为新一段,直接 Reset 覆盖旧内容;incremental delta 若发生在
+			// 「上一段已闭合」(thoughtRoundOpen=false,比如上一段被 tool 段兜底关轮了)也是新一段。
+			// 这样任何 vendor 发出的多段 thinking 都恒只保留最新一段,避免"两句思考并列"。
+			if !incremental || !s.thoughtRoundOpen {
 				s.cleanThought.Reset()
 				s.thoughtRoundOpen = true
 			}
 			if incremental {
 				s.cleanThought.WriteString(segment.Text)
 			} else {
-				appendToBuilder(&s.cleanThought, segment.Text)
+				s.cleanThought.WriteString(strings.TrimSpace(segment.Text))
 			}
 		case card.SegmentTool:
-			if text == "" {
-				continue
-			}
 			id := ""
+			name := ""
+			summary := ""
+			phase := ""
+			isError := false
 			if segment.Tool != nil {
 				id = segment.Tool.ID
+				name = segment.Tool.Name
+				summary = segment.Tool.Summary
+				phase = segment.Tool.Phase
+				isError = segment.Tool.IsError
 			}
-			isNewCall := id == "" || !s.seenToolIDs[id]
-			// tool_result 与其 tool_use 共享 id(claudeToolResultMeta 用 tool_use_id),
-			// 因此 result 片段的 id 已 seen,会走「追加到当前一次」分支,不重复计数。
-			if isNewCall {
-				s.toolRounds++
-				if id != "" {
-					s.seenToolIDs[id] = true
+			// 新调用:切换 latest*,计数 +1。旧调用(同 id)只更新对应字段,不重复计数。
+			if id == "" || id != s.latestToolID {
+				if id == "" || !s.seenToolIDs[id] {
+					s.toolRounds++
+					if id != "" {
+						s.seenToolIDs[id] = true
+					}
 				}
-				s.cleanTool.Reset()
-				s.cleanTool.WriteString(text)
-			} else {
-				appendToBuilder(&s.cleanTool, text)
+				s.latestToolID = id
+				s.latestToolName = strings.TrimSpace(name)
+				s.latestToolCmd = strings.TrimSpace(summary)
+				s.latestToolOutput = ""
+			}
+			switch phase {
+			case "use":
+				// command 优先取 ToolMeta.Summary(toolInputSummary 抽出的 command 字段);
+				// Summary 空(例如非 Bash 类工具、或 input 尚未补齐)时,从 raw text 里的 ```json
+				// 围栏 parse 出 command / 常见字段,兜底再用剥离头的整段。同一 id 多次到达都覆盖。
+				cmd := strings.TrimSpace(summary)
+				if cmd == "" {
+					cmd = extractToolUseCommand(segment.Text)
+				}
+				if cmd != "" {
+					s.latestToolCmd = cmd
+				}
+				if strings.TrimSpace(name) != "" {
+					s.latestToolName = strings.TrimSpace(name)
+				}
+			case "result":
+				// tool_result:从 raw text 提取 ``` 围栏内的实际输出,不显示 "- tool_result call_xxx" 头。
+				out := extractToolResultOutput(segment.Text)
+				if out == "" {
+					out = strings.TrimSpace(segment.Text)
+				}
+				if isError {
+					out = "❌ " + out
+				}
+				s.latestToolOutput = out
 			}
 		}
 	}
-	// 一轮 assistant message 结束:结算本轮思考。若本轮确有 thought,轮次 +1;
-	// 关闭 thoughtRoundOpen,下一段 thought 视为新一轮(触发 Reset)。
-	if assistantSnapshot && s.thoughtRoundOpen {
-		s.thoughtRounds++
+	if assistantSnapshot {
+		if latestSnapshotThought != "" {
+			s.cleanThought.Reset()
+			s.cleanThought.WriteString(latestSnapshotThought)
+			s.thoughtRoundOpen = true
+		}
+		if s.thoughtRoundOpen {
+			s.thoughtRounds++
+			s.thoughtRoundOpen = false
+		}
+	} else if sawTool && s.thoughtRoundOpen {
+		// 视觉兜底:tool 段暗示 thinking 阶段结束(一轮 flow 是 thinking → tool_use)。
+		// 只关轮不 +1(计数交给 assistantSnapshot 主路径或 finalizeCleanSectionsLocked 的
+		// result 兜底);下一段 thought 触发 Reset 覆盖旧内容,避免"两轮 thinking 累积成一大段"。
 		s.thoughtRoundOpen = false
 	}
+}
+
+// extractToolUseCommand 从 writeToolUse 生成的 markdown 里提出人读的 command。
+// 输入形如 "- Bash `id`\n\n```json\n{...}\n```"。先剥 ```json 围栏拿 JSON,parse 出 command /
+// file_path / path / query / url 等常见字段;失败则退回围栏原文(比 raw 段更干净,无 - Name id 头)。
+func extractToolUseCommand(raw string) string {
+	if raw == "" {
+		return ""
+	}
+	fenceStart := strings.Index(raw, "```")
+	if fenceStart < 0 {
+		return ""
+	}
+	rest := raw[fenceStart+3:]
+	if nl := strings.IndexByte(rest, '\n'); nl >= 0 {
+		rest = rest[nl+1:]
+	}
+	fenceEnd := strings.LastIndex(rest, "```")
+	if fenceEnd < 0 {
+		return ""
+	}
+	body := strings.TrimSpace(rest[:fenceEnd])
+	// 尝试 parse JSON 抽 command;失败就直接返回围栏内原文(避免 raw JSON 但含 call_id 头)。
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(body), &payload); err == nil {
+		for _, key := range []string{"command", "file_path", "path", "query", "url"} {
+			if v, ok := payload[key]; ok {
+				if text, ok := v.(string); ok && strings.TrimSpace(text) != "" {
+					return strings.TrimSpace(text)
+				}
+			}
+		}
+	}
+	return body
+}
+
+// extractToolResultOutput 从 writeToolResult 生成的 markdown 里剥出 ``` 围栏内的原始输出。
+// 输入形如:"- tool_result `id`\n\n```\n<output>\n```"。取围栏内内容;找不到围栏时返回空串,
+// 让调用方用整段 text 兜底。这样卡片里显示纯输出,不带 "- tool_result call_xxx" 这类壳文本。
+func extractToolResultOutput(raw string) string {
+	start := strings.Index(raw, "```")
+	if start < 0 {
+		return ""
+	}
+	rest := raw[start+3:]
+	// 跳过可选的 lang 标签,直到当前行末。
+	if nl := strings.IndexByte(rest, '\n'); nl >= 0 {
+		rest = rest[nl+1:]
+	}
+	end := strings.LastIndex(rest, "```")
+	if end < 0 {
+		return strings.TrimSpace(rest)
+	}
+	return strings.TrimRight(rest[:end], "\n\r\t ")
+}
+
+// formatLatestToolLocked 把 latestTool 三元组渲染成人读的 markdown:
+// **<Name>**\n\n```\n<command>\n```\n\n**输出**:\n```\n<output>\n```
+// 缺 name / cmd / output 都会跳过对应段,不显示 call_xxx id、不暴露 raw JSON payload。
+func (s *agentCardStream) formatLatestToolLocked() string {
+	if s.latestToolID == "" && s.latestToolName == "" && s.latestToolCmd == "" && s.latestToolOutput == "" {
+		return ""
+	}
+	var b strings.Builder
+	name := s.latestToolName
+	if name == "" {
+		name = "工具调用"
+	}
+	b.WriteString("**")
+	b.WriteString(name)
+	b.WriteString("**")
+	if s.latestToolCmd != "" {
+		b.WriteString("\n\n```\n")
+		b.WriteString(s.latestToolCmd)
+		b.WriteString("\n```")
+	}
+	if s.latestToolOutput != "" {
+		b.WriteString("\n\n**输出**:\n\n```\n")
+		b.WriteString(s.latestToolOutput)
+		b.WriteString("\n```")
+	}
+	return b.String()
 }
 
 func appendOrderedSegment(segments []card.Segment, segment card.Segment, incremental bool) []card.Segment {
@@ -709,7 +872,8 @@ func containsOrderedSegment(segments []card.Segment, want card.Segment) bool {
 // mergeFinalSegmentsLocked 用终态结果重建卡片正文。append 保留本次 run
 // 的聚合正文；append-clean-card/latest-card 只保留最后一段 assistant
 // 回复。runner 错误作为独立块追加，不参与最后一段选取。
-func (s *agentCardStream) mergeFinalSegmentsLocked(segments []card.Segment, answerSegments []string) {
+// orderedSegments 保留原始 Tool 元信息(finalizeCleanSectionsLocked 需要)。
+func (s *agentCardStream) mergeFinalSegmentsLocked(segments []card.Segment, answerSegments []string, orderedSegments []card.Segment) {
 	var aggregateAnswer strings.Builder
 	var thought strings.Builder
 	var tools strings.Builder
@@ -750,21 +914,51 @@ func (s *agentCardStream) mergeFinalSegmentsLocked(segments []card.Segment, answ
 		s.tools.WriteString(tools.String())
 	}
 	if s.replyMode == config.ReplyModeAppendCleanCard {
-		s.finalizeCleanSectionsLocked(segments)
+		// 组装 finalize 源:thought 从 segments;tool 优先从 orderedSegments(Claude stream 只有
+		// 这里保留了 Tool meta,segments 里的 SegmentTool 只是合并 markdown 无 meta),
+		// orderedSegments 里没有 tool 段时再从 segments 里取(测试路径或 codex path)。
+		hasOrderedTool := false
+		for _, seg := range orderedSegments {
+			if seg.Kind == card.SegmentTool {
+				hasOrderedTool = true
+				break
+			}
+		}
+		merged := make([]card.Segment, 0, len(segments)+len(orderedSegments))
+		for _, seg := range segments {
+			if seg.Kind == card.SegmentThought {
+				merged = append(merged, seg)
+			}
+			if seg.Kind == card.SegmentTool && !hasOrderedTool {
+				merged = append(merged, seg)
+			}
+		}
+		if hasOrderedTool {
+			for _, seg := range orderedSegments {
+				if seg.Kind == card.SegmentTool {
+					merged = append(merged, seg)
+				}
+			}
+		}
+		s.finalizeCleanSectionsLocked(merged)
 	}
 }
 
 // finalizeCleanSectionsLocked 在终态用本轮完整 result.Segments 重算 append-clean 的
-// 「最新一次」内容:最新一轮 COT = 最后一段 thought;最新一次工具 = 最后一个 tool_use.id
-// 分组的命令+输出。计数以流式期间累计的 thoughtRounds/toolRounds 为准(含全过程,更准);
-// 仅当流式没跑过(直出终态、计数为 0)时从终态 segments 兜底计数,避免「× N」缺失。
+// 「最新一次」:最新一轮 COT = 最后一段 thought;最新一次工具的 name/command/output 从对应
+// tool_use / tool_result segment 的 ToolMeta 与围栏文本提取。计数以流式期间累计的
+// thoughtRounds/toolRounds 为准(含全过程,更准);流式没跑过时(直出终态、计数为 0)从终态
+// segments 兜底计数,避免「× N」缺失。三元组渲染由 segmentsLocked 的 formatLatestToolLocked 完成。
 func (s *agentCardStream) finalizeCleanSectionsLocked(segments []card.Segment) {
 	var latestThought string
-	var thoughtCount int
-	lastToolID := ""
-	var latestTool strings.Builder
+	thoughtCount := 0
 	toolIDs := make(map[string]bool)
 	uniqueTools := 0
+	// 遍历一遍即定位最后一段 thought 与最后一次 tool 的 use/result。
+	s.latestToolID = ""
+	s.latestToolName = ""
+	s.latestToolCmd = ""
+	s.latestToolOutput = ""
 	for _, segment := range segments {
 		text := strings.TrimSpace(segment.Text)
 		if text == "" {
@@ -776,32 +970,55 @@ func (s *agentCardStream) finalizeCleanSectionsLocked(segments []card.Segment) {
 			thoughtCount++
 		case card.SegmentTool:
 			id := ""
+			name := ""
+			summary := ""
+			phase := ""
+			isError := false
 			if segment.Tool != nil {
 				id = segment.Tool.ID
+				name = strings.TrimSpace(segment.Tool.Name)
+				summary = strings.TrimSpace(segment.Tool.Summary)
+				phase = segment.Tool.Phase
+				isError = segment.Tool.IsError
 			}
-			if id == "" || !toolIDs[id] {
+			if id != "" && !toolIDs[id] {
+				toolIDs[id] = true
 				uniqueTools++
-				if id != "" {
-					toolIDs[id] = true
+			} else if id == "" {
+				uniqueTools++
+			}
+			if id == "" || id != s.latestToolID {
+				s.latestToolID = id
+				s.latestToolName = name
+				s.latestToolCmd = ""
+				s.latestToolOutput = ""
+			}
+			switch phase {
+			case "use":
+				cmd := summary
+				if cmd == "" {
+					cmd = extractToolUseCommand(segment.Text)
 				}
-				if id == "" || id != lastToolID {
-					latestTool.Reset()
-					latestTool.WriteString(text)
-				} else {
-					appendToBuilder(&latestTool, text)
+				if cmd != "" {
+					s.latestToolCmd = cmd
 				}
-				lastToolID = id
-			} else {
-				// 同一次工具的后续片段(如 result)追加到当前。
-				appendToBuilder(&latestTool, text)
-				lastToolID = id
+				if name != "" {
+					s.latestToolName = name
+				}
+			case "result":
+				out := extractToolResultOutput(segment.Text)
+				if out == "" {
+					out = text
+				}
+				if isError {
+					out = "❌ " + out
+				}
+				s.latestToolOutput = out
 			}
 		}
 	}
 	s.cleanThought.Reset()
 	s.cleanThought.WriteString(latestThought)
-	s.cleanTool.Reset()
-	s.cleanTool.WriteString(latestTool.String())
 	if s.thoughtRounds == 0 {
 		s.thoughtRounds = thoughtCount
 	}
@@ -838,6 +1055,11 @@ func (s *agentCardStream) eventLocked(initial bool) card.Event {
 	}
 	stopVisible := s.stopVisible && (s.status == "running" || s.status == "stopped" || s.status == "completed" || s.status == "failed")
 	stopDisabled := s.status != "running"
+	// 三段布局(append-clean-card)在终态隐藏 stop 按钮:终态卡片只需展示答案与折叠面板,
+	// "已完成 ✗" 灰按钮占位无意义,还会打断视觉。运行/停止请求中(status=running)仍显示。
+	if s.replyMode == config.ReplyModeAppendCleanCard && s.status != "running" {
+		stopVisible = false
+	}
 	return card.Event{
 		Type:             s.statusEventTypeLocked(),
 		SessionID:        s.sessionID,
@@ -874,7 +1096,7 @@ func (s *agentCardStream) segmentsLocked() []card.Segment {
 	toolsText := s.tools.String()
 	if s.replyMode == config.ReplyModeAppendCleanCard {
 		thoughtText = s.cleanThought.String()
-		toolsText = s.cleanTool.String()
+		toolsText = s.formatLatestToolLocked()
 	}
 	var segments []card.Segment
 	if text := stripTrailingBotSignature(s.answer.String()); strings.TrimSpace(text) != "" {
