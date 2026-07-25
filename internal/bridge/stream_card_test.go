@@ -1167,3 +1167,43 @@ func segmentTextByKind(ev card.Event, kind card.SegmentKind) string {
 	}
 	return ""
 }
+
+// TestFormatLatestToolClampsHugeOutputKeepsCommand 回归:超大工具输出时,
+// 工具名与命令必须完整保留在卡片里(bug:capacity keepTail 截断从头部吃起,
+// 只留输出、丢掉了命令)。修复后由 clampToolOutput 在生成阶段给输出上界,
+// 命令永远完整,输出保头尾省中间,整段不再超卡片容量。
+func TestFormatLatestToolClampsHugeOutputKeepsCommand(t *testing.T) {
+	cmd := "grep -rn func internal/bridge"
+	huge := strings.Repeat("internal/bridge/service.go:660:func resumeCardData longline\n", 2000)
+	s := &agentCardStream{
+		latestToolID:     "tu-1",
+		latestToolName:   "Bash",
+		latestToolCmd:    cmd,
+		latestToolOutput: huge,
+	}
+	rendered := s.formatLatestToolLocked()
+
+	// 1) 命令与工具名必须完整在渲染结果里
+	if !strings.Contains(rendered, cmd) {
+		t.Fatalf("命令丢失,rendered 头部=%q", rendered[:min(200, len(rendered))])
+	}
+	if !strings.Contains(rendered, "**Bash**") {
+		t.Fatalf("工具名丢失")
+	}
+	// 2) 输出被省略(不再原样塞入全部 huge)
+	if !strings.Contains(rendered, "中间省略") {
+		t.Fatalf("超大输出未被省略")
+	}
+	if len([]rune(rendered)) >= len([]rune(huge)) {
+		t.Fatalf("渲染结果未收缩: %d >= %d", len([]rune(rendered)), len([]rune(huge)))
+	}
+	// 3) 渲染结果整体受控在预算附近(命令+框架+省略后的输出),远小于卡片 28KB 软上限,
+	//    从而下游 capacity 通常无需再对该 tool 段做 keepTail 截断(即便触发,命令也在头部已保住)。
+	if got := len([]rune(rendered)); got > maxToolOutputRunes+2000 {
+		t.Fatalf("渲染结果仍过大: %d runes", got)
+	}
+	// 4) 结构完整:命令在前、输出在后
+	if strings.Index(rendered, cmd) > strings.Index(rendered, "**输出**") {
+		t.Fatalf("命令未排在输出之前")
+	}
+}

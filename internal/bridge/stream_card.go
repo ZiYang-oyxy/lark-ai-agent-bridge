@@ -784,9 +784,35 @@ func (s *agentCardStream) formatLatestToolLocked() string {
 	}
 	if s.latestToolOutput != "" {
 		b.WriteString("\n\n**输出**:\n\n```\n")
-		b.WriteString(s.latestToolOutput)
+		b.WriteString(clampToolOutput(s.latestToolOutput))
 		b.WriteString("\n```")
 	}
+	return b.String()
+}
+
+// maxToolOutputRunes 是单次工具调用「输出」段在卡片里的字符预算。
+// 远小于卡片整体软上限(LarkCardSoftMaxJSONBytes=28KB / CardMaxChars=12000),
+// 目的是:让工具名与命令(信息密度最高、用户最需要看到的部分)永远完整保留,
+// 只有冗长输出才被有界省略。否则下游 capacity.fitLarkCard 会用 keepTail 截断
+// 整个 tool 段——从头部吃起,反而先牺牲工具名和命令、只留一堆输出(本次修复的 bug)。
+const maxToolOutputRunes = 6000
+
+// clampToolOutput 对过长的工具输出做「保头 + 保尾 + 省中间」截断。
+// 头尾都保留能同时体现「命令产出的开头」与「结尾/退出状态」,中间用一行省略提示替代。
+// 未超预算时原样返回。
+func clampToolOutput(output string) string {
+	runes := []rune(output)
+	if len(runes) <= maxToolOutputRunes {
+		return output
+	}
+	omitted := len(runes) - maxToolOutputRunes
+	// 头部占 ~60%,尾部占 ~40%:开头信息通常更重要,但保留结尾以便看到退出/结论。
+	head := maxToolOutputRunes * 6 / 10
+	tail := maxToolOutputRunes - head
+	var b strings.Builder
+	b.WriteString(strings.TrimRight(string(runes[:head]), "\n"))
+	b.WriteString(fmt.Sprintf("\n\n… （中间省略 %d 字符）…\n\n", omitted))
+	b.WriteString(strings.TrimLeft(string(runes[len(runes)-tail:]), "\n"))
 	return b.String()
 }
 
