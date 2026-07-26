@@ -46,8 +46,9 @@ type Client struct {
 	GOARCH     string
 	CacheTTL   time.Duration
 
-	mu     sync.Mutex
-	cached map[string]cacheEntry // keyed by resolved manifest URL
+	mu         sync.Mutex
+	cached     map[string]cacheEntry // keyed by resolved manifest URL
+	refreshing map[string]bool       // async stale-cache refreshes keyed by URL
 }
 
 type cacheEntry struct {
@@ -100,6 +101,42 @@ func (c *Client) PeekManifest() (Manifest, bool) {
 		return Manifest{}, false
 	}
 	return entry.manifest, true
+}
+
+// LatestManifest returns the cached manifest immediately and asynchronously
+// refreshes it when it is missing or stale. A stale value remains usable while
+// revalidation is in flight, so card rendering never waits on update I/O.
+// Concurrent callers for the same channel share one background refresh.
+func (c *Client) LatestManifest() (Manifest, bool) {
+	if c == nil {
+		return Manifest{}, false
+	}
+	manifestURL := c.activeURL()
+	now := c.Now()
+	if now.IsZero() {
+		now = time.Now()
+	}
+	c.mu.Lock()
+	entry, ok := c.cached[manifestURL]
+	fresh := ok && now.Sub(entry.at) < c.cacheTTL()
+	if !fresh && !c.refreshing[manifestURL] {
+		if c.refreshing == nil {
+			c.refreshing = make(map[string]bool)
+		}
+		c.refreshing[manifestURL] = true
+		go c.refreshManifest(manifestURL)
+	}
+	c.mu.Unlock()
+	return entry.manifest, ok
+}
+
+func (c *Client) refreshManifest(manifestURL string) {
+	defer func() {
+		c.mu.Lock()
+		delete(c.refreshing, manifestURL)
+		c.mu.Unlock()
+	}()
+	_, _ = c.manifest(context.Background(), manifestURL)
 }
 
 // prerelease reports whether the opt-in prerelease channel is currently active.

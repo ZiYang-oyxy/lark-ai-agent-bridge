@@ -57,7 +57,7 @@ func (f *fakeUpdateManager) Prepare(context.Context, bridgeupdate.Asset) (Prepar
 	f.prepareCall++
 	return f.prepared, f.prepareErr
 }
-func (f *fakeUpdateManager) PeekManifest() (bridgeupdate.Manifest, bool) {
+func (f *fakeUpdateManager) LatestManifest() (bridgeupdate.Manifest, bool) {
 	return f.peekManifest, f.peekAvailable
 }
 

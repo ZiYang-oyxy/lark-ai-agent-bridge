@@ -42,6 +42,16 @@ func (m *Manager) PeekManifest() (Manifest, bool) {
 	return m.Client.PeekManifest()
 }
 
+// LatestManifest is the non-blocking stale-while-revalidate read used by card
+// rendering. It may return a stale cached manifest for the current frame while
+// a single background request refreshes the active channel.
+func (m *Manager) LatestManifest() (Manifest, bool) {
+	if m == nil || m.Client == nil {
+		return Manifest{}, false
+	}
+	return m.Client.LatestManifest()
+}
+
 func (m *Manager) ReleaseNotes(ctx context.Context, manifest Manifest) (string, error) {
 	if m == nil || m.Client == nil {
 		return "", errors.New("update client is unavailable")

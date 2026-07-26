@@ -52,6 +52,96 @@ func TestClientCheckCachesSuccessfulManifest(t *testing.T) {
 	}
 }
 
+func TestClientLatestManifestWarmsMissWithoutBlockingAndCoalesces(t *testing.T) {
+	binary := []byte("new")
+	hash := fmt.Sprintf("%x", sha256.Sum256(binary))
+	var calls atomic.Int32
+	requestStarted := make(chan struct{})
+	releaseResponse := make(chan struct{})
+	var server *httptest.Server
+	server = httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		if calls.Add(1) == 1 {
+			close(requestStarted)
+		}
+		<-releaseResponse
+		_, _ = w.Write([]byte(validManifest(server.URL+"/notes", server.URL+"/binary", len(binary), hash)))
+	}))
+	defer server.Close()
+	client := NewClient(server.URL, server.Client())
+
+	for range 20 {
+		if manifest, ok := client.LatestManifest(); ok {
+			t.Fatalf("cold LatestManifest() = %#v, true; want cache miss", manifest)
+		}
+	}
+	select {
+	case <-requestStarted:
+	case <-time.After(time.Second):
+		t.Fatal("background manifest refresh did not start")
+	}
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("concurrent cold refresh calls = %d, want 1", got)
+	}
+	close(releaseResponse)
+
+	deadline := time.Now().Add(time.Second)
+	for {
+		if manifest, ok := client.LatestManifest(); ok {
+			if manifest.Version != "1.2.3" {
+				t.Fatalf("warmed manifest version = %q", manifest.Version)
+			}
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("background manifest refresh did not populate cache")
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
+func TestClientLatestManifestReturnsStaleWhileRevalidating(t *testing.T) {
+	binary := []byte("new")
+	hash := fmt.Sprintf("%x", sha256.Sum256(binary))
+	var calls atomic.Int32
+	var version atomic.Value
+	version.Store("1.1.0")
+	var server *httptest.Server
+	server = httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls.Add(1)
+		body := validManifest(server.URL+"/notes", server.URL+"/binary", len(binary), hash)
+		_, _ = w.Write([]byte(replaceManifestVersion(body, version.Load().(string))))
+	}))
+	defer server.Close()
+	now := time.Date(2026, 7, 26, 12, 0, 0, 0, time.UTC)
+	client := NewClient(server.URL, server.Client())
+	client.Now = func() time.Time { return now }
+	if _, err := client.Check(t.Context(), "1.0.0"); err != nil {
+		t.Fatal(err)
+	}
+
+	version.Store("1.2.0")
+	now = now.Add(11 * time.Minute)
+	stale, ok := client.LatestManifest()
+	if !ok || stale.Version != "1.1.0" {
+		t.Fatalf("stale LatestManifest() = %#v, %t; want 1.1.0, true", stale, ok)
+	}
+
+	deadline := time.Now().Add(time.Second)
+	for {
+		latest, latestOK := client.LatestManifest()
+		if latestOK && latest.Version == "1.2.0" {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("revalidated manifest = %#v, %t; calls=%d", latest, latestOK, calls.Load())
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if got := calls.Load(); got != 2 {
+		t.Fatalf("manifest calls after revalidation = %d, want 2", got)
+	}
+}
+
 func TestClientRejectsUnsupportedRuntime(t *testing.T) {
 	hash := strings.Repeat("a", 64)
 	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {

@@ -3056,7 +3056,7 @@ func (s *Service) metaFromSessionWithDirAfter(sess session.Session, dir string, 
 		meta.Version = developerVersionText()
 		meta.DeveloperMode = s.DevMode != nil && s.DevMode.Prerelease()
 		if s.Updates != nil {
-			if manifest, ok := s.Updates.PeekManifest(); ok {
+			if manifest, ok := s.Updates.LatestManifest(); ok {
 				latest := strings.TrimSpace(manifest.Version)
 				current := strings.TrimSpace(buildinfo.Version)
 				if latest != "" && latest != current {

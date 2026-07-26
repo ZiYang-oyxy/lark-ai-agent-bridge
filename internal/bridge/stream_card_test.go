@@ -67,6 +67,33 @@ func TestAgentCardStreamFinishBackfillsFirstTurnSessionID(t *testing.T) {
 	}
 }
 
+func TestAgentCardStreamFinishAdoptsLatestVersionDiscoveredDuringRun(t *testing.T) {
+	cfg := testConfig(t)
+	renderer := card.NewFakeRenderer()
+	svc := NewService(cfg, renderer, newFakeRunner(), audit.NewRecorder())
+	sess := session.Session{Key: session.Key{Agent: "claude", ChatID: "chat"}, ID: "claude:chat"}
+	stream := newAgentCardStream(svc, "run", sess, session.Input{ReplyToMessageID: "source", Time: time.Now()})
+	stream.meta.ShowMetaRowDeveloper = true
+	stream.meta.Version = "dev"
+
+	terminal, err := stream.Finish("completed", card.Meta{
+		ShowMetaRowDeveloper: true,
+		Version:              "dev",
+		DeveloperMode:        true,
+		LatestVersion:        "v0.1.11-rc.6",
+	}, AgentRunResult{Segments: []card.Segment{{Kind: card.SegmentText, Text: "done"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if terminal.Meta.LatestVersion != "v0.1.11-rc.6" || !terminal.Meta.DeveloperMode {
+		t.Fatalf("terminal developer meta = %#v", terminal.Meta)
+	}
+	rows := card.MetaRows(terminal.Meta)
+	if len(rows) != 1 || !strings.Contains(rows[0].Text, "⬆️ 最新 v0.1.11-rc.6") {
+		t.Fatalf("terminal developer row = %#v", rows)
+	}
+}
+
 func TestAgentCardStreamHandleAdoptsFirstTurnContextUsage(t *testing.T) {
 	// 首轮:sess.AgentSessionID=="" 时 metaForRun 拿不到 sidecar,起始 meta.CtxOK=false;
 	// Handle 收到本轮 agent session id 后,如果 sidecar 已落盘且 mtime 晚于 runStartedAt,

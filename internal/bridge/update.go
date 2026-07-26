@@ -24,11 +24,10 @@ type UpdateManager interface {
 	ReleaseNotes(context.Context, bridgeupdate.Manifest) (string, error)
 	AggregatedReleaseNotes(ctx context.Context, currentVersion string, manifest bridgeupdate.Manifest, onSkip func(version string, err error)) (string, error)
 	Prepare(context.Context, bridgeupdate.Asset) (bridgeupdate.PreparedUpdate, error)
-	// PeekManifest returns the cached latest manifest without issuing any network
-	// request. Used by the developer status-bar row on the streaming hot path so
-	// it can show "最新 v..." only when a previous /help (or other live Check
-	// call) has already warmed the cache.
-	PeekManifest() (bridgeupdate.Manifest, bool)
+	// LatestManifest is a non-blocking stale-while-revalidate read. It keeps the
+	// streaming hot path off network I/O while allowing the developer status bar
+	// to discover releases without requiring a prior /help check.
+	LatestManifest() (bridgeupdate.Manifest, bool)
 }
 
 func (s *Service) handleHelpCommand(ctx context.Context, msg Message, preference config.RuntimePreference) error {

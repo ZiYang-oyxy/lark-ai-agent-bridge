@@ -362,6 +362,16 @@ func (s *agentCardStream) FinishTransformed(status string, meta card.Meta, resul
 	if meta.WorkDir != "" {
 		s.meta.WorkDir = meta.WorkDir
 	}
+	// The developer row may warm its update-manifest cache after the first
+	// streaming frame. Adopt the terminal snapshot so the same reply can show a
+	// newly discovered version instead of waiting for the next user message.
+	if s.meta.ShowMetaRowDeveloper || meta.ShowMetaRowDeveloper {
+		if meta.Version != "" {
+			s.meta.Version = meta.Version
+		}
+		s.meta.DeveloperMode = meta.DeveloperMode
+		s.meta.LatestVersion = meta.LatestVersion
+	}
 	if result.Model != "" {
 		s.meta.Model = result.Model
 		s.meta.ModelInfo.Actual = result.Model
