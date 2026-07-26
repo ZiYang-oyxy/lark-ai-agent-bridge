@@ -73,9 +73,10 @@ type Meta struct {
 }
 
 type StopButton struct {
-	Visible  bool
-	Disabled bool
-	GrantID  string
+	Visible         bool
+	Disabled        bool
+	GrantID         string
+	ActionSessionID string // 停止按钮操作路由到的原始sessionID，分页场景下和e.SessionID（分页ID）不同
 }
 
 type Action struct {

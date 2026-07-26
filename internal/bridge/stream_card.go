@@ -1769,7 +1769,7 @@ func (s *agentCardStream) eventLocked(initial bool) card.Event {
 		ReplyInThread:    s.replyInThread,
 		Segments:         segments,
 		Meta:             s.meta,
-		StopButton:       card.StopButton{Visible: stopVisible, Disabled: stopDisabled, GrantID: s.stopGrantID},
+		StopButton:       card.StopButton{Visible: stopVisible, Disabled: stopDisabled, GrantID: s.stopGrantID, ActionSessionID: s.sessionID},
 		Message:          message,
 		HeaderTitle:      s.headerTitleLocked(),
 		HeaderTemplate:   s.headerTemplateLocked(),

@@ -136,7 +136,11 @@ func buildTitleActionRow(title string, e Event) map[string]any {
 			"disabled":   e.StopButton.Disabled,
 		}
 		if !e.StopButton.Disabled {
-			button["behaviors"] = callbackBehaviorWithGrant(e.SessionID, "stop", "", e.StopButton.GrantID)
+			actionSessionID := e.SessionID
+			if e.StopButton.ActionSessionID != "" {
+				actionSessionID = e.StopButton.ActionSessionID
+			}
+			button["behaviors"] = callbackBehaviorWithGrant(actionSessionID, "stop", "", e.StopButton.GrantID)
 			button["confirm"] = map[string]any{
 				"title": map[string]any{"tag": "plain_text", "content": "确认停止任务？"},
 				"text":  map[string]any{"tag": "plain_text", "content": "停止后，本轮任务将立即结束，当前已生成的内容会保留。"},
