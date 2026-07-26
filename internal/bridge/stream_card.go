@@ -700,6 +700,15 @@ func (s *agentCardStream) onHeartbeat(generation uint64) {
 		s.metaRevision++
 	}
 	event := s.eventLocked(false)
+	// Heartbeats must keep the same bounded body as ordinary previews. They
+	// still force a full CardKit update for the elapsed-time header, but sending
+	// the accumulated body here would make the next normal preview shrink the
+	// card back to CardPreviewMaxChars.
+	if s.previewTail {
+		event = limitPreviewEventTail(event, s.previewPolicy.MaxPreviewRunes)
+	} else {
+		event = limitPreviewEvent(event, s.previewPolicy.MaxPreviewRunes)
+	}
 	event.ForceFullUpdate = true
 	if len(event.Segments) == 0 {
 		event.Message = "任务仍在运行…"

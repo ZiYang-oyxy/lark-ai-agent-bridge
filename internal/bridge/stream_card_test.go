@@ -643,6 +643,31 @@ func TestCardHeartbeatRefreshesQuietRunningCardAndStopsAtTerminal(t *testing.T) 
 	}
 }
 
+func TestCardHeartbeatKeepsBodyWithinPreviewLimit(t *testing.T) {
+	clock := &fakeStreamClock{now: time.Unix(100, 0)}
+	renderer := card.NewFakeRenderer()
+	stream := newPreviewTestStream(t, renderer, clock, 1, 10)
+	stream.heartbeatEvery = 15 * time.Second
+	if err := stream.Start(); err != nil {
+		t.Fatal(err)
+	}
+
+	stream.Handle(AgentStreamUpdate{Segments: []card.Segment{{Kind: card.SegmentText, Text: strings.Repeat("x", 20)}}})
+	clock.Advance(15 * time.Second)
+
+	events := renderer.Events()
+	if len(events) != 3 {
+		t.Fatalf("events = %d, want 3: %#v", len(events), events)
+	}
+	heartbeat := events[2]
+	if !heartbeat.ForceFullUpdate {
+		t.Fatalf("heartbeat did not request a full update: %#v", heartbeat)
+	}
+	if len(heartbeat.Segments) != 1 || heartbeat.Segments[0].Text != strings.Repeat("x", 10) {
+		t.Fatalf("heartbeat body = %#v, want preview-limited text", heartbeat.Segments)
+	}
+}
+
 func TestCardHeartbeatRefreshesCurrentRunContextUsage(t *testing.T) {
 	clock := &fakeStreamClock{now: time.Unix(100, 0)}
 	dir := t.TempDir()
