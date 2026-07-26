@@ -649,3 +649,113 @@ type fakeLongConnClient struct {
 func (f fakeLongConnClient) Run(ctx context.Context, handler func(context.Context, feishu.InboundMessage) error) error {
 	return f.run(ctx, handler)
 }
+
+// TestApplyResetStoreDeletesNamed 只删指定 store 文件，其余保留；缺失是 no-op。
+func TestApplyResetStoreDeletesNamed(t *testing.T) {
+	dir := t.TempDir()
+	sess := filepath.Join(dir, "sessions.json")
+	repl := filepath.Join(dir, "replies.json")
+	if err := os.WriteFile(sess, []byte("s"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(repl, []byte("r"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Config{SessionStorePath: sess, ReplyStorePath: repl}
+	if err := applyResetStore(cfg, "sessions.json"); err != nil {
+		t.Fatalf("applyResetStore: %v", err)
+	}
+	if _, err := os.Stat(sess); !os.IsNotExist(err) {
+		t.Fatalf("sessions.json should be deleted, err=%v", err)
+	}
+	if _, err := os.Stat(repl); err != nil {
+		t.Fatalf("replies.json should remain: %v", err)
+	}
+	// Missing file after reset is a no-op.
+	if err := applyResetStore(cfg, "sessions.json"); err != nil {
+		t.Fatalf("re-applying reset on missing file should be no-op, got %v", err)
+	}
+}
+
+// TestApplyResetStoreAll 清除全部已知 store。
+func TestApplyResetStoreAll(t *testing.T) {
+	dir := t.TempDir()
+	paths := map[string]string{
+		"sessions.json":            filepath.Join(dir, "sessions.json"),
+		"workspaces.json":          filepath.Join(dir, "workspaces.json"),
+		"preferences.json":         filepath.Join(dir, "preferences.json"),
+		"replies.json":             filepath.Join(dir, "replies.json"),
+		"access.json":              filepath.Join(dir, "access.json"),
+		"action-grants.json":       filepath.Join(dir, "action-grants.json"),
+		"dev-mode.json":            filepath.Join(dir, "dev-mode.json"),
+		"participated-topics.json": filepath.Join(dir, "participated-topics.json"),
+		"topic-aliases.json":       filepath.Join(dir, "topic-aliases.json"),
+		"schedules.json":           filepath.Join(dir, "schedules.json"),
+	}
+	for _, p := range paths {
+		if err := os.WriteFile(p, []byte("x"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	cfg := config.Config{
+		SessionStorePath:            paths["sessions.json"],
+		WorkspaceStorePath:          paths["workspaces.json"],
+		PreferenceStorePath:         paths["preferences.json"],
+		ReplyStorePath:              paths["replies.json"],
+		AccessStorePath:             paths["access.json"],
+		ActionGrantStorePath:        paths["action-grants.json"],
+		DevModeStorePath:            paths["dev-mode.json"],
+		ParticipatedTopicsStorePath: paths["participated-topics.json"],
+		TopicAliasStorePath:         paths["topic-aliases.json"],
+		ScheduleStorePath:           paths["schedules.json"],
+	}
+	if err := applyResetStore(cfg, "all"); err != nil {
+		t.Fatalf("applyResetStore all: %v", err)
+	}
+	for name, p := range paths {
+		if _, err := os.Stat(p); !os.IsNotExist(err) {
+			t.Fatalf("%s not cleared: %v", name, err)
+		}
+	}
+}
+
+// TestApplyResetStoreUnknown 拒绝未知 store 名并给出可用清单。
+func TestApplyResetStoreUnknown(t *testing.T) {
+	cfg := config.Config{}
+	err := applyResetStore(cfg, "config.json")
+	if err == nil {
+		t.Fatalf("applyResetStore should reject unknown name")
+	}
+	if !strings.Contains(err.Error(), "unknown store") {
+		t.Fatalf("error should mention 'unknown store': %v", err)
+	}
+}
+
+// TestApplyResetStoreEmptyIsNoop 空 spec = 未使用 flag = no-op。
+func TestApplyResetStoreEmptyIsNoop(t *testing.T) {
+	dir := t.TempDir()
+	sess := filepath.Join(dir, "sessions.json")
+	if err := os.WriteFile(sess, []byte("keep"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Config{SessionStorePath: sess}
+	if err := applyResetStore(cfg, ""); err != nil {
+		t.Fatalf("empty spec: %v", err)
+	}
+	if _, err := os.Stat(sess); err != nil {
+		t.Fatalf("sessions.json should remain untouched: %v", err)
+	}
+}
+
+// TestFirstNonEmptyPrefersEarlier 凭据白名单前缀切换测试用：优先 LAB_ 前缀，回落到旧名。
+func TestFirstNonEmptyPrefersEarlier(t *testing.T) {
+	if got := firstNonEmpty("", "  ", "hello", "world"); got != "hello" {
+		t.Fatalf("firstNonEmpty = %q, want hello", got)
+	}
+	if got := firstNonEmpty("", ""); got != "" {
+		t.Fatalf("all empty should return \"\", got %q", got)
+	}
+	if got := firstNonEmpty("  new  "); got != "new" {
+		t.Fatalf("firstNonEmpty should trim: got %q", got)
+	}
+}

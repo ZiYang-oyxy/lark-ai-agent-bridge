@@ -7,6 +7,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"io/fs"
 	"net/http"
 	"os"
 	"os/signal"
@@ -345,20 +346,26 @@ func runServe(args []string) error {
 		return err
 	}
 	defaultWorkDir := fs.String("default-workdir", cfg.DefaultWorkDir, "default workdir for messages without --workdir")
+	resetStore := fs.String("reset-store", "", "comma-separated list of store file names to delete before start (e.g. sessions.json,replies.json). Use \"all\" to reset every known state store. Config is never reset.")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 	if err := applyDefaultWorkDir(&cfg, *defaultWorkDir); err != nil {
 		return err
 	}
-	appID := os.Getenv("LARK_APP_ID")
-	appSecret := os.Getenv("LARK_APP_SECRET")
+	if err := applyResetStore(cfg, *resetStore); err != nil {
+		return err
+	}
+	// 凭据白名单：优先接受 persist 前缀 LAB_LARK_*，回落到旧的 LARK_* 以兼容真机部署。
+	// secret 只在内存持有，绝不落盘（Config.Config 不序列化）。
+	appID := firstNonEmpty(os.Getenv("LAB_LARK_APP_ID"), os.Getenv("LARK_APP_ID"))
+	appSecret := firstNonEmpty(os.Getenv("LAB_LARK_APP_SECRET"), os.Getenv("LARK_APP_SECRET"))
 	if appID == "" || appSecret == "" {
-		return fmt.Errorf("LARK_APP_ID and LARK_APP_SECRET are required for serve")
+		return fmt.Errorf("LAB_LARK_APP_ID and LAB_LARK_APP_SECRET are required for serve (旧 LARK_APP_ID/SECRET 仍兼容)")
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	botOpenID := os.Getenv("LARK_BOT_OPEN_ID")
+	botOpenID := firstNonEmpty(os.Getenv("LAB_LARK_BOT_OPEN_ID"), os.Getenv("LARK_BOT_OPEN_ID"))
 	if botOpenID == "" {
 		var err error
 		botOpenID, err = feishu.FetchBotOpenID(ctx, appID, appSecret)
@@ -859,3 +866,74 @@ func (f quotedMessageFetcher) FetchMessage(ctx context.Context, messageID string
 }
 
 var _ bridge.MessageFetcher = quotedMessageFetcher{}
+
+// firstNonEmpty returns the first non-empty (trimmed) string among the inputs,
+// or "" if all are blank. Used to accept a new env name while keeping the
+// legacy one as a fallback during rollout.
+func firstNonEmpty(values ...string) string {
+	for _, v := range values {
+		if s := strings.TrimSpace(v); s != "" {
+			return s
+		}
+	}
+	return ""
+}
+
+// resetStoreCatalog maps user-facing store names (as printed in --reset-store)
+// to their absolute paths in cfg. Config is intentionally NOT in this list —
+// --reset-store must never clear operator credentials or preferences file.
+func resetStoreCatalog(cfg config.Config) map[string]string {
+	return map[string]string{
+		"sessions.json":            cfg.SessionStorePath,
+		"workspaces.json":          cfg.WorkspaceStorePath,
+		"preferences.json":         cfg.PreferenceStorePath,
+		"replies.json":             cfg.ReplyStorePath,
+		"access.json":              cfg.AccessStorePath,
+		"action-grants.json":       cfg.ActionGrantStorePath,
+		"dev-mode.json":            cfg.DevModeStorePath,
+		"participated-topics.json": cfg.ParticipatedTopicsStorePath,
+		"topic-aliases.json":       cfg.TopicAliasStorePath,
+		"schedules.json":           cfg.ScheduleStorePath,
+	}
+}
+
+// applyResetStore deletes the state files named in spec before the serve loop
+// starts. spec is a comma-separated list of store file names, or "all" to
+// clear every known state store. Missing files are treated as a no-op. This
+// implements the plan's "完全复位" escape hatch — accept losing state when the
+// operator explicitly asks for it, but never touch config/credentials.
+func applyResetStore(cfg config.Config, spec string) error {
+	spec = strings.TrimSpace(spec)
+	if spec == "" {
+		return nil
+	}
+	catalog := resetStoreCatalog(cfg)
+	var names []string
+	if strings.EqualFold(spec, "all") {
+		for name := range catalog {
+			names = append(names, name)
+		}
+	} else {
+		for _, raw := range strings.Split(spec, ",") {
+			name := strings.TrimSpace(raw)
+			if name == "" {
+				continue
+			}
+			if _, ok := catalog[name]; !ok {
+				return fmt.Errorf("--reset-store: unknown store %q; known: sessions.json, workspaces.json, preferences.json, replies.json, access.json, action-grants.json, dev-mode.json, participated-topics.json, topic-aliases.json, schedules.json, all", name)
+			}
+			names = append(names, name)
+		}
+	}
+	for _, name := range names {
+		path := catalog[name]
+		if path == "" {
+			continue
+		}
+		if err := os.Remove(path); err != nil && !errors.Is(err, fs.ErrNotExist) {
+			return fmt.Errorf("--reset-store %s: %w", name, err)
+		}
+		fmt.Fprintf(os.Stderr, "[reset-store] cleared %s\n", path)
+	}
+	return nil
+}

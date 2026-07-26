@@ -121,6 +121,30 @@ func TestEngineConcurrentWithLock(t *testing.T) {
 	}
 }
 
+// TestWriteFileAtomicTopLevel 顶层辅助函数：迁移用；含目录 fsync。
+func TestWriteFileAtomicTopLevel(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "x.json")
+	if err := WriteFileAtomic(path, []byte(`{"ok":true}`), 0o600); err != nil {
+		t.Fatalf("WriteFileAtomic: %v", err)
+	}
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	if string(got) != `{"ok":true}` {
+		t.Fatalf("content = %s", got)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("Stat: %v", err)
+	}
+	if info.Mode().Perm() != 0o600 {
+		t.Fatalf("perm = %o, want 600", info.Mode().Perm())
+	}
+	assertNoTempResidue(t, dir)
+}
+
 func assertNoTempResidue(t *testing.T, dir string) {
 	t.Helper()
 	entries, err := os.ReadDir(dir)

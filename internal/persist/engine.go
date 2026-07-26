@@ -37,6 +37,23 @@ func NewEngine(dir string) (*Engine, error) {
 // Dir 返回引擎数据目录。
 func (e *Engine) Dir() string { return e.dir }
 
+// WriteFileAtomic 是给旧 store 包快速迁移的顶层辅助：
+// 用 engine 的同步 durable 原子写替换零散实现（补齐目录 fsync）。
+//
+// path 必须是要写入的目标文件绝对路径；实现内部自行推导所在目录并完成
+// temp → fsync(temp) → rename → fsync(dir)。返回成功即已落盘。
+func WriteFileAtomic(path string, data []byte, perm os.FileMode) error {
+	if strings.TrimSpace(path) == "" {
+		return errors.New("persist: empty path")
+	}
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return fmt.Errorf("persist: create parent dir for %s: %w", filepath.Base(path), err)
+	}
+	f := &file{path: path}
+	return f.writeAtomic(data, perm)
+}
+
 // file 代表一个 JSON 文件的原子读写单元，自带一把锁。
 type file struct {
 	path string
