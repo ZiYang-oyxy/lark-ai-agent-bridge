@@ -73,6 +73,27 @@ func TestActionRequestFromCardCallbackAcceptsBoolAndMultiSelect(t *testing.T) {
 	}
 }
 
+// CardKit clients may submit multi-select choices as option objects rather
+// than the bare string values used by the initial implementation. Keep this
+// callback shape compatible so /config metadata choices reach the save path.
+func TestActionRequestFromCardCallbackAcceptsMultiSelectOptionObjects(t *testing.T) {
+	req, err := ActionRequestFromCardCallback([]byte(`{
+		"operator": {"open_id": "user-1"},
+		"action": {
+			"value": {"session": "claude:chat", "action_id": "config.save"},
+			"form_value": {
+				"meta_rows": [{"value": "agent"}, {"value": "developer"}]
+			}
+		}
+	}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := req.FormValues["meta_rows"]; got != "agent,developer" {
+		t.Fatalf("multi-select option objects should be normalized to CSV, got %q", got)
+	}
+}
+
 func TestActionRequestFromCardCallbackPreservesEmptyMultiSelect(t *testing.T) {
 	req, err := ActionRequestFromCardCallback([]byte(`{
 		"operator": {"open_id": "user-1"},

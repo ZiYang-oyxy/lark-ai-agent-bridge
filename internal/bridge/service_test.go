@@ -955,6 +955,32 @@ func TestServiceConfigSaveMultiSelectMetaRows(t *testing.T) {
 	}
 }
 
+func TestServiceConfigSavePersistsMetaRowsFromCardCallbackOptionObjects(t *testing.T) {
+	cfg := testConfig(t)
+	cfg.Model, cfg.Effort = "default", "low"
+	defaults := config.RuntimePreference{Model: cfg.Model, Effort: cfg.Effort}
+	store, _ := testPreferenceStore(t, defaults, cfg.AllowedModels)
+	svc := NewService(cfg, card.NewFakeRenderer(), newFakeRunner(), audit.NewRecorder())
+	svc.Preferences = store
+
+	req, err := ActionRequestFromCardCallback([]byte(`{
+		"operator": {"open_id": "user"},
+		"action": {
+			"value": {"session": "config-card", "action_id": "config.save"},
+			"form_value": {"meta_rows": [{"value": "agent"}, {"value": "developer"}]}
+		}
+	}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.HandleActionResult(context.Background(), req); err != nil {
+		t.Fatal(err)
+	}
+	if got := store.Get(); !got.ShowMetaRowAgent || got.ShowMetaRowRuntime || !got.ShowMetaRowDeveloper {
+		t.Fatalf("saved metadata rows = %#v", got)
+	}
+}
+
 // TestServiceConfigSaveModelStaysStickyEffortIsEditable guards the /config
 // form's split treatment of the two knobs: Model is intentionally not part of
 // the form and must survive stale/malicious submissions; Effort is editable and

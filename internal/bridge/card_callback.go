@@ -93,8 +93,8 @@ func callbackFormValues(action map[string]any) (map[string]string, error) {
 // cardFormValueToString 把飞书 CardKit 表单回调里可能出现的值都规约成字符串:
 //   - string:原样
 //   - bool(如 checker `checked` 的 form_value):"true"/"false",与 strconv.ParseBool 兼容
-//   - []any(如 multi_select_static 的 form_value):元素为字符串则拼成逗号分隔,
-//     便于 handler 用 strings.Split 拆开;非字符串元素跳过
+//   - []any(如 multi_select_static 的 form_value):兼容裸字符串和带 value 的选项
+//     对象，并拼成逗号分隔，便于 handler 用 strings.Split 拆开
 //   - 其它(数字、null 等):返回 false,交给 caller continue,与旧 string-only
 //     行为语义一致(过去就是 continue)
 //
@@ -113,8 +113,13 @@ func cardFormValueToString(value any) (string, bool) {
 	case []any:
 		parts := make([]string, 0, len(v))
 		for _, item := range v {
-			if s, ok := item.(string); ok {
-				parts = append(parts, s)
+			switch selected := item.(type) {
+			case string:
+				parts = append(parts, selected)
+			case map[string]any:
+				if value, ok := selected["value"].(string); ok {
+					parts = append(parts, value)
+				}
 			}
 		}
 		return strings.Join(parts, ","), true
