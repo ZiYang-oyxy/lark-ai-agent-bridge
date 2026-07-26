@@ -219,6 +219,13 @@ const maxVisibleSegments = 2
 
 const cleanTimelineSeparator = "────────────────────"
 
+// usesCleanCardLayout identifies reply modes that present one run as the
+// append-clean three-section card. latest-card differs only in its policy:
+// it rehydrates and replaces the previous run's CardKit card.
+func usesCleanCardLayout(mode config.ReplyMode) bool {
+	return mode == config.ReplyModeAppendCleanCard || mode == config.ReplyModeLatestCard
+}
+
 func newAgentCardStream(service *Service, sessionID string, sess session.Session, input session.Input) *agentCardStream {
 	return newAgentCardStreamWithRenderer(service, sessionID, sess, input, service.Cards, nil)
 }
@@ -374,7 +381,7 @@ func (s *agentCardStream) Handle(update AgentStreamUpdate) {
 		s.orderedPartialAt = 0
 		s.orderedPartial = false
 	}
-	if s.replyMode == config.ReplyModeAppendCleanCard {
+	if usesCleanCardLayout(s.replyMode) {
 		s.updateCleanSectionsLocked(update.Segments, update.Incremental, assistantSnapshot, update.ProgressSnapshot)
 	}
 	activityChanged := update.Activity != "" && update.Activity != previousActivity
@@ -1517,7 +1524,7 @@ func (s *agentCardStream) mergeFinalSegmentsLocked(segments []card.Segment, answ
 		s.tools.Reset()
 		s.tools.WriteString(tools.String())
 	}
-	if s.replyMode == config.ReplyModeAppendCleanCard {
+	if usesCleanCardLayout(s.replyMode) {
 		// 组装 finalize 源:thought 从 segments;tool 优先从 orderedSegments(Claude stream 只有
 		// 这里保留了 Tool meta,segments 里的 SegmentTool 只是合并 markdown 无 meta),
 		// orderedSegments 里没有 tool 段时再从 segments 里取(测试路径或 codex path)。
@@ -1772,9 +1779,9 @@ func (s *agentCardStream) eventLocked(initial bool) card.Event {
 	}
 	stopVisible := s.stopVisible && (s.status == "running" || s.status == "stopped" || s.status == "completed" || s.status == "failed")
 	stopDisabled := s.status != "running"
-	// 三段布局(append-clean-card)在终态隐藏 stop 按钮:终态卡片只需展示答案与折叠面板,
+	// 三段布局(append-clean-card/latest-card)在终态隐藏 stop 按钮:终态卡片只需展示答案与折叠面板,
 	// "已完成 ✗" 灰按钮占位无意义,还会打断视觉。运行/停止请求中(status=running)仍显示。
-	if s.replyMode == config.ReplyModeAppendCleanCard && s.status != "running" {
+	if usesCleanCardLayout(s.replyMode) && s.status != "running" {
 		stopVisible = false
 	}
 	return card.Event{
@@ -1794,9 +1801,9 @@ func (s *agentCardStream) eventLocked(initial bool) card.Event {
 		ProcessExpanded:    false,
 		ToolCallCount:      s.toolCallCount,
 		OrderedLayout:      s.replyMode == config.ReplyModeAppend,
-		ThreeSectionLayout: s.replyMode == config.ReplyModeAppendCleanCard,
+		ThreeSectionLayout: usesCleanCardLayout(s.replyMode),
 		// 三段布局:思考默认展开(用户要求),终态折叠让最终答案更清爽;工具恒默认折叠。
-		ThoughtExpanded:   s.replyMode == config.ReplyModeAppendCleanCard && s.status == "running",
+		ThoughtExpanded:   usesCleanCardLayout(s.replyMode) && s.status == "running",
 		ToolsExpanded:     false,
 		ThoughtRoundCount: s.thoughtRounds,
 		ToolRoundCount:    s.toolRounds,
@@ -1807,11 +1814,10 @@ func (s *agentCardStream) segmentsLocked() []card.Segment {
 	if s.replyMode == config.ReplyModeAppend {
 		return s.withStopRequestedNoticeLocked(s.orderedSegmentsLocked())
 	}
-	// append-clean-card 在两个独立折叠区中分别倒序显示最新两条思考/工具 update;
-	// 其余模式(latest-card 等走此分支的)保持旧的累积 thought / tools。
+	// append-clean-card/latest-card 在两个独立折叠区中分别倒序显示最新两条思考/工具 update。
 	thoughtText := s.thought.String()
 	toolsText := s.tools.String()
-	if s.replyMode == config.ReplyModeAppendCleanCard {
+	if usesCleanCardLayout(s.replyMode) {
 		thoughtText = s.formatCleanTimelineLocked(card.SegmentThought)
 		toolsText = s.formatCleanTimelineLocked(card.SegmentTool)
 	}

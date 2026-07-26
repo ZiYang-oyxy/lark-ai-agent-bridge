@@ -1388,6 +1388,64 @@ func TestAppendCleanThreeSectionLatestOnly(t *testing.T) {
 	}
 }
 
+func TestLatestCardUsesAppendCleanThreeSectionLayout(t *testing.T) {
+	clock := &fakeStreamClock{now: time.Date(2026, 7, 26, 12, 10, 0, 0, time.FixedZone("CST", 8*60*60))}
+	renderer := card.NewFakeRenderer()
+	stream := newPreviewTestStreamForMode(t, renderer, clock, 1, 4000, config.ReplyModeLatestCard)
+	if err := stream.Start(); err != nil {
+		t.Fatal(err)
+	}
+	stream.Handle(AgentStreamUpdate{Activity: streamActivityReasoning, Incremental: true,
+		Segments: []card.Segment{{Kind: card.SegmentThought, Text: "先定位问题"}}})
+	clock.Advance(10 * time.Second)
+	stream.Handle(AgentStreamUpdate{Activity: streamActivityTool,
+		Segments: []card.Segment{{Kind: card.SegmentTool, Text: "- Bash `t1`\n\n```json\n{\"command\":\"go test ./...\"}\n```",
+			Tool: &card.ToolMeta{ID: "t1", Name: "Bash", Summary: "go test ./...", Phase: "use"}}}})
+	stream.Handle(AgentStreamUpdate{Segments: []card.Segment{{Kind: card.SegmentTool, Text: "- tool_result `t1`\n\n```\nok\n```",
+		Tool: &card.ToolMeta{ID: "t1", Phase: "result"}}}})
+	stream.Handle(AgentStreamUpdate{AssistantSnapshot: true,
+		Segments: []card.Segment{{Kind: card.SegmentThought, Text: "先定位问题"}, {Kind: card.SegmentText, Text: "最终答复"}}})
+	if err := stream.Flush(); err != nil {
+		t.Fatal(err)
+	}
+
+	preview := renderer.Events()[len(renderer.Events())-1]
+	if !preview.ThreeSectionLayout || !preview.ThoughtExpanded || preview.ToolsExpanded {
+		t.Fatalf("latest preview layout = %#v, want running append-clean layout", preview)
+	}
+	if preview.ThoughtRoundCount != 1 || preview.ToolRoundCount != 1 {
+		t.Fatalf("latest preview counts = thought:%d tool:%d, want 1/1", preview.ThoughtRoundCount, preview.ToolRoundCount)
+	}
+	if got := segmentTextByKind(preview, card.SegmentThought); !strings.Contains(got, "Update #1 · 12:10:00") || !strings.Contains(got, "先定位问题") {
+		t.Fatalf("latest thought timeline = %q", got)
+	}
+	if got := segmentTextByKind(preview, card.SegmentTool); !strings.Contains(got, "Update #2 · 12:10:10") || !strings.Contains(got, "go test ./...") {
+		t.Fatalf("latest tool timeline = %q", got)
+	}
+
+	terminal, err := stream.Finish("completed", card.Meta{}, AgentRunResult{
+		Segments: []card.Segment{
+			{Kind: card.SegmentThought, Text: "先定位问题"},
+			{Kind: card.SegmentTool, Text: "- Bash `t1`\n\n```json\n{\"command\":\"go test ./...\"}\n```", Tool: &card.ToolMeta{ID: "t1", Name: "Bash", Summary: "go test ./...", Phase: "use"}},
+			{Kind: card.SegmentTool, Text: "- tool_result `t1`\n\n```\nok\n```", Tool: &card.ToolMeta{ID: "t1", Phase: "result"}},
+			{Kind: card.SegmentText, Text: "最终答复"},
+		},
+		AnswerSegments: []string{"最终答复"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !terminal.ThreeSectionLayout || terminal.ThoughtExpanded || terminal.ToolsExpanded || terminal.StopButton.Visible {
+		t.Fatalf("latest terminal layout = %#v, want folded append-clean layout without stop", terminal)
+	}
+	if got := segmentTextByKind(terminal, card.SegmentThought); !strings.Contains(got, "Update #1 · 12:10:00") {
+		t.Fatalf("latest terminal thought timeline = %q", got)
+	}
+	if got := segmentTextByKind(terminal, card.SegmentTool); !strings.Contains(got, "Update #2 · 12:10:10") {
+		t.Fatalf("latest terminal tool timeline = %q", got)
+	}
+}
+
 func segmentTextByKind(ev card.Event, kind card.SegmentKind) string {
 	for _, seg := range ev.Segments {
 		if seg.Kind == kind {
