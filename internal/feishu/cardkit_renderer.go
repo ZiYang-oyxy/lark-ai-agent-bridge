@@ -368,6 +368,9 @@ func (r *CardKitRenderer) nativeFallbackReason(prepared card.PreparedLarkCard) s
 	if !prepared.EventCopy().Streaming {
 		return "not_streaming"
 	}
+	if prepared.EventCopy().ForceFullUpdate {
+		return "full_update_requested"
+	}
 	if !r.snapshot.prepared.NativeReady() {
 		return "snapshot_not_native_ready"
 	}

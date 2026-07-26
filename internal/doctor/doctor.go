@@ -74,6 +74,7 @@ func runStatic(cfg config.Config) []Check {
 		mediaCacheWritable(cfg.MediaCacheDir),
 		optionalEnv("E2E_CALLBACK_ADDR"),
 		durationPositive("card_update_every", cfg.CardUpdateEvery),
+		durationPositive("card_heartbeat_every", cfg.CardHeartbeatEvery),
 		durationPositive("interaction_timeout", cfg.InteractionTimeout),
 		intPositive("card_max_chars", cfg.CardMaxChars),
 		intPositive("card_min_delta_chars", cfg.CardMinDeltaChars),

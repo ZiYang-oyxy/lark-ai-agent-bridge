@@ -17,6 +17,7 @@ type Config struct {
 	ClaudeBin                   string
 	CodexBin                    string
 	CardUpdateEvery             time.Duration
+	CardHeartbeatEvery          time.Duration
 	CardMaxChars                int
 	CardMinDeltaChars           int
 	CardPreviewMaxChars         int
@@ -72,6 +73,7 @@ func LoadFromEnv() Config {
 		ClaudeBin:                   "claude",
 		CodexBin:                    "codex",
 		CardUpdateEvery:             800 * time.Millisecond,
+		CardHeartbeatEvery:          15 * time.Second,
 		CardMaxChars:                12000,
 		CardMinDeltaChars:           30,
 		CardPreviewMaxChars:         2000,
@@ -153,6 +155,11 @@ func LoadFromEnv() Config {
 	if v := os.Getenv("E2E_CARD_UPDATE_MS"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n > 0 {
 			cfg.CardUpdateEvery = time.Duration(n) * time.Millisecond
+		}
+	}
+	if v := os.Getenv("E2E_CARD_HEARTBEAT_SEC"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			cfg.CardHeartbeatEvery = time.Duration(n) * time.Second
 		}
 	}
 	if v := os.Getenv("E2E_CARD_MIN_DELTA_CHARS"); v != "" {
@@ -338,6 +345,9 @@ func LoadFromEnvStrict() (Config, error) {
 		return Config{}, err
 	}
 	if cfg.CardPreviewMaxChars, err = explicitPositiveInt("E2E_CARD_PREVIEW_MAX_CHARS", cfg.CardPreviewMaxChars); err != nil {
+		return Config{}, err
+	}
+	if cfg.CardHeartbeatEvery, err = explicitPositiveDuration("E2E_CARD_HEARTBEAT_SEC", time.Second, cfg.CardHeartbeatEvery); err != nil {
 		return Config{}, err
 	}
 	if cfg.MediaCacheDir, err = explicitMediaDir("E2E_MEDIA_CACHE_DIR", cfg.MediaCacheDir); err != nil {

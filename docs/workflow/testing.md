@@ -96,6 +96,7 @@ doctor 应检查：
 - 审计日志路径是否可创建和写入
 - `E2E_CALLBACK_ADDR` 是否设置；未设置也允许通过，表示按钮走长连接
 - `E2E_CARD_UPDATE_MS`
+- `E2E_CARD_HEARTBEAT_SEC`
 - `E2E_INTERACTION_TIMEOUT_SEC`
 - `E2E_CARD_MAX_CHARS`
 

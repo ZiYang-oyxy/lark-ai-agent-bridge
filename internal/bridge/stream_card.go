@@ -91,6 +91,9 @@ type agentCardStream struct {
 	previewGen       uint64
 	previewPending   bool
 	previewDisabled  bool
+	heartbeatEvery   time.Duration
+	heartbeatTimer   streamTimer
+	heartbeatGen     uint64
 	lastFlush        time.Time
 	lastFlushedRunes int
 	contentRevision  uint64
@@ -184,6 +187,10 @@ func newAgentCardStreamWithClock(service *Service, sessionID string, sess sessio
 	if policy.Interval <= 0 {
 		policy.Interval = time.Second
 	}
+	heartbeatEvery := service.Config.CardHeartbeatEvery
+	if heartbeatEvery <= 0 {
+		heartbeatEvery = 15 * time.Second
+	}
 	ctxDir := service.contextUsageDirForRun(sess.Key.Agent, input.AgentHome)
 	stopGrantID, grantErr := service.issueActionGrant(input.Sender, sess.Key.ChatID, sessionID, "stop", "", time.Now().Add(defaultActionGrantTTL))
 	stopVisible := true
@@ -192,23 +199,24 @@ func newAgentCardStreamWithClock(service *Service, sessionID string, sess sessio
 		service.Audit.Record("system", "action_grant_issue_failed", sessionID, "action=stop error="+grantErr.Error())
 	}
 	return &agentCardStream{
-		renderer:      renderer,
-		refProvider:   refProvider,
-		clock:         clock,
-		previewPolicy: policy,
-		previewTail:   continuationPreview,
-		sessionID:     sessionID,
-		replyTo:       input.ReplyToMessageID,
-		replyInThread: input.ConversationMode == config.ConversationModeTopic,
-		replyMode:     input.EffectiveReplyMode(),
-		startedAt:     startedAt,
-		status:        "running",
-		activity:      streamActivityReasoning,
-		meta:          service.metaForRunWithDir(sess, input, ctxDir),
-		totalBefore:   sess.Tokens,
-		stopVisible:   stopVisible,
-		stopGrantID:   stopGrantID,
-		ctxDir:        ctxDir,
+		renderer:       renderer,
+		refProvider:    refProvider,
+		clock:          clock,
+		previewPolicy:  policy,
+		heartbeatEvery: heartbeatEvery,
+		previewTail:    continuationPreview,
+		sessionID:      sessionID,
+		replyTo:        input.ReplyToMessageID,
+		replyInThread:  input.ConversationMode == config.ConversationModeTopic,
+		replyMode:      input.EffectiveReplyMode(),
+		startedAt:      startedAt,
+		status:         "running",
+		activity:       streamActivityReasoning,
+		meta:           service.metaForRunWithDir(sess, input, ctxDir),
+		totalBefore:    sess.Tokens,
+		stopVisible:    stopVisible,
+		stopGrantID:    stopGrantID,
+		ctxDir:         ctxDir,
 	}
 }
 
@@ -231,6 +239,7 @@ func (s *agentCardStream) Start() error {
 	if err == nil {
 		s.mu.Lock()
 		s.lastFlush = s.clock.Now()
+		s.resetHeartbeatLocked()
 		s.mu.Unlock()
 	}
 	return err
@@ -374,6 +383,7 @@ func (s *agentCardStream) FinishTransformed(status string, meta card.Meta, resul
 		s.stopVisible = true
 	}
 	s.closed = true
+	s.cancelHeartbeatLocked()
 	s.previewGen++
 	if s.previewTimer != nil {
 		s.previewTimer.Stop()
@@ -414,6 +424,7 @@ func (s *agentCardStream) markStopping() {
 
 func (s *agentCardStream) markStoppingLocked() {
 	s.stopping = true
+	s.cancelHeartbeatLocked()
 	s.previewGen++
 	if s.previewTimer != nil {
 		s.previewTimer.Stop()
@@ -596,6 +607,53 @@ func (s *agentCardStream) onPreviewTimer(generation uint64) {
 	_ = s.flushPreview(generation)
 }
 
+func (s *agentCardStream) resetHeartbeatLocked() {
+	s.cancelHeartbeatLocked()
+	if s.closed || s.stopping || s.previewDisabled || s.heartbeatEvery <= 0 {
+		return
+	}
+	generation := s.heartbeatGen
+	s.heartbeatTimer = s.clock.AfterFunc(s.heartbeatEvery, func() { s.onHeartbeat(generation) })
+}
+
+func (s *agentCardStream) cancelHeartbeatLocked() {
+	s.heartbeatGen++
+	if s.heartbeatTimer != nil {
+		s.heartbeatTimer.Stop()
+		s.heartbeatTimer = nil
+	}
+}
+
+func (s *agentCardStream) onHeartbeat(generation uint64) {
+	s.mu.Lock()
+	if s.closed || s.stopping || s.previewDisabled || generation != s.heartbeatGen {
+		s.mu.Unlock()
+		return
+	}
+	s.heartbeatTimer = nil
+	if s.previewPending {
+		s.resetHeartbeatLocked()
+		s.mu.Unlock()
+		return
+	}
+	event := s.eventLocked(false)
+	event.ForceFullUpdate = true
+	if len(event.Segments) == 0 {
+		event.Message = "任务仍在运行…"
+	}
+	s.mu.Unlock()
+
+	_ = s.renderHeartbeat(generation, event)
+	s.mu.Lock()
+	if generation != s.heartbeatGen {
+		s.mu.Unlock()
+		return
+	}
+	// A transient CardKit failure must not permanently disable liveness updates.
+	s.resetHeartbeatLocked()
+	s.mu.Unlock()
+}
+
 func (s *agentCardStream) flushPreview(generation uint64) error {
 	s.mu.Lock()
 	if s.closed || s.previewDisabled || !s.previewPending || generation != s.previewGen {
@@ -623,6 +681,7 @@ func (s *agentCardStream) flushPreview(generation uint64) error {
 	if err != nil {
 		s.previewDisabled = true
 		s.cancelPreviewTimerLocked()
+		s.cancelHeartbeatLocked()
 		s.mu.Unlock()
 		return err
 	}
@@ -630,6 +689,7 @@ func (s *agentCardStream) flushPreview(generation uint64) error {
 	s.lastFlushedRunes = flushedRunes
 	s.lastFlushedRev = flushedRevision
 	s.lastFlushedMeta = flushedMetaRevision
+	s.resetHeartbeatLocked()
 	immediate, nextGeneration := s.requestPreviewLocked(false)
 	s.mu.Unlock()
 	if immediate {
@@ -649,6 +709,18 @@ func (s *agentCardStream) renderPreview(generation uint64, event card.Event) err
 	defer s.renderMu.Unlock()
 	s.mu.Lock()
 	if s.closed || s.previewDisabled || !s.previewPending || generation != s.previewGen {
+		s.mu.Unlock()
+		return nil
+	}
+	s.mu.Unlock()
+	return s.renderer.Render(event)
+}
+
+func (s *agentCardStream) renderHeartbeat(generation uint64, event card.Event) error {
+	s.renderMu.Lock()
+	defer s.renderMu.Unlock()
+	s.mu.Lock()
+	if s.closed || s.stopping || s.previewDisabled || generation != s.heartbeatGen {
 		s.mu.Unlock()
 		return nil
 	}

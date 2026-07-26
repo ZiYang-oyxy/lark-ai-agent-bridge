@@ -421,6 +421,7 @@ func newPreviewTestStreamForMode(t *testing.T, renderer card.Renderer, clock str
 	t.Helper()
 	cfg := testConfig(t)
 	cfg.CardUpdateEvery = 800 * time.Millisecond
+	cfg.CardHeartbeatEvery = time.Hour
 	cfg.CardMinDeltaChars = minDelta
 	cfg.CardPreviewMaxChars = maxPreview
 	svc := NewService(cfg, card.NewFakeRenderer(), newFakeRunner(), audit.NewRecorder())
@@ -595,6 +596,90 @@ func TestStreamPreviewCannotRenderAfterFinish(t *testing.T) {
 	}
 }
 
+func TestCardHeartbeatRefreshesQuietRunningCardAndStopsAtTerminal(t *testing.T) {
+	clock := &fakeStreamClock{now: time.Unix(100, 0)}
+	renderer := card.NewFakeRenderer()
+	stream := newPreviewTestStream(t, renderer, clock, 30, 2000)
+	stream.heartbeatEvery = 15 * time.Second
+	if err := stream.Start(); err != nil {
+		t.Fatal(err)
+	}
+
+	clock.Advance(14 * time.Second)
+	if got := len(renderer.Events()); got != 1 {
+		t.Fatalf("events before heartbeat = %d, want 1", got)
+	}
+	clock.Advance(time.Second)
+	events := renderer.Events()
+	if len(events) != 2 {
+		t.Fatalf("events after heartbeat = %d, want 2", len(events))
+	}
+	heartbeat := events[1]
+	if heartbeat.Type != "stream" || !heartbeat.Streaming || !heartbeat.ForceFullUpdate || heartbeat.Message != "任务仍在运行…" {
+		t.Fatalf("heartbeat event = %#v", heartbeat)
+	}
+	if !strings.Contains(heartbeat.HeaderTitle, "15s") {
+		t.Fatalf("heartbeat title = %q, want refreshed elapsed time", heartbeat.HeaderTitle)
+	}
+
+	if _, err := stream.Finish("completed", card.Meta{}, AgentRunResult{Segments: []card.Segment{{Kind: card.SegmentText, Text: "done"}}}); err != nil {
+		t.Fatal(err)
+	}
+	before := len(renderer.Events())
+	clock.Advance(time.Minute)
+	if got := len(renderer.Events()); got != before {
+		t.Fatalf("events after terminal = %d, want %d", got, before)
+	}
+}
+
+func TestCardHeartbeatWaitsForQuietPeriodAfterNormalPreview(t *testing.T) {
+	clock := &fakeStreamClock{now: time.Unix(200, 0)}
+	renderer := card.NewFakeRenderer()
+	stream := newPreviewTestStream(t, renderer, clock, 1, 2000)
+	stream.heartbeatEvery = 15 * time.Second
+	if err := stream.Start(); err != nil {
+		t.Fatal(err)
+	}
+
+	clock.Advance(10 * time.Second)
+	stream.Handle(AgentStreamUpdate{Segments: []card.Segment{{Kind: card.SegmentText, Text: "output"}}})
+	if got := len(renderer.Events()); got != 2 {
+		t.Fatalf("events after normal preview = %d, want 2", got)
+	}
+	clock.Advance(14 * time.Second)
+	if got := len(renderer.Events()); got != 2 {
+		t.Fatalf("events before reset heartbeat = %d, want 2", got)
+	}
+	clock.Advance(time.Second)
+	if got := len(renderer.Events()); got != 3 {
+		t.Fatalf("events after reset heartbeat = %d, want 3", got)
+	}
+}
+
+func TestStaleCardHeartbeatCannotRenderAfterFinish(t *testing.T) {
+	clock := &fakeStreamClock{now: time.Unix(300, 0)}
+	renderer := card.NewFakeRenderer()
+	stream := newPreviewTestStream(t, renderer, clock, 30, 2000)
+	stream.heartbeatEvery = 15 * time.Second
+	if err := stream.Start(); err != nil {
+		t.Fatal(err)
+	}
+	stream.mu.Lock()
+	generation := stream.heartbeatGen
+	stale := stream.eventLocked(false)
+	stream.mu.Unlock()
+	if _, err := stream.Finish("completed", card.Meta{}, AgentRunResult{}); err != nil {
+		t.Fatal(err)
+	}
+	before := len(renderer.Events())
+	if err := stream.renderHeartbeat(generation, stale); err != nil {
+		t.Fatal(err)
+	}
+	if got := len(renderer.Events()); got != before {
+		t.Fatalf("events after stale heartbeat = %d, want %d", got, before)
+	}
+}
+
 func TestAgentCardStreamAllowsTransformedFinishThenTerminalUpdate(t *testing.T) {
 	clock := &fakeStreamClock{now: time.Unix(100, 0)}
 	renderer := card.NewFakeRenderer()
@@ -645,6 +730,7 @@ func TestStreamMarkStoppingBlocksRunningRenders(t *testing.T) {
 	}
 	before := len(renderer.Events())
 	stream.markStopping()
+	clock.Advance(2 * time.Hour)
 	// 停止后到达的流式增量必须被忽略。
 	stream.Handle(AgentStreamUpdate{Segments: []card.Segment{{Kind: card.SegmentText, Text: "late chunk"}}, Activity: streamActivityAnswering})
 	if err := stream.Flush(); err != nil {

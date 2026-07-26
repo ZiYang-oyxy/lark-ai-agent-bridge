@@ -17,6 +17,7 @@ bridge 不托管交互式终端，也不通过 tmux/PTY 捕获输出。每个已
 - 如果当前 conversation scope 已保存 agent session id，后续消息使用对应 CLI 的 resume 协议续接。
 - `/new` 会清空当前 conversation scope 保存的 agent session id，并从新会话开始。
 - 执行开始时创建“执行中”卡片，读取 Claude `stream-json` stdout 时增量更新同一张卡片。
+- 若连续 `E2E_CARD_HEARTBEAT_SEC`（默认 15 秒）没有成功的正常卡片更新，CardStream 会刷新同一卡片的耗时，表明任务通道仍存活；每次正常更新重置计时，终态和停止请求取消计时器。
 - 执行中卡片带一次性“停止”按钮，点击后取消当前 Agent 子进程，同一卡片进入灰色“已停止”状态并置灰按钮。
 - 完成、失败和停止后的卡片仍保留灰色 disabled 按钮，文案分别是“已完成”“已结束”“已停止”，避免用户误以为还能继续点击停止。
 
@@ -90,7 +91,7 @@ Conversation mode 决定会话 key 和飞书回复位置：
 
 Claude runner 使用 `--output-format stream-json`，通过 stdout pipe 逐行读取 JSONL 事件。每个事件会同时进入两条路径：
 
-- 增量路径：实时更新当前 CardStream 状态，并按 `E2E_CARD_UPDATE_MS` 节流刷新同一张 CardKit 卡片。
+- 增量路径：实时更新当前 CardStream 状态，并按 `E2E_CARD_UPDATE_MS` 节流刷新同一张 CardKit 卡片；没有新事件时由独立 idle heartbeat 更新耗时，不依赖 Agent stdout 继续产出。
 - 最终路径：在进程退出时汇总最终正文、思考、工具、model、token 和 Claude session id，写回内存会话状态。
 
 当前从 JSONL 事件中提取：

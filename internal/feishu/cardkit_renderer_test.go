@@ -559,6 +559,32 @@ func TestCardKitRendererNativeAnswerIgnoresElapsedHeaderSuffix(t *testing.T) {
 	}
 }
 
+func TestCardKitRendererHeartbeatForcesElapsedFullCardUpdate(t *testing.T) {
+	client := &fakeCardKitClient{}
+	renderer := NewCardKitRendererWithNative(client, "source", nil, RenderBinding{
+		BaseSessionID: "claude:chat", BatchID: "batch", LatestScope: "claude:chat", RunCardSessionID: "run-card",
+	}, &fakeNativeJournal{})
+	first := card.Event{
+		Type: "stream", Streaming: true, SessionID: "run-card", HeaderTitle: "🧠 正在推理 · ⏱ 0s", Message: "思考中…",
+	}
+	if err := renderer.Render(first); err != nil {
+		t.Fatal(err)
+	}
+	heartbeat := first
+	heartbeat.HeaderTitle = "🧠 正在推理 · ⏱ 15s"
+	heartbeat.Message = "任务仍在运行…"
+	heartbeat.ForceFullUpdate = true
+	if err := renderer.Render(heartbeat); err != nil {
+		t.Fatal(err)
+	}
+	if len(client.elementReqs) != 0 || len(client.updateReqs) != 1 {
+		t.Fatalf("heartbeat wrote element/full=%d/%d, want 0/1", len(client.elementReqs), len(client.updateReqs))
+	}
+	if got := client.updateReqs[0].Prepared.EventCopy().HeaderTitle; got != heartbeat.HeaderTitle {
+		t.Fatalf("heartbeat full-card title = %q, want %q", got, heartbeat.HeaderTitle)
+	}
+}
+
 func TestCardKitRendererNativeAnswerPreservesHeaderPhaseChanges(t *testing.T) {
 	client := &fakeCardKitClient{}
 	observer := &fakeCardKitObserver{}

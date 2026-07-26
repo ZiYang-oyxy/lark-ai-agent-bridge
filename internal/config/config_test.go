@@ -9,6 +9,7 @@ import (
 
 func TestLoadFromEnvParsesRuntimeTuning(t *testing.T) {
 	t.Setenv("E2E_CARD_UPDATE_MS", "250")
+	t.Setenv("E2E_CARD_HEARTBEAT_SEC", "7")
 	t.Setenv("E2E_CARD_MAX_CHARS", "4096")
 	t.Setenv("E2E_CARD_MIN_DELTA_CHARS", "31")
 	t.Setenv("E2E_CARD_PREVIEW_MAX_CHARS", "2001")
@@ -18,6 +19,9 @@ func TestLoadFromEnvParsesRuntimeTuning(t *testing.T) {
 	cfg := LoadFromEnv()
 	if cfg.CardUpdateEvery != 250*time.Millisecond {
 		t.Fatalf("card update interval = %s, want 250ms", cfg.CardUpdateEvery)
+	}
+	if cfg.CardHeartbeatEvery != 7*time.Second {
+		t.Fatalf("card heartbeat interval = %s, want 7s", cfg.CardHeartbeatEvery)
 	}
 	if cfg.CardMaxChars != 4096 {
 		t.Fatalf("card max chars = %d, want 4096", cfg.CardMaxChars)
@@ -107,7 +111,7 @@ func TestLoadFromEnvStrictRejectsNonHTTPSUpdateManifestURL(t *testing.T) {
 }
 
 func TestLoadFromEnvStrictRejectsInvalidPreviewTuning(t *testing.T) {
-	for _, name := range []string{"E2E_CARD_MIN_DELTA_CHARS", "E2E_CARD_PREVIEW_MAX_CHARS"} {
+	for _, name := range []string{"E2E_CARD_MIN_DELTA_CHARS", "E2E_CARD_PREVIEW_MAX_CHARS", "E2E_CARD_HEARTBEAT_SEC"} {
 		t.Run(name, func(t *testing.T) {
 			t.Setenv(name, "0")
 			if _, err := LoadFromEnvStrict(); err == nil {

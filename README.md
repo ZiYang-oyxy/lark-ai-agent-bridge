@@ -35,6 +35,7 @@ workspace：
 - `append` 每轮新建完整 CardKit 状态卡：thinking 位于独立折叠区，assistant 回复与工具安全摘要按事件顺序显示在同一个 Markdown 正文中；工具始终是普通文字，不使用下拉框。
 - `append-clean-card` 与 `latest-card` 使用 CardKit：运行中可展示折叠过程，并支持一次性停止按钮；clean/latest 终态只保留最终答案。
 - 执行中标题使用蓝色 `正在推理/正在执行工具/正在回复 · ⏱ Ns`，完成绿色，停止灰色，失败红色。
+- 执行中卡片连续 15 秒没有正常流式更新时会自动刷新耗时；无正文的等待阶段同时显示“任务仍在运行…”。每次正常更新会重新计时，完成、失败或停止后立即取消刷新。
 - 底部状态栏使用分割线和两行分栏：agent/model/tokens，以及 user/ip/workdir。
 - 工作目录不存在时先发确认卡片；点击创建后确认卡变绿并禁用按钮，Claude 执行另起运行卡片。
 - 卡片按钮走长连接 `card.action.trigger`，回调会同步返回终态卡片并保留异步 CardKit update 兜底；HTTP `/card/callback` 只保留为本地兼容调试入口。
@@ -55,6 +56,8 @@ GOCACHE=$PWD/.cache/go-build go run ./cmd/lark-agent-bridge simulate -text "/new
 GOCACHE=$PWD/.cache/go-build go run ./cmd/lark-agent-bridge simulate-action -action stop -session claude:chat-demo:message:local-id
 GOCACHE=$PWD/.cache/go-build go run ./cmd/lark-agent-bridge serve --default-workdir /tmp/lark-agent-bridge
 ```
+
+运行中卡片的 idle heartbeat 默认是 15 秒，可用 `E2E_CARD_HEARTBEAT_SEC` 设置正整数秒数。`E2E_CARD_UPDATE_MS` 仍只控制已有 Agent stream event 的内容刷新节流，两者用途不同。
 
 `serve` 需要 `LARK_APP_ID` 和 `LARK_APP_SECRET`。本地未配置时会明确失败，用于验证启动前置条件。
 

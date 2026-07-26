@@ -257,11 +257,15 @@ type Event struct {
 	HeaderTitle      string
 	HeaderTemplate   string
 	Streaming        bool
-	Activity         string
-	ThoughtExpanded  bool
-	ToolsExpanded    bool
-	ProcessExpanded  bool
-	ToolCallCount    int
+	// ForceFullUpdate is an internal transport hint for running-card heartbeats:
+	// elapsed/header changes must reach CardKit even though native answer streaming
+	// deliberately normalizes those fields in its static fingerprint.
+	ForceFullUpdate bool
+	Activity        string
+	ThoughtExpanded bool
+	ToolsExpanded   bool
+	ProcessExpanded bool
+	ToolCallCount   int
 	// ThoughtRoundCount / ToolRoundCount 是本轮 run 累计的思考轮次 / 工具调用次数,
 	// 用于三段布局(ThreeSectionLayout)下折叠区标题的「× N」计数。卡片正文只显示最新一次,
 	// 计数让用户知道背后发生了多少轮而不必展开历史。
