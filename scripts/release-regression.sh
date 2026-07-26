@@ -9,6 +9,9 @@ mkdir -p "$GOCACHE"
 PROFILE=""
 RELEASE="dev"
 STRICT_L3=0
+EVIDENCE_DIR=""
+EVIDENCE_FILE=""
+RUNNING_FILE=""
 
 usage() {
   cat <<'USAGE'
@@ -45,6 +48,28 @@ if [[ -z "$PROFILE" ]]; then
   exit 2
 fi
 
+if [[ -n "$(git status --porcelain --untracked-files=all)" ]]; then
+  echo "release-regression: worktree must be clean before regression" >&2
+  exit 1
+fi
+commit="$(git rev-parse HEAD)"
+git_common="$(git rev-parse --git-common-dir)"
+[[ "$git_common" == /* ]] || git_common="$ROOT/$git_common"
+EVIDENCE_DIR="$git_common/release-state"
+mkdir -p "$EVIDENCE_DIR"
+chmod 700 "$EVIDENCE_DIR"
+EVIDENCE_FILE="$EVIDENCE_DIR/regression-evidence-$commit.json"
+RUNNING_FILE="$EVIDENCE_DIR/regression-running-$commit.pid"
+rm -f "$EVIDENCE_FILE"
+running_tmp="$RUNNING_FILE.tmp.$$"
+printf '%s\n' "$$" >"$running_tmp"
+chmod 600 "$running_tmp"
+mv "$running_tmp" "$RUNNING_FILE"
+cleanup_running() {
+  rm -f "$RUNNING_FILE"
+}
+trap cleanup_running EXIT
+
 echo "NOTE: real card.action.trigger platform delivery is not automated (Feishu platform limit);"
 echo "      handling is covered by L1 deterministic tests + L2 render injection."
 
@@ -66,6 +91,28 @@ if ! env -u E2E_REAL_E2E_FAKE_CLAUDE ./scripts/e2e-real.sh --profile "$PROFILE" 
     echo "release-regression: --strict-l3 set, L3 failure is a hard gate" >&2
     exit 1
   fi
+fi
+
+if [[ -n "$(git status --porcelain --untracked-files=all)" ]]; then
+  echo "release-regression: worktree changed during regression; refusing evidence" >&2
+  exit 1
+fi
+if [[ "$(git rev-parse HEAD)" != "$commit" ]]; then
+  echo "release-regression: HEAD changed during regression; refusing evidence" >&2
+  exit 1
+fi
+if [[ "$STRICT_L3" -eq 1 && "$l3" == "passed" ]]; then
+  evidence_tmp="$EVIDENCE_FILE.tmp.$$"
+  jq -n \
+    --arg commit "$commit" \
+    --arg timestamp "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" \
+    --arg profile "$PROFILE" \
+    --arg release "$RELEASE" \
+    '{schema_version:1,commit:$commit,timestamp:$timestamp,profile:$profile,
+      release:$release,channel:"stable",strict_l3:true,
+      l0l1:"passed",l2:"passed",l3:"passed"}' >"$evidence_tmp"
+  chmod 600 "$evidence_tmp"
+  mv "$evidence_tmp" "$EVIDENCE_FILE"
 fi
 
 echo "RELEASE_REGRESSION_OK release=$RELEASE l0l1=passed l2=passed l3=$l3"
