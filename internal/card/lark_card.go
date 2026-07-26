@@ -263,7 +263,7 @@ func buildConfigFormElements(sessionID string, form ConfigForm) []any {
 		{Value: "true", Label: "完成时提醒发起人"},
 	}))...)
 
-	statusBar := buildStatusBarSection(sessionID, form)
+	statusBar := buildStatusBarSection(form)
 
 	saveButton := map[string]any{
 		"tag":              "button",
@@ -323,31 +323,17 @@ func buildConfigFormElements(sessionID string, form ConfigForm) []any {
 	return elements
 }
 
-// buildStatusBarSection 呈现「📊 元信息行」section 的三个开关。
+// buildStatusBarSection renders the three status-bar choices.
 //
-// **全局 `/config` 卡**（form.ChatID 为空）走飞书 CardKit `checker` 组件 +
-// 独立 callback behavior：点击即触发 `config.toggle_meta_row` action、bridge
-// 侧当场翻转对应字段并持久化，不依赖 `form.submit`。
+// The global /config card uses a standard multi-select form input. Values are
+// applied on form.submit, avoiding checker callbacks that are not reliable in
+// every Feishu client and form layout.
 //
 // **群覆盖 `/local-config` 卡**（form.ChatID 非空）仍回退到 `select_static`
 // 两选项下拉：群覆盖多一层"删覆盖恢复继承"的语义（`ChatOverride.ShowMetaRow*`
-// 是 `*bool`，nil 表示继承），"点击即生效"的三态 UX 需要单独设计，本轮先
-// 保守走 form.submit 路径不动，功能与语义等价于既有 rc.10 行为。
-//
-// 为什么全局要脱离 form:曾经把 checker 放进 form 内、复用现有 form.submit 收集，
-// 但飞书 CardKit 的 checker **不是 form 输入字段**——即便放在 form 内也不会
-// 被 form.submit 收集,用户点了保存后回旧值(v0.1.8-rc.10 修复这个 bug 时
-// 曾把 checker 换回 select_static 下拉)。现在改成每个 checker 独立走
-// `card.action.trigger` 事件即时提交,保留 checker 视觉的同时使操作真正生效。
-//
-// checker 的 `value` 字段用来传字段名(`show_meta_row_agent` / `..._runtime` /
-// `..._developer`),bridge 端收到 action 后读当前偏好、翻转对应字段、写回;
-// admin 校验、错误反馈复用现有 config action 通路。
-//
-// element_id 上限 20 字符,checker 自带 label 不走 fieldElements,直接给
-// 三个 checker 分配 `cfg_bar_{agent,rt,dev}_ck` 即可。
-func buildStatusBarSection(sessionID string, form ConfigForm) []map[string]any {
-	intro := "**元信息行**\n勾选要显示的行；未勾选的行不渲染。点击即生效，无需保存。示例展示了开启后卡片底部的样子（示例数据）。"
+// 是 `*bool`，nil 表示继承），继续走既有的 form.submit 路径。
+func buildStatusBarSection(form ConfigForm) []map[string]any {
+	intro := "**元信息行**\n选择要显示的行；未选择的行不渲染。修改后点击保存生效。示例展示了开启后卡片底部的样子（示例数据）。"
 	if form.ChatID != "" {
 		// 群覆盖场景：保留旧 select_static 下拉，走 form.submit。
 		intro = "**元信息行（本群覆盖）**\n选择要显示的行；未勾选的行不渲染。示例展示了开启后卡片底部的样子（示例数据）。"
@@ -369,26 +355,30 @@ func buildStatusBarSection(sessionID string, form ConfigForm) []map[string]any {
 			configSelectOptions("show_meta_row_developer", form.ShowMetaRowDeveloper, boolOpts("显示开发者行")))...)
 		return out
 	}
-	checker := func(elementID, field, label, checked string) map[string]any {
-		return map[string]any{
-			"tag":        "checker",
-			"element_id": elementID,
-			"checked":    strings.EqualFold(strings.TrimSpace(checked), "true"),
-			"text":       map[string]any{"tag": "plain_text", "content": label},
-			"behaviors":  callbackBehavior(sessionID, "config.toggle_meta_row", field),
-		}
+	selected := make([]any, 0, 3)
+	if strings.EqualFold(strings.TrimSpace(form.ShowMetaRowAgent), "true") {
+		selected = append(selected, "agent")
+	}
+	if strings.EqualFold(strings.TrimSpace(form.ShowMetaRowRuntime), "true") {
+		selected = append(selected, "runtime")
+	}
+	if strings.EqualFold(strings.TrimSpace(form.ShowMetaRowDeveloper), "true") {
+		selected = append(selected, "developer")
 	}
 	return []map[string]any{
 		markdownElement("cfg_bar_intro", intro),
-		checker("cfg_bar_agent_ck", "show_meta_row_agent",
-			"Agent 行 · 例：🍊 535a99 · 🧠 claude-opus-4-7[1m]（high） · 🟢 ctx: 35% (354.5k/1000k)",
-			form.ShowMetaRowAgent),
-		checker("cfg_bar_rt_ck", "show_meta_row_runtime",
-			"主机信息行 · 例：👤 lijun.996 · 🖥️ 192.0.2.42 · 📁 /home/<USER>/ws",
-			form.ShowMetaRowRuntime),
-		checker("cfg_bar_dev_ck", "show_meta_row_developer",
-			"开发者行 · 例：🐛 v0.1.8-rc.5 · ⬆️ 最新 v0.1.8-rc.6（🐛 rc / 🦋 stable）",
-			form.ShowMetaRowDeveloper),
+		{
+			"tag":            "multi_select_static",
+			"name":           "meta_rows",
+			"element_id":     "cfg_meta_rows",
+			"initial_option": selected,
+			"options": []any{
+				map[string]any{"text": map[string]any{"tag": "plain_text", "content": "Agent 行 · 例：🍊 535a99 · 🧠 claude-opus-4-7[1m]（high） · 🟢 ctx: 35% (354.5k/1000k)"}, "value": "agent"},
+				map[string]any{"text": map[string]any{"tag": "plain_text", "content": "主机信息行 · 例：👤 lijun.996 · 🖥️ 192.0.2.42 · 📁 /home/<USER>/ws"}, "value": "runtime"},
+				map[string]any{"text": map[string]any{"tag": "plain_text", "content": "开发者行 · 例：🐛 v0.1.8-rc.5 · ⬆️ 最新 v0.1.8-rc.6（🐛 rc / 🦋 stable）"}, "value": "developer"},
+			},
+			"width": "fill",
+		},
 	}
 }
 

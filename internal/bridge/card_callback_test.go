@@ -47,7 +47,7 @@ func TestActionRequestFromCardCallbackAcceptsBoolAndMultiSelect(t *testing.T) {
 			"form_value": {
 				"show_meta_row_agent": true,
 				"show_meta_row_runtime": false,
-				"meta_rows_multi": ["agent", "developer"],
+				"meta_rows": ["agent", "developer"],
 				"ignored_number": 42,
 				"ignored_null": null
 			}
@@ -62,7 +62,7 @@ func TestActionRequestFromCardCallbackAcceptsBoolAndMultiSelect(t *testing.T) {
 	if got := req.FormValues["show_meta_row_runtime"]; got != "false" {
 		t.Fatalf("bool false should be normalized to \"false\", got %q", got)
 	}
-	if got := req.FormValues["meta_rows_multi"]; got != "agent,developer" {
+	if got := req.FormValues["meta_rows"]; got != "agent,developer" {
 		t.Fatalf("multi_select array should be joined to CSV, got %q", got)
 	}
 	if _, ok := req.FormValues["ignored_number"]; ok {
@@ -70,6 +70,22 @@ func TestActionRequestFromCardCallbackAcceptsBoolAndMultiSelect(t *testing.T) {
 	}
 	if _, ok := req.FormValues["ignored_null"]; ok {
 		t.Fatalf("null form value should still be dropped, got %q", req.FormValues["ignored_null"])
+	}
+}
+
+func TestActionRequestFromCardCallbackPreservesEmptyMultiSelect(t *testing.T) {
+	req, err := ActionRequestFromCardCallback([]byte(`{
+		"operator": {"open_id": "user-1"},
+		"action": {
+			"value": {"session": "claude:chat", "action_id": "config.save"},
+			"form_value": {"meta_rows": []}
+		}
+	}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, ok := req.FormValues["meta_rows"]; !ok || got != "" {
+		t.Fatalf("empty multi-select must remain present as an empty value, got %#v", req.FormValues)
 	}
 }
 

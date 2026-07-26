@@ -1696,7 +1696,7 @@ func (s *Service) HandleActionResult(ctx context.Context, req ActionRequest) (Ac
 		s.Audit.Record(req.Actor, "action_grant_denied", req.SessionID, string(decision.Reason)+" action="+req.ActionID)
 		return s.renderActionEvent(actionDeniedEvent(req, decision.Reason))
 	}
-	if (req.ActionID == "config.save" || req.ActionID == "config.close" || req.ActionID == "config.toggle_meta_row" || req.ActionID == "local_config.save" || req.ActionID == "local_config.reset" || req.ActionID == "agent_mode.save" || req.ActionID == "update.install") && !s.canRunAdminCommand(req.Actor) {
+	if (req.ActionID == "config.save" || req.ActionID == "config.close" || req.ActionID == "local_config.save" || req.ActionID == "local_config.reset" || req.ActionID == "agent_mode.save" || req.ActionID == "update.install") && !s.canRunAdminCommand(req.Actor) {
 		s.Audit.Record(req.Actor, "admin_denied", req.SessionID, req.ActionID)
 		return s.renderActionEvent(card.Event{Type: "error", SessionID: req.SessionID, Segments: []card.Segment{{Kind: card.SegmentError, Text: "❌ 此操作仅管理员可用。"}}})
 	}
@@ -1792,41 +1792,6 @@ func (s *Service) HandleActionResult(ctx context.Context, req ActionRequest) (Ac
 		}
 		s.Audit.Record(req.Actor, "config_closed", req.SessionID, "config card deleted")
 		return ActionResult{}, nil
-	case "config.toggle_meta_row":
-		// 点击 /config 卡片元信息行 checker 时飞书触发的 action：即时翻转
-		// 对应字段并持久化，不走 form.submit。req.Value 是字段名（见
-		// card.buildStatusBarSection）。仅全局 preference 场景开放；群覆盖
-		// 走 form.submit 保存路径不变。
-		if s.Preferences == nil {
-			err := errors.New("preference store is not configured")
-			s.Audit.Record(req.Actor, "config_toggle_failed", req.SessionID, err.Error())
-			return s.renderActionEvent(configSaveErrorEvent(req.SessionID))
-		}
-		field := strings.TrimSpace(req.Value)
-		current := s.Preferences.Get()
-		preference := current
-		switch field {
-		case "show_meta_row_agent":
-			preference.ShowMetaRowAgent = !current.ShowMetaRowAgent
-		case "show_meta_row_runtime":
-			preference.ShowMetaRowRuntime = !current.ShowMetaRowRuntime
-		case "show_meta_row_developer":
-			preference.ShowMetaRowDeveloper = !current.ShowMetaRowDeveloper
-		default:
-			s.Audit.Record(req.Actor, "config_toggle_failed", req.SessionID, "unknown field "+field)
-			return s.renderActionEvent(configSaveErrorEvent(req.SessionID))
-		}
-		if err := s.Preferences.Set(preference); err != nil {
-			s.Audit.Record(req.Actor, "config_toggle_failed", req.SessionID, err.Error())
-			return s.renderActionEvent(configSaveErrorEvent(req.SessionID))
-		}
-		preference = s.Preferences.Get()
-		s.Audit.Record(req.Actor, "config_meta_row_toggled", req.SessionID, fmt.Sprintf("%s=%t", field, boolField(preference, field)))
-		return s.renderActionEvent(card.Event{
-			Type:      "config_meta_row_toggled",
-			SessionID: req.SessionID,
-			Segments:  []card.Segment{{Kind: card.SegmentText, Text: fmt.Sprintf("已%s%s。下一条新消息开始生效。", toggledLabel(boolField(preference, field)), metaRowLabel(field))}},
-		})
 	case "config.save":
 		if s.Preferences == nil {
 			err := errors.New("preference store is not configured")
@@ -1860,32 +1825,10 @@ func (s *Service) HandleActionResult(ctx context.Context, req ActionRequest) (Ac
 			}
 			notifyOnComplete = parsed
 		}
-		showMetaRowAgent := current.ShowMetaRowAgent
-		if raw, ok := req.FormValues["show_meta_row_agent"]; ok {
-			parsed, err := strconv.ParseBool(strings.TrimSpace(raw))
-			if err != nil {
-				s.Audit.Record(req.Actor, "config_save_failed", req.SessionID, "invalid show_meta_row_agent")
-				return s.renderActionEvent(configSaveErrorEvent(req.SessionID))
-			}
-			showMetaRowAgent = parsed
-		}
-		showMetaRowRuntime := current.ShowMetaRowRuntime
-		if raw, ok := req.FormValues["show_meta_row_runtime"]; ok {
-			parsed, err := strconv.ParseBool(strings.TrimSpace(raw))
-			if err != nil {
-				s.Audit.Record(req.Actor, "config_save_failed", req.SessionID, "invalid show_meta_row_runtime")
-				return s.renderActionEvent(configSaveErrorEvent(req.SessionID))
-			}
-			showMetaRowRuntime = parsed
-		}
-		showMetaRowDeveloper := current.ShowMetaRowDeveloper
-		if raw, ok := req.FormValues["show_meta_row_developer"]; ok {
-			parsed, err := strconv.ParseBool(strings.TrimSpace(raw))
-			if err != nil {
-				s.Audit.Record(req.Actor, "config_save_failed", req.SessionID, "invalid show_meta_row_developer")
-				return s.renderActionEvent(configSaveErrorEvent(req.SessionID))
-			}
-			showMetaRowDeveloper = parsed
+		showMetaRowAgent, showMetaRowRuntime, showMetaRowDeveloper, err := metaRowsFromForm(req.FormValues, current)
+		if err != nil {
+			s.Audit.Record(req.Actor, "config_save_failed", req.SessionID, err.Error())
+			return s.renderActionEvent(configSaveErrorEvent(req.SessionID))
 		}
 		effort := current.Effort
 		if raw, ok := req.FormValues["effort"]; ok {
@@ -2114,39 +2057,41 @@ func isKnownEffort(v string) bool {
 	return false
 }
 
-// boolField 读 preference 里指定 show_meta_row_* 字段的当前 bool 值。
-// 只服务 config.toggle_meta_row 分支：字段名由前置 switch 校验过、
-// 不会走到 default（那里已 return 错）。
-func boolField(preference config.RuntimePreference, field string) bool {
-	switch field {
-	case "show_meta_row_agent":
-		return preference.ShowMetaRowAgent
-	case "show_meta_row_runtime":
-		return preference.ShowMetaRowRuntime
-	case "show_meta_row_developer":
-		return preference.ShowMetaRowDeveloper
+// metaRowsFromForm accepts the multi-select while retaining legacy per-row
+// boolean values for config cards that were already open during an upgrade.
+func metaRowsFromForm(values map[string]string, current config.RuntimePreference) (agent, runtime, developer bool, err error) {
+	if raw, ok := values["meta_rows"]; ok {
+		selected := map[string]bool{}
+		for _, value := range strings.Split(raw, ",") {
+			switch value = strings.TrimSpace(value); value {
+			case "", "agent", "runtime", "developer":
+				if value != "" {
+					selected[value] = true
+				}
+			default:
+				return false, false, false, fmt.Errorf("invalid meta_rows value %q", value)
+			}
+		}
+		return selected["agent"], selected["runtime"], selected["developer"], nil
 	}
-	return false
-}
-
-// metaRowLabel 把 show_meta_row_* 字段名映射到用户可读的中文行名。
-func metaRowLabel(field string) string {
-	switch field {
-	case "show_meta_row_agent":
-		return "Agent 行"
-	case "show_meta_row_runtime":
-		return "主机信息行"
-	case "show_meta_row_developer":
-		return "开发者行"
+	agent, runtime, developer = current.ShowMetaRowAgent, current.ShowMetaRowRuntime, current.ShowMetaRowDeveloper
+	for _, row := range []struct {
+		key string
+		out *bool
+	}{
+		{"show_meta_row_agent", &agent},
+		{"show_meta_row_runtime", &runtime},
+		{"show_meta_row_developer", &developer},
+	} {
+		if raw, ok := values[row.key]; ok {
+			parsed, parseErr := strconv.ParseBool(strings.TrimSpace(raw))
+			if parseErr != nil {
+				return false, false, false, fmt.Errorf("invalid %s", row.key)
+			}
+			*row.out = parsed
+		}
 	}
-	return field
-}
-
-func toggledLabel(on bool) string {
-	if on {
-		return "开启"
-	}
-	return "关闭"
+	return agent, runtime, developer, nil
 }
 
 func (s *Service) configForm(preference config.RuntimePreference) *card.ConfigForm {

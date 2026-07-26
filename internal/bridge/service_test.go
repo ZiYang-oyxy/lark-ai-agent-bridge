@@ -898,101 +898,60 @@ func TestServiceConfigSavePersistsValidValuesAndRejectsInvalidValues(t *testing.
 	}
 }
 
-// TestServiceConfigToggleMetaRowFlipsAndPersists 锁 /config 元信息行 checker
-// 「点击即翻转即持久化」：req.Value 是字段名（show_meta_row_agent /
-// _runtime / _developer），HandleActionResult 命中后 preference 对应 bool
-// 立刻翻转、其它字段不动、事件类型是 config_meta_row_toggled、audit 落一条
-// config_meta_row_toggled；未知字段被拒（config_toggle_failed）。
-func TestServiceConfigToggleMetaRowFlipsAndPersists(t *testing.T) {
+func TestServiceConfigSaveMultiSelectMetaRows(t *testing.T) {
 	cfg := testConfig(t)
 	cfg.Model, cfg.Effort = "default", "low"
 	defaults := config.RuntimePreference{Model: cfg.Model, Effort: cfg.Effort}
-	store, path := testPreferenceStore(t, defaults, cfg.AllowedModels)
-	// 起点：agent 关、runtime 开、developer 关。
-	if err := store.Set(config.RuntimePreference{
-		Model: "default", Effort: "low",
-		ShowMetaRowAgent: false, ShowMetaRowRuntime: true, ShowMetaRowDeveloper: false,
-	}); err != nil {
-		t.Fatal(err)
-	}
-	recorder := audit.NewRecorder()
-	svc := NewService(cfg, card.NewFakeRenderer(), newFakeRunner(), recorder)
+	store, _ := testPreferenceStore(t, defaults, cfg.AllowedModels)
+	svc := NewService(cfg, card.NewFakeRenderer(), newFakeRunner(), audit.NewRecorder())
 	svc.Preferences = store
 
-	// 点 agent 行 checker：应从 false 翻到 true，其他两行不动。
-	result, err := svc.HandleActionResult(context.Background(), ActionRequest{
-		SessionID: "cfg-toggle", ActionID: "config.toggle_meta_row", Actor: "user",
-		Value: "show_meta_row_agent",
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if result.Event == nil || result.Event.Type != "config_meta_row_toggled" {
-		t.Fatalf("expect config_meta_row_toggled event, got %#v", result.Event)
-	}
-	got := store.Get()
-	if !got.ShowMetaRowAgent || !got.ShowMetaRowRuntime || got.ShowMetaRowDeveloper {
-		t.Fatalf("after toggling agent: %#v (want agent=true runtime=true developer=false)", got)
-	}
-	// 再点 agent 一次，应回到 false（翻转不是 set-true）。
 	if _, err := svc.HandleActionResult(context.Background(), ActionRequest{
-		SessionID: "cfg-toggle", ActionID: "config.toggle_meta_row", Actor: "user",
-		Value: "show_meta_row_agent",
+		SessionID: "config-multi", ActionID: "config.save", Actor: "user",
+		FormValues: map[string]string{"meta_rows": "agent,developer"},
 	}); err != nil {
 		t.Fatal(err)
 	}
-	got = store.Get()
-	if got.ShowMetaRowAgent {
-		t.Fatalf("second agent toggle should flip back to false, got %#v", got)
+	if got := store.Get(); !got.ShowMetaRowAgent || got.ShowMetaRowRuntime || !got.ShowMetaRowDeveloper {
+		t.Fatalf("saved multi-select meta rows = %#v", got)
 	}
-	// developer 从 false→true。
+	// An empty submitted value is distinct from an absent field and turns all
+	// rows off.
 	if _, err := svc.HandleActionResult(context.Background(), ActionRequest{
-		SessionID: "cfg-toggle", ActionID: "config.toggle_meta_row", Actor: "user",
-		Value: "show_meta_row_developer",
+		SessionID: "config-multi", ActionID: "config.save", Actor: "user",
+		FormValues: map[string]string{"meta_rows": ""},
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if !store.Get().ShowMetaRowDeveloper {
-		t.Fatalf("developer toggle should flip to true, got %#v", store.Get())
+	if got := store.Get(); got.ShowMetaRowAgent || got.ShowMetaRowRuntime || got.ShowMetaRowDeveloper {
+		t.Fatalf("empty multi-select must disable all meta rows: %#v", got)
 	}
-	// 持久化：重开 store 状态应保留。
-	reopened, err := config.OpenPreferenceStore(path, defaults, cfg.AllowedModels)
-	if err != nil {
+	// Keep accepting legacy per-row fields from cards opened before an upgrade.
+	if _, err := svc.HandleActionResult(context.Background(), ActionRequest{
+		SessionID: "config-multi", ActionID: "config.save", Actor: "user",
+		FormValues: map[string]string{
+			"show_meta_row_agent": "false", "show_meta_row_runtime": "true", "show_meta_row_developer": "false",
+		},
+	}); err != nil {
 		t.Fatal(err)
 	}
-	if got := reopened.Get(); !got.ShowMetaRowDeveloper || got.ShowMetaRowAgent {
-		t.Fatalf("reopened preference lost toggles: %#v", got)
+	if got := store.Get(); got.ShowMetaRowAgent || !got.ShowMetaRowRuntime || got.ShowMetaRowDeveloper {
+		t.Fatalf("legacy per-row values = %#v", got)
 	}
-	// 未知字段拒收。
+
 	before := store.Get()
-	result, err = svc.HandleActionResult(context.Background(), ActionRequest{
-		SessionID: "cfg-toggle", ActionID: "config.toggle_meta_row", Actor: "user",
-		Value: "show_meta_row_bogus",
+	result, err := svc.HandleActionResult(context.Background(), ActionRequest{
+		SessionID: "config-multi", ActionID: "config.save", Actor: "user",
+		FormValues: map[string]string{"meta_rows": "bogus"},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if result.Event == nil || result.Event.Type != "error" {
-		t.Fatalf("unknown field should produce error event, got %#v", result.Event)
+		t.Fatalf("invalid multi-select should produce error event, got %#v", result.Event)
 	}
 	if store.Get() != before {
-		t.Fatalf("unknown field must not mutate preference, before=%#v now=%#v", before, store.Get())
-	}
-	// audit 落了 config_meta_row_toggled 至少一条 + config_toggle_failed 一条。
-	var toggled, failed int
-	for _, e := range recorder.Events() {
-		if e.Action == "config_meta_row_toggled" {
-			toggled++
-		}
-		if e.Action == "config_toggle_failed" {
-			failed++
-		}
-	}
-	if toggled < 3 {
-		t.Fatalf("expect ≥3 config_meta_row_toggled audit entries, got %d", toggled)
-	}
-	if failed != 1 {
-		t.Fatalf("expect exactly 1 config_toggle_failed audit entry, got %d", failed)
+		t.Fatalf("invalid multi-select must not mutate preference: %#v", store.Get())
 	}
 }
 

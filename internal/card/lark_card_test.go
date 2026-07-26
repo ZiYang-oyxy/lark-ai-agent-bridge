@@ -537,7 +537,7 @@ func TestBuildLarkCardRendersRuntimeConfigForm(t *testing.T) {
 		t.Fatalf("select controls = %#v", selects)
 	}
 	if _, ok := selects["show_meta_row_agent"]; ok {
-		t.Fatal("global config card statusbar rows must be checker, not select_static")
+		t.Fatal("global config card statusbar rows must use one multi-select, not per-row select_static")
 	}
 	if selects["agent_home"]["initial_option"] != "默认" || selects["agent_bin"]["initial_option"] != "主机 claude" {
 		t.Fatalf("agent select controls = %#v", selects)
@@ -598,14 +598,12 @@ func TestBuildLarkCardRendersRuntimeConfigForm(t *testing.T) {
 	}
 }
 
-// 📊 元信息行 section 在**全局 /config 卡**上应渲染三个 CardKit `checker`
-// 组件，每个挂独立 callback 触发 `config.toggle_meta_row` action，脱离
-// form.submit（v0.1.8-rc.10 之前 checker 放在 form 里被飞书忽略——checker
-// **不是** form 输入字段；本轮重回 checker 但走 action.trigger 而非 form）。
+// 📊 元信息行 section 在**全局 /config 卡**上应渲染一个标准多选表单控件，
+// 随保存按钮提交，避免依赖不同飞书客户端行为不一致的 checker callback。
 //
 // 群覆盖 /local-config 卡沿用 select_static 布尔下拉走 form.submit：群覆盖
 // 多一层"删覆盖恢复继承"语义，暂不迁移，保持 rc.10 行为。
-func TestBuildLarkCardStatusBarSectionChecker(t *testing.T) {
+func TestBuildLarkCardStatusBarSectionUsesMultiSelect(t *testing.T) {
 	payload := BuildLarkCard(Event{
 		Type:      "config",
 		SessionID: "claude:chat:message:cfg-2",
@@ -622,148 +620,52 @@ func TestBuildLarkCardStatusBarSectionChecker(t *testing.T) {
 			ReplyModes: []string{"append"}, ConversationModes: []string{"chat"},
 		},
 	})
-	// 全局 /config 卡：找所有 statusbar checker，按 element_id 索引。
-	checkers := map[string]map[string]any{}
+	multiSelects := map[string]map[string]any{}
+	checkerCount := 0
 	var walk func(any)
 	walk = func(v any) {
 		switch n := v.(type) {
 		case map[string]any:
-			tag, _ := n["tag"].(string)
-			if tag == "checker" {
-				id, _ := n["element_id"].(string)
-				if strings.HasPrefix(id, "cfg_bar_") {
-					checkers[id] = n
-				}
+			if n["tag"] == "multi_select_static" {
+				name, _ := n["name"].(string)
+				multiSelects[name] = n
 			}
-			for _, c := range n {
-				walk(c)
+			if n["tag"] == "checker" {
+				checkerCount++
+			}
+			for _, child := range n {
+				walk(child)
 			}
 		case []any:
-			for _, c := range n {
-				walk(c)
+			for _, child := range n {
+				walk(child)
 			}
 		case []map[string]any:
-			for _, c := range n {
-				walk(c)
+			for _, child := range n {
+				walk(child)
 			}
 		}
 	}
 	walk(payload)
-	if len(checkers) != 3 {
-		t.Fatalf("expected 3 statusbar checkers on global /config card, got %d: %#v", len(checkers), checkers)
+	multi := multiSelects["meta_rows"]
+	if multi == nil {
+		t.Fatalf("global config card must contain meta_rows multi-select: %#v", multiSelects)
 	}
-	// 每个 checker: checked 布尔与 form 字段 "true"/"false" 一致；
-	// text.content 是带 mock 示例的 label；behaviors 挂 config.toggle_meta_row
-	// callback，value 是字段名。
-	expects := []struct {
-		id, field string
-		checked   bool
-	}{
-		{"cfg_bar_agent_ck", "show_meta_row_agent", true},
-		{"cfg_bar_rt_ck", "show_meta_row_runtime", false},
-		{"cfg_bar_dev_ck", "show_meta_row_developer", true},
+	if checkerCount != 0 {
+		t.Fatalf("global config card must not retain checker controls, got %d", checkerCount)
 	}
-	for _, e := range expects {
-		ck, ok := checkers[e.id]
-		if !ok {
-			t.Fatalf("missing checker %q; found: %#v", e.id, checkers)
-		}
-		if ck["checked"] != e.checked {
-			t.Fatalf("%s checked = %#v, want %v", e.id, ck["checked"], e.checked)
-		}
-		// checker 不应有 name 字段（不进 form）。
-		if _, hasName := ck["name"]; hasName {
-			t.Fatalf("%s must not carry a `name` field — checker is action-triggered, not form-collected", e.id)
-		}
-		behaviors, ok := ck["behaviors"].([]any)
-		if !ok || len(behaviors) == 0 {
-			t.Fatalf("%s must carry callback behaviors, got %#v", e.id, ck["behaviors"])
-		}
-		payloadMap := behaviors[0].(map[string]any)["value"].(map[string]any)
-		if payloadMap["action_id"] != "config.toggle_meta_row" {
-			t.Fatalf("%s action_id = %#v, want config.toggle_meta_row", e.id, payloadMap["action_id"])
-		}
-		if payloadMap["value"] != e.field {
-			t.Fatalf("%s callback value = %#v, want %q (field name)", e.id, payloadMap["value"], e.field)
-		}
-		if payloadMap["session"] != "claude:chat:message:cfg-2" {
-			t.Fatalf("%s callback session = %#v", e.id, payloadMap["session"])
-		}
+	if got := multi["initial_option"]; !reflect.DeepEqual(got, []any{"agent", "developer"}) {
+		t.Fatalf("meta_rows initial_option = %#v, want agent+developer", got)
 	}
-	// mock 示例文案随 checker label 一起渲染；用整卡文本聚合搜索。
-	var buf strings.Builder
-	var walkText func(any)
-	walkText = func(v any) {
-		switch n := v.(type) {
-		case map[string]any:
-			if n["tag"] == "markdown" {
-				if s, ok := n["content"].(string); ok {
-					buf.WriteString(s)
-					buf.WriteString("\n")
-				}
-			}
-			// checker 的 text 内嵌在 map 里，也要采集
-			if txt, ok := n["text"].(map[string]any); ok {
-				if s, ok := txt["content"].(string); ok {
-					buf.WriteString(s)
-					buf.WriteString("\n")
-				}
-			}
-			for _, c := range n {
-				walkText(c)
-			}
-		case []any:
-			for _, c := range n {
-				walkText(c)
-			}
-		case []map[string]any:
-			for _, c := range n {
-				walkText(c)
-			}
-		}
+	if options, ok := multi["options"].([]any); !ok || len(options) != 3 {
+		t.Fatalf("meta_rows options = %#v", multi["options"])
 	}
-	walkText(payload)
-	md := buf.String()
-	if !strings.Contains(md, "🍊") || !strings.Contains(md, "ctx:") {
-		t.Fatalf("agent checker label should mock the status bar (🍊 + ctx:), got:\n%s", md)
+	if multi["width"] != "fill" {
+		t.Fatalf("meta_rows width = %#v, want fill", multi["width"])
 	}
-	if !strings.Contains(md, "👤") || !strings.Contains(md, "📁") {
-		t.Fatalf("runtime checker label should mock 👤 + 📁, got:\n%s", md)
+	if _, hasBehavior := multi["behaviors"]; hasBehavior {
+		t.Fatalf("meta_rows must submit with the form, not use an immediate callback: %#v", multi)
 	}
-	if !strings.Contains(md, "🐛") || !strings.Contains(md, "🦋") {
-		t.Fatalf("developer checker label should mention both 🐛 rc / 🦋 stable emojis, got:\n%s", md)
-	}
-	if !strings.Contains(md, "最新") {
-		t.Fatalf("developer checker label should include ⬆️ 最新 semantics, got:\n%s", md)
-	}
-	// 强负断言：全局 /config 卡里必须完全没有 show_meta_row_* select_static
-	// （否则 checker 和下拉重复渲染），也不能出现旧的 multi_select_static。
-	var walkNegative func(any)
-	walkNegative = func(v any) {
-		switch n := v.(type) {
-		case map[string]any:
-			tag, _ := n["tag"].(string)
-			name, _ := n["name"].(string)
-			if tag == "select_static" && strings.HasPrefix(name, "show_meta_row_") {
-				t.Fatalf("global config card must not emit select_static for %q — checker + action.trigger replaces it", name)
-			}
-			if tag == "multi_select_static" && name == "meta_rows_multi" {
-				t.Fatal("statusbar section must not emit multi_select_static meta_rows_multi anymore")
-			}
-			for _, c := range n {
-				walkNegative(c)
-			}
-		case []any:
-			for _, c := range n {
-				walkNegative(c)
-			}
-		case []map[string]any:
-			for _, c := range n {
-				walkNegative(c)
-			}
-		}
-	}
-	walkNegative(payload)
 }
 
 // 群覆盖 /local-config 卡（form.ChatID != ""）保留 rc.10 的 select_static
