@@ -281,8 +281,8 @@ P3 安全收口的验收条件：
 已完成能力：
 
 - `append`：每轮新建一张无标题、单 Markdown 元素的轻量 CardKit；assistant 正文按原始顺序保留，thinking 隐藏，每次工具调用只显示一行安全摘要，终态保留 agent/token footer。
-- `append-clean-card`：每轮新卡片；运行中展示过程，终态只保留最后一段 assistant 回复并移除 thought/tools。
-- `latest-card`：复用每个 scope 的最新结果卡，其他终态语义与 `append-clean-card` 相同。
+- `append-clean-card`：每轮新卡片；最终正文只保留最后一段 assistant 回复，thought/progress 与 tools 时间线在终态保留并折叠。
+- `latest-card`：复用每个 scope 的最新结果卡；最终正文只保留末答，合并过程区在终态保留并折叠。
 
 暂缓到 P3 的能力：
 

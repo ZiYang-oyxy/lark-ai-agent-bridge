@@ -1976,8 +1976,8 @@ func TestBuildLarkCardResumeEmptyShowsHint(t *testing.T) {
 	}
 }
 
-// TestBuildLarkCardThreeSectionLayout 验证 append-clean 三段布局的元素顺序、展开态与标题计数:
-// 思考推理折叠区(正文前, expanded, ×N) → 正文 answer → 工具调用折叠区(正文后, folded, ×N)。
+// TestBuildLarkCardThreeSectionLayout verifies the reasoning timeline remains
+// above the answer and the tool timeline remains below it.
 func TestBuildLarkCardThreeSectionLayout(t *testing.T) {
 	payload := BuildLarkCard(Event{
 		Type:               "stream",
@@ -1995,7 +1995,6 @@ func TestBuildLarkCardThreeSectionLayout(t *testing.T) {
 	})
 	elements := payload["body"].(map[string]any)["elements"].([]any)
 
-	// 定位三个关键元素的下标与属性。
 	var thoughtIdx, answerIdx, toolsIdx = -1, -1, -1
 	for i, raw := range elements {
 		m, _ := raw.(map[string]any)
@@ -2006,8 +2005,11 @@ func TestBuildLarkCardThreeSectionLayout(t *testing.T) {
 				t.Fatalf("thought panel wrong: %#v", m)
 			}
 			title := m["header"].(map[string]any)["title"].(map[string]string)["content"]
-			if !strings.Contains(title, "思考推理") || !strings.Contains(title, "×3") {
-				t.Fatalf("thought title = %q, want 思考推理 + ×3", title)
+			if title != "思考推理 · 3" {
+				t.Fatalf("thought title = %q, want compact count", title)
+			}
+			if m["vertical_spacing"] != "4px" || m["padding"] != "4px 8px 4px 8px" {
+				t.Fatalf("thought panel spacing not compact: %#v", m)
 			}
 		case "answer":
 			answerIdx = i
@@ -2017,21 +2019,16 @@ func TestBuildLarkCardThreeSectionLayout(t *testing.T) {
 				t.Fatalf("tools panel wrong: %#v", m)
 			}
 			title := m["header"].(map[string]any)["title"].(map[string]string)["content"]
-			if !strings.Contains(title, "工具调用") || !strings.Contains(title, "×6") {
-				t.Fatalf("tools title = %q, want 工具调用 + ×6", title)
+			if title != "工具调用 · 6" {
+				t.Fatalf("tools title = %q, want compact count", title)
 			}
 		}
 	}
 	if thoughtIdx < 0 || answerIdx < 0 || toolsIdx < 0 {
 		t.Fatalf("missing elements: thought=%d answer=%d tools=%d\n%#v", thoughtIdx, answerIdx, toolsIdx, elements)
 	}
-	// 顺序:思考在正文前,工具在正文后。
 	if !(thoughtIdx < answerIdx && answerIdx < toolsIdx) {
-		t.Fatalf("order wrong: thought=%d answer=%d tools=%d, want thought<answer<tools", thoughtIdx, answerIdx, toolsIdx)
-	}
-	// 不应再出现旧的合并 panel_process。
-	if strings.Contains(fmt.Sprint(elements), "panel_process") {
-		t.Fatalf("three-section layout must not emit panel_process: %#v", elements)
+		t.Fatalf("order wrong: thought=%d answer=%d tools=%d", thoughtIdx, answerIdx, toolsIdx)
 	}
 }
 
@@ -2055,12 +2052,12 @@ func TestBuildLarkCardThreeSectionLayoutPutsStopBesideTitle(t *testing.T) {
 // 仅从 result 拿到 ToolCallCount)时回退到 ToolCallCount。
 func TestThreeSectionTitleFallsBackToToolCallCount(t *testing.T) {
 	title := toolsSectionTitle(Event{ToolCallCount: 4})
-	if !strings.Contains(title, "×4") {
-		t.Fatalf("tools title = %q, want ×4 from ToolCallCount fallback", title)
+	if title != "工具调用 · 4" {
+		t.Fatalf("tools title = %q, want compact ToolCallCount fallback", title)
 	}
 	empty := toolsSectionTitle(Event{})
-	if !strings.Contains(empty, "暂无") {
-		t.Fatalf("empty tools title = %q, want 暂无", empty)
+	if empty != "工具调用" {
+		t.Fatalf("empty tools title = %q, want compact label", empty)
 	}
 }
 

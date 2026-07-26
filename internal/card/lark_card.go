@@ -754,20 +754,13 @@ func processPanelTitle(e Event, tools string) string {
 	return "过程"
 }
 
-// buildThreeSectionElements 渲染 append-clean-card 的三段结构(参考 feishu-ai-agent-platform):
-//
-//	① 思考推理折叠区(element_id=panel_thought,正文之前,默认展开,只显示最新一次 COT)
-//	② 正文(element_id=answer,流式)
-//	③ 工具调用折叠区(element_id=panel_tools,正文之后,默认折叠,只显示最新一次调用命令+输出)
-//
-// 折叠区标题带「× N」计数(对齐用户参考的第三方卡片「工具调用 ×6」),让用户即使只看到
-// 最新一次,也知道背后累计发生了多少轮思考 / 多少次工具调用。展开态由 e.ThoughtExpanded /
-// e.ToolsExpanded 决定(stream 层填);终态两段都折叠。空段不渲染对应折叠区。
+// buildThreeSectionElements keeps the append-clean three-section layout:
+// reasoning timeline, answer, then tool timeline.
 func buildThreeSectionElements(e Event) []any {
 	answer, thought, tools := splitCardSections(e.Segments)
 	elements := make([]any, 0, 3)
 	if !e.HideAgentPanels && strings.TrimSpace(thought) != "" {
-		elements = append(elements, collapsiblePanelElement(
+		elements = append(elements, compactCollapsiblePanelElement(
 			"panel_thought",
 			thoughtSectionTitle(e),
 			e.ThoughtExpanded,
@@ -778,7 +771,7 @@ func buildThreeSectionElements(e Event) []any {
 		elements = append(elements, markdownElement("answer", answer))
 	}
 	if !e.HideAgentPanels && strings.TrimSpace(tools) != "" {
-		elements = append(elements, collapsiblePanelElement(
+		elements = append(elements, compactCollapsiblePanelElement(
 			"panel_tools",
 			toolsSectionTitle(e),
 			e.ToolsExpanded,
@@ -788,38 +781,26 @@ func buildThreeSectionElements(e Event) []any {
 	return elements
 }
 
-// thoughtSectionTitle 拼「💭 思考推理（生成中/已完成[· × N]，点击收起/展开）」。
-// 动作词随 expanded 切,状态词随 Streaming 切,计数随累计轮次切。
+// thoughtSectionTitle keeps the panel header compact; the card header already
+// exposes running/completed state and the chevron already conveys expansion.
 func thoughtSectionTitle(e Event) string {
-	action := "点击展开"
-	if e.ThoughtExpanded {
-		action = "点击收起"
+	if e.ThoughtRoundCount > 0 {
+		return fmt.Sprintf("思考推理 · %d", e.ThoughtRoundCount)
 	}
-	state := "已完成"
-	if e.Streaming {
-		state = "生成中"
-	}
-	if e.ThoughtRoundCount > 1 {
-		return fmt.Sprintf("💭 思考推理（%s · ×%d，%s）", state, e.ThoughtRoundCount, action)
-	}
-	return fmt.Sprintf("💭 思考推理（%s，%s）", state, action)
+	return "思考推理"
 }
 
-// toolsSectionTitle 拼「🔧 工具调用（×N，点击展开/收起）」。次数优先取 ToolRoundCount,
-// 回退到 ToolCallCount(终态从 result 兜底)。无次数时显示「暂无」。
+// toolsSectionTitle uses the per-run count and leaves expansion state to the
+// panel chevron. ToolCallCount remains the terminal-only fallback.
 func toolsSectionTitle(e Event) string {
-	action := "点击展开"
-	if e.ToolsExpanded {
-		action = "点击收起"
-	}
 	count := e.ToolRoundCount
 	if count == 0 {
 		count = e.ToolCallCount
 	}
 	if count > 0 {
-		return fmt.Sprintf("🔧 工具调用（×%d，%s）", count, action)
+		return fmt.Sprintf("工具调用 · %d", count)
 	}
-	return fmt.Sprintf("🔧 工具调用（暂无，%s）", action)
+	return "工具调用"
 }
 
 // processPanelBody 把思考与工具收进一个折叠区,内部仍保留 thought / tools 两个 element_id。
@@ -878,6 +859,13 @@ func collapsiblePanelElement(id, title string, expanded bool, elements []map[str
 		},
 		"elements": elements,
 	}
+}
+
+func compactCollapsiblePanelElement(id, title string, expanded bool, elements []map[string]any) map[string]any {
+	panel := collapsiblePanelElement(id, title, expanded, elements)
+	panel["vertical_spacing"] = "4px"
+	panel["padding"] = "4px 8px 4px 8px"
+	return panel
 }
 
 func buildButtonActions(e Event) []any {

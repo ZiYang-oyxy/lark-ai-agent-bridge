@@ -205,9 +205,12 @@ type AgentRunResult struct {
 	Model           string
 	Tokens          int
 	AgentSessionID  string
-	// AnswerSegments 保存本次 run 内每个 assistant text message 的正文,按出现顺序排列。
-	// 供终态"只保留最后一段回复"裁剪使用;Segments 仍是聚合结果,兼容其他消费方。
+	// AnswerSegments 保存判定为最终回复的 assistant 文本。会被后续工具活动证明是
+	// 执行进展的文本进入 ProgressSegments，不再污染 clean/latest 的最终正文。
 	AnswerSegments []string
+	// ProgressSegments 保存后续紧跟工具调用、因而可判定为执行进展的 assistant 文本。
+	// append 将它们保留在 OrderedSegments 的原位置；clean/latest 将它们放进过程面板。
+	ProgressSegments []string
 	// ToolCallCount 是本次 run 内唯一 tool_use.id 的数量,用于卡片过程区标题的稳定计数。
 	ToolCallCount int
 	// ProtocolUnknown/ProtocolAnomalies expose Codex JSONL drift for audit.
@@ -233,6 +236,9 @@ type AgentStreamUpdate struct {
 	// PartialMessage marks content_block/stream_event updates emitted before
 	// the corresponding complete assistant message snapshot.
 	PartialMessage bool
+	// ProgressSnapshot 将此前暂显在正文中的 assistant 文本提升为可展示的过程进展。
+	// append 仍以内联文本保留它；clean/latest 清掉正文副本并写入过程面板。
+	ProgressSnapshot bool
 }
 
 type pendingRun struct {
@@ -3389,7 +3395,7 @@ func parseClaudeStream(input io.Reader, copyTo *bytes.Buffer, onEvent func(Agent
 		if err := json.Unmarshal([]byte(line), &event); err != nil {
 			answer.WriteString(line)
 			answer.WriteByte('\n')
-			state.addAnswerSegment(line)
+			state.addFinalAnswer(line)
 			state.appendOrdered(card.SegmentText, line)
 			emitStreamUpdate(onEvent, AgentStreamUpdate{
 				Segments: []card.Segment{{Kind: card.SegmentText, Text: line}},
@@ -3398,17 +3404,23 @@ func parseClaudeStream(input io.Reader, copyTo *bytes.Buffer, onEvent func(Agent
 			continue
 		}
 		parsedJSON = true
-		emitStreamUpdate(onEvent, streamUpdateFromClaudeEvent(event))
-		consumeClaudeEvent(event, &answer, &thought, &tool, &result, state)
+		emitClaudeStreamUpdates(event, streamUpdateFromClaudeEvent(event), state, onEvent)
+		consumeClaudeEvent(event, &thought, &tool, &result, state)
 	}
 	if err := scanner.Err(); err != nil {
 		return result, err
 	}
+	state.finalizePendingAnswer()
 	if !parsedJSON && strings.TrimSpace(answer.String()) == "" {
 		if copyTo != nil {
 			answer.Write(copyTo.Bytes())
-			state.addAnswerSegment(string(copyTo.Bytes()))
+			state.addFinalAnswer(string(copyTo.Bytes()))
 			state.appendOrdered(card.SegmentText, string(copyTo.Bytes()))
+		}
+	}
+	if strings.TrimSpace(answer.String()) == "" {
+		for _, text := range state.answerSegments {
+			appendToBuilder(&answer, text)
 		}
 	}
 	addSegment := func(kind card.SegmentKind, text string) {
@@ -3421,24 +3433,73 @@ func parseClaudeStream(input io.Reader, copyTo *bytes.Buffer, onEvent func(Agent
 	addSegment(card.SegmentThought, thought.String())
 	addSegment(card.SegmentTool, tool.String())
 	result.OrderedSegments = append([]card.Segment(nil), state.orderedSegments...)
-	result.AnswerSegments = state.answerSegments
+	result.AnswerSegments = append([]string(nil), state.answerSegments...)
+	result.ProgressSegments = append([]string(nil), state.progressSegments...)
 	result.ToolCallCount = len(state.seenToolUse)
 	return result, nil
 }
 
 // claudeParseState 跟踪解析 Claude stream-json 时的跨行状态:
-// 按 assistant message 边界收集的正文分段,以及去重后的 tool_use.id 集合。
+// 暂存最新 assistant 文本：后续工具活动将其判定为 progress，流结束则判定为最终回复。
+// 同时保存 append 的原始有序段，以及去重后的 tool_use.id 集合。
 type claudeParseState struct {
-	answerSegments  []string
-	orderedSegments []card.Segment
-	seenToolUse     map[string]struct{}
+	answerSegments   []string
+	progressSegments []string
+	orderedSegments  []card.Segment
+	seenToolUse      map[string]struct{}
+	pendingMessage   string
 }
 
-func (s *claudeParseState) addAnswerSegment(text string) {
+func (s *claudeParseState) addFinalAnswer(text string) {
 	if s == nil {
 		return
 	}
 	text = strings.TrimSpace(text)
+	if text != "" {
+		s.answerSegments = append(s.answerSegments, text)
+	}
+}
+
+func (s *claudeParseState) bufferAssistantMessage(text string) {
+	if s == nil {
+		return
+	}
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return
+	}
+	s.pendingMessage = text
+}
+
+func (s *claudeParseState) promotePendingMessage() string {
+	if s == nil {
+		return ""
+	}
+	text := strings.TrimSpace(s.pendingMessage)
+	s.pendingMessage = ""
+	if text != "" {
+		s.progressSegments = append(s.progressSegments, text)
+	}
+	return text
+}
+
+func (s *claudeParseState) addProgressMessage(text string) string {
+	if s == nil {
+		return ""
+	}
+	text = strings.TrimSpace(text)
+	if text != "" {
+		s.progressSegments = append(s.progressSegments, text)
+	}
+	return text
+}
+
+func (s *claudeParseState) finalizePendingAnswer() {
+	if s == nil {
+		return
+	}
+	text := strings.TrimSpace(s.pendingMessage)
+	s.pendingMessage = ""
 	if text != "" {
 		s.answerSegments = append(s.answerSegments, text)
 	}
@@ -3460,7 +3521,7 @@ func (s *claudeParseState) appendOrderedSegment(segment card.Segment) {
 	s.orderedSegments = append(s.orderedSegments, segment)
 }
 
-func consumeClaudeEvent(event map[string]any, answer, thought, tool *strings.Builder, result *AgentRunResult, state *claudeParseState) {
+func consumeClaudeEvent(event map[string]any, thought, tool *strings.Builder, result *AgentRunResult, state *claudeParseState) {
 	if id, ok := event["session_id"].(string); ok && result.AgentSessionID == "" {
 		result.AgentSessionID = id
 	}
@@ -3469,10 +3530,8 @@ func consumeClaudeEvent(event map[string]any, answer, thought, tool *strings.Bui
 	}
 	result.Tokens += tokensFromValue(event["usage"])
 	if eventType, _ := event["type"].(string); eventType == "result" {
-		if text, ok := event["result"].(string); ok && strings.TrimSpace(text) != "" && strings.TrimSpace(answer.String()) == "" {
-			answer.WriteString(text)
-			answer.WriteByte('\n')
-			state.addAnswerSegment(text)
+		if text, ok := event["result"].(string); ok && strings.TrimSpace(text) != "" && len(state.answerSegments) == 0 {
+			state.addFinalAnswer(text)
 			state.appendOrdered(card.SegmentText, text)
 		}
 		return
@@ -3488,11 +3547,7 @@ func consumeClaudeEvent(event map[string]any, answer, thought, tool *strings.Bui
 		result.Model = model
 	}
 	result.Tokens += tokensFromValue(message["usage"])
-	// 只有 assistant role 的 message 才创建正文分段;user / tool-result message 的文本不进正文。
-	role, _ := message["role"].(string)
-	isAssistant := role == "" || role == "assistant"
 	content, _ := message["content"].([]any)
-	var messageText strings.Builder
 	for _, raw := range content {
 		block, _ := raw.(map[string]any)
 		if block == nil {
@@ -3501,13 +3556,9 @@ func consumeClaudeEvent(event map[string]any, answer, thought, tool *strings.Bui
 		blockType, _ := block["type"].(string)
 		switch blockType {
 		case "text":
-			writeBlockText(answer, block)
 			var ordered strings.Builder
 			writeBlockText(&ordered, block)
 			state.appendOrdered(card.SegmentText, ordered.String())
-			if isAssistant {
-				writeBlockText(&messageText, block)
-			}
 		case "thinking", "reasoning", "redacted_thinking":
 			writeBlockText(thought, block)
 		case "tool_use":
@@ -3525,10 +3576,100 @@ func consumeClaudeEvent(event map[string]any, answer, thought, tool *strings.Bui
 			state.appendOrderedSegment(card.Segment{Kind: card.SegmentTool, Text: ordered.String(), Tool: claudeToolResultMeta(block)})
 		}
 	}
-	// 同一个 assistant message 内的多个 text block 合并为一段回复(而非逐 block / 逐 delta 拆分)。
-	if isAssistant {
-		state.addAnswerSegment(messageText.String())
+}
+
+func emitClaudeStreamUpdates(event map[string]any, update AgentStreamUpdate, state *claudeParseState, onEvent func(AgentStreamUpdate)) {
+	messageText := claudeAssistantMessageText(event)
+	hasTool := updateContainsKind(update, card.SegmentTool)
+	eventType, _ := event["type"].(string)
+
+	if messageText != "" {
+		if previous := state.promotePendingMessage(); previous != "" {
+			emitClaudeProgressUpdate(onEvent, previous)
+		}
+		if hasTool {
+			state.addProgressMessage(messageText)
+			emitClaudeMixedAssistantUpdate(onEvent, update, messageText)
+			return
+		}
+		state.bufferAssistantMessage(messageText)
+		emitStreamUpdate(onEvent, update)
+		return
 	}
+	if hasTool {
+		if previous := state.promotePendingMessage(); previous != "" {
+			emitClaudeProgressUpdate(onEvent, previous)
+		}
+	}
+	if eventType == "result" {
+		state.finalizePendingAnswer()
+	}
+	emitStreamUpdate(onEvent, update)
+}
+
+func claudeAssistantMessageText(event map[string]any) string {
+	message, _ := event["message"].(map[string]any)
+	if message == nil {
+		return ""
+	}
+	role, _ := message["role"].(string)
+	if role != "" && role != "assistant" {
+		return ""
+	}
+	content, _ := message["content"].([]any)
+	var text strings.Builder
+	for _, raw := range content {
+		block, _ := raw.(map[string]any)
+		if blockType, _ := block["type"].(string); blockType == "text" {
+			writeBlockText(&text, block)
+		}
+	}
+	return strings.TrimSpace(text.String())
+}
+
+func updateContainsKind(update AgentStreamUpdate, kind card.SegmentKind) bool {
+	for _, segment := range update.Segments {
+		if segment.Kind == kind {
+			return true
+		}
+	}
+	return false
+}
+
+func emitClaudeProgressUpdate(onEvent func(AgentStreamUpdate), text string) {
+	emitStreamUpdate(onEvent, AgentStreamUpdate{
+		Segments:          []card.Segment{{Kind: card.SegmentThought, Text: strings.TrimSpace(text)}},
+		Activity:          streamActivityReasoning,
+		AssistantSnapshot: true,
+		ProgressSnapshot:  true,
+	})
+}
+
+func emitClaudeMixedAssistantUpdate(onEvent func(AgentStreamUpdate), update AgentStreamUpdate, messageText string) {
+	textUpdate := update
+	textUpdate.Segments = nil
+	for _, segment := range update.Segments {
+		if segment.Kind == card.SegmentText {
+			textUpdate.Segments = append(textUpdate.Segments, segment)
+		}
+	}
+	textUpdate.Activity = streamActivityAnswering
+	textUpdate.AssistantSnapshot = false
+	textUpdate.AnswerSnapshot = len(textUpdate.Segments) > 0
+	emitStreamUpdate(onEvent, textUpdate)
+	emitClaudeProgressUpdate(onEvent, messageText)
+
+	toolUpdate := AgentStreamUpdate{
+		AssistantSnapshot: update.AssistantSnapshot,
+		PartialMessage:    update.PartialMessage,
+	}
+	for _, segment := range update.Segments {
+		if segment.Kind != card.SegmentText {
+			toolUpdate.Segments = append(toolUpdate.Segments, segment)
+		}
+	}
+	toolUpdate.Activity = activityFromSegments(toolUpdate.Segments)
+	emitStreamUpdate(onEvent, toolUpdate)
 }
 
 func emitStreamUpdate(onEvent func(AgentStreamUpdate), update AgentStreamUpdate) {

@@ -4499,27 +4499,133 @@ func TestToolSegmentsAvoidMarkdownAdhesion(t *testing.T) {
 }
 
 func TestParseClaudeStreamSegmentsAssistantAnswersAndCountsUniqueTools(t *testing.T) {
-	// 两个 assistant message:第一段是过程性发言,第二段是最终结论。
-	// 一次工具调用被拆成 tool_use + tool_result 两条,同一 tool_use.id 只应计一次。
+	// 精简自真实回归提示:两轮进展、两次单步工具调用、一个最终总结。
 	lines := []string{
-		`{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"让我先看看"}]}}`,
-		`{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","name":"Bash","id":"tu-1","input":{"command":"ls"}}]}}`,
-		`{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"tu-1","content":"file.txt"}]}}`,
-		`{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"最终结论:只有一个文件。"}]}}`,
+		`{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"第一轮完成，继续第二轮"}]}}`,
+		`{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","name":"Bash","id":"tu-1","input":{"command":"pwd"}}]}}`,
+		`{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"tu-1","content":"/repo"}]}}`,
+		`{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"第二轮完成，准备总结"}]}}`,
+		`{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","name":"Bash","id":"tu-2","input":{"command":"git status --short"}}]}}`,
+		`{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"tu-2","content":""}]}}`,
+		`{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"两轮全部完成"}]}}`,
+		`{"type":"result","result":"两轮全部完成"}`,
 	}
 	data := []byte(strings.Join(lines, "\n"))
-	result, err := parseClaudeStream(bytes.NewReader(data), nil, func(AgentStreamUpdate) {})
+	var progressUpdates []AgentStreamUpdate
+	result, err := parseClaudeStream(bytes.NewReader(data), nil, func(update AgentStreamUpdate) {
+		if update.ProgressSnapshot {
+			progressUpdates = append(progressUpdates, update)
+		}
+	})
 	if err != nil {
 		t.Fatalf("parse stream error: %v", err)
 	}
-	if len(result.AnswerSegments) != 2 {
-		t.Fatalf("answer segments = %#v, want 2 assistant answers", result.AnswerSegments)
+	if len(result.AnswerSegments) != 1 || result.AnswerSegments[0] != "两轮全部完成" {
+		t.Fatalf("answer segments = %#v, want final answer only", result.AnswerSegments)
 	}
-	if last := result.AnswerSegments[len(result.AnswerSegments)-1]; !strings.Contains(last, "最终结论") {
-		t.Fatalf("last answer segment = %q", last)
+	if len(result.ProgressSegments) != 2 || result.ProgressSegments[0] != "第一轮完成，继续第二轮" || result.ProgressSegments[1] != "第二轮完成，准备总结" {
+		t.Fatalf("progress segments = %#v", result.ProgressSegments)
 	}
-	if result.ToolCallCount != 1 {
-		t.Fatalf("tool call count = %d, want 1 (deduped by tool_use.id)", result.ToolCallCount)
+	if len(progressUpdates) != 2 {
+		t.Fatalf("progress stream updates = %#v, want 2", progressUpdates)
+	}
+	if result.ToolCallCount != 2 {
+		t.Fatalf("tool call count = %d, want 2 (deduped by tool_use.id)", result.ToolCallCount)
+	}
+}
+
+func TestClaudeTextAndToolInSameMessagePromotesProgress(t *testing.T) {
+	input := strings.Join([]string{
+		`{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"先执行检查"},{"type":"tool_use","name":"Bash","id":"tu-1","input":{"command":"pwd"}}]}}`,
+		`{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"tu-1","content":"/repo"}]}}`,
+		`{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"检查完成"}]}}`,
+		`{"type":"result","result":"检查完成"}`,
+	}, "\n")
+	var progress int
+	result, err := parseClaudeStream(strings.NewReader(input), nil, func(update AgentStreamUpdate) {
+		if update.ProgressSnapshot {
+			progress++
+		}
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if progress != 1 || len(result.ProgressSegments) != 1 || result.ProgressSegments[0] != "先执行检查" {
+		t.Fatalf("progress updates/result = %d/%#v", progress, result.ProgressSegments)
+	}
+	if len(result.AnswerSegments) != 1 || result.AnswerSegments[0] != "检查完成" || result.ToolCallCount != 1 {
+		t.Fatalf("answer/tool count = %#v/%d", result.AnswerSegments, result.ToolCallCount)
+	}
+}
+
+func TestClaudeProgressAndToolCountsSurviveEveryReplyMode(t *testing.T) {
+	input := strings.Join([]string{
+		`{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"进展一"}]}}`,
+		`{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","name":"Bash","id":"tu-1","input":{"command":"pwd"}}]}}`,
+		`{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"tu-1","content":"/repo"}]}}`,
+		`{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","name":"Bash","id":"tu-2","input":{"command":"git status --short"}}]}}`,
+		`{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"tu-2","content":""}]}}`,
+		`{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"进展二"}]}}`,
+		`{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","name":"Bash","id":"tu-3","input":{"command":"pwd"}}]}}`,
+		`{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"tu-3","content":"/repo"}]}}`,
+		`{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","name":"Bash","id":"tu-4","input":{"command":"git status --short"}}]}}`,
+		`{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"tu-4","content":""}]}}`,
+		`{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"最终总结"}]}}`,
+		`{"type":"result","result":"最终总结"}`,
+	}, "\n")
+
+	for _, mode := range []config.ReplyMode{config.ReplyModeAppend, config.ReplyModeAppendCleanCard, config.ReplyModeLatestCard} {
+		t.Run(string(mode), func(t *testing.T) {
+			clock := &fakeStreamClock{now: time.Date(2026, 7, 26, 13, 0, 0, 0, time.FixedZone("CST", 8*60*60))}
+			renderer := card.NewFakeRenderer()
+			stream := newPreviewTestStreamForMode(t, renderer, clock, 1, 4000, mode)
+			if err := stream.Start(); err != nil {
+				t.Fatal(err)
+			}
+			result, err := parseClaudeStream(strings.NewReader(input), nil, stream.Handle)
+			if err != nil {
+				t.Fatal(err)
+			}
+			terminal, err := stream.Finish("completed", card.Meta{}, result)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if terminal.ToolCallCount != 4 {
+				t.Fatalf("tool count = %d, want 4", terminal.ToolCallCount)
+			}
+
+			if mode == config.ReplyModeAppend {
+				var text strings.Builder
+				for _, segment := range terminal.Segments {
+					if segment.Kind == card.SegmentText {
+						text.WriteString(segment.Text)
+						text.WriteByte('\n')
+					}
+				}
+				for _, want := range []string{"进展一", "进展二", "最终总结"} {
+					if !strings.Contains(text.String(), want) {
+						t.Fatalf("append inline timeline lost %q: %#v", want, terminal.Segments)
+					}
+				}
+				if thought := segmentTextByKind(terminal, card.SegmentThought); strings.Contains(thought, "进展一") || strings.Contains(thought, "进展二") {
+					t.Fatalf("append duplicated inline progress in thought panel: %q", thought)
+				}
+				return
+			}
+
+			if answer := segmentTextByKind(terminal, card.SegmentText); answer != "最终总结" {
+				t.Fatalf("%s answer = %q, want final only", mode, answer)
+			}
+			thought := segmentTextByKind(terminal, card.SegmentThought)
+			for _, want := range []string{"进展一", "进展二"} {
+				if !strings.Contains(thought, want) {
+					t.Fatalf("%s process panel lost %q: %q", mode, want, thought)
+				}
+			}
+			if mode == config.ReplyModeAppendCleanCard && (terminal.ThoughtRoundCount != 2 || terminal.ToolRoundCount != 4) {
+				t.Fatalf("clean counts = thought:%d tool:%d, want 2/4", terminal.ThoughtRoundCount, terminal.ToolRoundCount)
+			}
+		})
 	}
 }
 

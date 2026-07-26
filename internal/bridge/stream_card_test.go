@@ -2,6 +2,7 @@ package bridge
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -1261,10 +1262,10 @@ func TestStreamWhitespaceOnlyDeltaDoesNotRenderEmptyCardOrDelayFirstText(t *test
 	}
 }
 
-// TestAppendCleanThreeSectionLatestOnly 验证 append-clean-card 三段布局:思考/工具滚动保留
-// 最后两次,折叠区计数(× N)累计全过程,Event 携带 ThreeSectionLayout + 展开态。
+// TestAppendCleanThreeSectionLatestOnly verifies that append-clean preserves
+// separate reasoning/answer/tool sections and timestamps each category's two-item window.
 func TestAppendCleanThreeSectionLatestOnly(t *testing.T) {
-	clock := &fakeStreamClock{now: time.Unix(200, 0)}
+	clock := &fakeStreamClock{now: time.Date(2026, 7, 26, 11, 32, 0, 0, time.FixedZone("CST", 8*60*60))}
 	renderer := card.NewFakeRenderer()
 	stream := newPreviewTestStreamForMode(t, renderer, clock, 1, 4000, config.ReplyModeAppendCleanCard)
 	if err := stream.Start(); err != nil {
@@ -1275,6 +1276,7 @@ func TestAppendCleanThreeSectionLatestOnly(t *testing.T) {
 	// 注意 snapshot 会带完整 thought;delta 阶段的中间态会被 snapshot 权威覆盖,避免重复。
 	stream.Handle(AgentStreamUpdate{Activity: streamActivityReasoning, Incremental: true,
 		Segments: []card.Segment{{Kind: card.SegmentThought, Text: "先想第一步"}}})
+	clock.now = time.Date(2026, 7, 26, 11, 32, 10, 0, clock.now.Location())
 	stream.Handle(AgentStreamUpdate{Activity: streamActivityTool,
 		Segments: []card.Segment{{Kind: card.SegmentTool, Text: "- Bash `t1`\n\n```json\n{\"command\":\"ls\"}\n```",
 			Tool: &card.ToolMeta{ID: "t1", Name: "Bash", Summary: "ls", Phase: "use"}}}})
@@ -1288,8 +1290,10 @@ func TestAppendCleanThreeSectionLatestOnly(t *testing.T) {
 		}})
 
 	// 第 2 轮:新的思考 + 新一次工具,再 snapshot。
+	clock.now = time.Date(2026, 7, 26, 11, 32, 30, 0, clock.now.Location())
 	stream.Handle(AgentStreamUpdate{Activity: streamActivityReasoning, Incremental: true,
 		Segments: []card.Segment{{Kind: card.SegmentThought, Text: "再想第二步"}}})
+	clock.now = time.Date(2026, 7, 26, 11, 33, 20, 0, clock.now.Location())
 	stream.Handle(AgentStreamUpdate{Activity: streamActivityTool,
 		Segments: []card.Segment{{Kind: card.SegmentTool, Text: "- Bash `t2`\n\n```json\n{\"command\":\"cat x\"}\n```",
 			Tool: &card.ToolMeta{ID: "t2", Name: "Bash", Summary: "cat x", Phase: "use"}}}})
@@ -1316,29 +1320,35 @@ func TestAppendCleanThreeSectionLatestOnly(t *testing.T) {
 		t.Fatalf("counts = thought:%d tool:%d, want 2/2", ev.ThoughtRoundCount, ev.ToolRoundCount)
 	}
 	thought := segmentTextByKind(ev, card.SegmentThought)
-	// 滚动保留最后两段:应该同时包含第一步和第二步,用分隔线分开
-	if !strings.Contains(thought, "第一步") || !strings.Contains(thought, "第二步") {
-		t.Fatalf("thought should show last two COTs, got %q", thought)
+	for _, want := range []string{"**Update #3 · 11:32:30** · 再想第二步", "**Update #1 · 11:32:00** · 先想第一步", cleanTimelineSeparator} {
+		if !strings.Contains(thought, want) {
+			t.Fatalf("thought timeline missing %q: %q", want, thought)
+		}
 	}
-	if !strings.Contains(thought, "---") {
-		t.Fatalf("thought should have separator between segments, got %q", thought)
+	if strings.Index(thought, "Update #3") > strings.Index(thought, "Update #1") {
+		t.Fatalf("thought timeline must be newest-first: %q", thought)
 	}
-	// 思考区不应重复:snapshot 覆盖 delta,同一轮内不应出现两遍相同 COT。
-	if strings.Count(thought, "第二步") != 1 {
-		t.Fatalf("thought must not duplicate within a round, got %q", thought)
+	if strings.Contains(thought, "\n\n"+cleanTimelineSeparator) || strings.Contains(thought, cleanTimelineSeparator+"\n\n") {
+		t.Fatalf("thought separator must not have blank lines: %q", thought)
 	}
 	tool := segmentTextByKind(ev, card.SegmentTool)
-	// 工具区必须是人读格式:保留最后两次工具调用,含 Name (Bash) + command + 输出,不带 raw JSON / call_ id。
-	// 两次工具之间用分隔线分开,应该同时包含 ls 和 cat x 的结果
-	if !strings.Contains(tool, "Bash") || !strings.Contains(tool, "ls") || !strings.Contains(tool, "file1") ||
-		!strings.Contains(tool, "cat x") || !strings.Contains(tool, "hello") {
-		t.Fatalf("tool must show last two tools in human form, got %q", tool)
+	for _, want := range []string{
+		"**Update #4 · 11:33:20** · **Bash**\n`cat x` → `hello`",
+		"**Update #2 · 11:32:10** · **Bash**\n`ls`\n输出：\n```\nfile1\nfile2\n```",
+		cleanTimelineSeparator,
+	} {
+		if !strings.Contains(tool, want) {
+			t.Fatalf("tool timeline missing %q: %q", want, tool)
+		}
 	}
-	if !strings.Contains(tool, "---") {
-		t.Fatalf("tool should have separator between calls, got %q", tool)
+	if strings.Contains(strings.Split(tool, cleanTimelineSeparator)[0], "```") {
+		t.Fatalf("short newest tool values should stay compact: %q", tool)
 	}
-	if strings.Contains(tool, "t1") || strings.Contains(tool, "tool_result") || strings.Contains(tool, "\"command\"") {
-		t.Fatalf("tool must not leak raw id / raw json / tool_result stub, got %q", tool)
+	if strings.Index(tool, "Update #4") > strings.Index(tool, "Update #2") {
+		t.Fatalf("tool timeline must be newest-first: %q", tool)
+	}
+	if strings.Contains(tool, "\n\n"+cleanTimelineSeparator) || strings.Contains(tool, cleanTimelineSeparator+"\n\n") {
+		t.Fatalf("tool separator must not have blank lines: %q", tool)
 	}
 
 	// 终态:思考折叠,计数保持,内容保留最后两次;stop button 隐藏。
@@ -1370,14 +1380,11 @@ func TestAppendCleanThreeSectionLatestOnly(t *testing.T) {
 	if terminal.ThoughtRoundCount != 2 || terminal.ToolRoundCount != 2 {
 		t.Fatalf("terminal counts = thought:%d tool:%d, want 2/2", terminal.ThoughtRoundCount, terminal.ToolRoundCount)
 	}
-	// 终态也保留最后两段思考
-	if got := segmentTextByKind(terminal, card.SegmentThought); !strings.Contains(got, "第一步") || !strings.Contains(got, "第二步") {
-		t.Fatalf("terminal thought should keep last two, got %q", got)
+	if got := segmentTextByKind(terminal, card.SegmentThought); !strings.Contains(got, "Update #3 · 11:32:30") || !strings.Contains(got, "Update #1 · 11:32:00") {
+		t.Fatalf("terminal thought timeline should preserve two thoughts, got %q", got)
 	}
-	// 终态也保留最后两次工具调用
-	if got := segmentTextByKind(terminal, card.SegmentTool); !strings.Contains(got, "ls") || !strings.Contains(got, "file1") ||
-		!strings.Contains(got, "cat x") || !strings.Contains(got, "hello") {
-		t.Fatalf("terminal tool should keep last two, got %q", got)
+	if got := segmentTextByKind(terminal, card.SegmentTool); !strings.Contains(got, "Update #4 · 11:33:20") || !strings.Contains(got, "Update #2 · 11:32:10") {
+		t.Fatalf("terminal tool timeline should preserve two tools, got %q", got)
 	}
 }
 
@@ -1388,6 +1395,94 @@ func segmentTextByKind(ev card.Event, kind card.SegmentKind) string {
 		}
 	}
 	return ""
+}
+
+func TestAppendCleanTimelineKeepsTwoUpdatesPerPanel(t *testing.T) {
+	clock := &fakeStreamClock{now: time.Date(2026, 7, 26, 11, 30, 0, 0, time.FixedZone("CST", 8*60*60))}
+	stream := &agentCardStream{clock: clock}
+
+	for i := 1; i <= 3; i++ {
+		thoughtNumber := stream.startCleanUpdateLocked(card.SegmentThought)
+		stream.updateCleanThoughtLocked(thoughtNumber, fmt.Sprintf("thought-%d", i))
+		clock.Advance(time.Second)
+
+		toolNumber := stream.startCleanUpdateLocked(card.SegmentTool)
+		stream.updateCleanToolLocked(toolNumber, &toolCall{Name: "Bash", Cmd: fmt.Sprintf("tool-%d", i)})
+		clock.Advance(time.Second)
+	}
+
+	if len(stream.cleanUpdates) != 4 {
+		t.Fatalf("retained update count=%d, want two thoughts + two tools", len(stream.cleanUpdates))
+	}
+	thought := stream.formatCleanTimelineLocked(card.SegmentThought)
+	tool := stream.formatCleanTimelineLocked(card.SegmentTool)
+	for _, tc := range []struct {
+		name      string
+		text      string
+		newest    string
+		second    string
+		omitted   string
+		forbidden string
+	}{
+		{name: "thought", text: thought, newest: "Update #5", second: "Update #3", omitted: "较早 1 条已省略", forbidden: "Update #1"},
+		{name: "tool", text: tool, newest: "Update #6", second: "Update #4", omitted: "较早 1 条已省略", forbidden: "Update #2"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			for _, want := range []string{tc.newest, tc.second, tc.omitted} {
+				if !strings.Contains(tc.text, want) {
+					t.Fatalf("timeline missing %q: %q", want, tc.text)
+				}
+			}
+			if strings.Contains(tc.text, tc.forbidden) {
+				t.Fatalf("timeline retained oldest update %q: %q", tc.forbidden, tc.text)
+			}
+			if strings.Contains(tc.text, "\n\n"+cleanTimelineSeparator) || strings.Contains(tc.text, cleanTimelineSeparator+"\n\n") {
+				t.Fatalf("separator must not have blank lines: %q", tc.text)
+			}
+		})
+	}
+}
+
+func TestToolCallFormatCompactFallsBackForComplexValues(t *testing.T) {
+	got := (&toolCall{Name: "Bash", Cmd: "printf 'one\\ntwo'\nprintf done", Output: "line one\nline two"}).formatCompact()
+	for _, want := range []string{"**Bash**", "```\nprintf 'one\\ntwo'\nprintf done\n```", "输出：\n```\nline one\nline two\n```"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("compact tool fallback missing %q: %q", want, got)
+		}
+	}
+}
+
+func TestAppendCleanTerminalOnlyResultBuildsTimeline(t *testing.T) {
+	clock := &fakeStreamClock{now: time.Date(2026, 7, 26, 12, 0, 1, 0, time.FixedZone("CST", 8*60*60))}
+	renderer := card.NewFakeRenderer()
+	stream := newPreviewTestStreamForMode(t, renderer, clock, 1, 4000, config.ReplyModeAppendCleanCard)
+	if err := stream.Start(); err != nil {
+		t.Fatal(err)
+	}
+	terminal, err := stream.Finish("completed", card.Meta{}, AgentRunResult{
+		Segments: []card.Segment{
+			{Kind: card.SegmentThought, Text: "定位根因"},
+			{Kind: card.SegmentTool, Text: "- Bash `t1`\n\n```json\n{\"command\":\"go test ./...\"}\n```", Tool: &card.ToolMeta{ID: "t1", Name: "Bash", Summary: "go test ./...", Phase: "use"}},
+			{Kind: card.SegmentTool, Text: "- tool_result `t1`\n\n```\nok\n```", Tool: &card.ToolMeta{ID: "t1", Phase: "result"}},
+			{Kind: card.SegmentText, Text: "完成"},
+		},
+		AnswerSegments: []string{"完成"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	thought := segmentTextByKind(terminal, card.SegmentThought)
+	for _, want := range []string{"Update #1 · 12:00:01", "定位根因"} {
+		if !strings.Contains(thought, want) {
+			t.Fatalf("terminal-only thought timeline missing %q: %q", want, thought)
+		}
+	}
+	tool := segmentTextByKind(terminal, card.SegmentTool)
+	for _, want := range []string{"Update #2 · 12:00:01", "go test ./...", "ok"} {
+		if !strings.Contains(tool, want) {
+			t.Fatalf("terminal-only tool timeline missing %q: %q", want, tool)
+		}
+	}
 }
 
 // TestFormatLatestToolClampsHugeOutputKeepsCommand 回归:超大工具输出时,

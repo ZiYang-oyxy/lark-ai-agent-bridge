@@ -166,7 +166,7 @@ func TestPolicyAppendContinuationCreatesAtMostNineCardsAndReusesSlidingWindow(t 
 	}
 }
 
-func TestPolicyAppendCleanCardRemovesProcessPanelsAndFallsBackOnce(t *testing.T) {
+func TestPolicyAppendCleanCardKeepsProcessPanelsAndFallsBackOnce(t *testing.T) {
 	terminal := card.Event{
 		Type: "result",
 		Segments: []card.Segment{
@@ -191,14 +191,14 @@ func TestPolicyAppendCleanCardRemovesProcessPanelsAndFallsBackOnce(t *testing.T)
 		t.Fatalf("append fallback calls/events = %d/%d", target.appendCalls, len(target.appended))
 	}
 	clean := target.appended[0]
-	if len(clean.Segments) != 1 || clean.Segments[0].Kind != card.SegmentText || clean.Segments[0].Text != "answer" {
+	if len(clean.Segments) != 3 || clean.Segments[0].Kind != card.SegmentText || clean.Segments[0].Text != "answer" {
 		t.Fatalf("clean terminal segments = %#v", clean.Segments)
 	}
 	if clean.Meta.ModelInfo.Actual != "actual" || clean.Meta.Tokens != 7 || clean.Meta.WorkDir != "/work" || clean.Meta.Status != "completed" {
 		t.Fatalf("clean terminal meta = %#v", clean.Meta)
 	}
-	if !clean.HideAgentPanels {
-		t.Fatal("clean terminal did not hide thought/tool panels")
+	if clean.HideAgentPanels {
+		t.Fatal("clean terminal hid thought/tool panels")
 	}
 }
 
@@ -257,10 +257,10 @@ func TestPolicyLatestCardCleansTerminalAndPersistsAdvancedRef(t *testing.T) {
 		t.Fatalf("terminal events = %#v", target.rehydrated.events)
 	}
 	clean := target.rehydrated.events[0]
-	if len(clean.Segments) != 1 || clean.Segments[0].Kind != card.SegmentText || clean.Segments[0].Text != "answer" {
+	if len(clean.Segments) != 3 || clean.Segments[0].Kind != card.SegmentText || clean.Segments[0].Text != "answer" {
 		t.Fatalf("clean terminal segments = %#v", clean.Segments)
 	}
-	if clean.Streaming || clean.Activity != "" || clean.ProcessExpanded || !clean.HideAgentPanels {
+	if clean.Streaming || clean.Activity != "" || clean.ProcessExpanded || clean.HideAgentPanels {
 		t.Fatalf("clean terminal state = %#v", clean)
 	}
 	got := store.GetLatest("scope")
@@ -403,9 +403,8 @@ func configMode(value string) config.ReplyMode {
 	return config.ReplyMode(value)
 }
 
-// TestCleanTerminalEventKeepsPanelsForThreeSectionLayout 锁死:三段布局(append-clean-card
-// 走的新分支)在终态保留 thought/tool 的「最新一次」用于渲染折叠区,不再被 clean 清空;
-// 旧的合并 panel_process 分支(ThreeSectionLayout=false)沿用「终态只留正文」的老语义。
+// TestCleanTerminalEventKeepsAgentPanels 锁死 append-clean-card/latest-card 在终态只收起
+// 过程面板，不再删除 thought/tool 消息或工具次数。
 func TestCleanTerminalEventKeepsPanelsForThreeSectionLayout(t *testing.T) {
 	three := card.Event{
 		Type:               "result",
@@ -442,12 +441,14 @@ func TestCleanTerminalEventKeepsPanelsForThreeSectionLayout(t *testing.T) {
 		},
 	}
 	out2 := cleanTerminalEvent(legacy)
+	kinds = map[card.SegmentKind]bool{}
 	for _, s := range out2.Segments {
-		if s.Kind == card.SegmentThought || s.Kind == card.SegmentTool {
-			t.Fatalf("legacy clean terminal must drop thought/tool, got %#v", out2.Segments)
-		}
+		kinds[s.Kind] = true
 	}
-	if !out2.HideAgentPanels {
-		t.Fatalf("legacy clean terminal should set HideAgentPanels")
+	if !kinds[card.SegmentText] || !kinds[card.SegmentThought] || !kinds[card.SegmentTool] {
+		t.Fatalf("latest-card terminal should keep text+thought+tool, got %#v", out2.Segments)
+	}
+	if out2.HideAgentPanels {
+		t.Fatalf("latest-card terminal must keep agent panel visible")
 	}
 }

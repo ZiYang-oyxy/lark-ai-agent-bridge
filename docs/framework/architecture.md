@@ -104,7 +104,7 @@ Claude runner 使用 `--output-format stream-json`，通过 stdout pipe 逐行�
 - token 数：递归统计 usage 中以 `tokens` 结尾的数字字段
 - Claude session id：顶层或 message 内的 `session_id`
 
-输出会映射为 `card.Segment`。`append` 将 assistant 回复与工具安全摘要按事件顺序投影到同一个稳定的 `answer` Markdown 元素，工具始终以普通文字展示；thinking 单独放入折叠面板。`append-clean-card` 与 `latest-card` 继续使用聚合正文和过程折叠面板。
+输出会映射为 `card.Segment`。Claude assistant 文本先暂存：后续出现工具活动时判定为可展示的 progress，流结束时才判定为最终回复。`append` 将 progress、工具安全摘要与末答按事件顺序投影到同一个稳定的 `answer` Markdown 元素；原生 thinking 单独放入折叠面板。`append-clean-card` 将 thought/progress 与 tools 放入上下时间线，`latest-card` 使用合并过程区；两者终态都只裁剪正文，不删除过程消息或工具次数。
 
 ## Codex 输出解析
 

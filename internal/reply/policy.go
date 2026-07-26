@@ -303,19 +303,13 @@ func terminalEvent(event card.Event) bool {
 }
 
 func cleanTerminalEvent(event card.Event) card.Event {
-	// 三段布局(append-clean-card)在终态保留 thought/tool 的「最新一次」以便渲染
-	// 「💭 思考推理（已完成 · ×N）」/「🔧 工具调用（×N）」折叠区(默认折叠、不侵入正文);
-	// 旧的合并 panel_process 分支(latest-card 等)沿用「终态只留正文」的老语义。
-	preservePanels := event.ThreeSectionLayout
+	// append-clean-card 与 latest-card 都在终态保留可展示的 thought/tool 过程区，
+	// 仅统一收起折叠面板。latest-card 复用同一张卡，不应因任务结束而丢掉消息和工具次数。
 	segments := make([]card.Segment, 0, len(event.Segments))
 	for _, segment := range event.Segments {
 		switch segment.Kind {
-		case card.SegmentText, card.SegmentError:
+		case card.SegmentText, card.SegmentError, card.SegmentThought, card.SegmentTool:
 			segments = append(segments, segment)
-		case card.SegmentThought, card.SegmentTool:
-			if preservePanels {
-				segments = append(segments, segment)
-			}
 		}
 	}
 	event.Segments = segments
@@ -324,9 +318,7 @@ func cleanTerminalEvent(event card.Event) card.Event {
 	event.ThoughtExpanded = false
 	event.ToolsExpanded = false
 	event.ProcessExpanded = false
-	if !preservePanels {
-		event.HideAgentPanels = true
-	}
+	event.HideAgentPanels = false
 	return event
 }
 
