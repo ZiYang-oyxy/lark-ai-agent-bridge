@@ -481,6 +481,38 @@ func TestServiceResolvesAttachmentsBeforeDurableEnqueue(t *testing.T) {
 	}
 }
 
+func TestServiceExpandsDirectMergeForwardBeforeCommandParsing(t *testing.T) {
+	now := time.Now()
+	runner := newFakeRunner()
+	svc := NewService(testConfig(t), card.NewFakeRenderer(), runner, audit.NewRecorder())
+	fetcher := &fakeMessageFetcher{msg: QuotedMessage{
+		Text:        "[合并转发消息，共 1 条]\n[2026-07-26 17:32:47 | cli_fixture_924a34080d66]\n已完成：卡片正文",
+		MessageType: "merge_forward",
+	}}
+	svc.MessageFetcher = fetcher
+
+	if err := svc.HandleMessage(context.Background(), Message{
+		ID: "om_forward", ChatID: "chat", Sender: "user", MessageType: "merge_forward", Time: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	key := session.Key{Agent: agent.Claude, ChatID: "chat"}
+	sess, ok := svc.Sessions.Get(key)
+	if !ok || len(sess.Queue) != 1 {
+		t.Fatalf("queued session = %#v, want one expanded input", sess)
+	}
+	if err := svc.DrainReady(sess.Queue[0].DebounceUntil); err != nil {
+		t.Fatal(err)
+	}
+	waitForCalls(t, runner, 1)
+	if prompt := runner.Calls()[0].Prompt; !strings.Contains(prompt, "已完成：卡片正文") {
+		t.Fatalf("agent prompt = %q, want expanded forwarded card text", prompt)
+	}
+	if len(fetcher.calls) != 1 || fetcher.calls[0] != "om_forward" {
+		t.Fatalf("fetch calls = %v, want current merge-forward message", fetcher.calls)
+	}
+}
+
 func TestServicePassesFrozenModelAndEffortToRunner(t *testing.T) {
 	now := time.Now()
 	runner := newFakeRunner()

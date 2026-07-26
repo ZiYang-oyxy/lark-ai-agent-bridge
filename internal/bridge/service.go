@@ -578,6 +578,10 @@ func (s *Service) HandleMessage(ctx context.Context, msg Message) error {
 	if !ok {
 		defaultKind = agent.Claude
 	}
+	// A directly received merge_forward event only carries Feishu's short
+	// placeholder in Message.Content. Expand its own message ID before command
+	// parsing so the forwarded card text becomes the actual agent prompt.
+	msg = s.expandDirectMergeForward(ctx, msg)
 	if handled, err := s.handlePendingScheduleReply(msg, preference); handled {
 		return err
 	}
@@ -3028,6 +3032,39 @@ func (s *Service) resolveQuotedMessage(ctx context.Context, msg Message) (text, 
 		}
 	}
 	return quoted, fetched.SenderID, fetched.Attachments
+}
+
+// expandDirectMergeForward replaces the abbreviated inbound merge-forward
+// placeholder with the fully rendered snapshot fetched from Feishu. This is
+// intentionally separate from resolveQuotedMessage: a forwarded message is
+// the current message, not a reply whose content lives at ParentID.
+func (s *Service) expandDirectMergeForward(ctx context.Context, msg Message) Message {
+	if !strings.EqualFold(strings.TrimSpace(msg.MessageType), "merge_forward") || msg.ID == "" || s.MessageFetcher == nil {
+		return msg
+	}
+	fetched, err := s.MessageFetcher.FetchMessage(ctx, msg.ID)
+	if err != nil {
+		s.Audit.Record(msg.Sender, "merge_forward_fetch_failed", msg.ChatID, err.Error())
+		return msg
+	}
+	if text := strings.TrimSpace(fetched.Text); text != "" {
+		msg.Text = text
+	}
+	if len(fetched.Attachments) == 0 {
+		return msg
+	}
+	seen := make(map[media.Ref]struct{}, len(msg.Attachments)+len(fetched.Attachments))
+	attachments := make([]media.Ref, 0, len(msg.Attachments)+len(fetched.Attachments))
+	for _, ref := range append(msg.Attachments, fetched.Attachments...) {
+		if _, ok := seen[ref]; ok {
+			continue
+		}
+		seen[ref] = struct{}{}
+		attachments = append(attachments, ref)
+	}
+	msg.Attachments = attachments
+	msg.HasAttachments = true
+	return msg
 }
 
 func (s *Service) metaFromSession(sess session.Session) card.Meta {
