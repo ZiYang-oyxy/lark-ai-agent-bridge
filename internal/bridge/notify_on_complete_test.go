@@ -27,6 +27,8 @@ func (f *fakeNotifier) AddReaction(context.Context, string, feishu.ReactionType)
 
 func (f *fakeNotifier) DeleteReaction(context.Context, string, string) error { return nil }
 
+func (f *fakeNotifier) DeleteMessage(context.Context, string) error { return nil }
+
 func newNotifyTestService(notifier feishu.Sender) *Service {
 	svc := NewService(config.Config{}, card.NewFakeRenderer(), &fakeRunner{}, nil)
 	svc.Notifier = notifier

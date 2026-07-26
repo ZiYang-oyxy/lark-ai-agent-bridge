@@ -242,6 +242,8 @@ func runSimulate(args []string) error {
 	senderType := fs.String("sender-type", "user", "sender type: user or bot")
 	group := fs.Bool("group", false, "simulate group chat")
 	mentioned := fs.Bool("mentioned", true, "whether bot was mentioned")
+	messageType := fs.String("message-type", "text", "Feishu message type: text or post (post triggers topic precreate under topic conversation mode)")
+	fakeThread := fs.String("fake-thread", "", "if set, wire an in-memory Sender that returns this thread_id for SendReply so simulate can exercise the topic precreate path without Feishu")
 	timeoutNow := fs.Bool("timeout-now", false, "immediately trigger pending confirmation timeout after message handling")
 	defaultWorkDir := fs.String("default-workdir", cfg.DefaultWorkDir, "default workdir for messages without --workdir")
 	var nextMessages stringList
@@ -263,6 +265,7 @@ func runSimulate(args []string) error {
 		Sender:             *sender,
 		SenderType:         *senderType,
 		Text:               *text,
+		MessageType:        *messageType,
 		IsGroup:            *group,
 		Mentioned:          *mentioned,
 		ExplicitBotMention: *mentioned,
@@ -274,6 +277,10 @@ func runSimulate(args []string) error {
 		return err
 	}
 	svc.TopicParticipation = topics
+	if strings.TrimSpace(*fakeThread) != "" {
+		svc.Notifier = &simulateFakeSender{threadID: *fakeThread}
+		svc.TopicAliases = bridge.NewTopicAliasStore()
+	}
 	loadAgentsInto(svc, cfg, recorder)
 	msg := bridge.Message{
 		ID:                 fmt.Sprintf("local-%d", time.Now().UnixNano()),
@@ -282,6 +289,7 @@ func runSimulate(args []string) error {
 		Sender:             *sender,
 		SenderType:         *senderType,
 		Text:               *text,
+		MessageType:        *messageType,
 		IsGroup:            *group,
 		Mentioned:          *mentioned,
 		ExplicitBotMention: *mentioned,
@@ -298,6 +306,7 @@ func runSimulate(args []string) error {
 			Sender:             *sender,
 			SenderType:         *senderType,
 			Text:               nextText,
+			MessageType:        *messageType,
 			IsGroup:            *group,
 			Mentioned:          *mentioned,
 			ExplicitBotMention: *mentioned,
@@ -807,6 +816,27 @@ func (simulateRunner) Run(_ context.Context, req bridge.AgentRunRequest) (bridge
 }
 
 var _ bridge.AgentRunner = simulateRunner{}
+
+// simulateFakeSender is a minimal feishu.Sender used by simulate --fake-thread
+// to exercise the topic-precreate path without Feishu access. SendReply returns
+// a canned SendResult carrying the caller-configured thread_id and a synthetic
+// message_id ("om_probe_<threadID>"), so the recall step in
+// precreateTopicForPost fires and lands in audit as topic_precreate_probe.
+type simulateFakeSender struct {
+	feishu.NoopSender
+	threadID string
+}
+
+func (s *simulateFakeSender) SendReply(_ context.Context, _ feishu.Reply) (feishu.SendResult, error) {
+	return feishu.SendResult{
+		MessageID: "om_probe_" + s.threadID,
+		ThreadID:  s.threadID,
+	}, nil
+}
+
+func (s *simulateFakeSender) DeleteMessage(_ context.Context, _ string) error {
+	return nil
+}
 
 // quotedMessageFetcher adapts *feishu.SDKSender to bridge.MessageFetcher,
 // mapping the feishu-specific FetchedMessage into the bridge domain view so

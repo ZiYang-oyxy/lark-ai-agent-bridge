@@ -1021,6 +1021,16 @@ func (s *Service) runWithPreference(ctx context.Context, cmd Command, msg Messag
 			cmd.Agent = agent.Claude
 		}
 	}
+	// Feishu 对 msg_type=post 的顶层 @bot 不响应 reply_in_thread=true(不给分配
+	// thread_id),导致 topic 模式下富文本请求永远开不出真实话题,只能落进合成
+	// key。这里先发一条最小 text 引导消息、拿到真实 thread_id 后绑定 alias,
+	// 让后续 CardKit 走真实话题;失败降级到原合成 key 路径,不影响消息投递。
+	// text 消息不需要这步——它自己就能触发 Feishu 分配 thread_id。
+	if shouldPrecreateTopicForPost(msg, preference.ConversationMode) {
+		if realThread := s.precreateTopicForPost(ctx, msg); realThread != "" {
+			msg.ThreadID = realThread
+		}
+	}
 	conversationKey := sessionKeyForModeWithAlias(cmd.Agent, msg, preference.ConversationMode, s.TopicAliases)
 	workDir := s.effectiveWorkDir(conversationKey, cmd)
 	key := conversationKey

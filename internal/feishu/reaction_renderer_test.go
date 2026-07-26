@@ -29,6 +29,10 @@ func (f *fakeSender) DeleteReaction(context.Context, string, string) error {
 	return nil
 }
 
+func (f *fakeSender) DeleteMessage(context.Context, string) error {
+	return nil
+}
+
 func TestReactionCardRendererRoutesQueuedReaction(t *testing.T) {
 	sender := &fakeSender{}
 	cards := card.NewFakeRenderer()

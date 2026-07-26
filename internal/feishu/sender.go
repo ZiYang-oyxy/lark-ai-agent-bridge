@@ -47,6 +47,10 @@ type ReactionSink interface {
 
 type Sender interface {
 	SendReply(ctx context.Context, reply Reply) (SendResult, error)
+	// DeleteMessage removes a message the bot previously sent. Feishu allows
+	// bots to recall their own messages within a bounded window (currently
+	// ~2 minutes); callers that miss the window must tolerate a benign error.
+	DeleteMessage(ctx context.Context, messageID string) error
 	ReactionSink
 }
 
@@ -73,6 +77,10 @@ func (NoopSender) AddReaction(context.Context, string, ReactionType) (string, er
 }
 
 func (NoopSender) DeleteReaction(context.Context, string, string) error {
+	return nil
+}
+
+func (NoopSender) DeleteMessage(context.Context, string) error {
 	return nil
 }
 
