@@ -14,16 +14,44 @@ source "$ROOT/scripts/lib/e2e-capabilities.sh"
 SMOKE_CASES=(
   new_basic
   streaming_card
+  help
+  status
+  workdir_existing
+  topic_reply_at
+  topic_reply_without_at_negative
 )
 
 FULL_EXTRA_CASES=(
   session_restart_context
+  restart_queued_cancel
+  restart_running_interrupted
+  debounce_dm
+  debounce_group
+  busy_merge
+  queue_full
+  scope_parallel
+  stop_preserves_queue
   recall_state
+  message_revoke
+  message_revoke_pending_workdir
+  message_revoke_queued_input
   media_attachment_only
   media_images
   media_text_files
+  media_partial
+  media_rejected
+  config_roundtrip
+  config_reset
+  config_frozen_queue
+  requested_actual_model
+  reply_append
+  reply_clean
+  reply_latest
+  preview_thresholds
   native_text_stream
+  reaction_lifecycle
   latest_restart_fallback
+  wrapper_preflight
 )
 
 FEATURE_CASES=(
@@ -195,7 +223,7 @@ configure_callback_for_cases() {
   CALLBACK_ADDR=""
   for case_name in "${RUN_CASES[@]}"; do
     case "$case_name" in
-      native_text_stream|latest_restart_fallback)
+      stop_preserves_queue|config_roundtrip|config_reset|config_frozen_queue|requested_actual_model|reply_append|reply_clean|reply_latest|preview_thresholds|native_text_stream|latest_restart_fallback)
         enable_callback
         return
         ;;
@@ -2764,6 +2792,9 @@ case_prerequisites() {
       else
         printf '%s\n' credentials lark_cli_auth bot_identity test_group wrapper exclusive_runtime
       fi
+      ;;
+    stop_preserves_queue|config_roundtrip|config_reset|config_frozen_queue|requested_actual_model|reply_append|reply_clean|reply_latest|preview_thresholds|latest_restart_fallback)
+      printf '%s\n' credentials lark_cli_auth bot_identity test_group card_action wrapper exclusive_runtime
       ;;
     preflight)
       printf '%s\n' credentials lark_cli_auth bot_identity test_group exclusive_runtime

@@ -270,6 +270,41 @@ profile 和 evidence 位于 `/.lark-agent-bridge/`、`/.cache/`，均已 Git ign
 
 `e2e-real.sh` 的 bridge readiness 只观察本次启动后 serve 日志新增的 `connected to wss`,不依赖 `/card/callback`。只有选中 stop/config 等 action case 时才注入 `E2E_CALLBACK_ADDR` 并在 gateway 注入 action 前做 callback challenge 探针；非 action-only run 显示 `callback_addr: disabled`。本地 callback 产生的 action 证据属于 `gateway_injected`,不代表已验证飞书 `card.action.trigger` 平台投递。真实飞书 `new_basic` 已验证该 readiness 通常约 2 秒内完成,并能继续走到 CardKit `event=result`。
 
+### 新增回归用例 SOP
+
+#### Bash 真实飞书 case
+
+1. 在 `scripts/e2e-real.sh` 新增一个独立的 `case_<name>()`。case 必须自行生成唯一 marker、等待 audit/card 证据，并用 `record_message` 保存消息 ID；不得依赖上一 case 的状态。
+2. 把 `<name>` 加入且只加入一个清单：
+   - `SMOKE_CASES`：稳定、短耗时、每次真实冒烟都应运行。
+   - `FULL_EXTRA_CASES`：重启、队列、媒体、回收、配置写入等较慢或有额外前置的回归。
+   - `FEATURE_CASES`：会改变共享 bot 行为、必须显式选择的能力验证。
+3. 在 `case_prerequisites()` 复用现有 capability 名称。使用 callback gateway 的 stop/config case 必须声明 `card_action`，媒体与 recall case 使用各自 capability；没有额外要求时保留默认分支。
+4. 若 case 调用 `wait_callback_ready`，同步加入 `configure_callback_for_cases()` 白名单。不要为不需要 action 的 run 启动 callback listener。
+5. 先执行静态检查，再用专用 Test profile 单跑：
+
+   ```bash
+   bash -n scripts/e2e-real.sh
+   scripts/e2e-real.sh --list-cases
+   scripts/e2e-real.sh --profile <test-profile> --case <name> --strict-capabilities
+   ```
+
+   只有 summary 为 `passed` 才能视为真实链路已验证；`BLOCKED` 必须保留原因，不能改成假绿。
+
+#### Go scenario
+
+1. 在 `internal/e2e/<name>.go` 实现一个聚焦 scenario，使用 `RealContext`/driver 接口，不直接读取其他 scenario 的临时文件。
+2. 在 scenario registry/descriptor 中注册稳定名称、说明和所需 capability；名称与 CLI `--case` 保持一致。
+3. 在 `internal/e2e/<name>_test.go` 覆盖 descriptor 注册、成功证据和关键失败边界；外部命令使用 fake driver，不能在普通 `go test ./...` 中连接飞书。
+4. 运行：
+
+   ```bash
+   GOCACHE=$PWD/.cache/go-build go test ./internal/e2e/... -run '<Name>' -v
+   GOCACHE=$PWD/.cache/go-build go test ./...
+   ```
+
+清单、prerequisite、callback 配置和文档是同一个变更，不允许只新增函数却不注册；否则 case 会持续 bit rot。
+
 下面保留手动排查步骤，便于脚本失败时定位。
 
 1. 选择一个不会与其他开发会话共享 bot 的命名 profile。
