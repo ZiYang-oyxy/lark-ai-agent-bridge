@@ -168,8 +168,11 @@ func TestParseAgentModeCommand(t *testing.T) {
 }
 
 func TestHelpTextIncludesConfigCommand(t *testing.T) {
-	if text := HelpText(); !strings.Contains(text, "/config") {
-		t.Fatalf("help text = %q, want /config", text)
+	text := HelpText()
+	for _, want := range []string{"/config set", "/local-config set", "/mkdir"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("help text = %q, want %s", text, want)
+		}
 	}
 }
 
@@ -454,7 +457,7 @@ func TestHelpCardDataMatchesHelpText(t *testing.T) {
 	}
 	// Sanity: the card should surface the core commands, so the gate is not
 	// vacuously passing on an empty token set.
-	for _, want := range []string{"/new", "/status", "/stop", "/resume", "/agent-mode", "/config", "/local-config", "/cron", "/timer", "/invite", "/remove"} {
+	for _, want := range []string{"/new", "/status", "/stop", "/resume", "/agent-mode", "/mkdir", "/config", "/local-config", "/cron", "/timer", "/invite", "/remove"} {
 		if !seen[want] {
 			t.Fatalf("HelpCardData missing expected command %q", want)
 		}

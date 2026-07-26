@@ -79,7 +79,9 @@ echo "== command surface simulation =="
 	require_contains "$help_output" '"Type": "help"' "help simulation"
 	require_contains "$help_output" '"CurrentVersion": "dev"' "help current version"
 	require_contains "$help_output" '**`/new`** `[--workdir path]' "help simulation"
-	require_contains "$help_output" '**`/config`** 全局运行偏好' "help simulation"
+	require_contains "$help_output" '**`/config`** 全局运行偏好 · **`/config set`**' "help simulation"
+	require_contains "$help_output" '**`/local-config`** `[reset]` 本群覆盖 · **`/local-config set`**' "help simulation"
+	require_contains "$help_output" '**`/mkdir`** `[path]`' "help simulation"
 	require_contains "$help_output" '**`/resume`** `[session-id]' "help simulation"
 require_not_contains "$help_output" "/codex" "help simulation"
 
@@ -143,7 +145,7 @@ echo "== card and long connection action tests =="
 go test ./internal/card ./internal/feishu ./internal/bridge -run 'TestBuildLarkCardFormatsRichSegments|TestBuildLarkCardUsesDynamicHeaderAndStreamingMode|TestBuildLarkCardSupportsStoppedGreyHeader|TestBuildLarkCardUsesFinalStopButtonLabels|TestBuildCardActionFromLark|TestSDKLongConn|TestCallbackHTTPHandler|TestActionRequestFrom'
 echo "card action ok"
 
-if [[ -z "${LARK_APP_ID:-}" || -z "${LARK_APP_SECRET:-}" ]]; then
+if [[ -z "${LAB_LARK_APP_ID:-${LARK_APP_ID:-}}" || -z "${LAB_LARK_APP_SECRET:-${LARK_APP_SECRET:-}}" ]]; then
   echo "== serve credential guard =="
   set +e
   serve_output="$(go run ./cmd/lark-agent-bridge serve 2>&1)"
@@ -153,7 +155,7 @@ if [[ -z "${LARK_APP_ID:-}" || -z "${LARK_APP_SECRET:-}" ]]; then
     echo "verify failed: serve succeeded without LARK_APP_ID/LARK_APP_SECRET" >&2
     exit 1
   fi
-  require_contains "$serve_output" "LARK_APP_ID and LARK_APP_SECRET are required for serve" "serve credential guard"
+  require_contains "$serve_output" "LAB_LARK_APP_ID and LAB_LARK_APP_SECRET are required for serve" "serve credential guard"
   echo "serve credential guard ok"
 else
   echo "== serve credential guard skipped: LARK_APP_ID/LARK_APP_SECRET are set =="
