@@ -15,6 +15,7 @@ import (
 	"lark-agent-bridge/internal/buildinfo"
 	"lark-agent-bridge/internal/card"
 	"lark-agent-bridge/internal/config"
+	"lark-agent-bridge/internal/devmode"
 	"lark-agent-bridge/internal/schedule"
 	"lark-agent-bridge/internal/session"
 	bridgeupdate "lark-agent-bridge/internal/update"
@@ -33,6 +34,7 @@ type fakeUpdateManager struct {
 	refreshOnce    sync.Once
 	refreshStarted chan struct{}
 	refreshRelease chan struct{}
+	refreshChannel []bool
 }
 
 func (f *fakeUpdateManager) Check(context.Context, string) (bridgeupdate.CheckResult, error) {
@@ -46,6 +48,13 @@ func (f *fakeUpdateManager) Refresh(context.Context, string) (bridgeupdate.Check
 		<-f.refreshRelease
 	}
 	return f.checkResult, f.checkErr
+}
+func (f *fakeUpdateManager) CheckChannel(context.Context, string, bool) (bridgeupdate.CheckResult, error) {
+	return f.checkResult, f.checkErr
+}
+func (f *fakeUpdateManager) RefreshChannel(ctx context.Context, version string, prerelease bool) (bridgeupdate.CheckResult, error) {
+	f.refreshChannel = append(f.refreshChannel, prerelease)
+	return f.Refresh(ctx, version)
 }
 func (f *fakeUpdateManager) ReleaseNotes(context.Context, bridgeupdate.Manifest) (string, error) {
 	return f.notes, f.notesErr
@@ -384,6 +393,62 @@ func TestUpdateInstallAcknowledgesBeforeRefreshCompletes(t *testing.T) {
 	case <-prepared.restarted:
 	case <-time.After(time.Second):
 		t.Fatal("background update did not finish")
+	}
+}
+
+func TestUpgradeCommandUsesSelectedChannelAndRejectsBusySession(t *testing.T) {
+	setUpdateTestVersion(t)
+	prepared := &fakePreparedUpdate{restarted: make(chan struct{})}
+	manager := &fakeUpdateManager{checkResult: updateAvailableResult(), prepared: prepared}
+	renderer := card.NewFakeRenderer()
+	svc := NewService(updateTestConfig(t), renderer, newFakeRunner(), audit.NewRecorder())
+	svc.Updates = manager
+
+	devMode, err := devmode.OpenStore(filepath.Join(t.TempDir(), "devmode.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := devMode.SetPrerelease(true); err != nil {
+		t.Fatal(err)
+	}
+	svc.DevMode = devMode
+	if err := svc.HandleMessage(t.Context(), Message{ID: "upgrade-stable", ChatID: "dm", Sender: "admin", Text: "/upgrade stable"}); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-prepared.restarted:
+	case <-time.After(time.Second):
+		t.Fatal("/upgrade stable did not start the existing upgrade flow")
+	}
+	if len(manager.refreshChannel) != 1 || manager.refreshChannel[0] {
+		t.Fatalf("refresh channels = %#v, want [false]", manager.refreshChannel)
+	}
+
+	busyRenderer := card.NewFakeRenderer()
+	busy := NewService(updateTestConfig(t), busyRenderer, newFakeRunner(), audit.NewRecorder())
+	busy.Updates = &fakeUpdateManager{checkResult: updateAvailableResult(), prepared: &fakePreparedUpdate{}}
+	key := session.Key{Agent: agent.Claude, ChatID: "dm"}
+	busy.Sessions.Enqueue(key, sessionInputForUpdateTest(), t.TempDir())
+	if err := busy.HandleMessage(t.Context(), Message{ID: "upgrade-busy", ChatID: "dm", Sender: "admin", Text: "/upgrade"}); err != nil {
+		t.Fatal(err)
+	}
+	events := busyRenderer.Events()
+	if len(events) != 1 || !strings.Contains(events[0].Segments[0].Text, "会话正在运行或排队") {
+		t.Fatalf("busy /upgrade event = %#v", events)
+	}
+}
+
+func TestUpgradeCommandRejectsRCOutsideDeveloperMode(t *testing.T) {
+	setUpdateTestVersion(t)
+	renderer := card.NewFakeRenderer()
+	svc := NewService(updateTestConfig(t), renderer, newFakeRunner(), audit.NewRecorder())
+	svc.Updates = &fakeUpdateManager{checkResult: updateAvailableResult(), prepared: &fakePreparedUpdate{}}
+	if err := svc.HandleMessage(t.Context(), Message{ID: "upgrade-rc", ChatID: "dm", Sender: "admin", Text: "/upgrade rc"}); err != nil {
+		t.Fatal(err)
+	}
+	events := renderer.Events()
+	if len(events) != 1 || !strings.Contains(events[0].Segments[0].Text, "仅在开发者模式") {
+		t.Fatalf("rc outside developer mode = %#v", events)
 	}
 }
 

@@ -100,6 +100,17 @@ func TestClientChannelSelection(t *testing.T) {
 		t.Fatalf("prerelease channel should offer rc, got available=%v version=%s", res.UpdateAvailable, res.Manifest.Version)
 	}
 
+	// /upgrade stable must be able to select the stable manifest even while the
+	// persisted developer setting remains on.
+	client.HTTP = stable.Client()
+	res, err = client.CheckChannel(t.Context(), "0.1.3", false)
+	if err != nil {
+		t.Fatalf("explicit stable check: %v", err)
+	}
+	if res.Manifest.Version != "0.1.3" || res.UpdateAvailable {
+		t.Fatalf("explicit stable channel = available=%v version=%s", res.UpdateAvailable, res.Manifest.Version)
+	}
+
 	if stableCalls.Load() == 0 || preCalls.Load() == 0 {
 		t.Fatalf("both channels should have been fetched: stable=%d prerelease=%d", stableCalls.Load(), preCalls.Load())
 	}

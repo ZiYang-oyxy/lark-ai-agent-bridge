@@ -21,6 +21,8 @@ type PreparedUpdate = bridgeupdate.PreparedUpdate
 type UpdateManager interface {
 	Check(context.Context, string) (bridgeupdate.CheckResult, error)
 	Refresh(context.Context, string) (bridgeupdate.CheckResult, error)
+	CheckChannel(context.Context, string, bool) (bridgeupdate.CheckResult, error)
+	RefreshChannel(context.Context, string, bool) (bridgeupdate.CheckResult, error)
 	ReleaseNotes(context.Context, bridgeupdate.Manifest) (string, error)
 	AggregatedReleaseNotes(ctx context.Context, currentVersion string, manifest bridgeupdate.Manifest, onSkip func(version string, err error)) (string, error)
 	Prepare(context.Context, bridgeupdate.Asset) (bridgeupdate.PreparedUpdate, error)
@@ -167,21 +169,73 @@ func (s *Service) handleUpdateInstall(ctx context.Context, req ActionRequest) (A
 	// 这样完全消除「后台终态先到，又被延迟的 action response 覆盖」的竞态。
 	result := ActionResult{}
 	result.deferred = &deferredAction{
-		run:    func() { s.runUpdateInstall(context.WithoutCancel(ctx), req) },
+		run:    func() { s.runUpdateInstall(context.WithoutCancel(ctx), req, s.developerModeEnabled()) },
 		cancel: func() { s.endUpgradeAttempt(false) },
 	}
 	return result, nil
 }
 
-func (s *Service) runUpdateInstall(ctx context.Context, req ActionRequest) {
+// handleUpgradeCommand starts the existing staged self-upgrade flow directly.
+// /upgrade follows the current channel; in developer mode an admin may choose
+// the stable or RC channel explicitly with /upgrade stable or /upgrade rc.
+func (s *Service) handleUpgradeCommand(ctx context.Context, msg Message, cmd Command, preference config.RuntimePreference) error {
+	if s.Updates == nil || !buildinfo.IsRelease() {
+		return s.renderTextWithMode("upgrade", msg.ID, card.SegmentError, "当前 Bridge 未启用自升级。", preference.ConversationMode)
+	}
+
+	prerelease, err := s.upgradeCommandChannel(cmd.Text)
+	if err != nil {
+		return s.renderTextWithMode("upgrade", msg.ID, card.SegmentError, err.Error(), preference.ConversationMode)
+	}
+	if s.hasUpgradeBlockingWork() {
+		return s.renderTextWithMode("upgrade", msg.ID, card.SegmentError, "当前有会话正在运行或排队，升级失败。请等待所有会话空闲后重试。", preference.ConversationMode)
+	}
+	if !s.startUpgradeAttempt() {
+		return s.renderTextWithMode("upgrade", msg.ID, card.SegmentError, "另一项升级正在进行，请稍后重试。", preference.ConversationMode)
+	}
+	req := ActionRequest{
+		SessionID:     runID("upgrade", msg.ID),
+		Actor:         msg.Sender,
+		ChatID:        msg.ChatID,
+		OpenMessageID: msg.ID,
+	}
+	go s.runUpdateInstall(context.WithoutCancel(ctx), req, prerelease)
+	return nil
+}
+
+func (s *Service) developerModeEnabled() bool {
+	return s.DevMode != nil && s.DevMode.Prerelease()
+}
+
+func (s *Service) upgradeCommandChannel(arg string) (bool, error) {
+	arg = strings.ToLower(strings.TrimSpace(arg))
+	switch arg {
+	case "":
+		return s.developerModeEnabled(), nil
+	case "stable", "release":
+		if !s.developerModeEnabled() {
+			return false, errors.New("用法：`/upgrade`（正式通道）。开启开发者模式后可用 `/upgrade stable|rc` 选择通道。")
+		}
+		return false, nil
+	case "rc", "prerelease":
+		if !s.developerModeEnabled() {
+			return false, errors.New("`/upgrade rc` 仅在开发者模式开启后可用。")
+		}
+		return true, nil
+	default:
+		return false, errors.New("用法：`/upgrade`；开发者模式下可用 `/upgrade stable|rc`。")
+	}
+}
+
+func (s *Service) runUpdateInstall(ctx context.Context, req ActionRequest, prerelease bool) {
 	gateLocked := false
 	defer func() { s.endUpgradeAttempt(gateLocked) }()
 	s.renderUpdateBackgroundMessage(req.SessionID, card.SegmentText,
 		"已接收升级请求，正在下载并校验升级包。完成后 Bridge 会短暂重启，并在此对话回复结果。",
 		"orange", "Bridge 正在准备升级")
 
-	result, err := s.Updates.Refresh(ctx, buildinfo.Version)
-	if err != nil || !result.UpdateAvailable || result.Manifest.Version != strings.TrimSpace(req.Value) {
+	result, err := s.Updates.RefreshChannel(ctx, buildinfo.Version, prerelease)
+	if err != nil || !result.UpdateAvailable || (strings.TrimSpace(req.Value) != "" && result.Manifest.Version != strings.TrimSpace(req.Value)) {
 		if err != nil {
 			s.Audit.Record(req.Actor, "update_check_failed", req.SessionID, err.Error())
 		}

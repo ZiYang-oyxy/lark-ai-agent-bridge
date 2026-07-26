@@ -27,8 +27,26 @@ func (m *Manager) Refresh(ctx context.Context, currentVersion string) (CheckResu
 	if m == nil || m.Client == nil {
 		return CheckResult{}, errors.New("update client is unavailable")
 	}
+	return m.RefreshChannel(ctx, currentVersion, m.Client.prerelease())
+}
+
+// CheckChannel checks one named release channel without changing the runtime
+// developer-mode preference.
+func (m *Manager) CheckChannel(ctx context.Context, currentVersion string, prerelease bool) (CheckResult, error) {
+	if m == nil || m.Client == nil {
+		return CheckResult{}, errors.New("update client is unavailable")
+	}
+	return m.Client.CheckChannel(ctx, currentVersion, prerelease)
+}
+
+// RefreshChannel invalidates the cache before checking an explicitly selected
+// release channel.
+func (m *Manager) RefreshChannel(ctx context.Context, currentVersion string, prerelease bool) (CheckResult, error) {
+	if m == nil || m.Client == nil {
+		return CheckResult{}, errors.New("update client is unavailable")
+	}
 	m.Client.Invalidate()
-	return m.Client.Check(ctx, currentVersion)
+	return m.Client.CheckChannel(ctx, currentVersion, prerelease)
 }
 
 // PeekManifest returns the cached latest manifest without issuing any network

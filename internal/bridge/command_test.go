@@ -69,6 +69,25 @@ func TestTodoCommandIsAdminOnly(t *testing.T) {
 	}
 }
 
+func TestParseUpgradeCommandAndAdminGate(t *testing.T) {
+	for _, tc := range []struct {
+		text string
+		arg  string
+	}{
+		{text: "/upgrade"},
+		{text: "/upgrade stable", arg: "stable"},
+		{text: "/upgrade rc", arg: "rc"},
+	} {
+		cmd := ParseCommand(Message{Text: tc.text}, agent.Claude)
+		if cmd.Type != CommandUpgrade || cmd.Text != tc.arg {
+			t.Fatalf("ParseCommand(%q) = %#v", tc.text, cmd)
+		}
+	}
+	if !(&Service{}).adminCommand(CommandUpgrade) {
+		t.Fatal("/upgrade must be admin-only")
+	}
+}
+
 func TestParseNewAllowsEmptyPrompt(t *testing.T) {
 	cmd := ParseCommand(Message{Text: "/new --workdir /tmp/project"}, agent.Claude)
 	if cmd.Type != CommandRun || cmd.Text != "" || !cmd.Reset {

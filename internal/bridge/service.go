@@ -605,6 +605,8 @@ func (s *Service) HandleMessage(ctx context.Context, msg Message) error {
 	switch cmd.Type {
 	case CommandHelp:
 		return s.handleHelpCommand(ctx, msg, preference)
+	case CommandUpgrade:
+		return s.handleUpgradeCommand(ctx, msg, cmd, preference)
 	case CommandUnknown:
 		return s.renderTextWithMode("command", msg.ID, card.SegmentError, cmd.Text, preference.ConversationMode)
 	case CommandStatus:

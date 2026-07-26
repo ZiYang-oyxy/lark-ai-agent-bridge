@@ -152,16 +152,7 @@ func (c *Client) prerelease() bool {
 // applies it degrades to stable rather than erroring (a missing prerelease
 // channel simply means "nothing newer").
 func (c *Client) activeURL() string {
-	if !c.prerelease() {
-		return c.ManifestURL
-	}
-	if url := strings.TrimSpace(c.PrereleaseURL); url != "" {
-		return url
-	}
-	if derived, ok := derivePrereleaseURL(c.ManifestURL); ok {
-		return derived
-	}
-	return c.ManifestURL
+	return c.urlForChannel(c.prerelease())
 }
 
 // derivePrereleaseURL turns a stable manifest URL into its prerelease sibling
@@ -176,8 +167,14 @@ func derivePrereleaseURL(stableURL string) (string, bool) {
 }
 
 func (c *Client) Check(ctx context.Context, currentVersion string) (CheckResult, error) {
-	prerelease := c.prerelease()
-	manifest, err := c.manifest(ctx, c.activeURL())
+	return c.CheckChannel(ctx, currentVersion, c.prerelease())
+}
+
+// CheckChannel checks an explicitly selected release channel. It is used by
+// /upgrade so developer mode can intentionally choose either the latest RC or
+// the latest stable build without mutating the persisted developer setting.
+func (c *Client) CheckChannel(ctx context.Context, currentVersion string, prerelease bool) (CheckResult, error) {
+	manifest, err := c.manifest(ctx, c.urlForChannel(prerelease))
 	if err != nil {
 		return CheckResult{}, err
 	}
@@ -197,6 +194,19 @@ func (c *Client) Check(ctx context.Context, currentVersion string) (CheckResult,
 		return CheckResult{}, fmt.Errorf("compare update versions: %w", err)
 	}
 	return CheckResult{Manifest: manifest, Asset: asset, UpdateAvailable: comparison > 0}, nil
+}
+
+func (c *Client) urlForChannel(prerelease bool) string {
+	if !prerelease {
+		return c.ManifestURL
+	}
+	if url := strings.TrimSpace(c.PrereleaseURL); url != "" {
+		return url
+	}
+	if derived, ok := derivePrereleaseURL(c.ManifestURL); ok {
+		return derived
+	}
+	return c.ManifestURL
 }
 
 func (c *Client) manifest(ctx context.Context, manifestURL string) (Manifest, error) {

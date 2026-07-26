@@ -12,6 +12,7 @@ type CommandType string
 
 const (
 	CommandHelp        CommandType = "help"
+	CommandUpgrade     CommandType = "upgrade"
 	CommandRun         CommandType = "run"
 	CommandStatus      CommandType = "status"
 	CommandResume      CommandType = "resume"
@@ -57,6 +58,8 @@ func ParseCommand(msg Message, defaultAgent agent.Kind) Command {
 	switch name {
 	case "help":
 		return Command{Type: CommandHelp, Raw: raw}
+	case "upgrade":
+		return Command{Type: CommandUpgrade, Text: strings.TrimSpace(rest), Raw: raw}
 	case "status":
 		return Command{Type: CommandStatus, Agent: defaultAgent, Raw: raw}
 	case "stop":
@@ -170,6 +173,7 @@ func HelpCardData() card.HelpCard {
 					"**`/new`** `[--workdir path] [prompt]` 开新会话",
 					"**`/status`** 当前会话状态",
 					"**`/stop`** 停止当前任务",
+					"**`/upgrade`** 升级 Bridge（开发者模式可选 `stable|rc`）",
 					"**`/resume`** `[session-id]` 恢复历史会话",
 					"**`/agent-mode`** 切换 claude / codex",
 					"**`/cd`** `[path]` 切换本 topic 工作目录",
@@ -208,6 +212,7 @@ func HelpText() string {
 		"/resume - list the 10 most recent sessions for the current agent and workdir",
 		"/resume <session-id> - resume that session on the next message",
 		"/stop - stop the active task in this chat/topic; queued inputs are preserved",
+		"/upgrade - upgrade Bridge to the latest release (admin only; developer mode may select stable|rc)",
 		"/agent-mode - choose claude or codex for subsequent messages",
 		"/cd [path] - switch the working directory for this chat/topic",
 		"/ws list|save|use|del [name] - manage named workspaces",
