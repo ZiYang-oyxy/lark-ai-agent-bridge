@@ -593,23 +593,20 @@ func TestBuildLarkCardRendersRuntimeConfigForm(t *testing.T) {
 	if opts := selects["effort"]["options"].([]any); len(opts) != 4 {
 		t.Fatalf("effort select must expose 4 options (default/low/medium/high), got %#v", opts)
 	}
-	// 全局 /config 卡里 statusbar 三行改用 checker + callback，脱离 form 与
-	// select_static；剩余 select 总数为 10：agent_home + agent_bin + effort +
-	// reply_mode + conversation_mode + topic_seed_mode + group_message_mode +
-	// respond_to_bots + notify-on-complete + append overflow。群覆盖卡才走
-	// select_static + form。
-	if len(selects) != 10 ||
+	// 全局 /config 和群覆盖卡都通过三个独立 select_static 显式提交元信息行
+	// 开关，避免 multi-select 在客户端取消单项后回传旧选择。总数为 13。
+	if len(selects) != 13 ||
 		selects["reply_mode"]["initial_option"] != "latest-card" ||
 		selects["append_overflow_mode"]["initial_option"] != "truncate" ||
 		selects["conversation_mode"]["initial_option"] != "chat" ||
 		selects["topic_seed_mode"]["initial_option"] != "quote" ||
 		selects["group_message_mode"]["initial_option"] != "mention_only" ||
 		selects["respond_to_bots"]["initial_option"] != "false" ||
-		selects["notify_on_complete"]["initial_option"] != "false" {
+		selects["notify_on_complete"]["initial_option"] != "false" ||
+		selects["show_meta_row_agent"]["initial_option"] != "false" ||
+		selects["show_meta_row_runtime"]["initial_option"] != "false" ||
+		selects["show_meta_row_developer"]["initial_option"] != "false" {
 		t.Fatalf("select controls = %#v", selects)
-	}
-	if _, ok := selects["show_meta_row_agent"]; ok {
-		t.Fatal("global config card statusbar rows must use one multi-select, not per-row select_static")
 	}
 	if selects["agent_home"]["initial_option"] != "默认" || selects["agent_bin"]["initial_option"] != "主机 claude" {
 		t.Fatalf("agent select controls = %#v", selects)
@@ -681,12 +678,9 @@ func TestBuildLarkCardRendersRuntimeConfigForm(t *testing.T) {
 	}
 }
 
-// 📊 元信息行 section 在**全局 /config 卡**上应渲染一个标准多选表单控件，
-// 随保存按钮提交，避免依赖不同飞书客户端行为不一致的 checker callback。
-//
-// 群覆盖 /local-config 卡沿用 select_static 布尔下拉走 form.submit：群覆盖
-// 多一层"删覆盖恢复继承"语义，暂不迁移，保持 rc.10 行为。
-func TestBuildLarkCardStatusBarSectionUsesMultiSelect(t *testing.T) {
+// 全局与本群配置都使用独立布尔下拉，确保任何一行的显隐状态都在 form.submit
+// 中显式回传，而不依赖 multi-select 的客户端状态同步。
+func TestBuildLarkCardStatusBarSectionUsesIndependentSelects(t *testing.T) {
 	payload := BuildLarkCard(Event{
 		Type:      "config",
 		SessionID: "claude:chat:message:cfg-2",
@@ -703,15 +697,15 @@ func TestBuildLarkCardStatusBarSectionUsesMultiSelect(t *testing.T) {
 			ReplyModes: []string{"append"}, ConversationModes: []string{"chat"},
 		},
 	})
-	multiSelects := map[string]map[string]any{}
+	selects := map[string]map[string]any{}
 	checkerCount := 0
 	var walk func(any)
 	walk = func(v any) {
 		switch n := v.(type) {
 		case map[string]any:
-			if n["tag"] == "multi_select_static" {
+			if n["tag"] == "select_static" {
 				name, _ := n["name"].(string)
-				multiSelects[name] = n
+				selects[name] = n
 			}
 			if n["tag"] == "checker" {
 				checkerCount++
@@ -730,24 +724,24 @@ func TestBuildLarkCardStatusBarSectionUsesMultiSelect(t *testing.T) {
 		}
 	}
 	walk(payload)
-	multi := multiSelects["meta_rows"]
-	if multi == nil {
-		t.Fatalf("global config card must contain meta_rows multi-select: %#v", multiSelects)
-	}
 	if checkerCount != 0 {
 		t.Fatalf("global config card must not retain checker controls, got %d", checkerCount)
 	}
-	if got := multi["initial_option"]; !reflect.DeepEqual(got, []any{"agent", "developer"}) {
-		t.Fatalf("meta_rows initial_option = %#v, want agent+developer", got)
-	}
-	if options, ok := multi["options"].([]any); !ok || len(options) != 3 {
-		t.Fatalf("meta_rows options = %#v", multi["options"])
-	}
-	if multi["width"] != "fill" {
-		t.Fatalf("meta_rows width = %#v, want fill", multi["width"])
-	}
-	if _, hasBehavior := multi["behaviors"]; hasBehavior {
-		t.Fatalf("meta_rows must submit with the form, not use an immediate callback: %#v", multi)
+	for name, want := range map[string]string{
+		"show_meta_row_agent":     "true",
+		"show_meta_row_runtime":   "false",
+		"show_meta_row_developer": "true",
+	} {
+		control := selects[name]
+		if control == nil {
+			t.Fatalf("global config card must contain %s select: %#v", name, selects)
+		}
+		if control["initial_option"] != want || control["width"] != "fill" {
+			t.Fatalf("%s select = %#v", name, control)
+		}
+		if _, hasBehavior := control["behaviors"]; hasBehavior {
+			t.Fatalf("%s must submit with the form, not use an immediate callback: %#v", name, control)
+		}
 	}
 }
 

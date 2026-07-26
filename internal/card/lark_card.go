@@ -328,61 +328,31 @@ func buildConfigFormElements(sessionID string, form ConfigForm) []any {
 
 // buildStatusBarSection renders the three status-bar choices.
 //
-// The global /config card uses a standard multi-select form input. Values are
-// applied on form.submit, avoiding checker callbacks that are not reliable in
-// every Feishu client and form layout.
-//
-// **群覆盖 `/local-config` 卡**（form.ChatID 非空）仍回退到 `select_static`
-// 两选项下拉：群覆盖多一层"删覆盖恢复继承"的语义（`ChatOverride.ShowMetaRow*`
-// 是 `*bool`，nil 表示继承），继续走既有的 form.submit 路径。
+// Each row uses its own select_static input. CardKit multi-select can submit
+// its initial selection after one option is removed, so every row must submit
+// an explicit true/false value.
 func buildStatusBarSection(form ConfigForm) []map[string]any {
 	intro := "**元信息行**\n选择要显示的行；未选择的行不渲染。修改后点击保存生效。示例展示了开启后卡片底部的样子（示例数据）。"
 	if form.ChatID != "" {
-		// 群覆盖场景：保留旧 select_static 下拉，走 form.submit。
 		intro = "**元信息行（本群覆盖）**\n选择要显示的行；未勾选的行不渲染。示例展示了开启后卡片底部的样子（示例数据）。"
-		boolOpts := func(onLabel string) []SelectOption {
-			return []SelectOption{
-				{Value: "false", Label: "隐藏（默认）"},
-				{Value: "true", Label: onLabel},
-			}
+	}
+	boolOpts := func(onLabel string) []SelectOption {
+		return []SelectOption{
+			{Value: "false", Label: "隐藏（默认）"},
+			{Value: "true", Label: onLabel},
 		}
-		out := []map[string]any{markdownElement("cfg_bar_intro", intro)}
-		out = append(out, fieldElements("cfg_bar_agent", "Agent 行",
-			"例：🍊 535a99 · 🧠 claude-opus-4-7[1m]（high） · 🟢 ctx: 35% (354.5k/1000k)",
-			configSelectOptions("show_meta_row_agent", form.ShowMetaRowAgent, boolOpts("显示 Agent 行")))...)
-		out = append(out, fieldElements("cfg_bar_rt", "主机信息行",
-			"例：👤 lijun.996 · 🖥️ 192.0.2.42 · 📁 /home/<USER>/ws",
-			configSelectOptions("show_meta_row_runtime", form.ShowMetaRowRuntime, boolOpts("显示主机信息行")))...)
-		out = append(out, fieldElements("cfg_bar_dev", "开发者行",
-			"例：🐛 v0.1.8-rc.5 · ✨ 最新 v0.1.8-rc.6（🐛 rc / 🦋 stable）",
-			configSelectOptions("show_meta_row_developer", form.ShowMetaRowDeveloper, boolOpts("显示开发者行")))...)
-		return out
 	}
-	selected := make([]any, 0, 3)
-	if strings.EqualFold(strings.TrimSpace(form.ShowMetaRowAgent), "true") {
-		selected = append(selected, "agent")
-	}
-	if strings.EqualFold(strings.TrimSpace(form.ShowMetaRowRuntime), "true") {
-		selected = append(selected, "runtime")
-	}
-	if strings.EqualFold(strings.TrimSpace(form.ShowMetaRowDeveloper), "true") {
-		selected = append(selected, "developer")
-	}
-	return []map[string]any{
-		markdownElement("cfg_bar_intro", intro),
-		{
-			"tag":            "multi_select_static",
-			"name":           "meta_rows",
-			"element_id":     "cfg_meta_rows",
-			"initial_option": selected,
-			"options": []any{
-				map[string]any{"text": map[string]any{"tag": "plain_text", "content": "Agent 行 · 例：🍊 535a99 · 🧠 claude-opus-4-7[1m]（high） · 🟢 ctx: 35% (354.5k/1000k)"}, "value": "agent"},
-				map[string]any{"text": map[string]any{"tag": "plain_text", "content": "主机信息行 · 例：👤 lijun.996 · 🖥️ 192.0.2.42 · 📁 /home/<USER>/ws"}, "value": "runtime"},
-				map[string]any{"text": map[string]any{"tag": "plain_text", "content": "开发者行 · 例：🐛 v0.1.8-rc.5 · ✨ 最新 v0.1.8-rc.6（🐛 rc / 🦋 stable）"}, "value": "developer"},
-			},
-			"width": "fill",
-		},
-	}
+	out := []map[string]any{markdownElement("cfg_bar_intro", intro)}
+	out = append(out, fieldElements("cfg_bar_agent", "Agent 行",
+		"例：🍊 535a99 · 🧠 claude-opus-4-7[1m]（high） · 🟢 ctx: 35% (354.5k/1000k)",
+		configSelectOptions("show_meta_row_agent", form.ShowMetaRowAgent, boolOpts("显示 Agent 行")))...)
+	out = append(out, fieldElements("cfg_bar_rt", "主机信息行",
+		"例：👤 lijun.996 · 🖥️ 192.0.2.42 · 📁 /home/<USER>/ws",
+		configSelectOptions("show_meta_row_runtime", form.ShowMetaRowRuntime, boolOpts("显示主机信息行")))...)
+	out = append(out, fieldElements("cfg_bar_dev", "开发者行",
+		"例：🐛 v0.1.8-rc.5 · ✨ 最新 v0.1.8-rc.6（🐛 rc / 🦋 stable）",
+		configSelectOptions("show_meta_row_developer", form.ShowMetaRowDeveloper, boolOpts("显示开发者行")))...)
+	return out
 }
 
 func buildAgentModeFormElements(sessionID string, form AgentModeForm) []any {

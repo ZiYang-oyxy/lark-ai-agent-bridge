@@ -938,6 +938,17 @@ func TestServiceConfigSaveMultiSelectMetaRows(t *testing.T) {
 	if got := store.Get(); got.ShowMetaRowAgent || !got.ShowMetaRowRuntime || got.ShowMetaRowDeveloper {
 		t.Fatalf("legacy per-row values = %#v", got)
 	}
+	if _, err := svc.HandleActionResult(context.Background(), ActionRequest{
+		SessionID: "config-selects", ActionID: "config.save", Actor: "user",
+		FormValues: map[string]string{
+			"show_meta_row_agent": "true", "show_meta_row_runtime": "true", "show_meta_row_developer": "false",
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if got := store.Get(); !got.ShowMetaRowAgent || !got.ShowMetaRowRuntime || got.ShowMetaRowDeveloper {
+		t.Fatalf("independent row selection did not disable developer row: %#v", got)
+	}
 
 	before := store.Get()
 	result, err := svc.HandleActionResult(context.Background(), ActionRequest{
