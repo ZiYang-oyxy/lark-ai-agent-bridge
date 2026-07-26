@@ -12,25 +12,8 @@ unset E2E_PREFERENCE_STORE E2E_REPLY_STORE E2E_MEDIA_CACHE_DIR E2E_SESSION_STORE
 export GOCACHE="${GOCACHE:-$ROOT/.cache/go-build}"
 mkdir -p "$GOCACHE"
 
-require_contains() {
-  local haystack="$1"
-  local needle="$2"
-  local label="$3"
-  if [[ "$haystack" != *"$needle"* ]]; then
-    echo "verify failed: $label missing $needle" >&2
-    return 1
-  fi
-}
-
-require_not_contains() {
-  local haystack="$1"
-  local needle="$2"
-  local label="$3"
-  if [[ "$haystack" == *"$needle"* ]]; then
-    echo "verify failed: $label unexpectedly contained $needle" >&2
-    return 1
-  fi
-}
+source "$ROOT/scripts/lib/assert.sh"
+source "$ROOT/scripts/lib/simulate-suite.sh"
 
 echo "== group intake documentation contracts =="
 readme_output="$(<README.md)"
@@ -75,30 +58,11 @@ require_contains "$release_help" "bundle vMAJOR.MINOR.PATCH" "release bundle hel
 echo "version and release tooling ok"
 
 echo "== command surface simulation =="
-	help_output="$(go run ./cmd/lark-agent-bridge simulate -text "/help")"
-	require_contains "$help_output" '"Type": "help"' "help simulation"
-	require_contains "$help_output" '"CurrentVersion": "dev"' "help current version"
-	require_contains "$help_output" '**`/new`** `[--workdir path]' "help simulation"
-	require_contains "$help_output" '**`/config`** 全局运行偏好 · **`/config set`**' "help simulation"
-	require_contains "$help_output" '**`/local-config`** `[reset]` 本群覆盖 · **`/local-config set`**' "help simulation"
-	require_contains "$help_output" '**`/mkdir`** `[path]`' "help simulation"
-	require_contains "$help_output" '**`/resume`** `[session-id]' "help simulation"
-require_not_contains "$help_output" "/codex" "help simulation"
-
-plain_output="$(go run ./cmd/lark-agent-bridge simulate -text "hello")"
-require_contains "$plain_output" '"SessionID": "claude:chat-demo:message:' "plain text simulation"
-require_contains "$plain_output" "simulated answer: hello" "plain text simulation"
-
-resume_output="$(go run ./cmd/lark-agent-bridge simulate -text "/resume")"
-require_contains "$resume_output" "Session 历史存储不可用" "resume simulation without durable catalog"
-
-codex_output="$(go run ./cmd/lark-agent-bridge simulate -text "/codex inspect")"
-require_contains "$codex_output" "unknown command /codex" "codex disabled simulation"
+smoke_command_surface
 echo "command surface ok"
 
 echo "== group mention filter simulation =="
-group_output="$(go run ./cmd/lark-agent-bridge simulate -group=true -mentioned=false -text "hello")"
-require_contains "$group_output" '"events": []' "group mention filter simulation"
+smoke_group_intake
 echo "group mention filter ok"
 
 echo "== 冒烟测试套件 =="
@@ -106,19 +70,6 @@ go run ./cmd/lark-bridge-test --source . --smoke
 echo "冒烟测试通过"
 
 echo "== group intake mode simulation =="
-all_group_output="$(E2E_GROUP_MESSAGE_MODE=all_group_messages go run ./cmd/lark-agent-bridge simulate -group=true -mentioned=false -text "hello all")"
-require_contains "$all_group_output" "simulated answer: hello all" "all group messages simulation"
-
-bot_off_output="$(E2E_GROUP_MESSAGE_MODE=all_group_messages go run ./cmd/lark-agent-bridge simulate -group=true -mentioned=true -sender-type bot -text "/help")"
-require_contains "$bot_off_output" '"events": []' "bot sender default off simulation"
-bot_on_output="$(E2E_GROUP_MESSAGE_MODE=all_group_messages E2E_RESPOND_TO_BOTS=true go run ./cmd/lark-agent-bridge simulate -group=true -mentioned=true -sender-type bot -text "/help")"
-require_contains "$bot_on_output" '**`/new`** `[--workdir path]' "bot sender enabled simulation"
-
-topics_store="$ROOT/.cache/verify-participated-topics-$RANDOM.json"
-E2E_GROUP_MESSAGE_MODE=participated_topics E2E_PARTICIPATED_TOPICS_STORE="$topics_store" go run ./cmd/lark-agent-bridge simulate -group=true -thread=topic-verify -mentioned=true -text "/help" >/dev/null
-topic_followup_output="$(E2E_GROUP_MESSAGE_MODE=participated_topics E2E_PARTICIPATED_TOPICS_STORE="$topics_store" go run ./cmd/lark-agent-bridge simulate -group=true -thread=topic-verify -mentioned=false -text "/help")"
-require_contains "$topic_followup_output" '**`/new`** `[--workdir path]' "participated topic restart simulation"
-rm -f "$topics_store"
 echo "group intake modes ok"
 
 echo "== session behavior tests =="
