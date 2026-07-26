@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"lark-agent-bridge/internal/access"
 	"lark-agent-bridge/internal/agent"
 	"lark-agent-bridge/internal/audit"
 	"lark-agent-bridge/internal/card"
@@ -125,6 +126,57 @@ func TestLocalConfigResetClearsOnlyCurrentGroup(t *testing.T) {
 	}
 	if _, ok := store.ChatOverride("oc-b"); !ok {
 		t.Fatal("oc-b override must be preserved")
+	}
+}
+
+// /local-config set applies only the requested field to the existing group
+// override. inherit clears that field's pointer without affecting the others.
+func TestLocalConfigSetIncrementalInherit(t *testing.T) {
+	svc, store := localConfigService(t)
+	latest := config.ReplyModeLatestCard
+	if err := store.SetChat("oc-a", config.ChatOverride{ReplyMode: &latest}); err != nil {
+		t.Fatal(err)
+	}
+	msg := Message{ID: "set", IsGroup: true, ChatID: "oc-a", Sender: "ou_admin"}
+	if err := svc.handleLocalConfigCommand(context.Background(), msg, Command{Type: CommandLocalConfig, Text: "set effort=high"}, store.GetForChat("oc-a").ConversationMode); err != nil {
+		t.Fatal(err)
+	}
+	override, ok := store.ChatOverride("oc-a")
+	if !ok || override.Effort == nil || *override.Effort != "high" || override.ReplyMode == nil || *override.ReplyMode != latest {
+		t.Fatalf("override after effort set = %#v, want effort=high and preserved reply mode=%q", override, latest)
+	}
+	if err := svc.handleLocalConfigCommand(context.Background(), msg, Command{Type: CommandLocalConfig, Text: "set reply_mode=inherit"}, store.GetForChat("oc-a").ConversationMode); err != nil {
+		t.Fatal(err)
+	}
+	override, ok = store.ChatOverride("oc-a")
+	if !ok || override.ReplyMode != nil || override.Effort == nil || *override.Effort != "high" {
+		t.Fatalf("override after reply_mode inherit = %#v, want inherited reply mode and preserved effort=high", override)
+	}
+}
+
+func TestLocalConfigSetRequiresAdmin(t *testing.T) {
+	svc, store := localConfigService(t)
+	accessStore, err := access.OpenStore(filepath.Join(t.TempDir(), "access.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := accessStore.Update(func(p *access.Policy) { p.AllowedUsers = []string{"ou_user"} }); err != nil {
+		t.Fatal(err)
+	}
+	controls := access.NewRuntimeControls()
+	controls.OwnerRefreshSucceeded("ou_owner")
+	svc.Access, svc.AccessControls = accessStore, controls
+
+	msg := Message{ID: "denied", IsGroup: true, ChatID: "oc-a", Sender: "ou_user"}
+	if err := svc.handleLocalConfigCommand(context.Background(), msg, Command{Type: CommandLocalConfig, Text: "set effort=high"}, store.GetForChat("oc-a").ConversationMode); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := store.ChatOverride("oc-a"); ok {
+		t.Fatal("non-admin /local-config set must not persist an override")
+	}
+	events := svc.Cards.(*card.FakeRenderer).Events()
+	if len(events) == 0 || !strings.Contains(segmentText(events[len(events)-1]), "管理员") {
+		t.Fatalf("events = %#v", events)
 	}
 }
 

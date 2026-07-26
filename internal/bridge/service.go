@@ -906,7 +906,16 @@ func (s *Service) handleLocalConfigCommand(ctx context.Context, msg Message, cmd
 	if !msg.IsGroup || strings.TrimSpace(msg.ChatID) == "" {
 		return s.renderTextWithMode("local-config", msg.ID, card.SegmentText, "`/local-config` 只用于群里设置本群覆盖。私聊请用 `/config` 配置全局默认。", replyMode)
 	}
-	switch strings.ToLower(strings.TrimSpace(cmd.Text)) {
+	fields := strings.Fields(cmd.Text)
+	subcommand := ""
+	if len(fields) > 0 {
+		subcommand = strings.ToLower(fields[0])
+	}
+	if (subcommand == "reset" || subcommand == "set") && !s.canRunAdminCommand(msg.Sender) {
+		s.Audit.Record(msg.Sender, "admin_denied", msg.ChatID, "local_config."+subcommand)
+		return s.renderTextWithMode("local-config-denied", msg.ID, card.SegmentError, "❌ 此操作仅管理员可用。", replyMode)
+	}
+	switch subcommand {
 	case "":
 		if s.AccessInfo != nil {
 			if s.AccessAppID != "" {
@@ -931,8 +940,43 @@ func (s *Service) handleLocalConfigCommand(ctx context.Context, msg Message, cmd
 		}
 		s.Audit.Record(msg.Sender, "local_config_reset", msg.ChatID, "chat overrides cleared")
 		return s.renderTextWithMode("local-config-reset", msg.ID, card.SegmentText, "已清空本群覆盖，全部回到继承全局 `/config`；下一条新消息开始生效。", replyMode)
+	case "set":
+		if s.Preferences == nil {
+			return s.renderTextWithMode("local-config-set", msg.ID, card.SegmentError, "偏好存储尚未配置。", replyMode)
+		}
+		values := make(map[string]string, len(fields)-1)
+		for _, arg := range fields[1:] {
+			pair := strings.SplitN(arg, "=", 2)
+			if len(pair) != 2 {
+				return s.renderTextWithMode("local-config-set", msg.ID, card.SegmentError, "用法：/local-config set key=value|inherit [key=value|inherit ...]", replyMode)
+			}
+			key, value := strings.TrimSpace(pair[0]), strings.TrimSpace(pair[1])
+			if key == "" || value == "" {
+				return s.renderTextWithMode("local-config-set", msg.ID, card.SegmentError, "用法：/local-config set key=value|inherit [key=value|inherit ...]", replyMode)
+			}
+			values[key] = value
+		}
+		if len(values) == 0 {
+			return s.renderTextWithMode("local-config-set", msg.ID, card.SegmentError, "用法：/local-config set key=value|inherit [key=value|inherit ...]", replyMode)
+		}
+		// This is deliberately a sequential read-modify-write. PreferenceStore
+		// has no atomic PatchChat/CAS API; concurrent admin commands may lose an
+		// update, which is accepted for this low-frequency management operation.
+		existing, _ := s.Preferences.ChatOverride(msg.ChatID)
+		override, err := applyChatOverrideFields(existing, values)
+		if err != nil {
+			s.Audit.Record(msg.Sender, "local_config_save_failed", msg.ChatID, err.Error())
+			return s.renderTextWithMode("local-config-set", msg.ID, card.SegmentError, "本群覆盖保存失败："+err.Error(), replyMode)
+		}
+		if err := s.Preferences.SetChat(msg.ChatID, override); err != nil {
+			s.Audit.Record(msg.Sender, "local_config_save_failed", msg.ChatID, err.Error())
+			return s.renderTextWithMode("local-config-set", msg.ID, card.SegmentError, "本群覆盖保存失败："+err.Error(), replyMode)
+		}
+		effective := s.Preferences.GetForChat(msg.ChatID)
+		s.Audit.Record(msg.Sender, "local_config_saved", msg.ChatID, fmt.Sprintf("agent=%s model=%s effort=%s reply_mode=%s append_overflow_mode=%s conversation_mode=%s topic_seed_mode=%s group_message_mode=%s respond_to_bots=%t", effective.Agent, effective.Model, effective.Effort, effective.ReplyMode, effective.AppendOverflowMode, effective.ConversationMode, effective.TopicSeedMode, effective.GroupMessageMode, effective.RespondToBots))
+		return s.renderTextWithMode("local-config-set", msg.ID, card.SegmentText, "本群覆盖已保存；未指定的字段保持原状，`inherit` 的字段回到全局 `/config`；下一条新消息开始生效。", replyMode)
 	default:
-		return s.renderTextWithMode("local-config", msg.ID, card.SegmentError, "用法：/local-config 或 /local-config reset", replyMode)
+		return s.renderTextWithMode("local-config", msg.ID, card.SegmentError, "用法：/local-config、/local-config reset 或 /local-config set key=value|inherit [key=value|inherit ...]", replyMode)
 	}
 }
 
@@ -2424,6 +2468,127 @@ func chatOverrideFromForm(values map[string]string, global config.RuntimePrefere
 		}
 	}
 	return override
+}
+
+// applyChatOverrideFields applies /local-config set's explicit tri-state
+// updates to an existing override. A value of inherit clears just that field;
+// all omitted fields keep their stored pointer and therefore their override.
+// Unlike chatOverrideFromForm, this must not compare against the global
+// preference: setting a value equal to global is still an explicit override.
+func applyChatOverrideFields(existing config.ChatOverride, values map[string]string) (config.ChatOverride, error) {
+	updated := existing
+	for key, raw := range values {
+		key = strings.ToLower(strings.TrimSpace(key))
+		value := strings.TrimSpace(raw)
+		inherit := strings.EqualFold(value, "inherit")
+		switch key {
+		case "model":
+			if inherit {
+				updated.Model = nil
+			} else {
+				updated.Model = &value
+			}
+		case "effort":
+			if inherit {
+				updated.Effort = nil
+			} else {
+				if !isKnownEffort(value) {
+					return config.ChatOverride{}, fmt.Errorf("invalid effort %q", value)
+				}
+				updated.Effort = &value
+			}
+		case "reply_mode":
+			if inherit {
+				updated.ReplyMode = nil
+			} else {
+				v := config.ReplyMode(value)
+				updated.ReplyMode = &v
+			}
+		case "append_overflow_mode":
+			if inherit {
+				updated.AppendOverflowMode = nil
+			} else {
+				v := config.AppendOverflowMode(value)
+				updated.AppendOverflowMode = &v
+			}
+		case "conversation_mode":
+			if inherit {
+				updated.ConversationMode = nil
+			} else {
+				v := config.ConversationMode(value)
+				updated.ConversationMode = &v
+			}
+		case "topic_seed_mode":
+			if inherit {
+				updated.TopicSeedMode = nil
+			} else {
+				v := config.TopicSeedMode(value)
+				updated.TopicSeedMode = &v
+			}
+		case "group_message_mode":
+			if inherit {
+				updated.GroupMessageMode = nil
+			} else {
+				v := config.GroupMessageMode(value)
+				updated.GroupMessageMode = &v
+			}
+		case "respond_to_bots":
+			if inherit {
+				updated.RespondToBots = nil
+			} else {
+				v, err := strconv.ParseBool(value)
+				if err != nil {
+					return config.ChatOverride{}, fmt.Errorf("invalid respond_to_bots")
+				}
+				updated.RespondToBots = &v
+			}
+		case "show_meta_row_agent", "show_meta_row_runtime", "show_meta_row_developer":
+			if inherit {
+				switch key {
+				case "show_meta_row_agent":
+					updated.ShowMetaRowAgent = nil
+				case "show_meta_row_runtime":
+					updated.ShowMetaRowRuntime = nil
+				case "show_meta_row_developer":
+					updated.ShowMetaRowDeveloper = nil
+				}
+				continue
+			}
+			v, err := strconv.ParseBool(value)
+			if err != nil {
+				return config.ChatOverride{}, fmt.Errorf("invalid %s", key)
+			}
+			switch key {
+			case "show_meta_row_agent":
+				updated.ShowMetaRowAgent = &v
+			case "show_meta_row_runtime":
+				updated.ShowMetaRowRuntime = &v
+			case "show_meta_row_developer":
+				updated.ShowMetaRowDeveloper = &v
+			}
+		case "agent":
+			if inherit {
+				updated.Agent = nil
+			} else {
+				updated.Agent = &value
+			}
+		case "agent_home":
+			if inherit {
+				updated.AgentHome = nil
+			} else {
+				updated.AgentHome = &value
+			}
+		case "agent_bin":
+			if inherit {
+				updated.AgentBin = nil
+			} else {
+				updated.AgentBin = &value
+			}
+		default:
+			return config.ChatOverride{}, fmt.Errorf("unsupported local config field %q", key)
+		}
+	}
+	return updated, nil
 }
 
 func configSaveErrorEvent(sessionID string) card.Event {
