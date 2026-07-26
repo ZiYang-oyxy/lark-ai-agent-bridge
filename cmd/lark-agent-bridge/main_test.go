@@ -208,6 +208,24 @@ func TestSimulateRejectsUnknownSenderType(t *testing.T) {
 	}
 }
 
+func TestSimulateAttachesPreferenceStoreForConfigSet(t *testing.T) {
+	workDir := t.TempDir()
+	preferencePath := filepath.Join(workDir, "preferences.json")
+	t.Setenv("E2E_DEFAULT_WORKDIR", workDir)
+	t.Setenv("E2E_PREFERENCE_STORE", preferencePath)
+
+	if err := runSimulate([]string{"-text", "/config set effort=high"}); err != nil {
+		t.Fatal(err)
+	}
+	store, err := config.OpenPreferenceStore(preferencePath, runtimePreferenceDefaults(config.LoadFromEnv()), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := store.Get().Effort; got != "high" {
+		t.Fatalf("simulated preference effort = %q, want high", got)
+	}
+}
+
 func (f *serveCardKitClientFake) CreateCard(context.Context, feishu.CardKitCreateRequest) (feishu.CardKitCreateResult, error) {
 	return feishu.CardKitCreateResult{CardID: "card"}, nil
 }

@@ -139,6 +139,13 @@ func TestParseConfigCommandInDirectAndMentionedGroupMessages(t *testing.T) {
 	}
 }
 
+func TestParseConfigSetCommand(t *testing.T) {
+	cmd := ParseCommand(Message{Text: "/config set reply_mode=latest-card"}, agent.Claude)
+	if cmd.Type != CommandConfig || cmd.Text != "set reply_mode=latest-card" {
+		t.Fatalf("config set = %#v", cmd)
+	}
+}
+
 func TestParseAgentModeCommand(t *testing.T) {
 	cmd := ParseCommand(Message{Text: "/agent-mode"}, agent.Claude)
 	if cmd.Type != CommandAgentMode || cmd.Text != "" {

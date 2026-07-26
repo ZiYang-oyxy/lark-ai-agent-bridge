@@ -809,7 +809,19 @@ func resumeCardData(identity session.CatalogIdentity, entries []session.CatalogE
 }
 
 func (s *Service) handleConfigCommand(ctx context.Context, msg Message, cmd Command, preference config.RuntimePreference, replyMode config.ConversationMode) error {
-	switch strings.ToLower(strings.TrimSpace(cmd.Text)) {
+	fields := strings.Fields(cmd.Text)
+	if len(fields) == 0 {
+		fields = nil
+	}
+	subcommand := ""
+	if len(fields) > 0 {
+		subcommand = strings.ToLower(fields[0])
+	}
+	if (subcommand == "reset" || subcommand == "set") && !s.canRunAdminCommand(msg.Sender) {
+		s.Audit.Record(msg.Sender, "admin_denied", msg.ChatID, "config."+subcommand)
+		return s.renderTextWithMode("config-denied", msg.ID, card.SegmentError, "❌ 此操作仅管理员可用。", replyMode)
+	}
+	switch subcommand {
 	case "":
 		if s.AccessInfo != nil {
 			if s.AccessAppID != "" {
@@ -841,8 +853,47 @@ func (s *Service) handleConfigCommand(ctx context.Context, msg Message, cmd Comm
 		}
 		s.Audit.Record(msg.Sender, "config_reset", "", "runtime preferences reset")
 		return s.renderTextWithMode("config-reset", msg.ID, card.SegmentText, "已恢复环境默认的 agent / home / bin / model / effort / reply mode / conversation mode；下一条新消息开始生效。", replyMode)
+	case "set":
+		if s.Preferences == nil {
+			return s.renderTextWithMode("config-set", msg.ID, card.SegmentError, "偏好存储尚未配置。", replyMode)
+		}
+		values := make(map[string]string, len(fields)-1)
+		for _, arg := range fields[1:] {
+			pair := strings.SplitN(arg, "=", 2)
+			if len(pair) != 2 {
+				return s.renderTextWithMode("config-set", msg.ID, card.SegmentError, "用法：/config set key=value [key=value ...]", replyMode)
+			}
+			key, value := strings.TrimSpace(pair[0]), strings.TrimSpace(pair[1])
+			if key == "" || value == "" {
+				return s.renderTextWithMode("config-set", msg.ID, card.SegmentError, "用法：/config set key=value [key=value ...]", replyMode)
+			}
+			values[key] = value
+		}
+		if len(values) == 0 {
+			return s.renderTextWithMode("config-set", msg.ID, card.SegmentError, "用法：/config set key=value [key=value ...]", replyMode)
+		}
+		updated, err := preferenceFromFields(values, s.Preferences.Get())
+		if err != nil {
+			s.Audit.Record(msg.Sender, "config_save_failed", "", err.Error())
+			return s.renderTextWithMode("config-set", msg.ID, card.SegmentError, "偏好保存失败："+err.Error(), replyMode)
+		}
+		if !strings.EqualFold(strings.TrimSpace(s.Preferences.Get().Agent), strings.TrimSpace(updated.Agent)) {
+			if _, ok := s.Agents.HomePath(updated.Agent, updated.AgentHome); !ok {
+				updated.AgentHome = ""
+			}
+			if _, ok := s.Agents.BinPath(updated.Agent, updated.AgentBin); !ok {
+				updated.AgentBin = ""
+			}
+		}
+		if err := s.Preferences.Set(updated); err != nil {
+			s.Audit.Record(msg.Sender, "config_save_failed", "", err.Error())
+			return s.renderTextWithMode("config-set", msg.ID, card.SegmentError, "偏好保存失败："+err.Error(), replyMode)
+		}
+		updated = s.Preferences.Get()
+		s.Audit.Record(msg.Sender, "config_saved", "", fmt.Sprintf("agent=%s agent_home=%s agent_bin=%s model=%s effort=%s reply_mode=%s append_overflow_mode=%s conversation_mode=%s topic_seed_mode=%s group_message_mode=%s respond_to_bots=%t notify_on_complete=%t show_meta_row_agent=%t show_meta_row_runtime=%t show_meta_row_developer=%t", updated.Agent, updated.AgentHome, updated.AgentBin, updated.Model, updated.Effort, updated.ReplyMode, updated.AppendOverflowMode, updated.ConversationMode, updated.TopicSeedMode, updated.GroupMessageMode, updated.RespondToBots, updated.NotifyOnComplete, updated.ShowMetaRowAgent, updated.ShowMetaRowRuntime, updated.ShowMetaRowDeveloper))
+		return s.renderTextWithMode("config-set", msg.ID, card.SegmentText, "偏好已保存；下一条新消息开始生效。", replyMode)
 	default:
-		return s.renderTextWithMode("config", msg.ID, card.SegmentError, "用法：/config 或 /config reset", replyMode)
+		return s.renderTextWithMode("config", msg.ID, card.SegmentError, "用法：/config、/config reset 或 /config set key=value [key=value ...]", replyMode)
 	}
 }
 
@@ -1857,52 +1908,19 @@ func (s *Service) HandleActionResult(ctx context.Context, req ActionRequest) (Ac
 			return s.renderActionEvent(configSaveErrorEvent(req.SessionID))
 		}
 		current := s.Preferences.Get()
-		selectedAgent := strings.TrimSpace(req.FormValues["agent"])
-		if selectedAgent == "" {
-			selectedAgent = current.Agent
-		}
-		groupMessageMode := current.GroupMessageMode
-		if raw, ok := req.FormValues["group_message_mode"]; ok && strings.TrimSpace(raw) != "" {
-			groupMessageMode = config.GroupMessageMode(raw)
-		}
-		respondToBots := current.RespondToBots
-		if raw, ok := req.FormValues["respond_to_bots"]; ok {
-			parsed, err := strconv.ParseBool(strings.TrimSpace(raw))
-			if err != nil {
-				s.Audit.Record(req.Actor, "config_save_failed", req.SessionID, "invalid respond_to_bots")
-				return s.renderActionEvent(configSaveErrorEvent(req.SessionID))
+		values := make(map[string]string, len(req.FormValues))
+		for key, value := range req.FormValues {
+			// Model is not editable from the card. Ignore stale or malicious values
+			// before calling the shared text/card preference mapper.
+			if key != "model" {
+				values[key] = value
 			}
-			respondToBots = parsed
 		}
-		notifyOnComplete := current.NotifyOnComplete
-		if raw, ok := req.FormValues["notify_on_complete"]; ok {
-			parsed, err := strconv.ParseBool(strings.TrimSpace(raw))
-			if err != nil {
-				s.Audit.Record(req.Actor, "config_save_failed", req.SessionID, "invalid notify_on_complete")
-				return s.renderActionEvent(configSaveErrorEvent(req.SessionID))
-			}
-			notifyOnComplete = parsed
-		}
-		showMetaRowAgent, showMetaRowRuntime, showMetaRowDeveloper, err := metaRowsFromForm(req.FormValues, current)
+		preference, err := preferenceFromFields(values, current)
 		if err != nil {
 			s.Audit.Record(req.Actor, "config_save_failed", req.SessionID, err.Error())
 			return s.renderActionEvent(configSaveErrorEvent(req.SessionID))
 		}
-		effort := current.Effort
-		if raw, ok := req.FormValues["effort"]; ok {
-			v := strings.TrimSpace(raw)
-			if !isKnownEffort(v) {
-				s.Audit.Record(req.Actor, "config_save_failed", req.SessionID, "invalid effort")
-				return s.renderActionEvent(configSaveErrorEvent(req.SessionID))
-			}
-			effort = v
-		}
-		// Model is still not editable from the /config form; preserve current value.
-		appendOverflowMode := current.AppendOverflowMode
-		if raw, ok := req.FormValues["append_overflow_mode"]; ok && strings.TrimSpace(raw) != "" {
-			appendOverflowMode = config.AppendOverflowMode(strings.TrimSpace(raw))
-		}
-		preference := config.RuntimePreference{Model: current.Model, Effort: effort, ReplyMode: config.ReplyMode(req.FormValues["reply_mode"]), AppendOverflowMode: appendOverflowMode, ConversationMode: config.ConversationMode(req.FormValues["conversation_mode"]), TopicSeedMode: config.TopicSeedMode(req.FormValues["topic_seed_mode"]), GroupMessageMode: groupMessageMode, RespondToBots: respondToBots, NotifyOnComplete: notifyOnComplete, ShowMetaRowAgent: showMetaRowAgent, ShowMetaRowRuntime: showMetaRowRuntime, ShowMetaRowDeveloper: showMetaRowDeveloper, Agent: selectedAgent, AgentHome: req.FormValues["agent_home"], AgentBin: req.FormValues["agent_bin"]}
 		if !strings.EqualFold(strings.TrimSpace(current.Agent), strings.TrimSpace(preference.Agent)) {
 			if _, ok := s.Agents.HomePath(preference.Agent, preference.AgentHome); !ok {
 				preference.AgentHome = ""
@@ -2113,6 +2131,82 @@ func isKnownEffort(v string) bool {
 		return true
 	}
 	return false
+}
+
+// preferenceFromFields applies the editable /config fields to current. Both
+// the config card and /config set use this whitelist so their validation and
+// partial-update semantics stay equivalent. Model is intentionally absent: it
+// is selected by the agent runtime, not writable through /config.
+func preferenceFromFields(values map[string]string, current config.RuntimePreference) (config.RuntimePreference, error) {
+	for key := range values {
+		switch key {
+		case "agent", "agent_home", "agent_bin", "effort", "reply_mode", "append_overflow_mode", "conversation_mode", "topic_seed_mode", "group_message_mode", "respond_to_bots", "notify_on_complete", "meta_rows", "show_meta_row_agent", "show_meta_row_runtime", "show_meta_row_developer":
+		default:
+			return config.RuntimePreference{}, fmt.Errorf("unsupported config field %q", key)
+		}
+	}
+
+	preference := current
+	if raw, ok := values["agent"]; ok {
+		if value := strings.TrimSpace(raw); value != "" {
+			preference.Agent = value
+		}
+	}
+	if raw, ok := values["agent_home"]; ok {
+		preference.AgentHome = strings.TrimSpace(raw)
+	}
+	if raw, ok := values["agent_bin"]; ok {
+		preference.AgentBin = strings.TrimSpace(raw)
+	}
+	if raw, ok := values["effort"]; ok {
+		value := strings.TrimSpace(raw)
+		if !isKnownEffort(value) {
+			return config.RuntimePreference{}, fmt.Errorf("invalid effort %q", value)
+		}
+		preference.Effort = value
+	}
+	if raw, ok := values["reply_mode"]; ok {
+		preference.ReplyMode = config.ReplyMode(strings.TrimSpace(raw))
+	}
+	if raw, ok := values["append_overflow_mode"]; ok {
+		if value := strings.TrimSpace(raw); value != "" {
+			preference.AppendOverflowMode = config.AppendOverflowMode(value)
+		}
+	}
+	if raw, ok := values["conversation_mode"]; ok {
+		preference.ConversationMode = config.ConversationMode(strings.TrimSpace(raw))
+	}
+	if raw, ok := values["topic_seed_mode"]; ok {
+		preference.TopicSeedMode = config.TopicSeedMode(strings.TrimSpace(raw))
+	}
+	if raw, ok := values["group_message_mode"]; ok {
+		if value := strings.TrimSpace(raw); value != "" {
+			preference.GroupMessageMode = config.GroupMessageMode(value)
+		}
+	}
+	for _, field := range []struct {
+		key string
+		out *bool
+	}{
+		{"respond_to_bots", &preference.RespondToBots},
+		{"notify_on_complete", &preference.NotifyOnComplete},
+	} {
+		if raw, ok := values[field.key]; ok {
+			parsed, err := strconv.ParseBool(strings.TrimSpace(raw))
+			if err != nil {
+				return config.RuntimePreference{}, fmt.Errorf("invalid %s", field.key)
+			}
+			*field.out = parsed
+		}
+	}
+	showMetaRowAgent, showMetaRowRuntime, showMetaRowDeveloper, err := metaRowsFromForm(values, current)
+	if err != nil {
+		return config.RuntimePreference{}, err
+	}
+	preference.ShowMetaRowAgent = showMetaRowAgent
+	preference.ShowMetaRowRuntime = showMetaRowRuntime
+	preference.ShowMetaRowDeveloper = showMetaRowDeveloper
+	return preference, nil
 }
 
 // metaRowsFromForm accepts the multi-select while retaining legacy per-row
