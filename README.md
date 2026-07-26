@@ -32,7 +32,7 @@ workspace：
 - `/stop` 只停止当前 agent/chat/topic scope 的 active batch；命中 active batch 时不回复新卡片，而在原任务 stopped 卡尾部显示 `已请求停止当前任务；排队输入将继续执行。`；后续 queued 输入保留并继续调度，空闲时安全提示无运行任务。
 - `/resume` 列出当前 Agent 与 workdir 最近使用的 10 个 Bridge Session；`/resume <session-id>` 切换后由下一条普通消息继续目标 Session。
 - 自然语言定时同时支持重复任务和一次性任务；Agent 只生成规则提案，用户确认后 Bridge 才持久化并启用。
-- `/config` 的三种回复模式是：`Coder`（记录全部推理/工具调用过程）、`Worker`（不展开过程，只显示结果）、`Singleton`（维持单个卡片更新，搭配 pin 使用）。底层兼容 key 分别为 `append-clean-card`、`append`、`latest-card`，仅用于已有配置、环境变量和 API 兼容，不作为用户界面文案。
+- `/config` 的三种回复模式是：`Coder`（按顺序展示回复与工具进展）、`Worker`（思考、正文、工具分区展示）、`Singleton`（维持单个卡片更新，搭配 pin 使用）。底层兼容 key 分别为 `append`、`append-clean-card`、`latest-card`，仅用于已有配置、环境变量和 API 兼容，不作为用户界面文案。
 - 执行中标题使用蓝色 `正在推理/正在执行工具/正在回复 · ⏱ Ns`，完成绿色，停止灰色，失败红色。
 - 执行中卡片连续 5 秒没有正常流式更新时会自动刷新耗时；无正文的等待阶段同时显示“任务仍在运行…”。每次正常更新会重新计时，完成、失败或停止后立即取消刷新。
 - 底部状态栏使用分割线和两行分栏：agent/model/tokens，以及 user/ip/workdir。Claude 从 stream 事件、Codex 从当前 session transcript 读取已生效的实际模型；尚未取得运行期记录时显示“同步中”，不会把请求配置伪装为实际模型。

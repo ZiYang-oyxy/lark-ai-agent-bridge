@@ -680,7 +680,7 @@ Environment:
   E2E_CARD_MAX_CHARS     defaults to 12000
   E2E_CARD_MIN_DELTA_CHARS defaults to 30
   E2E_CARD_PREVIEW_MAX_CHARS defaults to 2000
-  E2E_REPLY_MODE         Worker=append, Coder=append-clean-card, or Singleton=latest-card
+  E2E_REPLY_MODE         Coder=append, Worker=append-clean-card, or Singleton=latest-card
   E2E_REPLY_STORE        defaults to <workdir>/.lark-agent-bridge/replies.json
   E2E_ACCESS_STORE       defaults to <workdir>/.lark-agent-bridge/access.json
   E2E_TOPIC_ALIAS_STORE  defaults to <workdir>/.lark-agent-bridge/topic-aliases.json

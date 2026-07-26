@@ -48,7 +48,7 @@
 - 已验证群话题内 @bot 续聊进入 `thread:<thread_id>` 会话；当前飞书权限下，群话题内不 @bot 的消息不会推送到 bridge。
 - 已使用同 bridge app 的隔离用户 OAuth profile 完成真实 P2P 与文件输入验证。
 - 已用确定性 service regression 覆盖 `interactive + text` 与 `image + text` 在 1 s 内各只启动一次 Agent；真实远程组合场景在对应部署 E2E 中复核。
-- 已完成 Reply Experience 六项真实 E2E：Worker（`append`）、Coder（`append-clean-card`）、Singleton（`latest-card`）、preview 双门限、reaction cleanup、restart/stale-card fallback。
+- 已完成 Reply Experience 六项真实 E2E：Coder（`append`）、Worker（`append-clean-card`）、Singleton（`latest-card`）、preview 双门限、reaction cleanup、restart/stale-card fallback。
 - 已在最终 integration 版本重跑十项核心真实 E2E，session restart、pending recovery、DM/group debounce、busy merge、queue full、scope parallel、stop 和 recall 全部通过。
 - 独立 reviewer 提出的两项 Important 已关闭:preview 不会在 final 后覆盖终态,recovery 卡片更新使用整批 5 秒 context budget。
 - 2026-07-18 最终部署二进制 SHA-256 为 `c8bbd15bd3b505f4df53f5c5da3885e9bbccd9e3476cca1d6daa8eb158c101f1`；生产进程已恢复并确认 WSS connected。

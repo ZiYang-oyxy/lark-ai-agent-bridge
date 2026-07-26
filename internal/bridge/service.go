@@ -2149,7 +2149,7 @@ func (s *Service) configForm(preference config.RuntimePreference) *card.ConfigFo
 		ShowMetaRowDeveloper: strconv.FormatBool(preference.ShowMetaRowDeveloper),
 		Agents:               toCardOptions(s.Agents.AgentOptions()), AgentHomes: toCardOptions(s.Agents.HomeOptions(agentKind)), AgentBins: toCardOptions(s.Agents.BinOptions(agentKind)),
 		Models: s.configModelOptions(), Efforts: []string{"default", "low", "medium", "high"},
-		ReplyModes:          []string{string(config.ReplyModeWorker), string(config.ReplyModeCoder), string(config.ReplyModeSingleton)},
+		ReplyModes:          []string{string(config.ReplyModeCoder), string(config.ReplyModeWorker), string(config.ReplyModeSingleton)},
 		AppendOverflowModes: []card.SelectOption{{Value: string(config.AppendOverflowModeTruncate), Label: "尾部截断（默认）"}, {Value: string(config.AppendOverflowModeContinueCard), Label: "自动续卡（最多 9 张）"}},
 		ConversationModes:   []string{string(config.ConversationModeChat), string(config.ConversationModeTopic)},
 		TopicSeedModes:      []string{string(config.TopicSeedModeQuote), string(config.TopicSeedModeFork)},

@@ -247,6 +247,9 @@ func TestLoadFromEnvReplyDefaultsAndOverrides(t *testing.T) {
 	workDir := filepath.Join(t.TempDir(), "work")
 	t.Setenv("E2E_DEFAULT_WORKDIR", workDir)
 	cfg := LoadFromEnv()
+	if cfg.ReplyMode != ReplyModeCoder {
+		t.Fatalf("default reply product mode = %q, want %q", cfg.ReplyMode, ReplyModeCoder)
+	}
 	if cfg.ReplyMode != ReplyModeAppend {
 		t.Fatalf("default reply mode = %q, want %q", cfg.ReplyMode, ReplyModeAppend)
 	}

@@ -33,18 +33,18 @@ type AppendOverflowMode string
 type TopicSeedMode string
 
 const (
-	// ReplyModeWorker only shows the final result. The stored value is kept for
-	// backward compatibility with existing preferences, schedules, and env.
-	ReplyModeWorker ReplyMode = "append"
-	// ReplyModeCoder exposes the thought and tool timelines.
-	ReplyModeCoder ReplyMode = "append-clean-card"
+	// ReplyModeCoder keeps the full ordered reply timeline. The stored value is
+	// kept for backward compatibility with existing preferences, schedules, and env.
+	ReplyModeCoder ReplyMode = "append"
+	// ReplyModeWorker separates thought and tool timelines from the final answer.
+	ReplyModeWorker ReplyMode = "append-clean-card"
 	// ReplyModeSingleton keeps updating one card in the current scope.
 	ReplyModeSingleton ReplyMode = "latest-card"
 
 	// Deprecated storage-oriented aliases. Use Worker/Coder/Singleton in new
 	// product code; these names remain so external integrations keep compiling.
-	ReplyModeAppend          = ReplyModeWorker
-	ReplyModeAppendCleanCard = ReplyModeCoder
+	ReplyModeAppend          = ReplyModeCoder
+	ReplyModeAppendCleanCard = ReplyModeWorker
 	ReplyModeLatestCard      = ReplyModeSingleton
 
 	ConversationModeChat  ConversationMode = "chat"
@@ -79,9 +79,9 @@ func (m ReplyMode) DisplayName() string {
 func (m ReplyMode) Description() string {
 	switch m {
 	case ReplyModeCoder:
-		return "记录全部推理/工具调用过程"
+		return "按顺序展示回复与工具进展"
 	case ReplyModeWorker:
-		return "不展开过程，只显示结果"
+		return "思考、正文、工具分区展示"
 	case ReplyModeSingleton:
 		return "维持单个卡片更新，搭配 pin 使用"
 	default:
@@ -347,7 +347,7 @@ func normalizeRuntimePreference(preference RuntimePreference) RuntimePreference 
 	preference.Effort = strings.ToLower(strings.TrimSpace(preference.Effort))
 	preference.ReplyMode = ReplyMode(strings.ToLower(strings.TrimSpace(string(preference.ReplyMode))))
 	if preference.ReplyMode == "" {
-		preference.ReplyMode = ReplyModeWorker
+		preference.ReplyMode = ReplyModeCoder
 	}
 	preference.ConversationMode = ConversationMode(strings.ToLower(strings.TrimSpace(string(preference.ConversationMode))))
 	if preference.ConversationMode == "" {

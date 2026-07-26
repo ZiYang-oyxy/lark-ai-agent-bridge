@@ -201,8 +201,8 @@ func TestReplyModeUsesProductNamesWhileKeepingStorageKeys(t *testing.T) {
 		storageKey string
 		label      string
 	}{
-		{ReplyModeWorker, "append", "Worker（不展开过程，只显示结果）"},
-		{ReplyModeCoder, "append-clean-card", "Coder（记录全部推理/工具调用过程）"},
+		{ReplyModeCoder, "append", "Coder（按顺序展示回复与工具进展）"},
+		{ReplyModeWorker, "append-clean-card", "Worker（思考、正文、工具分区展示）"},
 		{ReplyModeSingleton, "latest-card", "Singleton（维持单个卡片更新，搭配 pin 使用）"},
 	} {
 		if string(want.mode) != want.storageKey || want.mode.Label() != want.label {

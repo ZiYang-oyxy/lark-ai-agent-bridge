@@ -625,8 +625,8 @@ func TestBuildLarkCardRendersRuntimeConfigForm(t *testing.T) {
 	}
 	replyOptions := selects["reply_mode"]["options"].([]any)
 	for i, want := range []struct{ value, label string }{
-		{"append", "Worker（不展开过程，只显示结果）"},
-		{"append-clean-card", "Coder（记录全部推理/工具调用过程）"},
+		{"append", "Coder（按顺序展示回复与工具进展）"},
+		{"append-clean-card", "Worker（思考、正文、工具分区展示）"},
 		{"latest-card", "Singleton（维持单个卡片更新，搭配 pin 使用）"},
 	} {
 		option := replyOptions[i].(map[string]any)

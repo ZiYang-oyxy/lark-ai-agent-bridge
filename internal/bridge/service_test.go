@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"sort"
 	"strings"
 	"sync"
@@ -674,6 +675,9 @@ func TestServiceConfigCommandShowsCurrentPreferencesWithoutRunningAgent(t *testi
 	events := renderer.Events()
 	if len(events) != 1 || events[0].ConfigForm == nil || events[0].ConfigForm.Model != "opus" || events[0].ConfigForm.Effort != "high" || events[0].ConfigForm.ReplyMode != string(config.ReplyModeLatestCard) || events[0].ConfigForm.ConversationMode != string(config.ConversationModeChat) {
 		t.Fatalf("config events = %#v", events)
+	}
+	if got, want := events[0].ConfigForm.ReplyModes, []string{string(config.ReplyModeCoder), string(config.ReplyModeWorker), string(config.ReplyModeSingleton)}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("config reply modes = %#v, want %#v", got, want)
 	}
 	if len(runner.Calls()) != 0 {
 		t.Fatalf("/config started Agent: %#v", runner.Calls())
