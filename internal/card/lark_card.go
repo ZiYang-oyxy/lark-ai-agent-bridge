@@ -244,7 +244,7 @@ func buildConfigFormElements(sessionID string, form ConfigForm) []any {
 	runtime = append(runtime, fieldElements("cfg_effort", "推理深度", "default 跟随 Agent 自身设定 · low/medium/high 显式指定思考强度", configSelectOptions("effort", form.Effort, effortOptions(form.Efforts)))...)
 
 	conversation := []map[string]any{}
-	conversation = append(conversation, fieldElements("cfg_reply", "回复模式", "append 保留全过程 · clean-card 只留末答 · latest-card 复用最新卡", configSelect("reply_mode", form.ReplyMode, form.ReplyModes))...)
+	conversation = append(conversation, fieldElements("cfg_reply", "回复模式", "选择展示过程的程度；保存后只影响新进入队列的消息。", configSelectOptions("reply_mode", form.ReplyMode, replyModeOptions(form.ReplyModes)))...)
 	conversation = append(conversation, fieldElements("cfg_overflow", "超长回复处理", "仅 append 生效；尾部截断保持单卡，自动续卡最多 9 张", configSelectOptions("append_overflow_mode", form.AppendOverflowMode, form.AppendOverflowModes))...)
 	conversation = append(conversation, fieldElements("cfg_conv", "会话模式", "chat 按群共用会话 · topic 按话题隔离", configSelect("conversation_mode", form.ConversationMode, form.ConversationModes))...)
 	conversation = append(conversation, fieldElements("cfg_topic_seed", "新话题起点（topic 模式）", "quote 用当前消息+引用消息(含图片)起新会话，上下文短 · fork 从群主会话 fork 出一份，继承完整历史但上下文消耗大", configSelect("topic_seed_mode", form.TopicSeedMode, form.TopicSeedModes))...)
@@ -657,6 +657,21 @@ func effortOptions(values []string) []SelectOption {
 			label = "default（跟随 Agent 默认）"
 		}
 		opts = append(opts, SelectOption{Value: v, Label: label})
+	}
+	return opts
+}
+
+// replyModeOptions keeps the persisted mode keys stable while giving the
+// /config dropdown the user-facing names and behavior descriptions.
+func replyModeOptions(values []string) []SelectOption {
+	labels := map[string]string{
+		"append-clean-card": "Coder（记录全部推理/工具调用过程）",
+		"append":            "Worker（不展开过程，只显示结果）",
+		"latest-card":       "Singleton（维持单个卡片更新，搭配 pin 使用）",
+	}
+	opts := make([]SelectOption, 0, len(values))
+	for _, value := range values {
+		opts = append(opts, SelectOption{Value: value, Label: labels[value]})
 	}
 	return opts
 }

@@ -600,6 +600,17 @@ func TestBuildLarkCardRendersRuntimeConfigForm(t *testing.T) {
 	if len(selects["reply_mode"]["options"].([]any)) != 3 || len(selects["conversation_mode"]["options"].([]any)) != 2 {
 		t.Fatalf("select options = reply %#v conversation %#v", selects["reply_mode"]["options"], selects["conversation_mode"]["options"])
 	}
+	replyOptions := selects["reply_mode"]["options"].([]any)
+	for i, want := range []struct{ value, label string }{
+		{"append", "Worker（不展开过程，只显示结果）"},
+		{"append-clean-card", "Coder（记录全部推理/工具调用过程）"},
+		{"latest-card", "Singleton（维持单个卡片更新，搭配 pin 使用）"},
+	} {
+		option := replyOptions[i].(map[string]any)
+		if option["value"] != want.value || option["text"].(map[string]any)["content"] != want.label {
+			t.Fatalf("reply mode option %d = %#v, want value=%q label=%q", i, option, want.value, want.label)
+		}
+	}
 	if len(selects["append_overflow_mode"]["options"].([]any)) != 2 {
 		t.Fatalf("append overflow options = %#v", selects["append_overflow_mode"]["options"])
 	}

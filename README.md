@@ -32,8 +32,7 @@ workspace：
 - `/stop` 只停止当前 agent/chat/topic scope 的 active batch；命中 active batch 时不回复新卡片，而在原任务 stopped 卡尾部显示 `已请求停止当前任务；排队输入将继续执行。`；后续 queued 输入保留并继续调度，空闲时安全提示无运行任务。
 - `/resume` 列出当前 Agent 与 workdir 最近使用的 10 个 Bridge Session；`/resume <session-id>` 切换后由下一条普通消息继续目标 Session。
 - 自然语言定时同时支持重复任务和一次性任务；Agent 只生成规则提案，用户确认后 Bridge 才持久化并启用。
-- `append` 每轮新建完整 CardKit 状态卡：thinking 位于独立折叠区，assistant 回复与工具安全摘要按事件顺序显示在同一个 Markdown 正文中；工具始终是普通文字，不使用下拉框。
-- `append-clean-card` 与 `latest-card` 使用 CardKit：最终正文只保留最后一条回复，但可展示的思考、执行进展和工具次数在终态继续保留并默认折叠；clean 使用上下两个时间线，latest 使用合并过程区。
+- `/config` 的回复模式使用面向用户的名称，底层兼容保留原有配置值：`Coder`（`append-clean-card`，记录全部推理/工具调用过程）、`Worker`（`append`，不展开过程，只显示结果）、`Singleton`（`latest-card`，维持单个卡片更新，搭配 pin 使用）。
 - 执行中标题使用蓝色 `正在推理/正在执行工具/正在回复 · ⏱ Ns`，完成绿色，停止灰色，失败红色。
 - 执行中卡片连续 5 秒没有正常流式更新时会自动刷新耗时；无正文的等待阶段同时显示“任务仍在运行…”。每次正常更新会重新计时，完成、失败或停止后立即取消刷新。
 - 底部状态栏使用分割线和两行分栏：agent/model/tokens，以及 user/ip/workdir。
