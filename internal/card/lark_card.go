@@ -354,7 +354,7 @@ func buildStatusBarSection(form ConfigForm) []map[string]any {
 			"例：👤 lijun.996 · 🖥️ 192.0.2.42 · 📁 /home/<USER>/ws",
 			configSelectOptions("show_meta_row_runtime", form.ShowMetaRowRuntime, boolOpts("显示主机信息行")))...)
 		out = append(out, fieldElements("cfg_bar_dev", "开发者行",
-			"例：🐛 v0.1.8-rc.5 · ⬆️ 最新 v0.1.8-rc.6（🐛 rc / 🦋 stable）",
+			"例：🐛 v0.1.8-rc.5 · ✨ 最新 v0.1.8-rc.6（🐛 rc / 🦋 stable）",
 			configSelectOptions("show_meta_row_developer", form.ShowMetaRowDeveloper, boolOpts("显示开发者行")))...)
 		return out
 	}
@@ -378,7 +378,7 @@ func buildStatusBarSection(form ConfigForm) []map[string]any {
 			"options": []any{
 				map[string]any{"text": map[string]any{"tag": "plain_text", "content": "Agent 行 · 例：🍊 535a99 · 🧠 claude-opus-4-7[1m]（high） · 🟢 ctx: 35% (354.5k/1000k)"}, "value": "agent"},
 				map[string]any{"text": map[string]any{"tag": "plain_text", "content": "主机信息行 · 例：👤 lijun.996 · 🖥️ 192.0.2.42 · 📁 /home/<USER>/ws"}, "value": "runtime"},
-				map[string]any{"text": map[string]any{"tag": "plain_text", "content": "开发者行 · 例：🐛 v0.1.8-rc.5 · ⬆️ 最新 v0.1.8-rc.6（🐛 rc / 🦋 stable）"}, "value": "developer"},
+				map[string]any{"text": map[string]any{"tag": "plain_text", "content": "开发者行 · 例：🐛 v0.1.8-rc.5 · ✨ 最新 v0.1.8-rc.6（🐛 rc / 🦋 stable）"}, "value": "developer"},
 			},
 			"width": "fill",
 		},
@@ -1035,7 +1035,7 @@ func metaDeveloperText(meta Meta) string {
 		parts = append(parts, emoji)
 	}
 	if latest := strings.TrimSpace(meta.LatestVersion); latest != "" {
-		parts = append(parts, "⬆️ 最新 "+latest)
+		parts = append(parts, "✨ 最新 "+latest)
 	}
 	return strings.Join(parts, " · ")
 }

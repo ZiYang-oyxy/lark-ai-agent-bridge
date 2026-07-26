@@ -90,7 +90,7 @@ func TestAgentCardStreamFinishAdoptsLatestVersionDiscoveredDuringRun(t *testing.
 		t.Fatalf("terminal developer meta = %#v", terminal.Meta)
 	}
 	rows := card.MetaRows(terminal.Meta)
-	if len(rows) != 1 || !strings.Contains(rows[0].Text, "⬆️ 最新 v0.1.11-rc.6") {
+	if len(rows) != 1 || !strings.Contains(rows[0].Text, "✨ 最新 v0.1.11-rc.6") {
 		t.Fatalf("terminal developer row = %#v", rows)
 	}
 }

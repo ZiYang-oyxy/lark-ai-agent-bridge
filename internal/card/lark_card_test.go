@@ -384,7 +384,7 @@ func TestMetaRowsGatedByIndependentToggles(t *testing.T) {
 	}
 
 	// 单独打开 developer 行:版本号前置 emoji 由 DeveloperMode 决定
-	// (开=🐛 debug、关=🦋 蝴蝶),后跟 · 最新 v<latest>。base.DeveloperMode=true 应
+	// (开=🐛 debug、关=🦋 蝴蝶),后跟 · ✨ 最新 v<latest>。base.DeveloperMode=true 应
 	// 显示 🐛;且不再显式渲染"开发者模式 ✅/❌"段——emoji 已承担此意义。
 	onDev := base
 	onDev.ShowMetaRowDeveloper = true
@@ -392,7 +392,7 @@ func TestMetaRowsGatedByIndependentToggles(t *testing.T) {
 	if len(rows) != 1 || rows[0].ElementID != "meta_developer" {
 		t.Fatalf("developer-only MetaRows = %+v, want single meta_developer", rows)
 	}
-	for _, want := range []string{"🐛 v0.1.9", "最新 v0.1.10"} {
+	for _, want := range []string{"🐛 v0.1.9", "✨ 最新 v0.1.10"} {
 		if !strings.Contains(rows[0].Text, want) {
 			t.Fatalf("developer row %q missing %q", rows[0].Text, want)
 		}
@@ -405,6 +405,9 @@ func TestMetaRowsGatedByIndependentToggles(t *testing.T) {
 	}
 	if strings.Contains(rows[0].Text, "🏷️") {
 		t.Fatalf("legacy version tag 🏷️ must be gone: %q", rows[0].Text)
+	}
+	if strings.Contains(rows[0].Text, "⬆️") {
+		t.Fatalf("update notice must use sparkle emoji instead of up arrow: %q", rows[0].Text)
 	}
 
 	// 三个都打开:返回三行,顺序 agent → runtime → developer。
