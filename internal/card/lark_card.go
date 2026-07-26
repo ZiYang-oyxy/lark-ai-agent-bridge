@@ -1040,12 +1040,20 @@ func metaDeveloperText(meta Meta) string {
 	return strings.Join(parts, " · ")
 }
 
-// metaModelText 用实际模型值(缺失显 unknown),effort 以括号后缀呈现。
+// metaModelText uses this run's actual model when available. Before the agent
+// reports it, a non-default request is useful context; otherwise explicitly
+// render a syncing state instead of inheriting a previous run's model.
 func metaModelText(meta Meta) string {
 	if meta.ModelInfo != (ModelInfo{}) {
 		model := meta.ModelInfo.Actual
 		if model == "" {
-			model = "unknown"
+			if requested := strings.TrimSpace(meta.ModelInfo.Requested); requested != "" && requested != "default" {
+				model = requested
+			} else if meta.ModelPending {
+				model = "同步中"
+			} else {
+				model = "unknown"
+			}
 		}
 		if effort := meta.ModelInfo.Effort; effort != "" && effort != "unknown" {
 			return fmt.Sprintf("%s（%s）", model, effort)
@@ -1074,6 +1082,9 @@ func metaTokenText(meta Meta) string {
 			return fmt.Sprintf("%s %sctx: %d%% (%s/%s)", dot, prefix, meta.CtxUsedPercent, compactInt(meta.CtxTokens), compactInt(meta.CtxWindow))
 		}
 		return fmt.Sprintf("%s %sctx: %d%%", dot, prefix, meta.CtxUsedPercent)
+	}
+	if meta.CtxPending {
+		return "🔄 ctx: 同步中"
 	}
 	runTokens := meta.RunTokens
 	totalTokens := meta.TotalTokens

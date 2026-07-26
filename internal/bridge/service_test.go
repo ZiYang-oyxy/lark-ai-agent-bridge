@@ -2480,8 +2480,8 @@ func TestServiceRunsConfiguredCodexPresetWithImagesAndResumesThread(t *testing.T
 		t.Fatalf("prompt = %q", first.Prompt)
 	}
 	events := renderer.Events()
-	if got := events[len(events)-1].Meta.ModelInfo; got != (card.ModelInfo{}) {
-		t.Fatalf("Codex model provenance = %#v, want executable-owned empty metadata", got)
+	if got := events[len(events)-1].Meta; got.ModelInfo != (card.ModelInfo{Requested: "default", Effort: "low"}) || !got.ModelPending {
+		t.Fatalf("Codex model provenance = %#v, want pending executable-owned model", got)
 	}
 
 	secondAt := now.Add(2 * time.Second)

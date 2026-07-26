@@ -9,7 +9,6 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"lark-agent-bridge/internal/agent"
 	"lark-agent-bridge/internal/agent/contextusage"
 	"lark-agent-bridge/internal/card"
 	"lark-agent-bridge/internal/config"
@@ -334,16 +333,15 @@ func (s *agentCardStream) Handle(update AgentStreamUpdate) {
 	if update.Model != "" {
 		s.meta.Model = update.Model
 		s.meta.ModelInfo.Actual = update.Model
+		s.meta.ModelPending = false
 	}
 	if update.Tokens > 0 {
 		s.meta.RunTokens += update.Tokens
 		s.meta.Tokens = s.meta.RunTokens
 		s.meta.TotalTokens = s.totalBefore + s.meta.RunTokens
 	}
-	// 流式期间尝试读本轮 sidecar,一旦落盘就把"进行中"卡片的 ctx 从上一轮 approx
-	// 刷新为本轮真值。Finish 的 postRunMeta 仍是权威覆盖,这里只是让运行中的卡片
-	// 尽早显示真实占用而不是停留在起点估值上。读失败什么都不改,保留 metaForRun
-	// 起始时的旧值(approx)继续显示,避免出现"忽有忽无"闪烁。
+	// 流式期间只采纳本轮落盘的 sidecar。首卡明确显示同步中，绝不把上一轮的
+	// 模型或上下文占用伪装成本轮值。
 	s.refreshContextUsageLocked()
 	metadataChanged := s.meta != previousMeta
 	if metadataChanged {
@@ -434,6 +432,7 @@ func (s *agentCardStream) FinishTransformed(status string, meta card.Meta, resul
 	}
 	s.meta.CtxOK = meta.CtxOK
 	s.meta.CtxApprox = meta.CtxApprox
+	s.meta.CtxPending = meta.CtxPending
 	s.meta.CtxUsedPercent = meta.CtxUsedPercent
 	s.meta.CtxTokens = meta.CtxTokens
 	s.meta.CtxWindow = meta.CtxWindow
@@ -453,6 +452,7 @@ func (s *agentCardStream) FinishTransformed(status string, meta card.Meta, resul
 	if result.Model != "" {
 		s.meta.Model = result.Model
 		s.meta.ModelInfo.Actual = result.Model
+		s.meta.ModelPending = false
 	}
 	if result.Tokens > 0 {
 		s.meta.RunTokens = result.Tokens
@@ -537,45 +537,31 @@ func (s *agentCardStream) requestStop() card.Event {
 // gated by s.startedAt) and, if a fresh occupancy is available, overwrites the
 // running card's Ctx* fields. Must be called with s.mu held. Idempotent and cheap:
 // each call is one small file read + JSON decode against a known path.
-// refreshContextUsageLocked mirrors the freshness policy of the terminal
-// metaFromSessionWithDirAfter path: prefer a sidecar value written this run
-// (updated_at ≥ s.startedAt) and treat it as authoritative; if the sidecar for
-// this session_id exists but hasn't been re-flushed yet (Claude CLI batches
-// sidecar updates, so a running card can go minutes before the first this-run
-// flush lands), fall back to the last known value for the same session and
-// mark it CtxApprox=true (rendered with a `~` prefix). Only when neither is
-// available do we leave CtxOK=false so the caller falls back to raw token
-// counts. Fixes the earlier failure mode where a fresh synthetic-thread
-// session (sess.AgentSessionID=="") rendered `🔢 tokens: …` across the entire
-// streaming window because ReadAfter alone judged the (stale) prior sidecar
-// unusable and the initial CtxOK was never set.
+// refreshContextUsageLocked accepts only telemetry written after this run
+// started. Keeping prior-run values off the running card is intentional: an
+// explicit syncing state is more truthful than a plausible but stale model or
+// context percentage.
 func (s *agentCardStream) refreshContextUsageLocked() {
 	if s.ctxDir == "" || s.meta.SessionID == "" {
 		return
 	}
-	fresh := contextusage.ReadAfter(s.ctxDir, s.meta.SessionID, s.startedAt)
-	u := fresh
-	approx := false
-	if !fresh.OK {
-		base := contextusage.Read(s.ctxDir, s.meta.SessionID)
-		if !base.OK {
-			return
-		}
-		u = base
-		approx = true
+	u := contextusage.ReadAfter(s.ctxDir, s.meta.SessionID, s.startedAt)
+	if !u.OK {
+		return
 	}
 	s.meta.CtxOK = true
-	s.meta.CtxApprox = approx
+	s.meta.CtxApprox = false
+	s.meta.CtxPending = false
 	s.meta.CtxUsedPercent = u.UsedPercent
 	s.meta.CtxTokens = u.TotalTokens
 	s.meta.CtxWindow = u.ContextWindow
-	if s.meta.Agent == string(agent.Codex) {
-		if model := strings.TrimSpace(u.Model); model != "" {
-			s.meta.Model = model
-		}
-		if s.meta.Model != "" {
-			s.meta.ModelInfo = card.ModelInfo{Actual: s.meta.Model, Effort: u.ReasoningEffort}
-		}
+	if model := strings.TrimSpace(u.Model); model != "" {
+		s.meta.Model = model
+		s.meta.ModelInfo.Actual = model
+		s.meta.ModelPending = false
+	}
+	if s.meta.ModelInfo.Actual != "" && strings.TrimSpace(u.ReasoningEffort) != "" {
+		s.meta.ModelInfo.Effort = u.ReasoningEffort
 	}
 }
 
@@ -584,37 +570,19 @@ func (s *Service) metaForRun(sess session.Session, input session.Input) card.Met
 }
 
 func (s *Service) metaForRunWithDir(sess session.Session, input session.Input, ctxDir string) card.Meta {
-	meta, usage := s.metaFromSessionWithDir(sess, ctxDir)
-	// 起始 meta 里的 ctx 来自上一轮落盘的 sidecar,本轮尚未跑。标为 approx,渲染时
-	// 用 `~` 前缀与本轮真值区分;refreshContextUsageLocked 收到本轮 fresh 值后会
-	// 清掉 approx。首轮新会话(sess.AgentSessionID=="")没有旧值,CtxOK 本就为 false。
-	if meta.CtxOK {
-		meta.CtxApprox = true
-	}
-	if sess.Key.Agent == agent.Codex {
-		// Bridge deliberately does not select Codex model or reasoning effort.
-		// The chosen executable and its environment own that configuration. Use
-		// only exporter-reported metadata; before a first-turn session ID exists,
-		// the sidecar contract permits the newest canonical-cwd match as an
-		// explicitly approximate starting point.
-		if !meta.CtxOK {
-			if u := contextusage.ReadLatestForWorkDir(ctxDir, sess.WorkDir); u.OK {
-				usage = u
-				meta.CtxOK = true
-				meta.CtxApprox = true
-				meta.CtxUsedPercent = u.UsedPercent
-				meta.CtxTokens = u.TotalTokens
-				meta.CtxWindow = u.ContextWindow
-				meta.Model = strings.TrimSpace(u.Model)
-			}
-		}
-		if meta.Model != "" {
-			meta.ModelInfo = card.ModelInfo{Actual: meta.Model, Effort: usage.ReasoningEffort}
-		}
-	} else {
-		meta.Model = ""
-		meta.ModelInfo = card.ModelInfo{Requested: input.RequestedModel, Effort: input.RequestedEffort}
-	}
+	meta, _ := s.metaFromSessionWithDir(sess, ctxDir)
+	// A new card starts before this run has a session ID or a fresh sidecar. Do
+	// not carry over session.Model or a previous sidecar: both describe another
+	// run. The requested model/effort remains useful as an explicit startup hint.
+	meta.Model = ""
+	meta.ModelInfo = card.ModelInfo{Requested: input.RequestedModel, Effort: input.RequestedEffort}
+	meta.ModelPending = true
+	meta.CtxOK = false
+	meta.CtxApprox = false
+	meta.CtxPending = true
+	meta.CtxUsedPercent = 0
+	meta.CtxTokens = 0
+	meta.CtxWindow = 0
 	return meta
 }
 
@@ -723,6 +691,13 @@ func (s *agentCardStream) onHeartbeat(generation uint64) {
 		s.resetHeartbeatLocked()
 		s.mu.Unlock()
 		return
+	}
+	previousMeta := s.meta
+	// A quiet model may still flush its context sidecar. Heartbeats are the
+	// independent refresh path when no AgentStreamUpdate arrives.
+	s.refreshContextUsageLocked()
+	if s.meta != previousMeta {
+		s.metaRevision++
 	}
 	event := s.eventLocked(false)
 	event.ForceFullUpdate = true

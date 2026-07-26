@@ -440,6 +440,29 @@ func TestMetaRowsShowsCodexReasoningEffort(t *testing.T) {
 	}
 }
 
+func TestMetaRowsShowsCurrentRunSyncingState(t *testing.T) {
+	rows := MetaRows(Meta{
+		Agent:            "codex",
+		ShowMetaRowAgent: true,
+		ModelInfo:        ModelInfo{Requested: "default", Effort: "high"},
+		ModelPending:     true,
+		CtxPending:       true,
+	})
+	if len(rows) != 1 {
+		t.Fatalf("MetaRows len = %d, want 1: %#v", len(rows), rows)
+	}
+	for _, want := range []string{"🧠 同步中（high）", "🔄 ctx: 同步中"} {
+		if !strings.Contains(rows[0].Text, want) {
+			t.Fatalf("syncing row = %q, want %q", rows[0].Text, want)
+		}
+	}
+	for _, forbidden := range []string{"~ctx:", "ctx: 31%", "unknown"} {
+		if strings.Contains(rows[0].Text, forbidden) {
+			t.Fatalf("syncing row leaked stale state %q: %q", forbidden, rows[0].Text)
+		}
+	}
+}
+
 func TestShortSessionIDUsesDiscriminatingSuffix(t *testing.T) {
 	first := "019f99ab-1234-7000-8000-000000a1b2c3"
 	second := "019f99ab-1234-7000-8000-000000d4e5f6"

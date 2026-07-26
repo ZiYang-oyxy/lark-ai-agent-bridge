@@ -37,14 +37,17 @@ type ModelInfo struct {
 }
 
 type Meta struct {
-	Agent          string
-	SessionID      string
-	Model          string
-	Tokens         int
-	RunTokens      int
-	TotalTokens    int
-	CtxOK          bool
-	CtxApprox      bool
+	Agent       string
+	SessionID   string
+	Model       string
+	Tokens      int
+	RunTokens   int
+	TotalTokens int
+	CtxOK       bool
+	CtxApprox   bool
+	// CtxPending distinguishes a new run that has not exported its own context
+	// usage yet from a run where context telemetry is unavailable.
+	CtxPending     bool
 	CtxUsedPercent int
 	CtxTokens      int
 	CtxWindow      int
@@ -53,6 +56,9 @@ type Meta struct {
 	WorkDir        string
 	Status         string
 	ModelInfo      ModelInfo
+	// ModelPending means the running card has not observed this run's actual
+	// model yet. It must not render a model inherited from a prior run.
+	ModelPending bool
 	// 三行元信息独立开关。任一为 true 才渲染对应行;全 false 时整段 meta 段
 	// (含分隔线)不渲染,与旧的"总开关关闭"视觉一致。
 	ShowMetaRowAgent     bool
