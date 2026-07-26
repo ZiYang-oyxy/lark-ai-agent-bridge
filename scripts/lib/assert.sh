@@ -28,4 +28,3 @@ require_not_contains() {
 simulate() {
   go run ./cmd/lark-agent-bridge simulate "$@"
 }
-

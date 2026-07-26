@@ -47,4 +47,3 @@ smoke_group_intake() {
   require_contains "$topic_followup_output" '**`/new`** `[--workdir path]' "participated topic restart simulation"
   rm -f "$topics_store"
 }
-
