@@ -950,9 +950,13 @@ func (s *Service) handleLocalConfigCommand(ctx context.Context, msg Message, cmd
 			if len(pair) != 2 {
 				return s.renderTextWithMode("local-config-set", msg.ID, card.SegmentError, "用法：/local-config set key=value|inherit [key=value|inherit ...]", replyMode)
 			}
-			key, value := strings.TrimSpace(pair[0]), strings.TrimSpace(pair[1])
+			key := strings.ToLower(strings.TrimSpace(pair[0]))
+			value := strings.TrimSpace(pair[1])
 			if key == "" || value == "" {
 				return s.renderTextWithMode("local-config-set", msg.ID, card.SegmentError, "用法：/local-config set key=value|inherit [key=value|inherit ...]", replyMode)
+			}
+			if _, duplicate := values[key]; duplicate {
+				return s.renderTextWithMode("local-config-set", msg.ID, card.SegmentError, "本群覆盖保存失败：字段重复："+key, replyMode)
 			}
 			values[key] = value
 		}

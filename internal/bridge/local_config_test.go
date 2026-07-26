@@ -180,6 +180,28 @@ func TestLocalConfigSetRequiresAdmin(t *testing.T) {
 	}
 }
 
+func TestLocalConfigSetRejectsDuplicateKeysCaseInsensitively(t *testing.T) {
+	for _, text := range []string{
+		"set effort=high EFFORT=inherit",
+		"set EFFORT=inherit effort=high",
+	} {
+		t.Run(text, func(t *testing.T) {
+			svc, store := localConfigService(t)
+			msg := Message{ID: "duplicate", IsGroup: true, ChatID: "oc-a", Sender: "ou_admin"}
+			if err := svc.handleLocalConfigCommand(context.Background(), msg, Command{Type: CommandLocalConfig, Text: text}, store.GetForChat("oc-a").ConversationMode); err != nil {
+				t.Fatal(err)
+			}
+			if _, ok := store.ChatOverride("oc-a"); ok {
+				t.Fatal("duplicate keys must not persist an override")
+			}
+			events := svc.Cards.(*card.FakeRenderer).Events()
+			if len(events) == 0 || !strings.Contains(segmentText(events[len(events)-1]), "字段重复：effort") {
+				t.Fatalf("events = %#v", events)
+			}
+		})
+	}
+}
+
 // localConfigOverview reports the effective per-field values, marks exactly the
 // group's overridden fields, and counts them.
 func TestLocalConfigOverviewMarksOverriddenFields(t *testing.T) {
