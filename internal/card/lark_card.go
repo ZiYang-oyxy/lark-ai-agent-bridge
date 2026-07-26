@@ -34,6 +34,7 @@ func BuildLarkCard(e Event) map[string]any {
 		}
 	} else if e.MarkdownLayout {
 		elements = []any{markdownElement("answer", e.Markdown)}
+		elements = append(elements, buildMetaElements(e.Meta)...)
 	} else {
 		elements = make([]any, 0, len(e.Segments)+5)
 		if e.InlineTimelineLayout {

@@ -94,6 +94,52 @@ func TestBuildLarkCardMarkdownLayoutIsHeaderlessAndPanelFree(t *testing.T) {
 	}
 }
 
+func TestBuildLarkCardMarkdownLayoutHonorsStatusBarToggles(t *testing.T) {
+	base := Event{
+		Type: "result", MarkdownLayout: true, Markdown: "answer",
+		Meta: Meta{
+			Agent: "codex", SessionID: "session-123456", Model: "gpt-5.6-terra",
+			User: "developer", IP: "192.0.2.10", WorkDir: "/workspace",
+			Version: "v0.1.11-rc.5", LatestVersion: "v0.1.11-rc.6", DeveloperMode: true,
+		},
+	}
+	tests := []struct {
+		name      string
+		streaming bool
+		enable    func(*Meta)
+		wantID    string
+		wantText  string
+	}{
+		{name: "all hidden", streaming: true},
+		{name: "agent while streaming", streaming: true, enable: func(meta *Meta) { meta.ShowMetaRowAgent = true }, wantID: "meta_primary", wantText: "gpt-5.6-terra"},
+		{name: "runtime at terminal", enable: func(meta *Meta) { meta.ShowMetaRowRuntime = true }, wantID: "meta_runtime", wantText: "/workspace"},
+		{name: "developer at terminal", enable: func(meta *Meta) { meta.ShowMetaRowDeveloper = true }, wantID: "meta_developer", wantText: "v0.1.11-rc.5"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			event := base
+			event.Streaming = tt.streaming
+			if tt.enable != nil {
+				tt.enable(&event.Meta)
+			}
+			elements := BuildLarkCard(event)["body"].(map[string]any)["elements"].([]any)
+			if tt.wantID == "" {
+				if len(elements) != 1 {
+					t.Fatalf("hidden status bar elements = %#v, want answer only", elements)
+				}
+				return
+			}
+			if len(elements) != 3 || elements[1].(map[string]any)["tag"] != "hr" {
+				t.Fatalf("status bar elements = %#v, want answer + hr + row", elements)
+			}
+			row := elements[2].(map[string]any)
+			if row["element_id"] != tt.wantID || !strings.Contains(fmt.Sprint(row), tt.wantText) {
+				t.Fatalf("status bar row = %#v, want id=%q text containing %q", row, tt.wantID, tt.wantText)
+			}
+		})
+	}
+}
+
 func TestBuildLarkCardMarkdownLayoutPutsStopBesideTitle(t *testing.T) {
 	payload := BuildLarkCard(Event{
 		Type: "stream", SessionID: "claude:chat", Streaming: true, MarkdownLayout: true,
