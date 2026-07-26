@@ -146,6 +146,16 @@ func TestParseConfigSetCommand(t *testing.T) {
 	}
 }
 
+func TestParseMkdirCommand(t *testing.T) {
+	cmd := ParseCommand(Message{Text: "/mkdir projects/demo"}, agent.Claude)
+	if cmd.Type != CommandMkdir || cmd.Text != "projects/demo" {
+		t.Fatalf("mkdir = %#v", cmd)
+	}
+	if !(&Service{}).adminCommand(CommandMkdir) {
+		t.Fatal("mkdir must be admin-only")
+	}
+}
+
 func TestParseAgentModeCommand(t *testing.T) {
 	cmd := ParseCommand(Message{Text: "/agent-mode"}, agent.Claude)
 	if cmd.Type != CommandAgentMode || cmd.Text != "" {

@@ -42,6 +42,92 @@ func TestScheduleConfirmationActionPromotesDraft(t *testing.T) {
 	}
 }
 
+func TestCronConfirmAndCancelCommandsAreScoped(t *testing.T) {
+	now := time.Now()
+	for _, tc := range []struct {
+		name      string
+		text      string
+		mutate    func(*schedule.Draft)
+		wantTask  bool
+		wantDraft bool
+	}{
+		{name: "confirm matching id", text: "confirm abcd1234", wantTask: true},
+		{name: "cancel matching id", text: "cancel abcd1234", wantDraft: false},
+		{name: "reject other chat", text: "confirm abcd1234", mutate: func(d *schedule.Draft) { d.Target.ChatID = "oc_other" }, wantDraft: true},
+		{name: "reject other thread", text: "confirm abcd1234", mutate: func(d *schedule.Draft) { d.Target.ThreadID = "omt_other" }, wantDraft: true},
+		{name: "reject timer kind", text: "confirm abcd1234", mutate: func(d *schedule.Draft) { d.Kind = schedule.KindTimer }, wantDraft: true},
+		{name: "reject expired", text: "confirm abcd1234", mutate: func(d *schedule.Draft) { d.ExpiresAt = now.Add(-time.Minute) }, wantDraft: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			svc, _, store := scheduleTestService(t)
+			draft := bridgeFixtureDraft(now)
+			draft.Kind = schedule.KindCron
+			draft.CronExpr = "0 9 * * *"
+			draft.ScheduledAt = time.Time{}
+			if tc.mutate != nil {
+				tc.mutate(&draft)
+			}
+			if err := store.CreateDraft(draft); err != nil {
+				t.Fatal(err)
+			}
+			msg := Message{ID: "cmd", Sender: "ou_creator", ChatID: "oc_chat", ThreadID: "omt_topic", Time: now}
+			if err := svc.handleScheduleCommand(context.Background(), msg, Command{Type: CommandCron, Text: tc.text}, config.RuntimePreference{}); err != nil {
+				t.Fatal(err)
+			}
+			_, taskOK := store.Task(draft.ID)
+			_, draftOK := store.Draft(draft.ID)
+			if taskOK != tc.wantTask || draftOK != tc.wantDraft {
+				t.Fatalf("task=%v draft=%v", taskOK, draftOK)
+			}
+		})
+	}
+}
+
+func TestCronConfirmWithoutIDRequiresOneScopedDraft(t *testing.T) {
+	now := time.Now()
+	t.Run("unique", func(t *testing.T) {
+		svc, _, store := scheduleTestService(t)
+		draft := bridgeFixtureDraft(now)
+		draft.Kind = schedule.KindCron
+		draft.CronExpr = "0 9 * * *"
+		draft.ScheduledAt = time.Time{}
+		if err := store.CreateDraft(draft); err != nil {
+			t.Fatal(err)
+		}
+		msg := Message{ID: "unique", Sender: draft.Creator, ChatID: draft.Target.ChatID, ThreadID: draft.Target.ThreadID, Time: now}
+		if err := svc.handleScheduleCommand(context.Background(), msg, Command{Type: CommandCron, Text: "confirm"}, config.RuntimePreference{}); err != nil {
+			t.Fatal(err)
+		}
+		if _, ok := store.Task(draft.ID); !ok {
+			t.Fatal("unique scoped draft was not confirmed")
+		}
+	})
+	t.Run("ambiguous", func(t *testing.T) {
+		svc, renderer, store := scheduleTestService(t)
+		for i, id := range []string{"draft-a", "draft-b"} {
+			draft := bridgeFixtureDraft(now.Add(time.Duration(i) * time.Second))
+			draft.ID = id
+			draft.Kind = schedule.KindCron
+			draft.CronExpr = "0 9 * * *"
+			draft.ScheduledAt = time.Time{}
+			if err := store.CreateDraft(draft); err != nil {
+				t.Fatal(err)
+			}
+		}
+		msg := Message{ID: "ambiguous", Sender: "ou_creator", ChatID: "oc_chat", ThreadID: "omt_topic", Time: now}
+		if err := svc.handleScheduleCommand(context.Background(), msg, Command{Type: CommandCron, Text: "confirm"}, config.RuntimePreference{}); err != nil {
+			t.Fatal(err)
+		}
+		if len(store.Tasks()) != 0 || len(store.Drafts()) != 2 {
+			t.Fatalf("ambiguous command changed store: tasks=%d drafts=%d", len(store.Tasks()), len(store.Drafts()))
+		}
+		events := renderer.Events()
+		if len(events) == 0 || !strings.Contains(segmentText(events[len(events)-1]), "指定草稿 ID") {
+			t.Fatalf("ambiguous response = %#v", events)
+		}
+	})
+}
+
 func TestScheduleConfirmationActionRejectsOtherUser(t *testing.T) {
 	service, _, store := scheduleTestService(t)
 	draft := bridgeFixtureDraft(time.Now())

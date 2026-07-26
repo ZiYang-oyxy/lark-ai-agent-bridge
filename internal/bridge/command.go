@@ -27,6 +27,7 @@ const (
 	CommandGroupAccess CommandType = "group-access"
 	CommandCd          CommandType = "cd"
 	CommandWs          CommandType = "ws"
+	CommandMkdir       CommandType = "mkdir"
 	CommandDevel       CommandType = "devel"
 	CommandTodo        CommandType = "todo"
 	CommandAction      CommandType = "action"
@@ -96,6 +97,8 @@ func ParseCommand(msg Message, defaultAgent agent.Kind) Command {
 			wsName = fields[1]
 		}
 		return Command{Type: CommandWs, WsSub: sub, WsName: wsName, Raw: raw}
+	case "mkdir":
+		return Command{Type: CommandMkdir, Text: strings.TrimSpace(rest), Raw: raw}
 	case ".devel":
 		// Hidden developer command (not listed in /help): toggles the opt-in
 		// prerelease update channel. Text carries the raw argument ("", "0", "1").

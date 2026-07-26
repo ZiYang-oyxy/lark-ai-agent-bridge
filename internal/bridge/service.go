@@ -685,6 +685,8 @@ func (s *Service) HandleMessage(ctx context.Context, msg Message) error {
 		return s.handleCd(ctx, msg, cmd, preference)
 	case CommandWs:
 		return s.handleWs(ctx, msg, cmd, preference)
+	case CommandMkdir:
+		return s.handleMkdirCommand(ctx, msg, cmd, preference)
 	case CommandDevel:
 		return s.handleDevel(ctx, msg, cmd, preference)
 	case CommandTodo:
@@ -695,6 +697,84 @@ func (s *Service) HandleMessage(ctx context.Context, msg Message) error {
 		return s.runWithPreference(ctx, cmd, msg, "", preference)
 	default:
 		return s.renderTextWithMode("command", msg.ID, card.SegmentError, "unsupported command", preference.ConversationMode)
+	}
+}
+
+func (s *Service) handleMkdirCommand(_ context.Context, msg Message, cmd Command, preference config.RuntimePreference) error {
+	if !s.canRunAdminCommand(msg.Sender) {
+		s.Audit.Record(msg.Sender, "admin_denied", msg.ChatID, string(CommandMkdir))
+		return s.renderTextWithMode("mkdir-denied", msg.ID, card.SegmentError, "❌ 此命令仅管理员可用。", preference.ConversationMode)
+	}
+	target, err := resolveWorkspaceBoundedPath(cmd.Text, []string{s.Config.DefaultWorkDir})
+	if err != nil {
+		return s.renderTextWithMode("mkdir-invalid", msg.ID, card.SegmentError, "目录不在允许的 workspace 范围内："+err.Error(), preference.ConversationMode)
+	}
+	if err := os.MkdirAll(target, 0o755); err != nil {
+		return s.renderTextWithMode("mkdir-failed", msg.ID, card.SegmentError, "创建目录失败："+err.Error(), preference.ConversationMode)
+	}
+	s.Audit.Record(msg.Sender, "workdir_created", msg.ChatID, target)
+	event := workDirActionEvent("workdir_created", runID("mkdir", msg.ID), target)
+	event.ReplyToMessageID = msg.ID
+	event.ReplyInThread = preference.ConversationMode == config.ConversationModeTopic
+	return s.Cards.Render(event)
+}
+
+func resolveWorkspaceBoundedPath(raw string, roots []string) (string, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return "", errors.New("路径不能为空")
+	}
+	for _, configuredRoot := range roots {
+		rootAbs, err := filepath.Abs(strings.TrimSpace(configuredRoot))
+		if err != nil {
+			continue
+		}
+		root, err := filepath.EvalSymlinks(rootAbs)
+		if err != nil {
+			continue
+		}
+		candidate := raw
+		if !filepath.IsAbs(candidate) {
+			candidate = filepath.Join(root, candidate)
+		}
+		candidate, err = filepath.Abs(candidate)
+		if err != nil {
+			continue
+		}
+		resolved, err := resolvePathWithMissingTail(candidate)
+		if err != nil {
+			continue
+		}
+		relative, err := filepath.Rel(root, resolved)
+		if err == nil && relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+			return filepath.Clean(resolved), nil
+		}
+	}
+	return "", fmt.Errorf("path %q escapes configured roots", raw)
+}
+
+func resolvePathWithMissingTail(path string) (string, error) {
+	current := filepath.Clean(path)
+	var missing []string
+	for {
+		if _, err := os.Lstat(current); err == nil {
+			resolved, err := filepath.EvalSymlinks(current)
+			if err != nil {
+				return "", err
+			}
+			for i := len(missing) - 1; i >= 0; i-- {
+				resolved = filepath.Join(resolved, missing[i])
+			}
+			return filepath.Clean(resolved), nil
+		} else if !os.IsNotExist(err) {
+			return "", err
+		}
+		parent := filepath.Dir(current)
+		if parent == current {
+			return "", fmt.Errorf("no existing ancestor for %q", path)
+		}
+		missing = append(missing, filepath.Base(current))
+		current = parent
 	}
 }
 

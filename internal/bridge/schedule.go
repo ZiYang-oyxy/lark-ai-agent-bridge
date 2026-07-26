@@ -124,6 +124,42 @@ func (s *Service) handleScheduleCommand(ctx context.Context, msg Message, cmd Co
 		args = fields[1:]
 	}
 	switch sub {
+	case "confirm", "cancel":
+		if len(args) > 1 {
+			return s.renderTextWithMode(label+"-usage", msg.ID, card.SegmentError, "草稿 ID 参数不正确。\n\n"+scheduleUsageText(kind), preference.ConversationMode)
+		}
+		now := effectiveMessageTime(msg)
+		var draft schedule.Draft
+		if len(args) == 1 {
+			var ok bool
+			draft, ok = s.Schedules.Draft(args[0])
+			if !ok || !scheduleDraftMatchesCommand(draft, msg, kind, now) {
+				return s.renderTextWithMode(label+"-draft-denied", msg.ID, card.SegmentError, "找不到当前会话中可操作的对应草稿。", preference.ConversationMode)
+			}
+		} else {
+			var matches []schedule.Draft
+			for _, candidate := range s.liveScheduleDrafts(msg, now) {
+				if candidate.Kind == kind {
+					matches = append(matches, candidate)
+				}
+			}
+			if len(matches) != 1 {
+				return s.renderTextWithMode(label+"-draft-ambiguous", msg.ID, card.SegmentError, "当前会话必须恰好有一个对应的待确认草稿；请指定草稿 ID。", preference.ConversationMode)
+			}
+			draft = matches[0]
+		}
+		if sub == "cancel" {
+			if err := s.Schedules.CancelDraft(draft.ID, msg.Sender); err != nil {
+				return s.renderTextWithMode(label+"-cancel-failed", msg.ID, card.SegmentError, "取消草稿失败："+err.Error(), preference.ConversationMode)
+			}
+			s.Audit.Record(msg.Sender, "schedule_draft_cancelled", draft.ID, "command")
+			return s.renderTextWithMode(label+"-cancelled", msg.ID, card.SegmentText, "已取消，不会创建定时任务。", preference.ConversationMode)
+		}
+		task, err := s.confirmScheduleDraft(draft.ID, msg.Sender, now)
+		if err != nil {
+			return s.renderTextWithMode(label+"-confirm-failed", msg.ID, card.SegmentError, "确认草稿失败："+err.Error(), preference.ConversationMode)
+		}
+		return s.renderTextWithMode(label+"-confirmed", msg.ID, card.SegmentText, confirmedScheduleText(task), preference.ConversationMode)
 	case "list":
 		if len(args) > 1 || (len(args) == 1 && !strings.EqualFold(args[0], "all")) {
 			return s.renderTextWithMode(label+"-usage", msg.ID, card.SegmentError, "参数不正确。\n\n"+scheduleUsageText(kind), preference.ConversationMode)
@@ -216,6 +252,7 @@ func scheduleUsageText(kind schedule.Kind) string {
 			"**`/timer` / `/timer list`** 查看当前会话的一次性任务",
 			"**`/timer list all`** 查看全部一次性任务（仅管理员）",
 			"**`/timer add <自然语言任务>`** 创建任务，确认后生效",
+			"**`/timer confirm|cancel [draft-id]`** 确认或取消待处理草稿",
 			"例如：`/timer add 30分钟后提醒我提交周报`",
 			"**`/timer info <id>`** 查看详情",
 			"**`/timer del <id>`** 删除任务",
@@ -226,12 +263,21 @@ func scheduleUsageText(kind schedule.Kind) string {
 		"**`/cron` / `/cron list`** 查看当前会话的周期任务",
 		"**`/cron list all`** 查看全部周期任务（仅管理员）",
 		"**`/cron add <自然语言任务>`** 创建任务，确认后生效",
+		"**`/cron confirm|cancel [draft-id]`** 确认或取消待处理草稿",
 		"例如：`/cron add 每个工作日上午9点总结项目进展`",
 		"**`/cron info <id>`** 查看详情",
 		"**`/cron run <id>`** 立即执行一次",
 		"**`/cron enable|disable <id>`** 启用或停用",
 		"**`/cron del <id>`** 删除任务",
 	}, "\n")
+}
+
+func scheduleDraftMatchesCommand(draft schedule.Draft, msg Message, kind schedule.Kind, now time.Time) bool {
+	return draft.Creator == msg.Sender &&
+		draft.Target.ChatID == msg.ChatID &&
+		draft.Target.ThreadID == msg.ThreadID &&
+		draft.Kind == kind &&
+		(draft.ExpiresAt.IsZero() || draft.ExpiresAt.After(now))
 }
 
 func (s *Service) confirmScheduleDraft(id, actor string, now time.Time) (schedule.Task, error) {
