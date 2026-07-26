@@ -35,7 +35,7 @@ workspace：
 - `/config` 的三种回复模式是：`Coder`（记录全部推理/工具调用过程）、`Worker`（不展开过程，只显示结果）、`Singleton`（维持单个卡片更新，搭配 pin 使用）。底层兼容 key 分别为 `append-clean-card`、`append`、`latest-card`，仅用于已有配置、环境变量和 API 兼容，不作为用户界面文案。
 - 执行中标题使用蓝色 `正在推理/正在执行工具/正在回复 · ⏱ Ns`，完成绿色，停止灰色，失败红色。
 - 执行中卡片连续 5 秒没有正常流式更新时会自动刷新耗时；无正文的等待阶段同时显示“任务仍在运行…”。每次正常更新会重新计时，完成、失败或停止后立即取消刷新。
-- 底部状态栏使用分割线和两行分栏：agent/model/tokens，以及 user/ip/workdir。
+- 底部状态栏使用分割线和两行分栏：agent/model/tokens，以及 user/ip/workdir。Claude 从 stream 事件、Codex 从当前 session transcript 读取已生效的实际模型；尚未取得运行期记录时显示“同步中”，不会把请求配置伪装为实际模型。
 - 工作目录不存在时先发确认卡片；点击创建后确认卡变绿并禁用按钮，Claude 执行另起运行卡片。
 - 卡片按钮走长连接 `card.action.trigger`，回调会同步返回终态卡片并保留异步 CardKit update 兜底；HTTP `/card/callback` 只保留为本地兼容调试入口。
 - `/help` 显示当前 Bridge 版本；配置 HTTPS update manifest 后会提示新版本、在卡片内展示 Release note，并允许 owner/admin 一键原子升级。

@@ -4858,6 +4858,39 @@ printf '%s\n' '{"type":"turn.completed","usage":{"input_tokens":2,"output_tokens
 	}
 }
 
+func TestCLIExecRunnerStreamsCodexTranscriptModel(t *testing.T) {
+	rt, err := bridgeinstructions.NewRuntime()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rt.Close()
+	home := t.TempDir()
+	bin := filepath.Join(t.TempDir(), "codex")
+	script := `#!/bin/sh
+printf '%s\n' '{"type":"thread.started","thread_id":"thread-1"}'
+mkdir -p "$CODEX_HOME/sessions/2026/07/26"
+printf '%s\n' '{"type":"event_msg","payload":{"type":"thread_settings_applied","thread_settings":{"model":"gpt-5.6-luna"}}}' > "$CODEX_HOME/sessions/2026/07/26/rollout-thread-1.jsonl"
+printf '%s\n' '{"type":"item.completed","item":{"type":"reasoning","text":"inspect"}}'
+printf '%s\n' '{"type":"turn.completed"}'
+`
+	if err := os.WriteFile(bin, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	var updates []AgentStreamUpdate
+	result, err := (CLIExecRunner{Instructions: rt}).Run(context.Background(), AgentRunRequest{Kind: agent.Codex, Bin: bin, Prompt: "inspect", Home: home, BridgeInstructionsVersion: bridgeinstructions.CurrentVersion, OnEvent: func(update AgentStreamUpdate) {
+		updates = append(updates, update)
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Model != "gpt-5.6-luna" {
+		t.Fatalf("result model = %q", result.Model)
+	}
+	if len(updates) < 2 || updates[0].Model != "" || updates[1].Model != "gpt-5.6-luna" {
+		t.Fatalf("updates = %#v", updates)
+	}
+}
+
 func TestCLIExecRunnerBridgeInstructionsUseNativeChannels(t *testing.T) {
 	rt, err := bridgeinstructions.NewRuntime()
 	if err != nil {

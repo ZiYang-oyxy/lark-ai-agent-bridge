@@ -3309,12 +3309,37 @@ func (r CLIExecRunner) Run(ctx context.Context, req AgentRunRequest) (AgentRunRe
 			return
 		}
 	}()
-	var result AgentRunResult
+	var (
+		result             AgentRunResult
+		observedCodexModel string
+	)
+	baseOnEvent := req.OnEvent
+	onEvent := baseOnEvent
+	if req.Kind == agent.Codex {
+		var codexSessionID string
+		onEvent = func(update AgentStreamUpdate) {
+			if sessionID := strings.TrimSpace(update.AgentSessionID); sessionID != "" {
+				codexSessionID = sessionID
+			}
+			if update.Model == "" && observedCodexModel == "" && codexSessionID != "" {
+				observedCodexModel = codexTranscriptModel(req.Home, codexSessionID)
+			}
+			if update.Model == "" {
+				update.Model = observedCodexModel
+			}
+			if baseOnEvent != nil {
+				baseOnEvent(update)
+			}
+		}
+	}
 	var scanErr error
 	if req.Kind == agent.Codex {
-		result, scanErr = parseCodexStream(pipe, &stdout, req.OnEvent)
+		result, scanErr = parseCodexStream(pipe, &stdout, onEvent)
 	} else {
-		result, scanErr = parseClaudeStream(pipe, &stdout, req.OnEvent)
+		result, scanErr = parseClaudeStream(pipe, &stdout, onEvent)
+	}
+	if result.Model == "" {
+		result.Model = observedCodexModel
 	}
 	waitErr := cmd.Wait()
 	if scanErr != nil {
