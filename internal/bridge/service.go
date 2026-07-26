@@ -39,6 +39,7 @@ import (
 const (
 	recoveryNoticesTimeout = 5 * time.Second
 	helpContextTTL         = 24 * time.Hour
+	mergeForwardContextTTL = 5 * time.Minute
 )
 
 type helpContext struct {
@@ -53,6 +54,15 @@ type helpContext struct {
 type resumeContext struct {
 	Key       session.Key
 	Identity  session.CatalogIdentity
+	ExpiresAt time.Time
+}
+
+// pendingMergeForward keeps a user-sent merged forward briefly when group
+// mention-only intake skips it. A following explicit mention can then attach
+// that exact forwarded body to the agent request without making the bot react
+// to every forward in the group.
+type pendingMergeForward struct {
+	MessageID string
 	ExpiresAt time.Time
 }
 
@@ -100,29 +110,30 @@ type Service struct {
 	accessMu           sync.RWMutex
 	knownChats         []feishu.KnownChat
 
-	mu                 sync.Mutex
-	pendingRuns        map[string]pendingRun
-	activeRuns         map[string]activeRun
-	pendingCompletions map[string]pendingCompletion
-	waitingReactions   map[string]*reactionLifecycle
-	helpContexts       map[string]helpContext
-	resumeContexts     map[string]resumeContext
-	reactionDelay      time.Duration
-	startedAt          time.Time
-	accepting          bool
-	loopsCancel        context.CancelFunc
-	loopsStarted       bool
-	dispatchWG         sync.WaitGroup
-	runWG              sync.WaitGroup
-	scopeMu            sync.Mutex
-	scopeContext       context.Context
-	scopeCancel        context.CancelFunc
-	activeScopeCancel  context.CancelFunc
-	scopeWG            sync.WaitGroup
-	upgradeGate        sync.RWMutex
-	upgradeStateMu     sync.Mutex
-	upgradeInProgress  bool
-	upgradeMaintenance bool
+	mu                   sync.Mutex
+	pendingRuns          map[string]pendingRun
+	activeRuns           map[string]activeRun
+	pendingCompletions   map[string]pendingCompletion
+	waitingReactions     map[string]*reactionLifecycle
+	helpContexts         map[string]helpContext
+	resumeContexts       map[string]resumeContext
+	pendingMergeForwards map[string]pendingMergeForward
+	reactionDelay        time.Duration
+	startedAt            time.Time
+	accepting            bool
+	loopsCancel          context.CancelFunc
+	loopsStarted         bool
+	dispatchWG           sync.WaitGroup
+	runWG                sync.WaitGroup
+	scopeMu              sync.Mutex
+	scopeContext         context.Context
+	scopeCancel          context.CancelFunc
+	activeScopeCancel    context.CancelFunc
+	scopeWG              sync.WaitGroup
+	upgradeGate          sync.RWMutex
+	upgradeStateMu       sync.Mutex
+	upgradeInProgress    bool
+	upgradeMaintenance   bool
 
 	// Test seam: called after an active starting batch is registered and before
 	// the first cancellation check/card render.
@@ -353,24 +364,25 @@ func NewServiceWithSessions(cfg config.Config, renderer card.Renderer, runner Ag
 	renderer = card.NewLimitRenderer(renderer, cfg.CardMaxChars)
 	scopeContext, scopeCancel := context.WithCancel(context.Background())
 	return &Service{
-		Config:             cfg,
-		Sessions:           sessions,
-		Cards:              renderer,
-		Runner:             runner,
-		Audit:              recorder,
-		Agents:             config.DefaultAgentsConfig(),
-		pendingRuns:        map[string]pendingRun{},
-		activeRuns:         map[string]activeRun{},
-		pendingCompletions: map[string]pendingCompletion{},
-		waitingReactions:   map[string]*reactionLifecycle{},
-		helpContexts:       map[string]helpContext{},
-		resumeContexts:     map[string]resumeContext{},
-		reactionDelay:      defaultWaitingReactionDelay,
-		startedAt:          time.Now(),
-		accepting:          true,
-		RestoreNotices:     restoreNotices,
-		scopeContext:       scopeContext,
-		scopeCancel:        scopeCancel,
+		Config:               cfg,
+		Sessions:             sessions,
+		Cards:                renderer,
+		Runner:               runner,
+		Audit:                recorder,
+		Agents:               config.DefaultAgentsConfig(),
+		pendingRuns:          map[string]pendingRun{},
+		activeRuns:           map[string]activeRun{},
+		pendingCompletions:   map[string]pendingCompletion{},
+		waitingReactions:     map[string]*reactionLifecycle{},
+		helpContexts:         map[string]helpContext{},
+		resumeContexts:       map[string]resumeContext{},
+		pendingMergeForwards: map[string]pendingMergeForward{},
+		reactionDelay:        defaultWaitingReactionDelay,
+		startedAt:            time.Now(),
+		accepting:            true,
+		RestoreNotices:       restoreNotices,
+		scopeContext:         scopeContext,
+		scopeCancel:          scopeCancel,
 	}
 }
 
@@ -556,6 +568,7 @@ func (s *Service) HandleMessage(ctx context.Context, msg Message) error {
 	}
 	intake := DecideIntake(msg, preference, s.BotOpenID, participated)
 	if !intake.Accept {
+		s.rememberSkippedMergeForward(msg, intake.Reason)
 		s.Audit.Record(msg.Sender, "group_message_skipped", msg.ChatID, intake.Reason+" message="+msg.ID+" thread="+msg.ThreadID)
 		return nil
 	}
@@ -588,6 +601,9 @@ func (s *Service) HandleMessage(ctx context.Context, msg Message) error {
 	cmd := ParseCommand(msg, defaultKind)
 	if cmd.Type == CommandIgnored {
 		return nil
+	}
+	if cmd.Type == CommandRun {
+		msg, cmd = s.attachPendingMergeForward(ctx, msg, cmd)
 	}
 	if selected, ok := agent.ParseKind(preference.Agent); ok && (cmd.Type == CommandRun || cmd.Type == CommandStatus || cmd.Type == CommandStop || cmd.Type == CommandResume || cmd.Type == CommandCron || cmd.Type == CommandTimer || cmd.Type == CommandTodo) {
 		cmd.Agent = selected
@@ -3065,6 +3081,72 @@ func (s *Service) expandDirectMergeForward(ctx context.Context, msg Message) Mes
 	msg.Attachments = attachments
 	msg.HasAttachments = true
 	return msg
+}
+
+func mergeForwardContextKey(chatID, sender string) string {
+	return chatID + "\x00" + sender
+}
+
+func (s *Service) rememberSkippedMergeForward(msg Message, intakeReason string) {
+	if !msg.IsGroup || !strings.EqualFold(strings.TrimSpace(msg.MessageType), "merge_forward") || msg.ID == "" {
+		return
+	}
+	if intakeReason != IntakeReasonMentionRequired && intakeReason != IntakeReasonTopicNotJoined {
+		return
+	}
+	now := time.Now()
+	if !msg.Time.IsZero() {
+		now = msg.Time
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for key, pending := range s.pendingMergeForwards {
+		if !pending.ExpiresAt.After(now) {
+			delete(s.pendingMergeForwards, key)
+		}
+	}
+	s.pendingMergeForwards[mergeForwardContextKey(msg.ChatID, msg.Sender)] = pendingMergeForward{
+		MessageID: msg.ID,
+		ExpiresAt: now.Add(mergeForwardContextTTL),
+	}
+}
+
+func (s *Service) attachPendingMergeForward(ctx context.Context, msg Message, cmd Command) (Message, Command) {
+	if !msg.IsGroup || !msg.Mentioned || s.MessageFetcher == nil {
+		return msg, cmd
+	}
+	now := time.Now()
+	if !msg.Time.IsZero() {
+		now = msg.Time
+	}
+	key := mergeForwardContextKey(msg.ChatID, msg.Sender)
+	s.mu.Lock()
+	pending, ok := s.pendingMergeForwards[key]
+	if ok && !pending.ExpiresAt.After(now) {
+		delete(s.pendingMergeForwards, key)
+		ok = false
+	}
+	if ok {
+		delete(s.pendingMergeForwards, key)
+	}
+	s.mu.Unlock()
+	if !ok {
+		return msg, cmd
+	}
+
+	fetched, err := s.MessageFetcher.FetchMessage(ctx, pending.MessageID)
+	if err != nil {
+		s.Audit.Record(msg.Sender, "merge_forward_context_fetch_failed", msg.ChatID, "message="+pending.MessageID+" error="+err.Error())
+		return msg, cmd
+	}
+	forwarded := strings.TrimSpace(fetched.Text)
+	if forwarded == "" {
+		forwarded = "[合并转发内容不可用]"
+	}
+	cmd.Text = "以下是用户刚刚合并转发的内容：\n" + forwarded + "\n\n用户的请求：\n" + cmd.Text
+	msg.Attachments = append(msg.Attachments, fetched.Attachments...)
+	s.Audit.Record(msg.Sender, "merge_forward_context_attached", msg.ChatID, "source="+pending.MessageID+" request="+msg.ID)
+	return msg, cmd
 }
 
 func (s *Service) metaFromSession(sess session.Session) card.Meta {
