@@ -7,6 +7,7 @@ Release note 使用 [`TEMPLATE.md`](./TEMPLATE.md) 的固定结构，由以下�
 ```
 
 支持正式版 `vMAJOR.MINOR.PATCH` 与 RC `vMAJOR.MINOR.PATCH-rc.N`。两者必须按风险与操作优先级保留全部 section：`Breaking Changes`、`Features`、`Bug Fixes`、`Upgrade Notes`、`Miscellaneous`；空 section 写 `- 无。`。
+`/help` 升级详情卡与 HTML 发布历史页展示时会省略仅包含空占位的 section，避免把“无”作为有效更新内容展示。
 
 - RC：命令按 Conventional Commits 自动分类，不使用 AI 改写。
 - 正式版：AI 以从上一个正式版到当前版本的 commits 和 diff 为证据，按模板归并、去重并改写为面向用户的中文条目。

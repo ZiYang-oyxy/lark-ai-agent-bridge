@@ -172,7 +172,7 @@ func TestHelpMapsDevelopmentBuildWithoutDetailsAction(t *testing.T) {
 
 func TestUpdateDetailsShowsNotesAndAdminInstall(t *testing.T) {
 	setUpdateTestVersion(t)
-	manager := &fakeUpdateManager{checkResult: updateAvailableResult(), notes: "# Changes\n\n- safer"}
+	manager := &fakeUpdateManager{checkResult: updateAvailableResult(), notes: "# Changes\n\n## Breaking Changes\n\n- 无。\n\n## Features\n\n- safer"}
 	svc := NewService(updateTestConfig(t), card.NewFakeRenderer(), newFakeRunner(), audit.NewRecorder())
 	svc.Updates = manager
 	result, err := svc.HandleActionResult(t.Context(), ActionRequest{SessionID: "update", ActionID: "update.details", Value: "1.2.0", Actor: "admin"})
@@ -181,6 +181,9 @@ func TestUpdateDetailsShowsNotesAndAdminInstall(t *testing.T) {
 	}
 	if result.Event == nil || !strings.Contains(result.Event.Segments[0].Text, "safer") {
 		t.Fatalf("details result = %#v", result)
+	}
+	if strings.Contains(result.Event.Segments[0].Text, "Breaking Changes") || strings.Contains(result.Event.Segments[0].Text, "无。") {
+		t.Fatalf("details card must hide empty release-note sections: %#v", result.Event.Segments)
 	}
 	// Actions: 返回帮助, 立即升级 (admin-only), 发布历史 (external link, all users).
 	if len(result.Event.Actions) != 3 || result.Event.Actions[1].ID != "update.install" || result.Event.Actions[1].Confirm == nil {

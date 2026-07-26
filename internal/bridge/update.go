@@ -128,6 +128,7 @@ func (s *Service) handleUpdateDetails(ctx context.Context, req ActionRequest) (A
 		s.Audit.Record(req.Actor, "update_notes_failed", req.SessionID, err.Error())
 		return s.renderUpdateMessage(req.SessionID, card.SegmentError, "Release note 暂时无法读取。", "orange", "⚠️ 暂时无法读取 Release note")
 	}
+	notes = bridgeupdate.HideEmptyReleaseNoteSections(notes)
 	actions := []card.Action{{ID: "update.help", Label: "返回帮助"}}
 	if s.canRunAdminCommand(req.Actor) {
 		actions = append(actions, card.Action{
