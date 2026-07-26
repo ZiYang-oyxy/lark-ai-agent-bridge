@@ -40,6 +40,13 @@ func TestLoadFromEnvParsesRuntimeTuning(t *testing.T) {
 	}
 }
 
+func TestLoadFromEnvDefaultsCardHeartbeatToFiveSeconds(t *testing.T) {
+	t.Setenv("E2E_CARD_HEARTBEAT_SEC", "")
+	if got := LoadFromEnv().CardHeartbeatEvery; got != 5*time.Second {
+		t.Fatalf("card heartbeat default = %s, want 5s", got)
+	}
+}
+
 func TestLoadFromEnvPreviewDefaults(t *testing.T) {
 	cfg := LoadFromEnv()
 	if cfg.CardMinDeltaChars != 30 || cfg.CardPreviewMaxChars != 2000 {

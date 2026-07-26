@@ -28,7 +28,7 @@ func TestRunChecksRuntimeConfig(t *testing.T) {
 		DefaultAgent:        "claude",
 		DefaultWorkDir:      workDir,
 		CardUpdateEvery:     time.Second,
-		CardHeartbeatEvery:  15 * time.Second,
+		CardHeartbeatEvery:  5 * time.Second,
 		InteractionTimeout:  2 * time.Second,
 		CardMaxChars:        12000,
 		CardMinDeltaChars:   30,
@@ -52,7 +52,7 @@ func TestRunChecksRuntimeConfig(t *testing.T) {
 	assertCheck(t, checks, "media_cache", true, cachePath)
 	assertCheck(t, checks, "E2E_CALLBACK_ADDR", true, ":18080")
 	assertCheck(t, checks, "card_update_every", true, "1s")
-	assertCheck(t, checks, "card_heartbeat_every", true, "15s")
+	assertCheck(t, checks, "card_heartbeat_every", true, "5s")
 	assertCheck(t, checks, "interaction_timeout", true, "2s")
 	assertCheck(t, checks, "card_max_chars", true, "12000")
 	assertCheck(t, checks, "card_min_delta_chars", true, "30")

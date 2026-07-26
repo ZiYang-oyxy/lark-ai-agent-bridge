@@ -73,7 +73,7 @@ func LoadFromEnv() Config {
 		ClaudeBin:                   "claude",
 		CodexBin:                    "codex",
 		CardUpdateEvery:             800 * time.Millisecond,
-		CardHeartbeatEvery:          15 * time.Second,
+		CardHeartbeatEvery:          5 * time.Second,
 		CardMaxChars:                12000,
 		CardMinDeltaChars:           30,
 		CardPreviewMaxChars:         2000,

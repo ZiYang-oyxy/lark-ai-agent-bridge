@@ -189,7 +189,7 @@ func newAgentCardStreamWithClock(service *Service, sessionID string, sess sessio
 	}
 	heartbeatEvery := service.Config.CardHeartbeatEvery
 	if heartbeatEvery <= 0 {
-		heartbeatEvery = 15 * time.Second
+		heartbeatEvery = 5 * time.Second
 	}
 	ctxDir := service.contextUsageDirForRun(sess.Key.Agent, input.AgentHome)
 	stopGrantID, grantErr := service.issueActionGrant(input.Sender, sess.Key.ChatID, sessionID, "stop", "", time.Now().Add(defaultActionGrantTTL))
