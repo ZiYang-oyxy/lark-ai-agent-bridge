@@ -195,6 +195,22 @@ func TestRuntimePreferenceValidatesAndPersistsReplyMode(t *testing.T) {
 	}
 }
 
+func TestReplyModeUsesProductNamesWhileKeepingStorageKeys(t *testing.T) {
+	for _, want := range []struct {
+		mode       ReplyMode
+		storageKey string
+		label      string
+	}{
+		{ReplyModeWorker, "append", "Worker（不展开过程，只显示结果）"},
+		{ReplyModeCoder, "append-clean-card", "Coder（记录全部推理/工具调用过程）"},
+		{ReplyModeSingleton, "latest-card", "Singleton（维持单个卡片更新，搭配 pin 使用）"},
+	} {
+		if string(want.mode) != want.storageKey || want.mode.Label() != want.label {
+			t.Fatalf("mode=%q label=%q, want storage=%q label=%q", want.mode, want.mode.Label(), want.storageKey, want.label)
+		}
+	}
+}
+
 func TestPreferenceStoreResetPersistsRemovalAndRestoresDefaults(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "preferences.json")
 	defaults := RuntimePreference{Model: "default", Effort: "low", ReplyMode: ReplyModeAppend, ConversationMode: ConversationModeChat, TopicSeedMode: TopicSeedModeQuote, GroupMessageMode: GroupMessageModeMentionOnly, AppendOverflowMode: AppendOverflowModeTruncate, Agent: DefaultAgentKind}

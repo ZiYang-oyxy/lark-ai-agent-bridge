@@ -49,7 +49,7 @@ bridge 不托管交互式终端，也不通过 tmux/PTY 捕获输出。每个已
 - `/ws list|save <name>|use <name>|remove <name>`：管理当前 topic 的命名工作区。`save` 记录当前有效工作目录，`use`（管理员）切入命名工作区（复用 `/cd` 的“中断+落库+重置会话”三连），`list` 只读展示。
 - `/status`：查看当前 chat/topic 会话状态；群聊中会额外显示当前群内已知会话数量。
 - `/stop`：停止当前所选 Agent 在当前 chat/topic scope 的 active batch；保留后续 queued 输入，空闲时返回安全提示。
-- `/config`：配置 agent、agent home、agent bin、model、effort、Reply mode 和 Conversation mode；`/config reset` 恢复环境默认。
+- `/config`：配置 agent、agent home、agent bin、model、effort、回复模式（Coder、Worker、Singleton）和 Conversation mode；`/config reset` 恢复环境默认。
 - `/invite user|admin|member @user`、`/remove user|admin|member @user`：管理私聊用户、管理员或当前群的指定成员；`member` 只能在已允许的目标群中管理。
 - `/invite group`、`/remove group`、`/invite all group`：管理允许响应的群；新加入的群默认采用全体成员模式。
 - `/group-access all|selected`：在当前允许群内切换全体成员或指定成员模式。owner/admin 始终可用。
@@ -104,7 +104,7 @@ Claude runner 使用 `--output-format stream-json`，通过 stdout pipe 逐行�
 - token 数：递归统计 usage 中以 `tokens` 结尾的数字字段
 - Claude session id：顶层或 message 内的 `session_id`
 
-输出会映射为 `card.Segment`。Claude assistant 文本先暂存：后续出现工具活动时判定为可展示的 progress，流结束时才判定为最终回复。`append` 将 progress、工具安全摘要与末答按事件顺序投影到同一个稳定的 `answer` Markdown 元素；原生 thinking 单独放入折叠面板。`append-clean-card` 将 thought/progress 与 tools 放入上下时间线，`latest-card` 使用合并过程区；两者终态都只裁剪正文，不删除过程消息或工具次数。
+输出会映射为 `card.Segment`。Claude assistant 文本先暂存：后续出现工具活动时判定为可展示的 progress，流结束时才判定为最终回复。Worker（兼容 key `append`）将 progress、工具安全摘要与末答按事件顺序投影到同一个稳定的 `answer` Markdown 元素；原生 thinking 单独放入折叠面板。Coder（`append-clean-card`）将 thought/progress 与 tools 放入上下时间线，Singleton（`latest-card`）使用合并过程区；两者终态都只裁剪正文，不删除过程消息或工具次数。
 
 ## Codex 输出解析
 

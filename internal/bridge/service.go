@@ -1869,7 +1869,7 @@ func (s *Service) HandleActionResult(ctx context.Context, req ActionRequest) (Ac
 		result, err := s.renderActionEvent(card.Event{
 			Type:      "config_saved",
 			SessionID: req.SessionID,
-			Segments:  []card.Segment{{Kind: card.SegmentText, Text: fmt.Sprintf("偏好已保存。\n\n**Agent**：`%s`\n**Agent 主目录**：`%s`\n**Agent 可执行文件**：`%s`\n**模型**：`%s`\n**Effort**：`%s`\n**回复模式**：`%s`\n**超长回复处理**：`%s`\n**会话模式**：`%s`\n**新话题起点**：`%s`\n**群消息接收**：`%s`\n**响应其他 bot**：`%t`\n\n下一条新消息开始生效。", preference.Agent, orDefault(preference.AgentHome, config.DefaultHomeLabel), orDefault(preference.AgentBin, config.DefaultBinLabelFor(preference.Agent)), preference.Model, preference.Effort, preference.ReplyMode, preference.AppendOverflowMode, preference.ConversationMode, preference.TopicSeedMode, preference.GroupMessageMode, preference.RespondToBots)}},
+			Segments:  []card.Segment{{Kind: card.SegmentText, Text: fmt.Sprintf("偏好已保存。\n\n**Agent**：`%s`\n**Agent 主目录**：`%s`\n**Agent 可执行文件**：`%s`\n**模型**：`%s`\n**Effort**：`%s`\n**回复模式**：`%s`\n**超长回复处理**：`%s`\n**会话模式**：`%s`\n**新话题起点**：`%s`\n**群消息接收**：`%s`\n**响应其他 bot**：`%t`\n\n下一条新消息开始生效。", preference.Agent, orDefault(preference.AgentHome, config.DefaultHomeLabel), orDefault(preference.AgentBin, config.DefaultBinLabelFor(preference.Agent)), preference.Model, preference.Effort, preference.ReplyMode.Label(), preference.AppendOverflowMode, preference.ConversationMode, preference.TopicSeedMode, preference.GroupMessageMode, preference.RespondToBots)}},
 		})
 		if err == nil {
 			s.ensureGroupMessageScope(req.SessionID, preference.GroupMessageMode)
@@ -1900,7 +1900,7 @@ func (s *Service) HandleActionResult(ctx context.Context, req ActionRequest) (Ac
 		return s.renderActionEvent(card.Event{
 			Type:      "local_config_saved",
 			SessionID: req.SessionID,
-			Segments:  []card.Segment{{Kind: card.SegmentText, Text: fmt.Sprintf("本群覆盖已保存 —— 仅本群生效，未改全局；未修改的项继承全局 `/config`。\n\n**Agent**：`%s`\n**模型**：`%s`\n**Effort**：`%s`\n**回复模式**：`%s`\n**超长回复处理**：`%s`\n**会话模式**：`%s`\n**新话题起点**：`%s`\n**群消息接收**：`%s`\n**响应其他 bot**：`%t`\n\n下一条新消息开始生效。", effective.Agent, effective.Model, effective.Effort, effective.ReplyMode, effective.AppendOverflowMode, effective.ConversationMode, effective.TopicSeedMode, effective.GroupMessageMode, effective.RespondToBots)}},
+			Segments:  []card.Segment{{Kind: card.SegmentText, Text: fmt.Sprintf("本群覆盖已保存 —— 仅本群生效，未改全局；未修改的项继承全局 `/config`。\n\n**Agent**：`%s`\n**模型**：`%s`\n**Effort**：`%s`\n**回复模式**：`%s`\n**超长回复处理**：`%s`\n**会话模式**：`%s`\n**新话题起点**：`%s`\n**群消息接收**：`%s`\n**响应其他 bot**：`%t`\n\n下一条新消息开始生效。", effective.Agent, effective.Model, effective.Effort, effective.ReplyMode.Label(), effective.AppendOverflowMode, effective.ConversationMode, effective.TopicSeedMode, effective.GroupMessageMode, effective.RespondToBots)}},
 		})
 	case "local_config.edit":
 		if s.Preferences == nil {
@@ -2117,7 +2117,7 @@ func (s *Service) configForm(preference config.RuntimePreference) *card.ConfigFo
 		ShowMetaRowDeveloper: strconv.FormatBool(preference.ShowMetaRowDeveloper),
 		Agents:               toCardOptions(s.Agents.AgentOptions()), AgentHomes: toCardOptions(s.Agents.HomeOptions(agentKind)), AgentBins: toCardOptions(s.Agents.BinOptions(agentKind)),
 		Models: s.configModelOptions(), Efforts: []string{"default", "low", "medium", "high"},
-		ReplyModes:          []string{string(config.ReplyModeAppend), string(config.ReplyModeAppendCleanCard), string(config.ReplyModeLatestCard)},
+		ReplyModes:          []string{string(config.ReplyModeWorker), string(config.ReplyModeCoder), string(config.ReplyModeSingleton)},
 		AppendOverflowModes: []card.SelectOption{{Value: string(config.AppendOverflowModeTruncate), Label: "尾部截断（默认）"}, {Value: string(config.AppendOverflowModeContinueCard), Label: "自动续卡（最多 9 张）"}},
 		ConversationModes:   []string{string(config.ConversationModeChat), string(config.ConversationModeTopic)},
 		TopicSeedModes:      []string{string(config.TopicSeedModeQuote), string(config.TopicSeedModeFork)},
@@ -2736,7 +2736,7 @@ func (s *Service) statusCardDataForKey(kind agent.Kind, key session.Key, prefere
 	pref := card.StatusSection{
 		Title: "⚙️ 运行偏好",
 		Fields: []card.StatusField{
-			{Label: "回复模式", Value: string(preference.ReplyMode), Code: true},
+			{Label: "回复模式", Value: preference.ReplyMode.Label()},
 			{Label: "超长回复处理", Value: string(preference.AppendOverflowMode), Code: true},
 			{Label: "会话模式", Value: string(preference.ConversationMode), Code: true},
 		},

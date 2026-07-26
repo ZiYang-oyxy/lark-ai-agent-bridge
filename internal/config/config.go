@@ -97,7 +97,7 @@ func LoadFromEnv() Config {
 		ScheduleRetention:           30 * 24 * time.Hour,
 		Model:                       "default",
 		Effort:                      "low",
-		ReplyMode:                   ReplyModeAppend,
+		ReplyMode:                   ReplyModeWorker,
 		ConversationMode:            ConversationModeChat,
 		TopicSeedMode:               TopicSeedModeQuote,
 		GroupMessageMode:            GroupMessageModeMentionOnly,

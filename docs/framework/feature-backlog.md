@@ -83,8 +83,8 @@ gist 的企业级方案对当前体量**严重过度设计**,近期一律不进�
 
 ### P1-3 · 回复展示模式可配 + typing/reaction 反馈
 
-- **状态(2026-07-18)**:✅ 已完成。`/config` 可选择 `append`、`append-clean-card`、`latest-card`;偏好与 latest mapping 使用原子 JSON 持久化。
-- **回复语义**:`append` 每轮新建 CardKit,按原始顺序内联保留 assistant 进展、工具摘要和最终回复；`append-clean-card` 每轮新建完整卡片,最终正文只保留末答,思考/进展与工具时间线保留最近两条并显示完整计数；`latest-card` 按 conversation scope 复用卡片,最终正文只保留末答并继续保留折叠过程区。跨重启继续递增 sequence；旧卡 ID 失效时清除 mapping 并新建卡,真实飞书返回的 `10002 cardid invalid` 已纳入 stale 判定。
+- **状态(2026-07-18)**:✅ 已完成。`/config` 可选择 Worker、Coder、Singleton；兼容 key 仍为 `append`、`append-clean-card`、`latest-card`，偏好与 Singleton mapping 使用原子 JSON 持久化。
+- **回复语义**:Worker 每轮新建 CardKit,按原始顺序内联保留 assistant 进展、工具摘要和最终回复；Coder 每轮新建完整卡片,最终正文只保留末答,思考/进展与工具时间线保留最近两条并显示完整计数；Singleton 按 conversation scope 复用卡片,最终正文只保留末答并继续保留折叠过程区。跨重启继续递增 sequence；旧卡 ID 失效时清除 mapping 并新建卡,真实飞书返回的 `10002 cardid invalid` 已纳入 stale 判定。
 - **流式体验**:preview 同时满足时间间隔与新增字符门限,终态不截断;等待输入使用 `OneSecond`,运行使用 `Typing`,所有完成/停止/重启/竞态路径统一清理 reaction。
 - **证据**:`.cache/evidence/dee05c5/reply-final-summary.md` 汇总六个最终通过的 Reply E2E,并链接保留首轮失败现场与两次定向绿色重跑。
 

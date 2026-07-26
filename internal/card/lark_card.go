@@ -3,6 +3,8 @@ package card
 import (
 	"fmt"
 	"strings"
+
+	"lark-agent-bridge/internal/config"
 )
 
 func BuildLarkCard(e Event) map[string]any {
@@ -664,14 +666,10 @@ func effortOptions(values []string) []SelectOption {
 // replyModeOptions keeps the persisted mode keys stable while giving the
 // /config dropdown the user-facing names and behavior descriptions.
 func replyModeOptions(values []string) []SelectOption {
-	labels := map[string]string{
-		"append-clean-card": "Coder（记录全部推理/工具调用过程）",
-		"append":            "Worker（不展开过程，只显示结果）",
-		"latest-card":       "Singleton（维持单个卡片更新，搭配 pin 使用）",
-	}
 	opts := make([]SelectOption, 0, len(values))
 	for _, value := range values {
-		opts = append(opts, SelectOption{Value: value, Label: labels[value]})
+		mode := config.ReplyMode(value)
+		opts = append(opts, SelectOption{Value: value, Label: mode.Label()})
 	}
 	return opts
 }

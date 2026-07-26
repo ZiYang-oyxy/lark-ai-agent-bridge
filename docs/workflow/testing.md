@@ -362,7 +362,7 @@ E2E_REAL_E2E_FAKE_CLAUDE=1 \
 
 验收要求:
 
-- `append` 两轮创建两张卡并内联保留全部进展/工具；`append-clean-card` 最终正文只留末答、上下时间线保留进展/工具及完整计数；`latest-card` 同样保留过程区，并在同 scope 复用 card ID、递增 sequence。
+- Worker（兼容 key `append`）两轮创建两张卡并内联保留全部进展/工具；Coder（`append-clean-card`）最终正文只留末答、上下时间线保留进展/工具及完整计数；Singleton（`latest-card`）同样保留过程区，并在同 scope 复用 card ID、递增 sequence。
 - preview 同时受 interval/min-delta 限制,中间内容截断但终态完整。
 - `OneSecond` 和 `Typing` 在任务结束后均被删除;真实链路超过等待阈值时,快速任务允许短暂出现 `OneSecond`,但不允许残留。
 - 重启把 queued/starting 终结为 cancelled、running 终结为 interrupted,用户可见卡显示“服务重启,已中断,请重新发送”。

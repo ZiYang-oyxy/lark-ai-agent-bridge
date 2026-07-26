@@ -32,7 +32,7 @@ workspace：
 - `/stop` 只停止当前 agent/chat/topic scope 的 active batch；命中 active batch 时不回复新卡片，而在原任务 stopped 卡尾部显示 `已请求停止当前任务；排队输入将继续执行。`；后续 queued 输入保留并继续调度，空闲时安全提示无运行任务。
 - `/resume` 列出当前 Agent 与 workdir 最近使用的 10 个 Bridge Session；`/resume <session-id>` 切换后由下一条普通消息继续目标 Session。
 - 自然语言定时同时支持重复任务和一次性任务；Agent 只生成规则提案，用户确认后 Bridge 才持久化并启用。
-- `/config` 的回复模式使用面向用户的名称，底层兼容保留原有配置值：`Coder`（`append-clean-card`，记录全部推理/工具调用过程）、`Worker`（`append`，不展开过程，只显示结果）、`Singleton`（`latest-card`，维持单个卡片更新，搭配 pin 使用）。
+- `/config` 的三种回复模式是：`Coder`（记录全部推理/工具调用过程）、`Worker`（不展开过程，只显示结果）、`Singleton`（维持单个卡片更新，搭配 pin 使用）。底层兼容 key 分别为 `append-clean-card`、`append`、`latest-card`，仅用于已有配置、环境变量和 API 兼容，不作为用户界面文案。
 - 执行中标题使用蓝色 `正在推理/正在执行工具/正在回复 · ⏱ Ns`，完成绿色，停止灰色，失败红色。
 - 执行中卡片连续 5 秒没有正常流式更新时会自动刷新耗时；无正文的等待阶段同时显示“任务仍在运行…”。每次正常更新会重新计时，完成、失败或停止后立即取消刷新。
 - 底部状态栏使用分割线和两行分栏：agent/model/tokens，以及 user/ip/workdir。
@@ -142,7 +142,7 @@ owner 或管理员可在飞书中管理名单：
 - `chat`（默认）：CardKit/文本回复使用 `reply_in_thread=false`，session key 为 `{Agent, ChatID}`。
 - `topic`：回复使用 `reply_in_thread=true`，非空 `ThreadID` 会进入 session key；P2P 或群聊主会话中，只有正文里显式可见的 `@bot` 才创建独立 topic session，未显式 `@bot` 的消息继续使用 chat root session。
 
-该设置与 Reply mode（`append`、`append-clean-card`、`latest-card`）相互独立。保存成功后只影响新接收的消息；已有 session 不迁移、不删除，已经排队或停在 workdir 确认阶段的输入继续使用接收时的 mode。启动环境可用 `E2E_CONVERSATION_MODE=chat|topic` 设置 `/config reset` 恢复的默认值。
+该设置与回复模式（Coder、Worker、Singleton）相互独立。保存成功后只影响新接收的消息；已有 session 不迁移、不删除，已经排队或停在 workdir 确认阶段的输入继续使用接收时的 mode。启动环境可用 `E2E_CONVERSATION_MODE=chat|topic` 设置 `/config reset` 恢复的默认值。
 
 ## Session 恢复
 

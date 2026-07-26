@@ -33,9 +33,19 @@ type AppendOverflowMode string
 type TopicSeedMode string
 
 const (
-	ReplyModeAppend          ReplyMode = "append"
-	ReplyModeAppendCleanCard ReplyMode = "append-clean-card"
-	ReplyModeLatestCard      ReplyMode = "latest-card"
+	// ReplyModeWorker only shows the final result. The stored value is kept for
+	// backward compatibility with existing preferences, schedules, and env.
+	ReplyModeWorker ReplyMode = "append"
+	// ReplyModeCoder exposes the thought and tool timelines.
+	ReplyModeCoder ReplyMode = "append-clean-card"
+	// ReplyModeSingleton keeps updating one card in the current scope.
+	ReplyModeSingleton ReplyMode = "latest-card"
+
+	// Deprecated storage-oriented aliases. Use Worker/Coder/Singleton in new
+	// product code; these names remain so external integrations keep compiling.
+	ReplyModeAppend          = ReplyModeWorker
+	ReplyModeAppendCleanCard = ReplyModeCoder
+	ReplyModeLatestCard      = ReplyModeSingleton
 
 	ConversationModeChat  ConversationMode = "chat"
 	ConversationModeTopic ConversationMode = "topic"
@@ -50,6 +60,41 @@ const (
 	TopicSeedModeQuote TopicSeedMode = "quote"
 	TopicSeedModeFork  TopicSeedMode = "fork"
 )
+
+// DisplayName is the product-facing reply mode name. Never expose the
+// storage key as user-facing copy unless documenting a compatibility boundary.
+func (m ReplyMode) DisplayName() string {
+	switch m {
+	case ReplyModeCoder:
+		return "Coder"
+	case ReplyModeWorker:
+		return "Worker"
+	case ReplyModeSingleton:
+		return "Singleton"
+	default:
+		return string(m)
+	}
+}
+
+func (m ReplyMode) Description() string {
+	switch m {
+	case ReplyModeCoder:
+		return "记录全部推理/工具调用过程"
+	case ReplyModeWorker:
+		return "不展开过程，只显示结果"
+	case ReplyModeSingleton:
+		return "维持单个卡片更新，搭配 pin 使用"
+	default:
+		return ""
+	}
+}
+
+func (m ReplyMode) Label() string {
+	if description := m.Description(); description != "" {
+		return m.DisplayName() + "（" + description + "）"
+	}
+	return m.DisplayName()
+}
 
 var builtinModels = []string{"default", "sonnet", "opus", "haiku"}
 
@@ -244,7 +289,7 @@ func validateRuntimePreferenceWith(preference RuntimePreference, allowedModels [
 		return fmt.Errorf("effort %q is not allowed", preference.Effort)
 	}
 	switch preference.ReplyMode {
-	case ReplyModeAppend, ReplyModeAppendCleanCard, ReplyModeLatestCard:
+	case ReplyModeWorker, ReplyModeCoder, ReplyModeSingleton:
 	default:
 		return fmt.Errorf("reply mode %q is not allowed", preference.ReplyMode)
 	}
@@ -302,7 +347,7 @@ func normalizeRuntimePreference(preference RuntimePreference) RuntimePreference 
 	preference.Effort = strings.ToLower(strings.TrimSpace(preference.Effort))
 	preference.ReplyMode = ReplyMode(strings.ToLower(strings.TrimSpace(string(preference.ReplyMode))))
 	if preference.ReplyMode == "" {
-		preference.ReplyMode = ReplyModeAppend
+		preference.ReplyMode = ReplyModeWorker
 	}
 	preference.ConversationMode = ConversationMode(strings.ToLower(strings.TrimSpace(string(preference.ConversationMode))))
 	if preference.ConversationMode == "" {
