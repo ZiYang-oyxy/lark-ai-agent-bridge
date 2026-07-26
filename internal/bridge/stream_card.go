@@ -12,6 +12,7 @@ import (
 	"lark-agent-bridge/internal/agent/contextusage"
 	"lark-agent-bridge/internal/card"
 	"lark-agent-bridge/internal/config"
+	"lark-agent-bridge/internal/reply"
 	"lark-agent-bridge/internal/session"
 )
 
@@ -85,6 +86,7 @@ type agentCardStream struct {
 	refProvider      interface{ RenderRef() session.RenderRef }
 	clock            streamClock
 	previewPolicy    PreviewPolicy
+	previewTail      bool
 	previewTimer     streamTimer
 	previewGen       uint64
 	previewPending   bool
@@ -129,15 +131,15 @@ type agentCardStream struct {
 	//   * 工具:同一 tool_use.id 的多次 segment(占位 input → 完整 input)覆盖 command,
 	//     不 append;tool_result(同 id)覆盖 output。切换到新 id 才 toolRounds++ 并推入 recentTools,最多保留2条。
 	recentThoughts   []string
-	currentThought    strings.Builder
+	currentThought   strings.Builder
 	thoughtRounds    int
 	thoughtRoundOpen bool
 	toolRounds       int
 	seenToolIDs      map[string]bool
 	// 工具调用的可读三元组,渲染时拼成人读格式(`**Name**` + command 围栏 + 输出围栏)。
 	// currentTool 是正在进行中的工具调用,完成后推入 recentTools。
-	recentTools      []*toolCall
-	currentTool      *toolCall
+	recentTools []*toolCall
+	currentTool *toolCall
 
 	// ctxDir 是本轮 agent 对应的 context-usage sidecar 目录(Claude/Codex 各一)。
 	// 流式期间用来在 Handle 中读本轮 fresh 用量,让"进行中"卡片能显示实时 ctx。
@@ -175,6 +177,10 @@ func newAgentCardStreamWithClock(service *Service, sessionID string, sess sessio
 	if policy.MaxPreviewRunes <= 0 {
 		policy.MaxPreviewRunes = 2000
 	}
+	continuationPreview := input.EffectiveReplyMode() == config.ReplyModeAppend && input.EffectiveAppendOverflowMode() == config.AppendOverflowModeContinueCard
+	if continuationPreview {
+		policy.MaxPreviewRunes = reply.ContinuationPreviewMaxRunes(service.Config.CardMaxChars)
+	}
 	if policy.Interval <= 0 {
 		policy.Interval = time.Second
 	}
@@ -190,6 +196,7 @@ func newAgentCardStreamWithClock(service *Service, sessionID string, sess sessio
 		refProvider:   refProvider,
 		clock:         clock,
 		previewPolicy: policy,
+		previewTail:   continuationPreview,
 		sessionID:     sessionID,
 		replyTo:       input.ReplyToMessageID,
 		replyInThread: input.ConversationMode == config.ConversationModeTopic,
@@ -595,7 +602,12 @@ func (s *agentCardStream) flushPreview(generation uint64) error {
 		s.mu.Unlock()
 		return nil
 	}
-	event := limitPreviewEvent(s.eventLocked(false), s.previewPolicy.MaxPreviewRunes)
+	event := s.eventLocked(false)
+	if s.previewTail {
+		event = limitPreviewEventTail(event, s.previewPolicy.MaxPreviewRunes)
+	} else {
+		event = limitPreviewEvent(event, s.previewPolicy.MaxPreviewRunes)
+	}
 	flushedRunes := s.previewRuneCountLocked()
 	flushedRevision := s.contentRevision
 	flushedMetaRevision := s.metaRevision
@@ -669,6 +681,44 @@ func limitPreviewEvent(event card.Event, maxRunes int) card.Event {
 		}
 		remaining -= len(runes)
 		segments = append(segments, segment)
+	}
+	event.Segments = segments
+	return event
+}
+
+func limitPreviewEventTail(event card.Event, maxRunes int) card.Event {
+	if maxRunes <= 0 {
+		return event
+	}
+	total := 0
+	for _, segment := range event.Segments {
+		total += len([]rune(segment.Text))
+	}
+	if total <= maxRunes {
+		return event
+	}
+	const notice = "_较早过程已省略_"
+	noticeRunes := []rune(notice)
+	if maxRunes <= len(noticeRunes) {
+		event.Segments = []card.Segment{{Kind: card.SegmentText, Text: string(noticeRunes[:maxRunes])}}
+		return event
+	}
+	remaining := maxRunes - len(noticeRunes) - 2
+	reversed := make([]card.Segment, 0, len(event.Segments))
+	for i := len(event.Segments) - 1; i >= 0 && remaining > 0; i-- {
+		segment := event.Segments[i]
+		runes := []rune(segment.Text)
+		if len(runes) > remaining {
+			segment.Text = string(runes[len(runes)-remaining:])
+			runes = runes[:remaining]
+		}
+		remaining -= len(runes)
+		reversed = append(reversed, segment)
+	}
+	segments := make([]card.Segment, 1, len(reversed)+1)
+	segments[0] = card.Segment{Kind: card.SegmentText, Text: notice}
+	for i := len(reversed) - 1; i >= 0; i-- {
+		segments = append(segments, reversed[i])
 	}
 	event.Segments = segments
 	return event

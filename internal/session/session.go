@@ -76,6 +76,7 @@ type Input struct {
 	// ignored. Empty means "no fork, start fresh".
 	ForkFromAgentSessionID    string `json:",omitempty"`
 	ReplyMode                 config.ReplyMode
+	AppendOverflowMode        config.AppendOverflowMode `json:",omitempty"`
 	ConversationMode          config.ConversationMode
 	BridgeInstructionsVersion string `json:",omitempty"`
 	ScheduleRunID             string `json:",omitempty"`
@@ -98,6 +99,15 @@ func (in Input) EffectiveReplyMode() config.ReplyMode {
 		return config.ReplyModeAppend
 	}
 	return in.ReplyMode
+}
+
+// EffectiveAppendOverflowMode keeps durable inputs written before the option
+// was introduced on the single-card tail-window behavior.
+func (in Input) EffectiveAppendOverflowMode() config.AppendOverflowMode {
+	if in.AppendOverflowMode == "" {
+		return config.AppendOverflowModeTruncate
+	}
+	return in.AppendOverflowMode
 }
 
 type Batch struct {
@@ -1084,6 +1094,7 @@ func compatibleBatchInput(first, next Input) bool {
 		first.AgentHome == next.AgentHome &&
 		first.BridgeInstructionsVersion == next.BridgeInstructionsVersion &&
 		first.EffectiveReplyMode() == next.EffectiveReplyMode() &&
+		first.EffectiveAppendOverflowMode() == next.EffectiveAppendOverflowMode() &&
 		first.ConversationMode == next.ConversationMode
 }
 

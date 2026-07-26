@@ -905,7 +905,11 @@ func (s *Service) runtimePreference() config.RuntimePreference {
 	if topicSeedMode == "" {
 		topicSeedMode = config.TopicSeedModeQuote
 	}
-	return config.RuntimePreference{Model: model, Effort: effort, ReplyMode: mode, ConversationMode: conversationMode, TopicSeedMode: topicSeedMode, GroupMessageMode: groupMessageMode, RespondToBots: s.Config.RespondToBots, Agent: config.DefaultAgentKind}
+	appendOverflowMode := s.Config.AppendOverflowMode
+	if appendOverflowMode == "" {
+		appendOverflowMode = config.AppendOverflowModeTruncate
+	}
+	return config.RuntimePreference{Model: model, Effort: effort, ReplyMode: mode, AppendOverflowMode: appendOverflowMode, ConversationMode: conversationMode, TopicSeedMode: topicSeedMode, GroupMessageMode: groupMessageMode, RespondToBots: s.Config.RespondToBots, Agent: config.DefaultAgentKind}
 }
 
 // resolveAgentBinHome resolves the executable path and home/config directory
@@ -1067,7 +1071,7 @@ func (s *Service) runWithPreference(ctx context.Context, cmd Command, msg Messag
 	if seedMode == config.TopicSeedModeFork {
 		forkFrom = s.forkSeedForTopicSession(cmd.Agent, key, msg, preference.ConversationMode)
 	}
-	input := session.Input{ID: msg.ID, Sender: msg.Sender, Text: text, QuotedText: quotedText, QuotedSender: quotedSender, Attachments: attachments, ReplyToMessageID: msg.ID, CardSessionID: cardSessionID, WorkDir: workDir, RequestedModel: preference.Model, RequestedEffort: preference.Effort, AgentBin: bin, AgentHome: home, ForkFromAgentSessionID: forkFrom, ReplyMode: preference.ReplyMode, ConversationMode: preference.ConversationMode, NotifyOnComplete: preference.NotifyOnComplete, BridgeInstructionsVersion: bridgeinstructions.CurrentVersion, ScheduleKind: cmd.ScheduleKind, ScheduleTargetThreadID: msg.ThreadID, IsGroup: msg.IsGroup, Time: effectiveMessageTime(msg), DebounceUntil: receivedAt.Add(debounceWindow), DebounceWindow: debounceWindow, State: session.InputDebouncing, Reset: cmd.Reset || cmd.ScheduleKind != ""}
+	input := session.Input{ID: msg.ID, Sender: msg.Sender, Text: text, QuotedText: quotedText, QuotedSender: quotedSender, Attachments: attachments, ReplyToMessageID: msg.ID, CardSessionID: cardSessionID, WorkDir: workDir, RequestedModel: preference.Model, RequestedEffort: preference.Effort, AgentBin: bin, AgentHome: home, ForkFromAgentSessionID: forkFrom, ReplyMode: preference.ReplyMode, AppendOverflowMode: preference.AppendOverflowMode, ConversationMode: preference.ConversationMode, NotifyOnComplete: preference.NotifyOnComplete, BridgeInstructionsVersion: bridgeinstructions.CurrentVersion, ScheduleKind: cmd.ScheduleKind, ScheduleTargetThreadID: msg.ThreadID, IsGroup: msg.IsGroup, Time: effectiveMessageTime(msg), DebounceUntil: receivedAt.Add(debounceWindow), DebounceWindow: debounceWindow, State: session.InputDebouncing, Reset: cmd.Reset || cmd.ScheduleKind != ""}
 	accepted, queued, err := s.Sessions.AcceptAndEnqueue(key, input, receivedAt, s.dedupTTL(), s.dedupMaxEntries(), s.batchLimits())
 	if err != nil {
 		action := "queue_rejected"
@@ -1176,11 +1180,20 @@ func (s *Service) startBatch(parent context.Context, sess session.Session, batch
 			_ = s.Cards.Render(card.Event{Type: "error", SessionID: id, ReplyToMessageID: anchor.ReplyToMessageID, ReplyInThread: anchor.ConversationMode == config.ConversationModeTopic, Segments: []card.Segment{{Kind: card.SegmentError, Text: "回复卡片初始化失败，请重试。"}}})
 			return
 		}
+		policyRun.SetActiveRefChanged(func(ref session.RenderRef) error {
+			return s.Sessions.ReplaceActiveBatchRenderRef(sess.ID, batch.ID, ref)
+		})
 		var renderer card.Renderer = policyRun
 		if mode == config.ReplyModeAppend {
-			renderer = reply.NewMarkdownCardRenderer(policyRun)
+			if anchor.EffectiveAppendOverflowMode() == config.AppendOverflowModeContinueCard {
+				renderer = reply.NewMarkdownContinuationRendererWithLimit(policyRun, s.Config.CardMaxChars)
+			} else {
+				renderer = reply.NewMarkdownCardRendererWithLimit(policyRun, s.Config.CardMaxChars)
+			}
+			stream = newAgentCardStreamWithRenderer(s, id, sess, anchor, renderer, policyRun)
+		} else {
+			stream = newAgentCardStreamWithRenderer(s, id, sess, anchor, card.NewLimitRenderer(renderer, s.Config.CardMaxChars), policyRun)
 		}
-		stream = newAgentCardStreamWithRenderer(s, id, sess, anchor, card.NewLimitRenderer(renderer, s.Config.CardMaxChars), policyRun)
 	}
 	s.storeActiveRun(id, activeRun{BaseSessionID: sess.ID, BatchID: batch.ID, SourceMessageIDs: sources, Key: sess.Key, WorkDir: sess.WorkDir, Cancel: cancel, Stream: stream, Typing: typing})
 	if s.afterStoreActiveRunHook != nil {
@@ -1884,7 +1897,11 @@ func (s *Service) HandleActionResult(ctx context.Context, req ActionRequest) (Ac
 			effort = v
 		}
 		// Model is still not editable from the /config form; preserve current value.
-		preference := config.RuntimePreference{Model: current.Model, Effort: effort, ReplyMode: config.ReplyMode(req.FormValues["reply_mode"]), ConversationMode: config.ConversationMode(req.FormValues["conversation_mode"]), TopicSeedMode: config.TopicSeedMode(req.FormValues["topic_seed_mode"]), GroupMessageMode: groupMessageMode, RespondToBots: respondToBots, NotifyOnComplete: notifyOnComplete, ShowMetaRowAgent: showMetaRowAgent, ShowMetaRowRuntime: showMetaRowRuntime, ShowMetaRowDeveloper: showMetaRowDeveloper, Agent: selectedAgent, AgentHome: req.FormValues["agent_home"], AgentBin: req.FormValues["agent_bin"]}
+		appendOverflowMode := current.AppendOverflowMode
+		if raw, ok := req.FormValues["append_overflow_mode"]; ok && strings.TrimSpace(raw) != "" {
+			appendOverflowMode = config.AppendOverflowMode(strings.TrimSpace(raw))
+		}
+		preference := config.RuntimePreference{Model: current.Model, Effort: effort, ReplyMode: config.ReplyMode(req.FormValues["reply_mode"]), AppendOverflowMode: appendOverflowMode, ConversationMode: config.ConversationMode(req.FormValues["conversation_mode"]), TopicSeedMode: config.TopicSeedMode(req.FormValues["topic_seed_mode"]), GroupMessageMode: groupMessageMode, RespondToBots: respondToBots, NotifyOnComplete: notifyOnComplete, ShowMetaRowAgent: showMetaRowAgent, ShowMetaRowRuntime: showMetaRowRuntime, ShowMetaRowDeveloper: showMetaRowDeveloper, Agent: selectedAgent, AgentHome: req.FormValues["agent_home"], AgentBin: req.FormValues["agent_bin"]}
 		if !strings.EqualFold(strings.TrimSpace(current.Agent), strings.TrimSpace(preference.Agent)) {
 			if _, ok := s.Agents.HomePath(preference.Agent, preference.AgentHome); !ok {
 				preference.AgentHome = ""
@@ -1898,12 +1915,12 @@ func (s *Service) HandleActionResult(ctx context.Context, req ActionRequest) (Ac
 			return s.renderActionEvent(configSaveErrorEvent(req.SessionID))
 		}
 		preference = s.Preferences.Get()
-		s.Audit.Record(req.Actor, "config_saved", req.SessionID, fmt.Sprintf("agent=%s agent_home=%s agent_bin=%s model=%s effort=%s reply_mode=%s conversation_mode=%s topic_seed_mode=%s group_message_mode=%s respond_to_bots=%t notify_on_complete=%t show_meta_row_agent=%t show_meta_row_runtime=%t show_meta_row_developer=%t", preference.Agent, preference.AgentHome, preference.AgentBin, preference.Model, preference.Effort, preference.ReplyMode, preference.ConversationMode, preference.TopicSeedMode, preference.GroupMessageMode, preference.RespondToBots, preference.NotifyOnComplete, preference.ShowMetaRowAgent, preference.ShowMetaRowRuntime, preference.ShowMetaRowDeveloper))
+		s.Audit.Record(req.Actor, "config_saved", req.SessionID, fmt.Sprintf("agent=%s agent_home=%s agent_bin=%s model=%s effort=%s reply_mode=%s append_overflow_mode=%s conversation_mode=%s topic_seed_mode=%s group_message_mode=%s respond_to_bots=%t notify_on_complete=%t show_meta_row_agent=%t show_meta_row_runtime=%t show_meta_row_developer=%t", preference.Agent, preference.AgentHome, preference.AgentBin, preference.Model, preference.Effort, preference.ReplyMode, preference.AppendOverflowMode, preference.ConversationMode, preference.TopicSeedMode, preference.GroupMessageMode, preference.RespondToBots, preference.NotifyOnComplete, preference.ShowMetaRowAgent, preference.ShowMetaRowRuntime, preference.ShowMetaRowDeveloper))
 		s.Audit.Record(req.Actor, "group_message_mode_saved", req.SessionID, fmt.Sprintf("mode=%s respond_to_bots=%t", preference.GroupMessageMode, preference.RespondToBots))
 		result, err := s.renderActionEvent(card.Event{
 			Type:      "config_saved",
 			SessionID: req.SessionID,
-			Segments:  []card.Segment{{Kind: card.SegmentText, Text: fmt.Sprintf("偏好已保存。\n\n**Agent**：`%s`\n**Agent 主目录**：`%s`\n**Agent 可执行文件**：`%s`\n**模型**：`%s`\n**Effort**：`%s`\n**回复模式**：`%s`\n**会话模式**：`%s`\n**新话题起点**：`%s`\n**群消息接收**：`%s`\n**响应其他 bot**：`%t`\n\n下一条新消息开始生效。", preference.Agent, orDefault(preference.AgentHome, config.DefaultHomeLabel), orDefault(preference.AgentBin, config.DefaultBinLabelFor(preference.Agent)), preference.Model, preference.Effort, preference.ReplyMode, preference.ConversationMode, preference.TopicSeedMode, preference.GroupMessageMode, preference.RespondToBots)}},
+			Segments:  []card.Segment{{Kind: card.SegmentText, Text: fmt.Sprintf("偏好已保存。\n\n**Agent**：`%s`\n**Agent 主目录**：`%s`\n**Agent 可执行文件**：`%s`\n**模型**：`%s`\n**Effort**：`%s`\n**回复模式**：`%s`\n**超长回复处理**：`%s`\n**会话模式**：`%s`\n**新话题起点**：`%s`\n**群消息接收**：`%s`\n**响应其他 bot**：`%t`\n\n下一条新消息开始生效。", preference.Agent, orDefault(preference.AgentHome, config.DefaultHomeLabel), orDefault(preference.AgentBin, config.DefaultBinLabelFor(preference.Agent)), preference.Model, preference.Effort, preference.ReplyMode, preference.AppendOverflowMode, preference.ConversationMode, preference.TopicSeedMode, preference.GroupMessageMode, preference.RespondToBots)}},
 		})
 		if err == nil {
 			s.ensureGroupMessageScope(req.SessionID, preference.GroupMessageMode)
@@ -1930,11 +1947,11 @@ func (s *Service) HandleActionResult(ctx context.Context, req ActionRequest) (Ac
 			return s.renderActionEvent(configSaveErrorEvent(req.SessionID))
 		}
 		effective := s.Preferences.GetForChat(chatID)
-		s.Audit.Record(req.Actor, "local_config_saved", chatID, fmt.Sprintf("agent=%s model=%s effort=%s reply_mode=%s conversation_mode=%s topic_seed_mode=%s group_message_mode=%s respond_to_bots=%t", effective.Agent, effective.Model, effective.Effort, effective.ReplyMode, effective.ConversationMode, effective.TopicSeedMode, effective.GroupMessageMode, effective.RespondToBots))
+		s.Audit.Record(req.Actor, "local_config_saved", chatID, fmt.Sprintf("agent=%s model=%s effort=%s reply_mode=%s append_overflow_mode=%s conversation_mode=%s topic_seed_mode=%s group_message_mode=%s respond_to_bots=%t", effective.Agent, effective.Model, effective.Effort, effective.ReplyMode, effective.AppendOverflowMode, effective.ConversationMode, effective.TopicSeedMode, effective.GroupMessageMode, effective.RespondToBots))
 		return s.renderActionEvent(card.Event{
 			Type:      "local_config_saved",
 			SessionID: req.SessionID,
-			Segments:  []card.Segment{{Kind: card.SegmentText, Text: fmt.Sprintf("本群覆盖已保存 —— 仅本群生效，未改全局；未修改的项继承全局 `/config`。\n\n**Agent**：`%s`\n**模型**：`%s`\n**Effort**：`%s`\n**回复模式**：`%s`\n**会话模式**：`%s`\n**新话题起点**：`%s`\n**群消息接收**：`%s`\n**响应其他 bot**：`%t`\n\n下一条新消息开始生效。", effective.Agent, effective.Model, effective.Effort, effective.ReplyMode, effective.ConversationMode, effective.TopicSeedMode, effective.GroupMessageMode, effective.RespondToBots)}},
+			Segments:  []card.Segment{{Kind: card.SegmentText, Text: fmt.Sprintf("本群覆盖已保存 —— 仅本群生效，未改全局；未修改的项继承全局 `/config`。\n\n**Agent**：`%s`\n**模型**：`%s`\n**Effort**：`%s`\n**回复模式**：`%s`\n**超长回复处理**：`%s`\n**会话模式**：`%s`\n**新话题起点**：`%s`\n**群消息接收**：`%s`\n**响应其他 bot**：`%t`\n\n下一条新消息开始生效。", effective.Agent, effective.Model, effective.Effort, effective.ReplyMode, effective.AppendOverflowMode, effective.ConversationMode, effective.TopicSeedMode, effective.GroupMessageMode, effective.RespondToBots)}},
 		})
 	case "local_config.edit":
 		if s.Preferences == nil {
@@ -2139,7 +2156,7 @@ func (s *Service) configForm(preference config.RuntimePreference) *card.ConfigFo
 	}
 	form := &card.ConfigForm{
 		Agent: agentKind, AgentHome: preference.AgentHome, AgentBin: preference.AgentBin,
-		Model: preference.Model, Effort: preference.Effort, ReplyMode: string(preference.ReplyMode), ConversationMode: string(preference.ConversationMode),
+		Model: preference.Model, Effort: preference.Effort, ReplyMode: string(preference.ReplyMode), AppendOverflowMode: string(preference.AppendOverflowMode), ConversationMode: string(preference.ConversationMode),
 		TopicSeedMode:        string(preference.TopicSeedMode),
 		GroupMessageMode:     string(preference.GroupMessageMode),
 		RespondToBots:        strconv.FormatBool(preference.RespondToBots),
@@ -2149,9 +2166,10 @@ func (s *Service) configForm(preference config.RuntimePreference) *card.ConfigFo
 		ShowMetaRowDeveloper: strconv.FormatBool(preference.ShowMetaRowDeveloper),
 		Agents:               toCardOptions(s.Agents.AgentOptions()), AgentHomes: toCardOptions(s.Agents.HomeOptions(agentKind)), AgentBins: toCardOptions(s.Agents.BinOptions(agentKind)),
 		Models: s.configModelOptions(), Efforts: []string{"default", "low", "medium", "high"},
-		ReplyModes:        []string{string(config.ReplyModeAppend), string(config.ReplyModeAppendCleanCard), string(config.ReplyModeLatestCard)},
-		ConversationModes: []string{string(config.ConversationModeChat), string(config.ConversationModeTopic)},
-		TopicSeedModes:    []string{string(config.TopicSeedModeQuote), string(config.TopicSeedModeFork)},
+		ReplyModes:          []string{string(config.ReplyModeAppend), string(config.ReplyModeAppendCleanCard), string(config.ReplyModeLatestCard)},
+		AppendOverflowModes: []card.SelectOption{{Value: string(config.AppendOverflowModeTruncate), Label: "尾部截断（默认）"}, {Value: string(config.AppendOverflowModeContinueCard), Label: "自动续卡（最多 9 张）"}},
+		ConversationModes:   []string{string(config.ConversationModeChat), string(config.ConversationModeTopic)},
+		TopicSeedModes:      []string{string(config.TopicSeedModeQuote), string(config.TopicSeedModeFork)},
 	}
 	s.populateAccessConfigForm(form)
 	return form
@@ -2193,6 +2211,7 @@ func (s *Service) localConfigOverview(chatID string) *card.LocalConfigOverview {
 		{Label: "Agent 可执行文件", Value: agentBin, Overridden: override.AgentBin != nil},
 		{Label: "推理深度", Value: effective.Effort, Overridden: override.Effort != nil},
 		{Label: "回复模式", Value: string(effective.ReplyMode), Overridden: override.ReplyMode != nil},
+		{Label: "超长回复处理", Value: string(effective.AppendOverflowMode), Overridden: override.AppendOverflowMode != nil},
 		{Label: "会话模式", Value: string(effective.ConversationMode), Overridden: override.ConversationMode != nil},
 		{Label: "新话题起点", Value: string(effective.TopicSeedMode), Overridden: override.TopicSeedMode != nil},
 		{Label: "群消息接收", Value: groupMessageModeText(effective.GroupMessageMode), Overridden: override.GroupMessageMode != nil},
@@ -2250,6 +2269,11 @@ func chatOverrideFromForm(values map[string]string, global config.RuntimePrefere
 	if raw, ok := values["reply_mode"]; ok {
 		if v := config.ReplyMode(strings.TrimSpace(raw)); v != "" && v != global.ReplyMode {
 			override.ReplyMode = &v
+		}
+	}
+	if raw, ok := values["append_overflow_mode"]; ok {
+		if v := config.AppendOverflowMode(strings.TrimSpace(raw)); v != "" && v != global.AppendOverflowMode {
+			override.AppendOverflowMode = &v
 		}
 	}
 	if raw, ok := values["conversation_mode"]; ok {
@@ -2694,6 +2718,7 @@ func (s *Service) statusTextWithPreference(kind agent.Kind, msg Message, prefere
 	fmt.Fprintf(&b, "default_workdir=%s\n", s.Config.DefaultWorkDir)
 	fmt.Fprintf(&b, "current_session=%s\n", key.ID())
 	fmt.Fprintf(&b, "reply_mode=%s\n", preference.ReplyMode)
+	fmt.Fprintf(&b, "append_overflow_mode=%s\n", preference.AppendOverflowMode)
 	fmt.Fprintf(&b, "conversation_mode=%s\n", preference.ConversationMode)
 	if fields := s.localOverrideFields(msg); len(fields) > 0 {
 		fmt.Fprintf(&b, "local_overrides=%s\n", strings.Join(fields, ","))
@@ -2761,6 +2786,7 @@ func (s *Service) statusCardDataForKey(kind agent.Kind, key session.Key, prefere
 		Title: "⚙️ 运行偏好",
 		Fields: []card.StatusField{
 			{Label: "回复模式", Value: string(preference.ReplyMode), Code: true},
+			{Label: "超长回复处理", Value: string(preference.AppendOverflowMode), Code: true},
 			{Label: "会话模式", Value: string(preference.ConversationMode), Code: true},
 		},
 	}
@@ -2833,6 +2859,9 @@ func (s *Service) localOverrideFields(msg Message) []string {
 	}
 	if override.ReplyMode != nil {
 		fields = append(fields, "reply_mode")
+	}
+	if override.AppendOverflowMode != nil {
+		fields = append(fields, "append_overflow_mode")
 	}
 	if override.ConversationMode != nil {
 		fields = append(fields, "conversation_mode")

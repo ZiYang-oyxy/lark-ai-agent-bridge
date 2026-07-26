@@ -33,14 +33,15 @@ type Target struct {
 }
 
 type FrozenExecution struct {
-	Agent            string `json:"agent"`
-	Model            string `json:"model"`
-	Effort           string `json:"effort"`
-	AgentHome        string `json:"agent_home,omitempty"`
-	AgentBin         string `json:"agent_bin,omitempty"`
-	WorkDir          string `json:"work_dir"`
-	ReplyMode        string `json:"reply_mode"`
-	ConversationMode string `json:"conversation_mode"`
+	Agent              string `json:"agent"`
+	Model              string `json:"model"`
+	Effort             string `json:"effort"`
+	AgentHome          string `json:"agent_home,omitempty"`
+	AgentBin           string `json:"agent_bin,omitempty"`
+	WorkDir            string `json:"work_dir"`
+	ReplyMode          string `json:"reply_mode"`
+	AppendOverflowMode string `json:"append_overflow_mode,omitempty"`
+	ConversationMode   string `json:"conversation_mode"`
 }
 
 type Proposal struct {

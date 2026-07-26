@@ -19,11 +19,16 @@ type ConversationMode string
 
 type GroupMessageMode string
 
+// AppendOverflowMode determines how append-mode replies behave after a card
+// reaches its display limit.
+type AppendOverflowMode string
+
 // TopicSeedMode 决定 topic 模式下"新话题的 session 起点"如何构造:
 //   - Quote(默认):新话题从零起 session,把用户 @bot 的正文 + 引用消息(若有)
 //     作为唯一 seed prompt。上下文短、不会继承主会话历史。
 //   - Fork:走 Claude 的 --fork-session <root>,新话题从群主会话 fork 出一份,
 //     继承主会话完整历史。上下文消耗大,但语义连续。
+//
 // 该字段仅在 ConversationMode == topic 时生效,chat 模式忽略。
 type TopicSeedMode string
 
@@ -39,6 +44,9 @@ const (
 	GroupMessageModeParticipatedTopics GroupMessageMode = "participated_topics"
 	GroupMessageModeAll                GroupMessageMode = "all_group_messages"
 
+	AppendOverflowModeTruncate     AppendOverflowMode = "truncate"
+	AppendOverflowModeContinueCard AppendOverflowMode = "continue-card"
+
 	TopicSeedModeQuote TopicSeedMode = "quote"
 	TopicSeedModeFork  TopicSeedMode = "fork"
 )
@@ -53,13 +61,14 @@ var validEfforts = map[string]struct{}{
 }
 
 type RuntimePreference struct {
-	Model            string           `json:"model"`
-	Effort           string           `json:"effort"`
-	ReplyMode        ReplyMode        `json:"reply_mode,omitempty"`
-	ConversationMode ConversationMode `json:"conversation_mode,omitempty"`
-	TopicSeedMode    TopicSeedMode    `json:"topic_seed_mode,omitempty"`
-	GroupMessageMode GroupMessageMode `json:"group_message_mode,omitempty"`
-	RespondToBots    bool             `json:"respond_to_bots,omitempty"`
+	Model              string             `json:"model"`
+	Effort             string             `json:"effort"`
+	ReplyMode          ReplyMode          `json:"reply_mode,omitempty"`
+	ConversationMode   ConversationMode   `json:"conversation_mode,omitempty"`
+	TopicSeedMode      TopicSeedMode      `json:"topic_seed_mode,omitempty"`
+	GroupMessageMode   GroupMessageMode   `json:"group_message_mode,omitempty"`
+	AppendOverflowMode AppendOverflowMode `json:"append_overflow_mode,omitempty"`
+	RespondToBots      bool               `json:"respond_to_bots,omitempty"`
 	// NotifyOnComplete, when true,补发一条 thread reply 文本消息 in the chat when a
 	// run reaches the completed terminal state, so the 发起用户 gets a red-dot /
 	// unread notification (the terminal card is an in-place CardKit update and
@@ -254,6 +263,11 @@ func validateRuntimePreferenceWith(preference RuntimePreference, allowedModels [
 	default:
 		return fmt.Errorf("group message mode %q is not allowed", preference.GroupMessageMode)
 	}
+	switch preference.AppendOverflowMode {
+	case AppendOverflowModeTruncate, AppendOverflowModeContinueCard:
+	default:
+		return fmt.Errorf("append overflow mode %q is not allowed", preference.AppendOverflowMode)
+	}
 	if err := validateAgentSelection(preference, agents); err != nil {
 		return err
 	}
@@ -301,6 +315,10 @@ func normalizeRuntimePreference(preference RuntimePreference) RuntimePreference 
 	preference.GroupMessageMode = GroupMessageMode(strings.ToLower(strings.TrimSpace(string(preference.GroupMessageMode))))
 	if preference.GroupMessageMode == "" {
 		preference.GroupMessageMode = GroupMessageModeMentionOnly
+	}
+	preference.AppendOverflowMode = AppendOverflowMode(strings.ToLower(strings.TrimSpace(string(preference.AppendOverflowMode))))
+	if preference.AppendOverflowMode == "" {
+		preference.AppendOverflowMode = AppendOverflowModeTruncate
 	}
 	preference.Agent = strings.ToLower(strings.TrimSpace(preference.Agent))
 	if preference.Agent == "" {

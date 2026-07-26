@@ -449,6 +449,7 @@ func TestBuildLarkCardRendersRuntimeConfigForm(t *testing.T) {
 			ConversationMode:     "chat",
 			TopicSeedMode:        "quote",
 			GroupMessageMode:     "mention_only",
+			AppendOverflowMode:   "truncate",
 			RespondToBots:        "false",
 			NotifyOnComplete:     "false",
 			ShowMetaRowAgent:     "false",
@@ -460,6 +461,7 @@ func TestBuildLarkCardRendersRuntimeConfigForm(t *testing.T) {
 			Models:               []string{"default", "sonnet", "opus", "haiku"},
 			Efforts:              []string{"default", "low", "medium", "high"},
 			ReplyModes:           []string{"append", "append-clean-card", "latest-card"},
+			AppendOverflowModes:  []SelectOption{{Value: "truncate", Label: "尾部截断（默认）"}, {Value: "continue-card", Label: "自动续卡（最多 9 张）"}},
 			ConversationModes:    []string{"chat", "topic"},
 			TopicSeedModes:       []string{"quote", "fork"},
 		},
@@ -520,11 +522,13 @@ func TestBuildLarkCardRendersRuntimeConfigForm(t *testing.T) {
 		t.Fatalf("effort select must expose 4 options (default/low/medium/high), got %#v", opts)
 	}
 	// 全局 /config 卡里 statusbar 三行改用 checker + callback，脱离 form 与
-	// select_static；剩余 select 总数为 9：agent_home + agent_bin + effort +
+	// select_static；剩余 select 总数为 10：agent_home + agent_bin + effort +
 	// reply_mode + conversation_mode + topic_seed_mode + group_message_mode +
-	// respond_to_bots + notify_on_complete。群覆盖卡才走 select_static + form。
-	if len(selects) != 9 ||
+	// respond_to_bots + notify-on-complete + append overflow。群覆盖卡才走
+	// select_static + form。
+	if len(selects) != 10 ||
 		selects["reply_mode"]["initial_option"] != "latest-card" ||
+		selects["append_overflow_mode"]["initial_option"] != "truncate" ||
 		selects["conversation_mode"]["initial_option"] != "chat" ||
 		selects["topic_seed_mode"]["initial_option"] != "quote" ||
 		selects["group_message_mode"]["initial_option"] != "mention_only" ||
@@ -549,6 +553,9 @@ func TestBuildLarkCardRendersRuntimeConfigForm(t *testing.T) {
 	}
 	if len(selects["reply_mode"]["options"].([]any)) != 3 || len(selects["conversation_mode"]["options"].([]any)) != 2 {
 		t.Fatalf("select options = reply %#v conversation %#v", selects["reply_mode"]["options"], selects["conversation_mode"]["options"])
+	}
+	if len(selects["append_overflow_mode"]["options"].([]any)) != 2 {
+		t.Fatalf("append overflow options = %#v", selects["append_overflow_mode"]["options"])
 	}
 	if submit == nil || submit["form_action_type"] != "submit" {
 		t.Fatalf("submit button = %#v", submit)

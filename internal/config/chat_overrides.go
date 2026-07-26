@@ -10,13 +10,14 @@ import (
 // value for this field". Only execution-oriented preferences are overridable;
 // access control (allowed users/chats/admins) is intentionally never per-chat.
 type ChatOverride struct {
-	Model            *string           `json:"model,omitempty"`
-	Effort           *string           `json:"effort,omitempty"`
-	ReplyMode        *ReplyMode        `json:"reply_mode,omitempty"`
-	ConversationMode *ConversationMode `json:"conversation_mode,omitempty"`
-	TopicSeedMode    *TopicSeedMode    `json:"topic_seed_mode,omitempty"`
-	GroupMessageMode *GroupMessageMode `json:"group_message_mode,omitempty"`
-	RespondToBots    *bool             `json:"respond_to_bots,omitempty"`
+	Model              *string             `json:"model,omitempty"`
+	Effort             *string             `json:"effort,omitempty"`
+	ReplyMode          *ReplyMode          `json:"reply_mode,omitempty"`
+	ConversationMode   *ConversationMode   `json:"conversation_mode,omitempty"`
+	TopicSeedMode      *TopicSeedMode      `json:"topic_seed_mode,omitempty"`
+	GroupMessageMode   *GroupMessageMode   `json:"group_message_mode,omitempty"`
+	AppendOverflowMode *AppendOverflowMode `json:"append_overflow_mode,omitempty"`
+	RespondToBots      *bool               `json:"respond_to_bots,omitempty"`
 	// ShowMetaRowAgent / ShowMetaRowRuntime / ShowMetaRowDeveloper 是新的三个独立
 	// 元信息行开关的按群覆盖。ShowMetaRows 是旧字段,只保留读侧迁移(见 mergeChatOverride)。
 	ShowMetaRowAgent     *bool   `json:"show_meta_row_agent,omitempty"`
@@ -24,14 +25,15 @@ type ChatOverride struct {
 	ShowMetaRowDeveloper *bool   `json:"show_meta_row_developer,omitempty"`
 	ShowMetaRows         *bool   `json:"show_meta_rows,omitempty"`
 	Agent                *string `json:"agent,omitempty"`
-	AgentHome        *string           `json:"agent_home,omitempty"`
-	AgentBin         *string           `json:"agent_bin,omitempty"`
+	AgentHome            *string `json:"agent_home,omitempty"`
+	AgentBin             *string `json:"agent_bin,omitempty"`
 }
 
 // IsEmpty reports whether the override sets no field at all.
 func (o ChatOverride) IsEmpty() bool {
 	return o.Model == nil && o.Effort == nil && o.ReplyMode == nil &&
 		o.ConversationMode == nil && o.TopicSeedMode == nil && o.GroupMessageMode == nil &&
+		o.AppendOverflowMode == nil &&
 		o.RespondToBots == nil && o.ShowMetaRowAgent == nil &&
 		o.ShowMetaRowRuntime == nil && o.ShowMetaRowDeveloper == nil &&
 		o.ShowMetaRows == nil && o.Agent == nil &&
@@ -71,6 +73,10 @@ func normalizeChatOverride(o ChatOverride) ChatOverride {
 		v := GroupMessageMode(strings.ToLower(strings.TrimSpace(string(*o.GroupMessageMode))))
 		o.GroupMessageMode = &v
 	}
+	if o.AppendOverflowMode != nil {
+		v := AppendOverflowMode(strings.ToLower(strings.TrimSpace(string(*o.AppendOverflowMode))))
+		o.AppendOverflowMode = &v
+	}
 	if o.Agent != nil {
 		v := strings.ToLower(strings.TrimSpace(*o.Agent))
 		o.Agent = &v
@@ -108,6 +114,9 @@ func mergeChatOverride(base RuntimePreference, o ChatOverride, allowedModels []s
 	}
 	if o.GroupMessageMode != nil {
 		merged.GroupMessageMode = *o.GroupMessageMode
+	}
+	if o.AppendOverflowMode != nil {
+		merged.AppendOverflowMode = *o.AppendOverflowMode
 	}
 	if o.RespondToBots != nil {
 		merged.RespondToBots = *o.RespondToBots

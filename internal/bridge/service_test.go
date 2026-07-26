@@ -48,6 +48,7 @@ type bridgeReplyTarget struct {
 	renderErr      error
 	bindings       []feishu.RenderBinding
 	newErr         error
+	uniqueRefs     bool
 }
 
 func (t *bridgeReplyTarget) NewStreamingBound(ctx context.Context, binding feishu.RenderBinding, replyTo string) (feishu.ResumableRenderer, error) {
@@ -73,7 +74,11 @@ func (t *bridgeReplyTarget) NewStreaming(context.Context, string, string) (feish
 	}
 	ref := t.newRef
 	if ref.CardID == "" {
-		ref = session.RenderRef{CardID: "new-card", ReplyMessageID: "new-reply"}
+		if t.uniqueRefs {
+			ref = session.RenderRef{CardID: fmt.Sprintf("new-card-%d", t.newCalls), ReplyMessageID: fmt.Sprintf("new-reply-%d", t.newCalls)}
+		} else {
+			ref = session.RenderRef{CardID: "new-card", ReplyMessageID: "new-reply"}
+		}
 	}
 	return &bridgeReplyRenderer{target: t, ref: ref}, nil
 }
@@ -833,7 +838,7 @@ func TestServiceConfigResetRemovesOverride(t *testing.T) {
 	cfg := testConfig(t)
 	cfg.Model, cfg.Effort = "sonnet", "low"
 	cfg.AllowedModels = []string{"default", "sonnet", "opus", "haiku"}
-	defaults := config.RuntimePreference{Model: cfg.Model, Effort: cfg.Effort, ReplyMode: config.ReplyModeAppend, ConversationMode: config.ConversationModeChat, TopicSeedMode: config.TopicSeedModeQuote, GroupMessageMode: config.GroupMessageModeMentionOnly, Agent: config.DefaultAgentKind}
+	defaults := config.RuntimePreference{Model: cfg.Model, Effort: cfg.Effort, ReplyMode: config.ReplyModeAppend, ConversationMode: config.ConversationModeChat, TopicSeedMode: config.TopicSeedModeQuote, GroupMessageMode: config.GroupMessageModeMentionOnly, AppendOverflowMode: config.AppendOverflowModeTruncate, Agent: config.DefaultAgentKind}
 	store, path := testPreferenceStore(t, defaults, cfg.AllowedModels)
 	if err := store.Set(config.RuntimePreference{Model: "opus", Effort: "high", ReplyMode: config.ReplyModeLatestCard}); err != nil {
 		t.Fatal(err)
@@ -866,11 +871,11 @@ func TestServiceConfigSavePersistsValidValuesAndRejectsInvalidValues(t *testing.
 	svc.Preferences = store
 	// Model is not part of the /config form (a submitted "model" is ignored);
 	// effort is part of the form and must be applied.
-	result, err := svc.HandleActionResult(context.Background(), ActionRequest{SessionID: "config-card", ActionID: "config.save", Actor: "user", FormValues: map[string]string{"model": "claude-custom-1", "effort": "medium", "reply_mode": "latest-card", "conversation_mode": "topic"}})
+	result, err := svc.HandleActionResult(context.Background(), ActionRequest{SessionID: "config-card", ActionID: "config.save", Actor: "user", FormValues: map[string]string{"model": "claude-custom-1", "effort": "medium", "reply_mode": "latest-card", "append_overflow_mode": "continue-card", "conversation_mode": "topic"}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Event == nil || result.Event.Type != "config_saved" || store.Get() != (config.RuntimePreference{Model: "default", Effort: "medium", ReplyMode: config.ReplyModeLatestCard, ConversationMode: config.ConversationModeTopic, TopicSeedMode: config.TopicSeedModeQuote, GroupMessageMode: config.GroupMessageModeMentionOnly, Agent: config.DefaultAgentKind}) {
+	if result.Event == nil || result.Event.Type != "config_saved" || store.Get() != (config.RuntimePreference{Model: "default", Effort: "medium", ReplyMode: config.ReplyModeLatestCard, ConversationMode: config.ConversationModeTopic, TopicSeedMode: config.TopicSeedModeQuote, GroupMessageMode: config.GroupMessageModeMentionOnly, AppendOverflowMode: config.AppendOverflowModeContinueCard, Agent: config.DefaultAgentKind}) {
 		t.Fatalf("save result/store = %#v / %#v", result, store.Get())
 	}
 	if result.Event.ConfigForm != nil {
@@ -1010,7 +1015,7 @@ func TestServiceConfigSaveModelStaysStickyEffortIsEditable(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := (config.RuntimePreference{Model: "opus", Effort: "high", ReplyMode: config.ReplyModeLatestCard, ConversationMode: config.ConversationModeTopic, TopicSeedMode: config.TopicSeedModeQuote, GroupMessageMode: config.GroupMessageModeMentionOnly, Agent: config.DefaultAgentKind}); result.Event == nil || result.Event.Type != "config_saved" || store.Get() != want {
+	if want := (config.RuntimePreference{Model: "opus", Effort: "high", ReplyMode: config.ReplyModeLatestCard, ConversationMode: config.ConversationModeTopic, TopicSeedMode: config.TopicSeedModeQuote, GroupMessageMode: config.GroupMessageModeMentionOnly, AppendOverflowMode: config.AppendOverflowModeTruncate, Agent: config.DefaultAgentKind}); result.Event == nil || result.Event.Type != "config_saved" || store.Get() != want {
 		t.Fatalf("save without model/effort = %#v / %#v, want %#v", result, store.Get(), want)
 	}
 
@@ -1232,6 +1237,58 @@ func TestServiceRoutesBatchThroughReplyPolicyAndPersistsActiveRenderRef(t *testi
 	}
 }
 
+func TestServiceAppendContinuationCreatesSecondCardAndPersistsNewestRef(t *testing.T) {
+	cfg := testConfig(t)
+	cfg.Model, cfg.Effort = "default", "low"
+	cfg.CardMaxChars = 6000
+	cfg.CardUpdateEvery = time.Nanosecond
+	cfg.CardMinDeltaChars = 1
+	preferences, _ := testPreferenceStore(t, config.RuntimePreference{
+		Model:              cfg.Model,
+		Effort:             cfg.Effort,
+		ReplyMode:          config.ReplyModeAppend,
+		AppendOverflowMode: config.AppendOverflowModeContinueCard,
+	}, cfg.AllowedModels)
+	runner := newFakeRunner()
+	runner.updates = []AgentStreamUpdate{{
+		Segments: []card.Segment{{Kind: card.SegmentText, Text: strings.Repeat("续", 9500)}},
+		Activity: streamActivityAnswering,
+	}}
+	runner.block = make(chan struct{})
+	target := &bridgeReplyTarget{uniqueRefs: true}
+	svc := NewService(cfg, card.NewFakeRenderer(), runner, audit.NewRecorder())
+	svc.Preferences = preferences
+	svc.CardTarget = target
+	now := time.Now()
+	if err := svc.HandleMessage(context.Background(), Message{ID: "continuation", ChatID: "chat", Sender: "user", Text: "long", Time: now}); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.DrainReady(now.Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	<-runner.started
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		target.mu.Lock()
+		calls := target.newCalls
+		bindings := append([]feishu.RenderBinding(nil), target.bindings...)
+		target.mu.Unlock()
+		sess, ok := svc.Sessions.Get(session.Key{Agent: agent.Claude, ChatID: "chat"})
+		if calls == 2 && ok && sess.ActiveBatch != nil && sess.ActiveBatch.RenderRef != nil && sess.ActiveBatch.RenderRef.CardID == "new-card-2" {
+			if len(bindings) != 2 || !strings.HasSuffix(bindings[1].RunCardSessionID, ":page:2") {
+				t.Fatalf("continuation bindings = %#v", bindings)
+			}
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("continuation state calls=%d session=%#v bindings=%#v", calls, sess, bindings)
+		}
+		time.Sleep(time.Millisecond)
+	}
+	close(runner.block)
+	waitForSessionNoActiveBatch(t, svc, session.Key{Agent: agent.Claude, ChatID: "chat"})
+}
+
 func TestServiceRoutesAppendToLightweightMarkdownCard(t *testing.T) {
 	cfg := testConfig(t)
 	cfg.ReplyMode = config.ReplyModeAppend
@@ -1389,7 +1446,7 @@ func TestServiceConfigPersistenceFailureShowsErrorAndAudits(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Event == nil || result.Event.Type != "error" || store.Get() != (config.RuntimePreference{Model: "sonnet", Effort: "medium", ReplyMode: config.ReplyModeAppend, ConversationMode: config.ConversationModeChat, TopicSeedMode: config.TopicSeedModeQuote, GroupMessageMode: config.GroupMessageModeMentionOnly, Agent: config.DefaultAgentKind}) || !auditContainsAction(recorder.Events(), "config_save_failed") {
+	if result.Event == nil || result.Event.Type != "error" || store.Get() != (config.RuntimePreference{Model: "sonnet", Effort: "medium", ReplyMode: config.ReplyModeAppend, ConversationMode: config.ConversationModeChat, TopicSeedMode: config.TopicSeedModeQuote, GroupMessageMode: config.GroupMessageModeMentionOnly, AppendOverflowMode: config.AppendOverflowModeTruncate, Agent: config.DefaultAgentKind}) || !auditContainsAction(recorder.Events(), "config_save_failed") {
 		t.Fatalf("failure result/store/audit = %#v / %#v / %#v", result, store.Get(), recorder.Events())
 	}
 }

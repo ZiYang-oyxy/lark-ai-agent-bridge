@@ -289,6 +289,102 @@ func TestRenderInlineTimelineKeepsTailOfOversizedLatestReply(t *testing.T) {
 	}
 }
 
+func TestRenderInlineTimelinePagesCreatesNineCardSlidingTail(t *testing.T) {
+	beginning := "BEGINNING_MUST_BE_DROPPED"
+	ending := "LATEST_TAIL_MUST_SURVIVE"
+	text := beginning + strings.Repeat("中", continuationPageMaxRunes*10) + ending
+	pages := RenderInlineTimelinePages(card.Event{Type: "result", Segments: []card.Segment{{Kind: card.SegmentText, Text: text}}})
+	if len(pages) != maxContinuationCards {
+		t.Fatalf("pages = %d, want %d", len(pages), maxContinuationCards)
+	}
+	joined := strings.Join(pages, "")
+	if strings.Contains(joined, beginning) || !strings.Contains(joined, "较早过程已省略") || !strings.HasSuffix(joined, ending) {
+		t.Fatalf("sliding tail mismatch: prefix=%q suffix=%q", []rune(joined)[:20], []rune(joined)[len([]rune(joined))-40:])
+	}
+	for i, page := range pages {
+		if got := utf8.RuneCountInString(page); got > continuationPageMaxRunes {
+			t.Fatalf("page %d runes = %d", i+1, got)
+		}
+	}
+}
+
+func TestRenderInlineTimelinePagesKeepsFullContentBeforeNineCardLimit(t *testing.T) {
+	ending := "TRUE_ENDING"
+	text := strings.Repeat("甲", continuationPageMaxRunes+100) + ending
+	pages := RenderInlineTimelinePages(card.Event{Type: "result", Segments: []card.Segment{{Kind: card.SegmentText, Text: text}}})
+	if len(pages) != 2 || strings.Join(pages, "") != text {
+		t.Fatalf("pages did not retain complete content: count=%d tail=%q", len(pages), pages[len(pages)-1])
+	}
+}
+
+func TestRenderInlineTimelinePagesFitCardCapacityWithoutSecondaryTruncation(t *testing.T) {
+	text := strings.Repeat("🧪", continuationPageMaxRunes+500) + "TRUE_ENDING"
+	pages := RenderInlineTimelinePages(card.Event{Type: "stream", Streaming: true, Segments: []card.Segment{{Kind: card.SegmentText, Text: text}}})
+	if len(pages) != 2 {
+		t.Fatalf("pages = %d, want 2", len(pages))
+	}
+	for i, page := range pages {
+		prepared, err := card.PrepareLarkCard(card.Event{Type: "stream", Streaming: true, MarkdownLayout: true, Markdown: page})
+		if err != nil {
+			t.Fatalf("page %d prepare: %v", i+1, err)
+		}
+		if got := prepared.Answer(); got != page {
+			t.Fatalf("page %d was secondarily truncated: got %d runes want %d", i+1, utf8.RuneCountInString(got), utf8.RuneCountInString(page))
+		}
+	}
+	if got := strings.Join(pages, ""); got != text+"\n\n_🧠 正在思考…_" {
+		t.Fatalf("reassembled pages lost content: suffix=%q", []rune(got)[len([]rune(got))-30:])
+	}
+}
+
+func TestRenderInlineTimelinePagesAdaptToJSONEscaping(t *testing.T) {
+	text := strings.Repeat("<>&", continuationPageMaxRunes) + "TRUE_ENDING"
+	event := card.Event{Type: "result", SessionID: "run", Segments: []card.Segment{{Kind: card.SegmentText, Text: text}}}
+	pages := RenderInlineTimelinePages(event)
+	if len(pages) < 2 || len(pages) > maxContinuationCards {
+		t.Fatalf("adaptive pages = %d", len(pages))
+	}
+	if got := strings.Join(pages, ""); got != text {
+		t.Fatalf("adaptive pages lost content: got=%d want=%d", len([]rune(got)), len([]rune(text)))
+	}
+	for i, page := range pages {
+		pageEvent := event
+		pageEvent.SessionID += ":page:9"
+		pageEvent.Segments = nil
+		pageEvent.MarkdownLayout = true
+		pageEvent.Markdown = page
+		prepared, err := card.PrepareLarkCard(pageEvent)
+		if err != nil || prepared.Answer() != page {
+			t.Fatalf("escaped page %d was secondarily truncated: err=%v got=%d want=%d", i+1, err, len([]rune(prepared.Answer())), len([]rune(page)))
+		}
+	}
+}
+
+func TestAppendMarkdownLimitsHonorConfiguredCardMaxChars(t *testing.T) {
+	text := "BEGIN" + strings.Repeat("甲", 2500) + "TRUE_ENDING"
+	event := card.Event{Type: "result", Segments: []card.Segment{{Kind: card.SegmentText, Text: text}}}
+	truncated := RenderInlineTimelineWithLimit(event, 1000)
+	if len([]rune(truncated)) > 1000 || strings.Contains(truncated, "BEGIN") || !strings.HasSuffix(truncated, "TRUE_ENDING") {
+		t.Fatalf("configured truncate limit mismatch: runes=%d prefix=%q suffix=%q", len([]rune(truncated)), []rune(truncated)[:20], []rune(truncated)[len([]rune(truncated))-20:])
+	}
+	pages := RenderInlineTimelinePagesWithLimit(event, 1000)
+	if len(pages) != 3 || strings.Join(pages, "") != text {
+		t.Fatalf("configured continuation limit mismatch: pages=%d joined=%d want=%d", len(pages), len([]rune(strings.Join(pages, ""))), len([]rune(text)))
+	}
+	for i, page := range pages {
+		if len([]rune(page)) > 1000 {
+			t.Fatalf("page %d exceeds configured limit: %d", i+1, len([]rune(page)))
+		}
+	}
+}
+
+func TestRenderInlineTimelineRedactsAnswerWhenAppendBypassesGenericLimit(t *testing.T) {
+	got := RenderInlineTimeline(card.Event{Type: "result", Segments: []card.Segment{{Kind: card.SegmentText, Text: "Authorization: Bearer abc.def"}}})
+	if strings.Contains(got, "abc.def") || !strings.Contains(got, "REDACTED") {
+		t.Fatalf("answer was not redacted: %q", got)
+	}
+}
+
 func TestMarkdownCardRendererHidesThinkingWithoutMutatingCaller(t *testing.T) {
 	inner := &fakeMarkdownCardRenderer{}
 	renderer := NewMarkdownCardRenderer(inner)

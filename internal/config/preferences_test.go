@@ -9,7 +9,7 @@ import (
 
 func TestPreferenceStoreUsesDefaultsWhenSnapshotIsMissing(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "preferences.json")
-	defaults := RuntimePreference{Model: "default", Effort: "low", ReplyMode: ReplyModeAppend, ConversationMode: ConversationModeChat, TopicSeedMode: TopicSeedModeQuote, GroupMessageMode: GroupMessageModeMentionOnly, Agent: DefaultAgentKind}
+	defaults := RuntimePreference{Model: "default", Effort: "low", ReplyMode: ReplyModeAppend, ConversationMode: ConversationModeChat, TopicSeedMode: TopicSeedModeQuote, GroupMessageMode: GroupMessageModeMentionOnly, AppendOverflowMode: AppendOverflowModeTruncate, Agent: DefaultAgentKind}
 	store, err := OpenPreferenceStore(path, defaults, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -24,12 +24,12 @@ func TestPreferenceStoreUsesDefaultsWhenSnapshotIsMissing(t *testing.T) {
 
 func TestPreferenceStorePersistsVersionedOverrideAtomically(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "nested", "preferences.json")
-	defaults := RuntimePreference{Model: "default", Effort: "low", ReplyMode: ReplyModeAppend, ConversationMode: ConversationModeChat, TopicSeedMode: TopicSeedModeQuote, GroupMessageMode: GroupMessageModeMentionOnly, Agent: DefaultAgentKind}
+	defaults := RuntimePreference{Model: "default", Effort: "low", ReplyMode: ReplyModeAppend, ConversationMode: ConversationModeChat, TopicSeedMode: TopicSeedModeQuote, GroupMessageMode: GroupMessageModeMentionOnly, AppendOverflowMode: AppendOverflowModeTruncate, Agent: DefaultAgentKind}
 	store, err := OpenPreferenceStore(path, defaults, []string{"claude-custom-1"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := RuntimePreference{Model: "claude-custom-1", Effort: "high", ReplyMode: ReplyModeAppend, ConversationMode: ConversationModeChat, TopicSeedMode: TopicSeedModeQuote, GroupMessageMode: GroupMessageModeMentionOnly, Agent: DefaultAgentKind}
+	want := RuntimePreference{Model: "claude-custom-1", Effort: "high", ReplyMode: ReplyModeAppend, ConversationMode: ConversationModeChat, TopicSeedMode: TopicSeedModeQuote, GroupMessageMode: GroupMessageModeMentionOnly, AppendOverflowMode: AppendOverflowModeTruncate, Agent: DefaultAgentKind}
 	if err := store.Set(want); err != nil {
 		t.Fatal(err)
 	}
@@ -136,6 +136,34 @@ func TestPreferenceStoreBackwardCompatibleWithLegacySnapshot(t *testing.T) {
 	if got.Model != "sonnet" || got.Effort != "high" {
 		t.Fatalf("legacy snapshot lost fields: %#v", got)
 	}
+	if got.AppendOverflowMode != AppendOverflowModeTruncate {
+		t.Fatalf("legacy append overflow mode = %q, want %q", got.AppendOverflowMode, AppendOverflowModeTruncate)
+	}
+}
+
+func TestRuntimePreferenceValidatesAndPersistsAppendOverflowMode(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "preferences.json")
+	defaults := RuntimePreference{Model: "default", Effort: "low", AppendOverflowMode: AppendOverflowModeTruncate}
+	store, err := OpenPreferenceStore(path, defaults, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, mode := range []AppendOverflowMode{AppendOverflowModeTruncate, AppendOverflowModeContinueCard} {
+		want := RuntimePreference{Model: "opus", Effort: "high", ReplyMode: ReplyModeAppend, ConversationMode: ConversationModeChat, TopicSeedMode: TopicSeedModeQuote, GroupMessageMode: GroupMessageModeMentionOnly, AppendOverflowMode: mode, Agent: DefaultAgentKind}
+		if err := store.Set(want); err != nil {
+			t.Fatalf("Set(%q): %v", mode, err)
+		}
+		reopened, err := OpenPreferenceStore(path, defaults, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := reopened.Get(); got != want {
+			t.Fatalf("append overflow preference = %#v, want %#v", got, want)
+		}
+	}
+	if err := store.Set(RuntimePreference{Model: "sonnet", Effort: "low", AppendOverflowMode: "new-card"}); err == nil {
+		t.Fatal("invalid append overflow mode was accepted")
+	}
 }
 
 func TestRuntimePreferenceValidatesAndPersistsReplyMode(t *testing.T) {
@@ -146,7 +174,7 @@ func TestRuntimePreferenceValidatesAndPersistsReplyMode(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, mode := range []ReplyMode{ReplyModeAppend, ReplyModeAppendCleanCard, ReplyModeLatestCard} {
-		want := RuntimePreference{Model: "opus", Effort: "high", ReplyMode: mode, ConversationMode: ConversationModeChat, TopicSeedMode: TopicSeedModeQuote, GroupMessageMode: GroupMessageModeMentionOnly, Agent: DefaultAgentKind}
+		want := RuntimePreference{Model: "opus", Effort: "high", ReplyMode: mode, ConversationMode: ConversationModeChat, TopicSeedMode: TopicSeedModeQuote, GroupMessageMode: GroupMessageModeMentionOnly, AppendOverflowMode: AppendOverflowModeTruncate, Agent: DefaultAgentKind}
 		if err := store.Set(want); err != nil {
 			t.Fatalf("Set(%q): %v", mode, err)
 		}
@@ -169,7 +197,7 @@ func TestRuntimePreferenceValidatesAndPersistsReplyMode(t *testing.T) {
 
 func TestPreferenceStoreResetPersistsRemovalAndRestoresDefaults(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "preferences.json")
-	defaults := RuntimePreference{Model: "default", Effort: "low", ReplyMode: ReplyModeAppend, ConversationMode: ConversationModeChat, TopicSeedMode: TopicSeedModeQuote, GroupMessageMode: GroupMessageModeMentionOnly, Agent: DefaultAgentKind}
+	defaults := RuntimePreference{Model: "default", Effort: "low", ReplyMode: ReplyModeAppend, ConversationMode: ConversationModeChat, TopicSeedMode: TopicSeedModeQuote, GroupMessageMode: GroupMessageModeMentionOnly, AppendOverflowMode: AppendOverflowModeTruncate, Agent: DefaultAgentKind}
 	store, err := OpenPreferenceStore(path, defaults, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -211,7 +239,7 @@ func TestPreferenceStoreFailedReplacementDoesNotPublishCandidate(t *testing.T) {
 	if err := store.Set(RuntimePreference{Model: "opus", Effort: "high", ReplyMode: ReplyModeLatestCard}); err == nil {
 		t.Fatal("Set() error = nil, want replacement failure")
 	}
-	want := RuntimePreference{Model: "sonnet", Effort: "medium", ReplyMode: ReplyModeAppend, ConversationMode: ConversationModeChat, TopicSeedMode: TopicSeedModeQuote, GroupMessageMode: GroupMessageModeMentionOnly, Agent: DefaultAgentKind}
+	want := RuntimePreference{Model: "sonnet", Effort: "medium", ReplyMode: ReplyModeAppend, ConversationMode: ConversationModeChat, TopicSeedMode: TopicSeedModeQuote, GroupMessageMode: GroupMessageModeMentionOnly, AppendOverflowMode: AppendOverflowModeTruncate, Agent: DefaultAgentKind}
 	if got := store.Get(); got != want {
 		t.Fatalf("preference after failed write = %#v, want unchanged %#v", got, want)
 	}
@@ -239,7 +267,7 @@ func TestRuntimePreferenceValidatesAndPersistsConversationMode(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, mode := range []ConversationMode{ConversationModeChat, ConversationModeTopic} {
-		want := RuntimePreference{Model: "opus", Effort: "high", ReplyMode: ReplyModeLatestCard, ConversationMode: mode, TopicSeedMode: TopicSeedModeQuote, GroupMessageMode: GroupMessageModeMentionOnly, Agent: DefaultAgentKind}
+		want := RuntimePreference{Model: "opus", Effort: "high", ReplyMode: ReplyModeLatestCard, ConversationMode: mode, TopicSeedMode: TopicSeedModeQuote, GroupMessageMode: GroupMessageModeMentionOnly, AppendOverflowMode: AppendOverflowModeTruncate, Agent: DefaultAgentKind}
 		if err := store.Set(want); err != nil {
 			t.Fatalf("Set(%q): %v", mode, err)
 		}

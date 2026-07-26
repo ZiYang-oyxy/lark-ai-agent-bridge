@@ -2,6 +2,7 @@ package reply
 
 import (
 	"strings"
+	"unicode/utf8"
 
 	"lark-agent-bridge/internal/card"
 	"lark-agent-bridge/internal/security"
@@ -10,6 +11,8 @@ import (
 const (
 	toolHeaderSummaryMaxRunes = 80
 	inlineTimelineMaxRunes    = 9000
+	continuationPageMaxRunes  = 6000
+	maxContinuationCards      = 9
 )
 
 func RenderMarkdown(event card.Event) string {
@@ -69,6 +72,33 @@ func RenderMarkdown(event card.Event) string {
 // single Markdown element used by append cards. Card status, actions, and meta
 // remain in the surrounding CardKit shell and are intentionally omitted here.
 func RenderInlineTimeline(event card.Event) string {
+	return RenderInlineTimelineWithLimit(event, inlineTimelineMaxRunes)
+}
+
+func RenderInlineTimelineWithLimit(event card.Event, maxRunes int) string {
+	parts := inlineTimelineParts(event)
+	if len(parts) == 0 {
+		return "_（未返回内容）_"
+	}
+	return fitTimelineParts(parts, normalizedTimelineLimit(maxRunes, inlineTimelineMaxRunes))
+}
+
+// RenderInlineTimelinePages projects the same append timeline into at most
+// nine cards. Once the combined window is full, it keeps a continuous tail so
+// the newest answer and terminal state remain on the last card.
+func RenderInlineTimelinePages(event card.Event) []string {
+	return RenderInlineTimelinePagesWithLimit(event, continuationPageMaxRunes)
+}
+
+func RenderInlineTimelinePagesWithLimit(event card.Event, maxRunes int) []string {
+	parts := inlineTimelineParts(event)
+	if len(parts) == 0 {
+		parts = []string{"_（未返回内容）_"}
+	}
+	return paginateTimelineParts(event, parts, normalizedTimelineLimit(maxRunes, continuationPageMaxRunes), maxContinuationCards)
+}
+
+func inlineTimelineParts(event card.Event) []string {
 	parts := make([]string, 0, len(event.Segments))
 	toolParts := make(map[string]int)
 	pendingTools := make(map[string]bool)
@@ -102,11 +132,11 @@ func RenderInlineTimeline(event card.Event) string {
 		case card.SegmentError:
 			if text != "" {
 				hasError = true
-				parts = append(parts, "⚠️ agent 失败："+text)
+				parts = append(parts, "⚠️ agent 失败："+security.Redact(text))
 			}
 		default:
 			if text != "" {
-				parts = append(parts, text)
+				parts = append(parts, security.Redact(text))
 			}
 		}
 	}
@@ -124,10 +154,134 @@ func RenderInlineTimeline(event card.Event) string {
 		}
 	}
 
-	if len(parts) == 0 {
-		return "_（未返回内容）_"
+	return parts
+}
+
+func normalizedTimelineLimit(configured, fallback int) int {
+	if configured <= 0 || configured > fallback {
+		return fallback
 	}
-	return fitTimelineParts(parts, inlineTimelineMaxRunes)
+	return configured
+}
+
+func ContinuationPreviewMaxRunes(cardMaxRunes int) int {
+	return normalizedTimelineLimit(cardMaxRunes, continuationPageMaxRunes) * maxContinuationCards
+}
+
+func paginateTimelineParts(event card.Event, parts []string, maxRunes, maxPages int) []string {
+	if len(parts) == 0 || maxRunes <= 0 || maxPages <= 0 {
+		return nil
+	}
+	runes, truncated := boundedTimelineTail(parts, maxRunes*maxPages)
+	pages := make([]string, 0, minInt(maxPages+1, (len(runes)+maxRunes-1)/maxRunes))
+	for len(runes) > 0 {
+		count := largestFittingPrefix(event, runes, maxRunes)
+		pages = append(pages, string(runes[:count]))
+		runes = runes[count:]
+	}
+	if len(pages) == 0 {
+		return []string{"_（未返回内容）_"}
+	}
+	if len(pages) > maxPages {
+		pages = append([]string(nil), pages[len(pages)-maxPages:]...)
+		truncated = true
+	}
+	if truncated {
+		pages[0] = fitContinuationNotice(event, pages[0], maxRunes)
+	}
+	return pages
+}
+
+func boundedTimelineTail(parts []string, capacity int) ([]rune, bool) {
+	if capacity <= 0 {
+		return nil, len(parts) > 0
+	}
+	reversed := make([]rune, 0, capacity)
+	truncated := false
+outer:
+	for i := len(parts) - 1; i >= 0; i-- {
+		for remaining := parts[i]; remaining != ""; {
+			if len(reversed) == capacity {
+				truncated = true
+				break outer
+			}
+			r, size := utf8.DecodeLastRuneInString(remaining)
+			reversed = append(reversed, r)
+			remaining = remaining[:len(remaining)-size]
+		}
+		if i == 0 {
+			continue
+		}
+		for range 2 {
+			if len(reversed) == capacity {
+				truncated = true
+				break outer
+			}
+			reversed = append(reversed, '\n')
+		}
+	}
+	for left, right := 0, len(reversed)-1; left < right; left, right = left+1, right-1 {
+		reversed[left], reversed[right] = reversed[right], reversed[left]
+	}
+	return reversed, truncated
+}
+
+func largestFittingPrefix(event card.Event, runes []rune, maxRunes int) int {
+	high := minInt(maxRunes, len(runes))
+	if continuationMarkdownFits(event, string(runes[:high])) {
+		return high
+	}
+	low := 1
+	for low < high {
+		mid := low + (high-low+1)/2
+		if continuationMarkdownFits(event, string(runes[:mid])) {
+			low = mid
+		} else {
+			high = mid - 1
+		}
+	}
+	return low
+}
+
+func fitContinuationNotice(event card.Event, page string, maxRunes int) string {
+	const notice = "_较早过程已省略_\n\n"
+	noticeRunes := []rune(notice)
+	if maxRunes <= len(noticeRunes) {
+		return string(noticeRunes[:maxRunes])
+	}
+	runes := []rune(page)
+	if len(runes) > maxRunes {
+		runes = runes[len(runes)-maxRunes:]
+	}
+	low, high := 0, len(runes)
+	for low < high {
+		mid := low + (high-low+1)/2
+		candidate := notice + string(runes[len(runes)-mid:])
+		if continuationMarkdownFits(event, candidate) && len([]rune(candidate)) <= maxRunes {
+			low = mid
+		} else {
+			high = mid - 1
+		}
+	}
+	return notice + string(runes[len(runes)-low:])
+}
+
+func continuationMarkdownFits(event card.Event, markdown string) bool {
+	page := event
+	page.SessionID += ":page:9"
+	page.Markdown = markdown
+	page.MarkdownLayout = true
+	page.InlineTimelineLayout = false
+	page.OrderedLayout = false
+	_, _, err := card.MarshalLarkCard(card.BuildLarkCard(page))
+	return err == nil
+}
+
+func minInt(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }
 
 func renderToolUse(meta *card.ToolMeta) string {

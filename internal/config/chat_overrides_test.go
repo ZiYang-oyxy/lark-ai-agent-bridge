@@ -7,7 +7,7 @@ import (
 )
 
 func baseDefaults() RuntimePreference {
-	return RuntimePreference{Model: "default", Effort: "low", ReplyMode: ReplyModeAppend, ConversationMode: ConversationModeChat, GroupMessageMode: GroupMessageModeMentionOnly, Agent: DefaultAgentKind}
+	return RuntimePreference{Model: "default", Effort: "low", ReplyMode: ReplyModeAppend, ConversationMode: ConversationModeChat, GroupMessageMode: GroupMessageModeMentionOnly, AppendOverflowMode: AppendOverflowModeTruncate, Agent: DefaultAgentKind}
 }
 
 // GetForChat with no override for the chat must equal the global effective
@@ -90,6 +90,28 @@ func TestSetChatOverrideStatusBarRows(t *testing.T) {
 	after := store.Get()
 	if after.ShowMetaRowAgent || after.ShowMetaRowRuntime || after.ShowMetaRowDeveloper {
 		t.Fatal("global toggles must stay false after per-chat override")
+	}
+}
+
+func TestSetChatOverridesAppendOverflowMode(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "preferences.json")
+	store, err := OpenPreferenceStore(path, baseDefaults(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mode := AppendOverflowMode(" CONTINUE-CARD ")
+	override := ChatOverride{AppendOverflowMode: &mode}
+	if override.IsEmpty() {
+		t.Fatal("append overflow override should not be empty")
+	}
+	if err := store.SetChat("oc-a", override); err != nil {
+		t.Fatal(err)
+	}
+	if got := store.GetForChat("oc-a").AppendOverflowMode; got != AppendOverflowModeContinueCard {
+		t.Fatalf("chat append overflow mode = %q, want %q", got, AppendOverflowModeContinueCard)
+	}
+	if got := store.GetForChat("oc-b").AppendOverflowMode; got != AppendOverflowModeTruncate {
+		t.Fatalf("other chat append overflow mode = %q, want %q", got, AppendOverflowModeTruncate)
 	}
 }
 

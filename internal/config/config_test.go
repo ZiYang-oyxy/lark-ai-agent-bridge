@@ -251,6 +251,24 @@ func TestLoadFromEnvReplyDefaultsAndOverrides(t *testing.T) {
 	}
 }
 
+func TestLoadFromEnvAppendOverflowDefaultsAndOverrides(t *testing.T) {
+	cfg := LoadFromEnv()
+	if cfg.AppendOverflowMode != AppendOverflowModeTruncate {
+		t.Fatalf("default append overflow mode = %q, want %q", cfg.AppendOverflowMode, AppendOverflowModeTruncate)
+	}
+	t.Setenv("E2E_APPEND_OVERFLOW_MODE", string(AppendOverflowModeContinueCard))
+	if got := LoadFromEnv().AppendOverflowMode; got != AppendOverflowModeContinueCard {
+		t.Fatalf("append overflow mode = %q, want %q", got, AppendOverflowModeContinueCard)
+	}
+}
+
+func TestLoadFromEnvStrictRejectsInvalidAppendOverflowMode(t *testing.T) {
+	t.Setenv("E2E_APPEND_OVERFLOW_MODE", "new-card")
+	if _, err := LoadFromEnvStrict(); err == nil {
+		t.Fatal("LoadFromEnvStrict() error = nil for invalid append overflow mode")
+	}
+}
+
 func TestLoadFromEnvConversationModeDefaultsAndOverrides(t *testing.T) {
 	cfg := LoadFromEnv()
 	if cfg.ConversationMode != ConversationModeChat {

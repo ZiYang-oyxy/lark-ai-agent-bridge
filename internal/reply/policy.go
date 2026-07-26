@@ -38,16 +38,19 @@ func NewPolicy(target CardTarget, store *Store) *Policy {
 }
 
 type Run struct {
-	mu        sync.Mutex
-	ctx       context.Context
-	mode      config.ReplyMode
-	target    CardTarget
-	store     *Store
-	scope     string
-	sessionID string
-	binding   feishu.RenderBinding
-	replyTo   string
-	renderer  feishu.ResumableRenderer
+	mu         sync.Mutex
+	ctx        context.Context
+	mode       config.ReplyMode
+	target     CardTarget
+	store      *Store
+	scope      string
+	sessionID  string
+	binding    feishu.RenderBinding
+	replyTo    string
+	renderer   feishu.ResumableRenderer
+	pages      []feishu.ResumableRenderer
+	pageCache  []string
+	refChanged func(session.RenderRef) error
 }
 
 func (p *Policy) Begin(ctx context.Context, mode config.ReplyMode, scope, sessionID, replyTo string) (*Run, error) {
@@ -96,7 +99,16 @@ func (p *Policy) BeginBound(ctx context.Context, mode config.ReplyMode, scope st
 		}
 		run.renderer = renderer
 	}
+	run.pages = []feishu.ResumableRenderer{run.renderer}
 	return run, nil
+}
+
+// SetActiveRefChanged persists the newest continuation card as the active
+// recovery target. It is called only after a second or later card is created.
+func (r *Run) SetActiveRefChanged(fn func(session.RenderRef) error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.refChanged = fn
 }
 
 func (p *Policy) discardLatestRef(ref session.RenderRef) bool {
@@ -152,10 +164,122 @@ func (r *Run) Render(event card.Event) error {
 func (r *Run) RenderRef() session.RenderRef {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if len(r.pages) > 0 {
+		return r.pages[len(r.pages)-1].RenderRef()
+	}
 	if r.renderer == nil {
 		return session.RenderRef{}
 	}
 	return r.renderer.RenderRef()
+}
+
+// RenderPages renders a bounded sliding window of append continuation cards.
+// Existing cards are reused when the logical window moves; new cards are only
+// created while the count grows, so Feishu receives at most nine messages.
+func (r *Run) RenderPages(events []card.Event) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.mode != config.ReplyModeAppend {
+		return fmt.Errorf("continuation cards require append mode")
+	}
+	if len(events) == 0 || len(events) > maxContinuationCards {
+		return fmt.Errorf("invalid continuation page count %d", len(events))
+	}
+	for len(r.pages) < len(events) {
+		pageIndex := len(r.pages)
+		renderer, err := r.newPageRenderer(pageIndex)
+		if err != nil {
+			return err
+		}
+		r.pages = append(r.pages, renderer)
+		r.pageCache = append(r.pageCache, "")
+	}
+	if len(r.pageCache) < len(r.pages) {
+		r.pageCache = append(r.pageCache, make([]string, len(r.pages)-len(r.pageCache))...)
+	}
+	offset := len(r.pages) - len(events)
+	for i, renderer := range r.pages {
+		var event card.Event
+		if i < offset {
+			event = events[0]
+			event.Markdown = "_较早续卡内容已合并到后续卡片_"
+		} else {
+			event = events[i-offset]
+		}
+		event.SessionID = r.pageSessionID(i)
+		if i != len(r.pages)-1 {
+			event.Streaming = false
+			event.Activity = ""
+			event.StopButton.Visible = false
+		}
+		signature := continuationPageSignature(event)
+		if signature == r.pageCache[i] {
+			continue
+		}
+		if err := renderer.Render(event); err != nil {
+			return err
+		}
+		r.pageCache[i] = signature
+	}
+	return nil
+}
+
+func (r *Run) newPageRenderer(pageIndex int) (feishu.ResumableRenderer, error) {
+	binding := r.binding
+	binding.RunCardSessionID = r.pageSessionID(pageIndex)
+	var renderer feishu.ResumableRenderer
+	var err error
+	if bound, ok := r.target.(BoundCardTarget); ok {
+		renderer, err = bound.NewStreamingBound(r.ctx, binding, r.replyTo)
+	} else {
+		renderer, err = r.target.NewStreaming(r.ctx, binding.RunCardSessionID, r.replyTo)
+	}
+	if err != nil {
+		return nil, err
+	}
+	// RenderRef is empty until the first page frame creates/replies the card;
+	// persistence therefore happens after RenderPages has rendered it.
+	return &refTrackingRenderer{ResumableRenderer: renderer, onFirstRef: func(ref session.RenderRef) error {
+		if pageIndex == 0 || r.refChanged == nil {
+			return nil
+		}
+		return r.refChanged(ref)
+	}}, nil
+}
+
+func (r *Run) pageSessionID(pageIndex int) string {
+	if pageIndex == 0 {
+		return r.sessionID
+	}
+	return fmt.Sprintf("%s:page:%d", r.sessionID, pageIndex+1)
+}
+
+func continuationPageSignature(event card.Event) string {
+	return fmt.Sprintf("%s\x00%s\x00%t\x00%s\x00%s", event.Type, event.Markdown, event.Streaming, event.HeaderTitle, event.HeaderTemplate)
+}
+
+type refTrackingRenderer struct {
+	feishu.ResumableRenderer
+	onFirstRef func(session.RenderRef) error
+	tracked    bool
+}
+
+func (r *refTrackingRenderer) Render(event card.Event) error {
+	if err := r.ResumableRenderer.Render(event); err != nil {
+		return err
+	}
+	if r.tracked || r.onFirstRef == nil {
+		return nil
+	}
+	ref := r.ResumableRenderer.RenderRef()
+	if ref.CardID == "" {
+		return nil
+	}
+	if err := r.onFirstRef(ref); err != nil {
+		return err
+	}
+	r.tracked = true
+	return nil
 }
 
 func (r *Run) persistLatest() error {

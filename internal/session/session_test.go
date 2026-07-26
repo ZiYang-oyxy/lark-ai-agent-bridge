@@ -1177,3 +1177,17 @@ func TestScheduleInputsNeverBatchWithOtherInputs(t *testing.T) {
 		t.Fatal("scheduled input must match only its own run")
 	}
 }
+
+func TestAppendOverflowModeSeparatesOrdinaryBatches(t *testing.T) {
+	truncate := Input{WorkDir: "/tmp/work", RequestedModel: "sonnet", RequestedEffort: "low", ReplyMode: config.ReplyModeAppend, AppendOverflowMode: config.AppendOverflowModeTruncate}
+	legacy := truncate
+	legacy.AppendOverflowMode = ""
+	continuation := truncate
+	continuation.AppendOverflowMode = config.AppendOverflowModeContinueCard
+	if !compatibleBatchInput(truncate, legacy) || !compatibleBatchInput(legacy, truncate) {
+		t.Fatal("legacy empty overflow mode must normalize to truncate")
+	}
+	if compatibleBatchInput(truncate, continuation) || compatibleBatchInput(continuation, truncate) {
+		t.Fatal("truncate and continuation inputs must not share a batch")
+	}
+}

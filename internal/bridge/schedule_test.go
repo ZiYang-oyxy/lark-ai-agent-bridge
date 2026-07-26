@@ -14,6 +14,7 @@ import (
 	"lark-agent-bridge/internal/audit"
 	"lark-agent-bridge/internal/bridgeinstructions"
 	"lark-agent-bridge/internal/card"
+	"lark-agent-bridge/internal/config"
 	"lark-agent-bridge/internal/schedule"
 	"lark-agent-bridge/internal/session"
 )
@@ -191,7 +192,7 @@ func TestScheduleDispatchUsesFrozenConfiguration(t *testing.T) {
 	task := schedule.Task{
 		ID: "task1234", Kind: schedule.KindCron, Prompt: "生成日报", Creator: "ou_creator",
 		Target:    schedule.Target{ChatID: "oc_chat", ThreadID: "omt_topic", ReplyToMessageID: "om_origin", IsGroup: true},
-		Execution: schedule.FrozenExecution{Agent: "codex", Model: "frozen-model", Effort: "high", AgentHome: "/tmp/codex-home", AgentBin: "/opt/codex", WorkDir: workDir, ReplyMode: "append-clean-card", ConversationMode: "topic"},
+		Execution: schedule.FrozenExecution{Agent: "codex", Model: "frozen-model", Effort: "high", AgentHome: "/tmp/codex-home", AgentBin: "/opt/codex", WorkDir: workDir, ReplyMode: "append-clean-card", AppendOverflowMode: "continue-card", ConversationMode: "topic"},
 	}
 	run := schedule.Run{ID: "cron:task1234:2026-07-21T09:00:00Z", TaskID: task.ID, ScheduledAt: time.Now(), State: schedule.RunPending}
 	conversationKey := session.Key{Agent: agent.Codex, ChatID: task.Target.ChatID, Thread: task.Target.ThreadID}
@@ -229,7 +230,7 @@ func TestScheduleDispatchUsesFrozenConfiguration(t *testing.T) {
 	if input.ID != run.ID || input.Text != task.Prompt || input.WorkDir != workDir || input.RequestedModel != "frozen-model" || input.RequestedEffort != "high" || input.AgentHome != "/tmp/codex-home" || input.AgentBin != "/opt/codex" {
 		t.Fatalf("frozen input = %#v", input)
 	}
-	if input.ScheduleRunID != run.ID || input.ScheduleTaskID != task.ID || input.ConversationMode != "topic" || input.ReplyMode != "append-clean-card" {
+	if input.ScheduleRunID != run.ID || input.ScheduleTaskID != task.ID || input.ConversationMode != "topic" || input.ReplyMode != "append-clean-card" || input.AppendOverflowMode != config.AppendOverflowModeContinueCard {
 		t.Fatalf("schedule correlation = %#v", input)
 	}
 	duplicate, err := service.Enqueue(context.Background(), task, run)
@@ -312,6 +313,7 @@ func TestAgentProposalGetsScopedTokenAndReplacesTerminalCard(t *testing.T) {
 	workDir := t.TempDir()
 	cfg := testConfig(t)
 	cfg.DefaultWorkDir = workDir
+	cfg.AppendOverflowMode = config.AppendOverflowModeContinueCard
 	renderer := card.NewFakeRenderer()
 	runner := &proposingRunner{done: make(chan struct{}), proposal: schedule.Proposal{
 		Kind: schedule.KindCron, CronExpr: "0 9 * * 1-5", Timezone: "Asia/Shanghai", Description: "工作日总结", Prompt: "总结昨天的进展",
@@ -367,6 +369,9 @@ func TestAgentProposalGetsScopedTokenAndReplacesTerminalCard(t *testing.T) {
 	}
 	if got := store.Drafts()[0].Target.ThreadID; got != msg.ThreadID {
 		t.Fatalf("draft target thread = %q, want %q", got, msg.ThreadID)
+	}
+	if got := store.Drafts()[0].Execution.AppendOverflowMode; got != string(config.AppendOverflowModeContinueCard) {
+		t.Fatalf("draft append overflow mode = %q", got)
 	}
 	events := renderer.Events()
 	last := events[len(events)-1]

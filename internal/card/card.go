@@ -96,17 +96,18 @@ type SelectOption struct {
 }
 
 type ConfigForm struct {
-	Agent            string
-	AgentHome        string
-	AgentBin         string
-	Model            string
-	Effort           string
-	ReplyMode        string
-	ConversationMode string
-	TopicSeedMode    string
-	GroupMessageMode string
-	RespondToBots    string
-	NotifyOnComplete string
+	Agent              string
+	AgentHome          string
+	AgentBin           string
+	Model              string
+	Effort             string
+	ReplyMode          string
+	AppendOverflowMode string
+	ConversationMode   string
+	TopicSeedMode      string
+	GroupMessageMode   string
+	RespondToBots      string
+	NotifyOnComplete   string
 	// 三个元信息行独立开关的表单值,均为字符串序列化的 "true"/"false"。
 	ShowMetaRowAgent     string
 	ShowMetaRowRuntime   string
@@ -117,6 +118,7 @@ type ConfigForm struct {
 	Models               []string
 	Efforts              []string
 	ReplyModes           []string
+	AppendOverflowModes  []SelectOption
 	ConversationModes    []string
 	TopicSeedModes       []string
 	AllowedUsers         []string

@@ -360,13 +360,14 @@ func effectiveWrapperTarget(cfg config.Config) (agent.Kind, string, string, erro
 		return "", "", "", agentsErr
 	}
 	defaults := config.RuntimePreference{
-		Model:            cfg.Model,
-		Effort:           cfg.Effort,
-		ReplyMode:        cfg.ReplyMode,
-		ConversationMode: cfg.ConversationMode,
-		TopicSeedMode:    cfg.TopicSeedMode,
-		GroupMessageMode: cfg.GroupMessageMode,
-		RespondToBots:    cfg.RespondToBots,
+		Model:              cfg.Model,
+		Effort:             cfg.Effort,
+		ReplyMode:          cfg.ReplyMode,
+		AppendOverflowMode: cfg.AppendOverflowMode,
+		ConversationMode:   cfg.ConversationMode,
+		TopicSeedMode:      cfg.TopicSeedMode,
+		GroupMessageMode:   cfg.GroupMessageMode,
+		RespondToBots:      cfg.RespondToBots,
 	}
 	preferences, err := config.OpenPreferenceStore(cfg.PreferenceStorePath, defaults, cfg.AllowedModels, agents.Agents...)
 	if err != nil {
@@ -679,7 +680,7 @@ func preferenceStoreWritable(cfg config.Config) Check {
 	if info.Mode().Perm() != 0o600 {
 		return Check{Name: "preference_store", OK: false, Detail: "insecure_permissions: " + path}
 	}
-	defaults := config.RuntimePreference{Model: cfg.Model, Effort: cfg.Effort, ReplyMode: cfg.ReplyMode, ConversationMode: cfg.ConversationMode}
+	defaults := config.RuntimePreference{Model: cfg.Model, Effort: cfg.Effort, ReplyMode: cfg.ReplyMode, AppendOverflowMode: cfg.AppendOverflowMode, ConversationMode: cfg.ConversationMode}
 	agents, _ := config.LoadAgentsConfig(cfg.AgentsConfigPath)
 	if _, err := config.OpenPreferenceStore(path, defaults, cfg.AllowedModels, agents.Agents...); err != nil {
 		return Check{Name: "preference_store", OK: false, Detail: "invalid_snapshot: " + path}

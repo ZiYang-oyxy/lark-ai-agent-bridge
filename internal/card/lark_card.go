@@ -244,6 +244,7 @@ func buildConfigFormElements(sessionID string, form ConfigForm) []any {
 
 	conversation := []map[string]any{}
 	conversation = append(conversation, fieldElements("cfg_reply", "回复模式", "append 保留全过程 · clean-card 只留末答 · latest-card 复用最新卡", configSelect("reply_mode", form.ReplyMode, form.ReplyModes))...)
+	conversation = append(conversation, fieldElements("cfg_overflow", "超长回复处理", "仅 append 生效；尾部截断保持单卡，自动续卡最多 9 张", configSelectOptions("append_overflow_mode", form.AppendOverflowMode, form.AppendOverflowModes))...)
 	conversation = append(conversation, fieldElements("cfg_conv", "会话模式", "chat 按群共用会话 · topic 按话题隔离", configSelect("conversation_mode", form.ConversationMode, form.ConversationModes))...)
 	conversation = append(conversation, fieldElements("cfg_topic_seed", "新话题起点（topic 模式）", "quote 用当前消息+引用消息(含图片)起新会话，上下文短 · fork 从群主会话 fork 出一份，继承完整历史但上下文消耗大", configSelect("topic_seed_mode", form.TopicSeedMode, form.TopicSeedModes))...)
 

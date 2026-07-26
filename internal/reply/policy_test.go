@@ -3,6 +3,7 @@ package reply
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -21,6 +22,23 @@ type fakeTarget struct {
 	newRenderer    *fakeResumable
 	rehydrated     *fakeResumable
 	appended       []card.Event
+}
+
+type pagedFakeTarget struct {
+	renderers []*fakeResumable
+	sessions  []string
+}
+
+func (f *pagedFakeTarget) NewStreaming(_ context.Context, sessionID, _ string) (feishu.ResumableRenderer, error) {
+	r := &fakeResumable{ref: session.RenderRef{CardID: "card-" + sessionID, ReplyMessageID: "reply-" + sessionID}}
+	f.renderers = append(f.renderers, r)
+	f.sessions = append(f.sessions, sessionID)
+	return r, nil
+}
+
+func (f *pagedFakeTarget) AppendTerminal(context.Context, string, card.Event) error { return nil }
+func (f *pagedFakeTarget) Rehydrate(string, session.RenderRef) feishu.ResumableRenderer {
+	return nil
 }
 
 func (f *fakeTarget) NewStreaming(context.Context, string, string) (feishu.ResumableRenderer, error) {
@@ -82,6 +100,69 @@ func TestPolicyAppendUsesOneStreamingCard(t *testing.T) {
 	}
 	if target.newCalls != 1 || target.appendCalls != 0 || len(target.newRenderer.events) != 2 {
 		t.Fatalf("new/append/events = %d/%d/%d", target.newCalls, target.appendCalls, len(target.newRenderer.events))
+	}
+}
+
+func TestPolicyAppendContinuationCreatesAtMostNineCardsAndReusesSlidingWindow(t *testing.T) {
+	target := &pagedFakeTarget{}
+	run, err := NewPolicy(target, nil).Begin(context.Background(), config.ReplyModeAppend, "scope", "run", "source")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var persisted []session.RenderRef
+	run.SetActiveRefChanged(func(ref session.RenderRef) error {
+		persisted = append(persisted, ref)
+		return nil
+	})
+	two := []card.Event{
+		{Type: "stream", Streaming: true, MarkdownLayout: true, Markdown: "page-1"},
+		{Type: "stream", Streaming: true, MarkdownLayout: true, Markdown: "page-2"},
+	}
+	if err := run.RenderPages(two); err != nil {
+		t.Fatal(err)
+	}
+	if len(target.renderers) != 2 || len(persisted) != 1 || persisted[0].CardID != "card-run:page:2" {
+		t.Fatalf("renderers/persisted = %d/%#v", len(target.renderers), persisted)
+	}
+	if got := target.renderers[0].events[0]; got.Streaming || got.StopButton.Visible {
+		t.Fatalf("frozen first page = %#v", got)
+	}
+
+	nine := make([]card.Event, maxContinuationCards)
+	for i := range nine {
+		nine[i] = card.Event{Type: "stream", Streaming: true, MarkdownLayout: true, Markdown: fmt.Sprintf("window-a-%d", i+1)}
+	}
+	if err := run.RenderPages(nine); err != nil {
+		t.Fatal(err)
+	}
+	if len(target.renderers) != maxContinuationCards || len(persisted) != maxContinuationCards-1 {
+		t.Fatalf("nine-card state = renderers %d persisted %d", len(target.renderers), len(persisted))
+	}
+	for i := range nine {
+		nine[i].Markdown = fmt.Sprintf("window-b-%d", i+1)
+	}
+	if err := run.RenderPages(nine); err != nil {
+		t.Fatal(err)
+	}
+	if len(target.renderers) != maxContinuationCards {
+		t.Fatalf("sliding window created extra cards: %d", len(target.renderers))
+	}
+	for i, renderer := range target.renderers {
+		last := renderer.events[len(renderer.events)-1]
+		if last.Markdown != fmt.Sprintf("window-b-%d", i+1) {
+			t.Fatalf("page %d markdown = %q", i+1, last.Markdown)
+		}
+	}
+
+	before := len(target.renderers[0].events)
+	if err := run.RenderPages(nine); err != nil {
+		t.Fatal(err)
+	}
+	if len(target.renderers[0].events) != before {
+		t.Fatal("unchanged page was rendered again")
+	}
+	if got := run.RenderRef(); got.CardID != "card-run:page:9" {
+		t.Fatalf("active ref = %#v", got)
 	}
 }
 

@@ -563,13 +563,14 @@ func openSessionState(cfg config.Config) (*session.Manager, []session.RecoveryNo
 
 func runtimePreferenceDefaults(cfg config.Config) config.RuntimePreference {
 	return config.RuntimePreference{
-		Model:            cfg.Model,
-		Effort:           cfg.Effort,
-		ReplyMode:        cfg.ReplyMode,
-		ConversationMode: cfg.ConversationMode,
-		TopicSeedMode:    cfg.TopicSeedMode,
-		GroupMessageMode: cfg.GroupMessageMode,
-		RespondToBots:    cfg.RespondToBots,
+		Model:              cfg.Model,
+		Effort:             cfg.Effort,
+		ReplyMode:          cfg.ReplyMode,
+		AppendOverflowMode: cfg.AppendOverflowMode,
+		ConversationMode:   cfg.ConversationMode,
+		TopicSeedMode:      cfg.TopicSeedMode,
+		GroupMessageMode:   cfg.GroupMessageMode,
+		RespondToBots:      cfg.RespondToBots,
 	}
 }
 

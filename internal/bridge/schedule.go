@@ -41,7 +41,7 @@ func (s *Service) Enqueue(_ context.Context, task schedule.Task, run schedule.Ru
 		CardSessionID: runID(key.ID(), run.ID), WorkDir: task.Execution.WorkDir,
 		RequestedModel: task.Execution.Model, RequestedEffort: task.Execution.Effort,
 		AgentBin: task.Execution.AgentBin, AgentHome: task.Execution.AgentHome,
-		ReplyMode: config.ReplyMode(task.Execution.ReplyMode), ConversationMode: config.ConversationMode(task.Execution.ConversationMode),
+		ReplyMode: config.ReplyMode(task.Execution.ReplyMode), AppendOverflowMode: config.AppendOverflowMode(task.Execution.AppendOverflowMode), ConversationMode: config.ConversationMode(task.Execution.ConversationMode),
 		BridgeInstructionsVersion: bridgeinstructions.CurrentVersion,
 		ScheduleRunID:             run.ID, ScheduleTaskID: task.ID, IsGroup: task.Target.IsGroup,
 		Time: now, State: session.InputQueued,
@@ -326,7 +326,7 @@ func (s *Service) issueScheduleProposalContext(sess session.Session, batch sessi
 		Execution: schedule.FrozenExecution{
 			Agent: string(sess.Key.Agent), Model: anchor.RequestedModel, Effort: anchor.RequestedEffort,
 			AgentHome: anchor.AgentHome, AgentBin: anchor.AgentBin, WorkDir: sess.WorkDir,
-			ReplyMode: string(anchor.EffectiveReplyMode()), ConversationMode: string(anchor.ConversationMode),
+			ReplyMode: string(anchor.EffectiveReplyMode()), AppendOverflowMode: string(anchor.EffectiveAppendOverflowMode()), ConversationMode: string(anchor.ConversationMode),
 		},
 		ForcedKind: schedule.Kind(anchor.ScheduleKind),
 	}

@@ -59,7 +59,7 @@ func TestLocalConfigSaveWritesOnlyTargetGroup(t *testing.T) {
 		Actor:     "ou_user",
 		Value:     "oc-a",
 		FormValues: map[string]string{
-			"model": "default", "effort": "low", "reply_mode": "append", "conversation_mode": "topic",
+			"model": "default", "effort": "low", "reply_mode": "append", "append_overflow_mode": "continue-card", "conversation_mode": "topic",
 		},
 	})
 	if err != nil {
@@ -70,6 +70,12 @@ func TestLocalConfigSaveWritesOnlyTargetGroup(t *testing.T) {
 	}
 	if got := store.GetForChat("oc-a").ConversationMode; got != config.ConversationModeTopic {
 		t.Fatalf("group oc-a conversation mode = %q, want topic", got)
+	}
+	if got := store.GetForChat("oc-a").AppendOverflowMode; got != config.AppendOverflowModeContinueCard {
+		t.Fatalf("group oc-a append overflow mode = %q, want continue-card", got)
+	}
+	if got := store.Get().AppendOverflowMode; got != config.AppendOverflowModeTruncate {
+		t.Fatalf("global append overflow mode = %q, want unchanged truncate", got)
 	}
 	if got := store.Get().ConversationMode; got != config.ConversationModeChat {
 		t.Fatalf("global conversation mode = %q, want unchanged chat", got)

@@ -46,6 +46,7 @@ type Config struct {
 	ConversationMode            ConversationMode
 	TopicSeedMode               TopicSeedMode
 	GroupMessageMode            GroupMessageMode
+	AppendOverflowMode          AppendOverflowMode
 	RespondToBots               bool
 	AllowedModels               []string
 	QueueMaxPending             int
@@ -98,6 +99,7 @@ func LoadFromEnv() Config {
 		ConversationMode:            ConversationModeChat,
 		TopicSeedMode:               TopicSeedModeQuote,
 		GroupMessageMode:            GroupMessageModeMentionOnly,
+		AppendOverflowMode:          AppendOverflowModeTruncate,
 		QueueMaxPending:             20,
 		BatchMaxInputs:              10,
 		BatchMaxTextRunes:           64 << 10,
@@ -221,6 +223,9 @@ func LoadFromEnv() Config {
 	if v := os.Getenv("E2E_GROUP_MESSAGE_MODE"); v != "" {
 		cfg.GroupMessageMode = GroupMessageMode(strings.ToLower(strings.TrimSpace(v)))
 	}
+	if v := os.Getenv("E2E_APPEND_OVERFLOW_MODE"); v != "" {
+		cfg.AppendOverflowMode = AppendOverflowMode(strings.ToLower(strings.TrimSpace(v)))
+	}
 	if v := os.Getenv("E2E_RESPOND_TO_BOTS"); strings.EqualFold(strings.TrimSpace(v), "true") {
 		cfg.RespondToBots = true
 	}
@@ -316,7 +321,7 @@ func LoadFromEnvStrict() (Config, error) {
 			return Config{}, fmt.Errorf("parse E2E_ALLOWED_MODELS: %w", err)
 		}
 	}
-	if err := ValidateRuntimePreference(RuntimePreference{Model: cfg.Model, Effort: cfg.Effort, ReplyMode: cfg.ReplyMode, ConversationMode: cfg.ConversationMode, TopicSeedMode: cfg.TopicSeedMode, GroupMessageMode: cfg.GroupMessageMode, RespondToBots: cfg.RespondToBots}, cfg.AllowedModels...); err != nil {
+	if err := ValidateRuntimePreference(RuntimePreference{Model: cfg.Model, Effort: cfg.Effort, ReplyMode: cfg.ReplyMode, ConversationMode: cfg.ConversationMode, TopicSeedMode: cfg.TopicSeedMode, GroupMessageMode: cfg.GroupMessageMode, AppendOverflowMode: cfg.AppendOverflowMode, RespondToBots: cfg.RespondToBots}, cfg.AllowedModels...); err != nil {
 		return Config{}, fmt.Errorf("validate runtime preference defaults: %w", err)
 	}
 	if raw, ok := os.LookupEnv("E2E_RESPOND_TO_BOTS"); ok {
