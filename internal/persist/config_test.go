@@ -1,6 +1,10 @@
 package persist
 
 import (
+	"encoding/json"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -86,4 +90,132 @@ func deref(p *string) string {
 		return "<nil>"
 	}
 	return *p
+}
+
+// TestConfigSecretNotSerialized 设了 secret 值后，序列化 configDoc 的 JSON 里搜不到该值。
+func TestConfigSecretNotSerialized(t *testing.T) {
+	const secretVal = "cli_super_secret_value_12345"
+	doc := configDoc{
+		SchemaVersion: ConfigSchemaVersion,
+		Base: &configPatch{
+			Lark: &larkPatch{
+				AppID:     ptrStr(secretVal),
+				AppSecret: ptrStr(secretVal),
+				BotOpenID: ptrStr("ou_bot_open"),
+			},
+		},
+	}
+	raw, err := json.Marshal(doc)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if strings.Contains(string(raw), secretVal) {
+		t.Fatalf("serialized doc leaked secret: %s", raw)
+	}
+	// 非 secret 字段仍应出现。
+	if !strings.Contains(string(raw), "ou_bot_open") {
+		t.Fatalf("non-secret bot_open_id missing from doc: %s", raw)
+	}
+}
+
+// TestConfigSecretNotLoadedFromFile 从含 secret 字段名的 JSON 加载时，secret 字段保持为空。
+func TestConfigSecretNotLoadedFromFile(t *testing.T) {
+	// 人为构造一份带 secret 名的 JSON（如手工篡改或旧格式），secret 不该被吸入。
+	raw := []byte(`{
+		"schema_version": 1,
+		"base": { "lark": { "app_id": "LEAKED", "app_secret": "LEAKED", "bot_open_id": "ou_x" } }
+	}`)
+	var doc configDoc
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if doc.Base == nil || doc.Base.Lark == nil {
+		t.Fatalf("expected base.lark present")
+	}
+	if doc.Base.Lark.AppID != nil {
+		t.Fatalf("AppID loaded from file = %q, want nil (secret must not load)", *doc.Base.Lark.AppID)
+	}
+	if doc.Base.Lark.AppSecret != nil {
+		t.Fatalf("AppSecret loaded from file = %q, want nil", *doc.Base.Lark.AppSecret)
+	}
+	if doc.Base.Lark.BotOpenID == nil || *doc.Base.Lark.BotOpenID != "ou_x" {
+		t.Fatalf("BotOpenID (non-secret) should load, got %v", doc.Base.Lark.BotOpenID)
+	}
+}
+
+// TestConfigValidateRejectsInvalid Validate 拒绝非法枚举/负数，返回字段级错误。
+func TestConfigValidateRejectsInvalid(t *testing.T) {
+	cases := []struct {
+		name   string
+		mutate func(*Config)
+	}{
+		{"negative max turns", func(c *Config) { c.Behavior.MaxTurns = -1 }},
+		{"zero max turns", func(c *Config) { c.Behavior.MaxTurns = 0 }},
+		{"bad effort enum", func(c *Config) { c.Agent.Effort = "turbo" }},
+		{"empty model", func(c *Config) { c.Agent.Model = "" }},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			c := Defaults()
+			tc.mutate(&c)
+			if err := c.Validate(); err == nil {
+				t.Fatalf("Validate accepted invalid config (%s)", tc.name)
+			}
+		})
+	}
+	// Defaults 本身必须合法。
+	if err := Defaults().Validate(); err != nil {
+		t.Fatalf("Defaults().Validate() = %v, want nil", err)
+	}
+}
+
+// TestConfigWriteDocPerm 写出的 config.json 权限为 0600。
+func TestConfigWriteDocPerm(t *testing.T) {
+	dir := t.TempDir()
+	e, err := NewEngine(dir)
+	if err != nil {
+		t.Fatalf("NewEngine: %v", err)
+	}
+	doc := configDoc{SchemaVersion: ConfigSchemaVersion, Base: &configPatch{Agent: &agentPatch{Model: ptrStr("m")}}}
+	if err := writeConfigDoc(e, doc); err != nil {
+		t.Fatalf("writeConfigDoc: %v", err)
+	}
+	info, err := os.Stat(filepath.Join(dir, ConfigFileName))
+	if err != nil {
+		t.Fatalf("stat: %v", err)
+	}
+	if perm := info.Mode().Perm(); perm != 0o600 {
+		t.Fatalf("config.json perm = %o, want 600", perm)
+	}
+}
+
+// TestConfigDocRoundTrip 分区段文档往返：写盘再读回，各层 patch 结构保持。
+func TestConfigDocRoundTrip(t *testing.T) {
+	dir := t.TempDir()
+	e, err := NewEngine(dir)
+	if err != nil {
+		t.Fatalf("NewEngine: %v", err)
+	}
+	doc := configDoc{
+		SchemaVersion:   ConfigSchemaVersion,
+		Base:            &configPatch{Agent: &agentPatch{Model: ptrStr("base-m")}},
+		RuntimeOverride: &configPatch{Behavior: &behaviorPatch{MaxTurns: ptrInt(5)}},
+		ChatOverrides:   map[string]*configPatch{"oc_1": {Agent: &agentPatch{Effort: ptrStr("high")}}},
+	}
+	if err := writeConfigDoc(e, doc); err != nil {
+		t.Fatalf("writeConfigDoc: %v", err)
+	}
+	got, err := readConfigDoc(e)
+	if err != nil {
+		t.Fatalf("readConfigDoc: %v", err)
+	}
+	if got.Base == nil || deref(got.Base.Agent.Model) != "base-m" {
+		t.Fatalf("base lost: %+v", got.Base)
+	}
+	if got.RuntimeOverride == nil || got.RuntimeOverride.Behavior == nil || *got.RuntimeOverride.Behavior.MaxTurns != 5 {
+		t.Fatalf("runtime_override lost: %+v", got.RuntimeOverride)
+	}
+	if got.ChatOverrides["oc_1"] == nil || deref(got.ChatOverrides["oc_1"].Agent.Effort) != "high" {
+		t.Fatalf("chat_override lost: %+v", got.ChatOverrides)
+	}
 }

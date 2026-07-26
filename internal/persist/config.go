@@ -1,5 +1,17 @@
 package persist
 
+import (
+	"encoding/json"
+	"fmt"
+	"strings"
+)
+
+// ConfigSchemaVersion 是配置磁盘文档当前版本。
+const ConfigSchemaVersion = 1
+
+// ConfigFileName 是配置文件在 engine 目录内的文件名。
+const ConfigFileName = "config.json"
+
 // Config 是 bridge 的强类型配置，子结构分组。
 //
 // 字段清单在 Task 3 按现状 internal/config 迁移完整；本骨架先给出代表性分组，
@@ -70,4 +82,65 @@ func Defaults() Config {
 			MaxTurns:     20,
 		},
 	}
+}
+
+// validEfforts 是 agent effort 的合法枚举（对齐 bridge 现状）。
+var validEfforts = map[string]bool{
+	"low": true, "medium": true, "high": true, "xhigh": true, "max": true,
+}
+
+// Validate 是唯一一处校验：枚举/正整数/必填等。返回字段级错误。
+func (c Config) Validate() error {
+	if strings.TrimSpace(c.Agent.Model) == "" {
+		return fmt.Errorf("persist: agent.model must not be empty")
+	}
+	if !validEfforts[c.Agent.Effort] {
+		return fmt.Errorf("persist: agent.effort %q invalid", c.Agent.Effort)
+	}
+	if c.Behavior.MaxTurns < 1 {
+		return fmt.Errorf("persist: behavior.max_turns must be >= 1, got %d", c.Behavior.MaxTurns)
+	}
+	return nil
+}
+
+// configDoc 是配置的磁盘分区段文档：存的是各层原始 patch，不是合并后的最终值。
+//
+// secret 字段（larkPatch 里 json:"-"）在任何区段都不会序列化、不会从文件加载，
+// 只能由 env.go 注入。
+type configDoc struct {
+	SchemaVersion   int                     `json:"schema_version"`
+	Base            *configPatch            `json:"base,omitempty"`
+	RuntimeOverride *configPatch            `json:"runtime_override,omitempty"`
+	ChatOverrides   map[string]*configPatch `json:"chat_overrides,omitempty"`
+}
+
+// readConfigDoc 读配置文档；文件不存在返回空文档（当前版本、无区段）。
+func readConfigDoc(e *Engine) (configDoc, error) {
+	f := e.open(ConfigFileName)
+	raw, exists, err := f.readRaw()
+	if err != nil {
+		return configDoc{}, err
+	}
+	if !exists {
+		return configDoc{SchemaVersion: ConfigSchemaVersion}, nil
+	}
+	var doc configDoc
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		return configDoc{}, fmt.Errorf("persist: decode %s: %w", ConfigFileName, err)
+	}
+	if doc.SchemaVersion > ConfigSchemaVersion {
+		return configDoc{}, fmt.Errorf("persist: %s schema %d newer than supported %d", ConfigFileName, doc.SchemaVersion, ConfigSchemaVersion)
+	}
+	return doc, nil
+}
+
+// writeConfigDoc 同步 durable 写配置文档，权限 0600（配置含 secret 相邻数据）。
+func writeConfigDoc(e *Engine, doc configDoc) error {
+	f := e.open(ConfigFileName)
+	data, err := json.MarshalIndent(doc, "", "  ")
+	if err != nil {
+		return fmt.Errorf("persist: encode %s: %w", ConfigFileName, err)
+	}
+	data = append(data, '\n')
+	return f.writeAtomic(data, 0o600)
 }
