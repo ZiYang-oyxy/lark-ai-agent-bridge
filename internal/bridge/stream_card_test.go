@@ -512,7 +512,7 @@ func TestAppendStreamPreservesTimeline(t *testing.T) {
 	}
 }
 
-func TestAgentCardStreamThinkingOnlyDoesNotSchedulePreviewButCheckpointsIncludeIt(t *testing.T) {
+func TestAgentCardStreamThinkingOnlySchedulesAppendPreview(t *testing.T) {
 	clock := &fakeStreamClock{now: time.Unix(55, 0)}
 	renderer := card.NewFakeRenderer()
 	stream := newPreviewTestStream(t, renderer, clock, 1, 2000)
@@ -526,8 +526,8 @@ func TestAgentCardStreamThinkingOnlyDoesNotSchedulePreviewButCheckpointsIncludeI
 		Segments:    []card.Segment{{Kind: card.SegmentThought, Text: "reasoning"}},
 	})
 	clock.Advance(time.Second)
-	if got := len(renderer.Events()); got != initialRenders {
-		t.Fatalf("thinking-only renders = %d, want %d", got, initialRenders)
+	if got := len(renderer.Events()); got != initialRenders+1 {
+		t.Fatalf("thinking-only renders = %d, want %d", got, initialRenders+1)
 	}
 
 	stream.Handle(AgentStreamUpdate{
@@ -536,8 +536,8 @@ func TestAgentCardStreamThinkingOnlyDoesNotSchedulePreviewButCheckpointsIncludeI
 		Segments:    []card.Segment{{Kind: card.SegmentText, Text: "answer"}},
 	})
 	events := renderer.Events()
-	if len(events) != initialRenders+1 {
-		t.Fatalf("answer checkpoint renders = %d, want %d", len(events), initialRenders+1)
+	if len(events) != initialRenders+2 {
+		t.Fatalf("answer checkpoint renders = %d, want %d", len(events), initialRenders+2)
 	}
 	preview := events[len(events)-1]
 	assertSegmentKinds(t, preview, card.SegmentThought, card.SegmentText)
@@ -550,8 +550,8 @@ func TestAgentCardStreamThinkingOnlyDoesNotSchedulePreviewButCheckpointsIncludeI
 		Segments:    []card.Segment{{Kind: card.SegmentThought, Text: " more"}},
 	})
 	clock.Advance(time.Second)
-	if got := len(renderer.Events()); got != initialRenders+1 {
-		t.Fatalf("second thinking-only renders = %d, want %d", got, initialRenders+1)
+	if got := len(renderer.Events()); got != initialRenders+3 {
+		t.Fatalf("second thinking-only renders = %d, want %d", got, initialRenders+3)
 	}
 
 	stream.Handle(AgentStreamUpdate{
@@ -561,8 +561,8 @@ func TestAgentCardStreamThinkingOnlyDoesNotSchedulePreviewButCheckpointsIncludeI
 	clock.Advance(time.Second)
 	events = renderer.Events()
 	checkpoint := events[len(events)-1]
-	assertSegmentKinds(t, checkpoint, card.SegmentThought, card.SegmentText, card.SegmentTool)
-	if checkpoint.Activity != streamActivityTool || !strings.Contains(checkpoint.Segments[0].Text, "reasoning more") {
+	assertSegmentKinds(t, checkpoint, card.SegmentThought, card.SegmentText, card.SegmentThought, card.SegmentTool)
+	if checkpoint.Activity != streamActivityTool || !strings.Contains(checkpoint.Segments[0].Text, "reasoning") || !strings.Contains(checkpoint.Segments[2].Text, "more") {
 		t.Fatalf("tool checkpoint = %#v", checkpoint)
 	}
 
@@ -570,7 +570,7 @@ func TestAgentCardStreamThinkingOnlyDoesNotSchedulePreviewButCheckpointsIncludeI
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(terminal.Segments) == 0 || terminal.Segments[0].Kind != card.SegmentThought || !strings.Contains(terminal.Segments[0].Text, "reasoning more") {
+	if len(terminal.Segments) < 3 || terminal.Segments[0].Kind != card.SegmentThought || !strings.Contains(terminal.Segments[0].Text, "reasoning") || terminal.Segments[2].Kind != card.SegmentThought || !strings.Contains(terminal.Segments[2].Text, "more") {
 		t.Fatalf("terminal lost accumulated thinking: %#v", terminal.Segments)
 	}
 }
@@ -1205,7 +1205,7 @@ func TestStreamPreservesFullThinkingBoundariesAndThinkingDeltas(t *testing.T) {
 	}
 	events := renderer.Events()
 	segments := events[len(events)-1].Segments
-	if len(segments) != 1 || segments[0].Kind != card.SegmentThought || segments[0].Text != "first\n\nsecond + delta" {
+	if len(segments) != 2 || segments[0].Kind != card.SegmentThought || segments[0].Text != "first" || segments[1].Kind != card.SegmentThought || segments[1].Text != "second + delta" {
 		t.Fatalf("thought segments = %#v", segments)
 	}
 }

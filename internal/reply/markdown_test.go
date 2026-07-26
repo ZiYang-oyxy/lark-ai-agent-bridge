@@ -174,7 +174,7 @@ func TestRenderMarkdownHandlesErrorAndEmptyResult(t *testing.T) {
 	}
 }
 
-func TestRenderInlineTimelineOrdersRepliesAndPlainTextTools(t *testing.T) {
+func TestRenderInlineTimelineOrdersThoughtsRepliesAndPlainTextTools(t *testing.T) {
 	got := RenderInlineTimeline(card.Event{
 		Type:      "stream",
 		Streaming: true,
@@ -186,11 +186,11 @@ func TestRenderInlineTimelineOrdersRepliesAndPlainTextTools(t *testing.T) {
 			{Kind: card.SegmentTool, Text: "secret output", Tool: &card.ToolMeta{ID: "t1", Phase: "result"}},
 		},
 	})
-	want := "先检查配置。\n\n> ✅ **Bash** — git status\n\n配置正常。\n\n_🧠 正在思考…_"
+	want := "先检查配置。\n\n> 💭 **思考** — private reasoning\n\n> ✅ **Bash** — git status\n\n配置正常。\n\n_🧠 正在思考…_"
 	if got != want {
 		t.Fatalf("timeline = %q, want %q", got, want)
 	}
-	for _, forbidden := range []string{"private reasoning", "private input", "secret output", "tokens:"} {
+	for _, forbidden := range []string{"private input", "secret output", "tokens:"} {
 		if strings.Contains(got, forbidden) {
 			t.Fatalf("timeline leaked %q: %q", forbidden, got)
 		}
@@ -385,7 +385,7 @@ func TestRenderInlineTimelineRedactsAnswerWhenAppendBypassesGenericLimit(t *test
 	}
 }
 
-func TestMarkdownCardRendererHidesThinkingWithoutMutatingCaller(t *testing.T) {
+func TestMarkdownCardRendererShowsThinkingWithoutMutatingCaller(t *testing.T) {
 	inner := &fakeMarkdownCardRenderer{}
 	renderer := NewMarkdownCardRenderer(inner)
 	original := "private reasoning"
@@ -394,7 +394,7 @@ func TestMarkdownCardRendererHidesThinkingWithoutMutatingCaller(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := inner.events[0]
-	if got.Markdown != "_🧠 正在思考…_" || strings.Contains(got.Markdown, original) {
+	if got.Markdown != "> 💭 **思考** — private reasoning\n\n_🧠 正在思考…_" {
 		t.Fatalf("thinking projection = %#v", got)
 	}
 	if got.Segments[0].Text != original || event.Segments[0].Text != original {
@@ -427,14 +427,14 @@ func TestMarkdownCardRendererKeepsStateAndUsesLightweightMarkdownLayout(t *testi
 		t.Fatalf("events = %#v", inner.events)
 	}
 	got := inner.events[0]
-	if got.InlineTimelineLayout || !got.MarkdownLayout || got.OrderedLayout || got.Markdown != "> ⏳ **Bash** — pwd\n\ndone\n\n_🧰 正在调用工具…_" {
+	if got.InlineTimelineLayout || !got.MarkdownLayout || got.OrderedLayout || got.Markdown != "> 💭 **思考** — reasoning\n\n> ⏳ **Bash** — pwd\n\ndone\n\n_🧰 正在调用工具…_" {
 		t.Fatalf("markdown event = %#v", got)
 	}
 	if len(got.Segments) != len(input.Segments) || got.StopButton != input.StopButton || got.Meta != input.Meta ||
 		got.HeaderTitle != input.HeaderTitle || got.HeaderTemplate != input.HeaderTemplate || got.Streaming != input.Streaming {
 		t.Fatalf("markdown event cleared full card state: %#v", got)
 	}
-	if strings.Contains(got.Markdown, "reasoning") || strings.Contains(got.Markdown, "secret") || strings.Contains(got.Markdown, "tokens:") {
+	if strings.Contains(got.Markdown, "secret") || strings.Contains(got.Markdown, "tokens:") {
 		t.Fatalf("inline timeline leaked shell/private state: %#v", got)
 	}
 	payload := card.BuildLarkCard(got)

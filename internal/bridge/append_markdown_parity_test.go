@@ -23,6 +23,7 @@ func TestAppendMarkdownClaudeAndCodexToolProjection(t *testing.T) {
 	codexInput := strings.Join([]string{
 		`{"type":"thread.started","thread_id":"codex-thread"}`,
 		`{"type":"turn.started"}`,
+		`{"type":"item.completed","item":{"id":"reasoning","type":"reasoning","text":"inspect workspace first"}}`,
 		`{"type":"item.started","item":{"id":"codex-tool","type":"command_execution","command":"pwd"}}`,
 		`{"type":"item.completed","item":{"id":"codex-tool","type":"command_execution","output":"/repo","exit_code":0}}`,
 		`{"type":"item.completed","item":{"id":"message","type":"agent_message","text":"done"}}`,
@@ -35,14 +36,14 @@ func TestAppendMarkdownClaudeAndCodexToolProjection(t *testing.T) {
 
 	claudeMarkdown := reply.RenderInlineTimeline(card.Event{Type: "result", Segments: claudeResult.OrderedSegments})
 	codexMarkdown := reply.RenderInlineTimeline(card.Event{Type: "result", Segments: codexResult.OrderedSegments})
-	claudeWant := "> ✅ **Bash** — pwd\n\ndone"
-	codexWant := "> ✅ **command\\_execution** — pwd\n\ndone"
+	claudeWant := "> 💭 **思考** — private plan\n\n> ✅ **Bash** — pwd\n\ndone"
+	codexWant := "> 💭 **思考** — inspect workspace first\n\n> ✅ **command\\_execution** — pwd\n\ndone"
 	if claudeMarkdown != claudeWant || codexMarkdown != codexWant {
 		t.Fatalf("append markdown projection:\nClaude: %q\nCodex:  %q\nWant Claude: %q\nWant Codex: %q", claudeMarkdown, codexMarkdown, claudeWant, codexWant)
 	}
-	for _, hidden := range []string{"private plan", "/repo"} {
+	for _, hidden := range []string{"/repo"} {
 		if strings.Contains(claudeMarkdown, hidden) || strings.Contains(codexMarkdown, hidden) {
-			t.Fatalf("append markdown leaked %q: Claude=%q Codex=%q", hidden, claudeMarkdown, codexMarkdown)
+			t.Fatalf("append markdown leaked tool output %q: Claude=%q Codex=%q", hidden, claudeMarkdown, codexMarkdown)
 		}
 	}
 }

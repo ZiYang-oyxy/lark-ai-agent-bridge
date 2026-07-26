@@ -367,11 +367,8 @@ func (s *agentCardStream) Handle(update AgentStreamUpdate) {
 		s.orderedPartial = true
 	}
 	for _, segment := range update.Segments {
-		if update.ProgressSnapshot && s.replyMode == config.ReplyModeAppend && segment.Kind == card.SegmentThought {
-			continue
-		}
 		s.appendSegmentLocked(segment, update.Incremental)
-		if s.replyMode != config.ReplyModeAppend || assistantSnapshot || segment.Kind == card.SegmentThought {
+		if s.replyMode != config.ReplyModeAppend || assistantSnapshot {
 			continue
 		}
 		s.ordered = appendOrderedSegment(s.ordered, segment, update.Incremental)
@@ -1346,7 +1343,7 @@ func clampToolOutput(output string) string {
 }
 
 func appendOrderedSegment(segments []card.Segment, segment card.Segment, incremental bool) []card.Segment {
-	if segment.Kind == card.SegmentThought || (segment.Text == "" && !isStructuredToolSegment(segment)) {
+	if segment.Text == "" && !isStructuredToolSegment(segment) {
 		return segments
 	}
 	if incremental && segment.Text != "" && len(segments) > 0 && segments[len(segments)-1].Kind == segment.Kind {
@@ -1359,7 +1356,7 @@ func appendOrderedSegment(segments []card.Segment, segment card.Segment, increme
 func replaceOrderedAnswerSnapshot(segments, snapshot []card.Segment, partialAt int, hasPartial bool) []card.Segment {
 	visible := make([]card.Segment, 0, len(snapshot))
 	for _, segment := range snapshot {
-		if segment.Kind != card.SegmentThought && (segment.Text != "" || isStructuredToolSegment(segment)) {
+		if segment.Text != "" || isStructuredToolSegment(segment) {
 			visible = append(visible, segment)
 		}
 	}
@@ -1458,9 +1455,6 @@ func hasVisibleOrderedSegments(segments []card.Segment) bool {
 }
 
 func isVisibleOrderedSegment(segment card.Segment) bool {
-	if segment.Kind == card.SegmentThought {
-		return false
-	}
 	return strings.TrimSpace(segment.Text) != "" || isStructuredToolSegment(segment)
 }
 
@@ -1848,7 +1842,7 @@ func (s *agentCardStream) withStopRequestedNoticeLocked(segments []card.Segment)
 
 func (s *agentCardStream) orderedSegmentsLocked() []card.Segment {
 	segments := make([]card.Segment, 0, len(s.ordered)+1)
-	if text := strings.TrimSpace(s.thought.String()); text != "" {
+	if text := strings.TrimSpace(s.thought.String()); text != "" && !containsOrderedKind(s.ordered, card.SegmentThought) {
 		segments = append(segments, card.Segment{Kind: card.SegmentThought, Text: text})
 	}
 	segments = append(segments, s.ordered...)

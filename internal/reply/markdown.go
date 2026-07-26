@@ -68,6 +68,12 @@ func RenderMarkdown(event card.Event) string {
 	return strings.Join(parts, "\n\n")
 }
 
+func renderThoughtLine(text string) string {
+	text = security.Redact(strings.TrimSpace(text))
+	text = strings.ReplaceAll(text, "\n", "\n> ")
+	return "> 💭 **思考** — " + text
+}
+
 // RenderInlineTimeline projects ordered assistant and tool events into the
 // single Markdown element used by append cards. Card status, actions, and meta
 // remain in the surrounding CardKit shell and are intentionally omitted here.
@@ -107,7 +113,9 @@ func inlineTimelineParts(event card.Event) []string {
 		text := strings.TrimSpace(segment.Text)
 		switch segment.Kind {
 		case card.SegmentThought:
-			continue
+			if text != "" {
+				parts = append(parts, renderThoughtLine(text))
+			}
 		case card.SegmentTool:
 			meta := segment.Tool
 			if meta == nil || strings.TrimSpace(meta.ID) == "" {

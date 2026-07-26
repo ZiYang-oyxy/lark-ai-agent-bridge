@@ -2289,13 +2289,14 @@ func TestServiceStreamsRunnerUpdatesIntoSameCard(t *testing.T) {
 	}
 	waitForEvents(t, renderer, 4)
 	events := renderer.Events()
-	// Thinking-only deltas stay in memory; the next tool checkpoint carries the
-	// accumulated thought while updating the visible activity.
-	if events[1].Type != "stream" || events[1].Activity != streamActivityTool || len(events[1].Segments) < 2 || events[1].Segments[0].Kind != card.SegmentThought {
-		t.Fatalf("tool checkpoint event = %#v", events[1])
+	if events[1].Type != "stream" || events[1].Activity != streamActivityReasoning || len(events[1].Segments) != 1 || events[1].Segments[0].Kind != card.SegmentThought {
+		t.Fatalf("thought stream event = %#v", events[1])
 	}
-	if events[2].Type != "stream" || events[2].Activity != streamActivityAnswering {
-		t.Fatalf("answer stream event = %#v", events[2])
+	if events[2].Type != "stream" || events[2].Activity != streamActivityTool {
+		t.Fatalf("tool stream event = %#v", events[2])
+	}
+	if events[3].Type != "stream" || events[3].Activity != streamActivityAnswering {
+		t.Fatalf("answer stream event = %#v", events[3])
 	}
 	last := events[len(events)-1]
 	if last.Type != "result" || last.HeaderTemplate != "green" {
@@ -4607,8 +4608,8 @@ func TestClaudeProgressAndToolCountsSurviveEveryReplyMode(t *testing.T) {
 						t.Fatalf("append inline timeline lost %q: %#v", want, terminal.Segments)
 					}
 				}
-				if thought := segmentTextByKind(terminal, card.SegmentThought); strings.Contains(thought, "进展一") || strings.Contains(thought, "进展二") {
-					t.Fatalf("append duplicated inline progress in thought panel: %q", thought)
+				if thought := segmentTextByKind(terminal, card.SegmentThought); !containsAll(thought, "进展一", "进展二") {
+					t.Fatalf("append thought timeline lost progress: %q", thought)
 				}
 				return
 			}

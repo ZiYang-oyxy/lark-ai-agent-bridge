@@ -3510,7 +3510,7 @@ func (s *claudeParseState) appendOrdered(kind card.SegmentKind, text string) {
 }
 
 func (s *claudeParseState) appendOrderedSegment(segment card.Segment) {
-	if s == nil || segment.Kind == card.SegmentThought {
+	if s == nil {
 		return
 	}
 	text := strings.TrimSpace(segment.Text)
@@ -3561,6 +3561,9 @@ func consumeClaudeEvent(event map[string]any, thought, tool *strings.Builder, re
 			state.appendOrdered(card.SegmentText, ordered.String())
 		case "thinking", "reasoning", "redacted_thinking":
 			writeBlockText(thought, block)
+			var ordered strings.Builder
+			writeBlockText(&ordered, block)
+			state.appendOrdered(card.SegmentThought, ordered.String())
 		case "tool_use":
 			writeToolUse(tool, block)
 			var ordered strings.Builder
