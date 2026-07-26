@@ -16,8 +16,10 @@ import (
 )
 
 const (
-	maxMergeForwardMessages  = 200
-	maxMergeForwardTextRunes = 64 << 10
+	maxMergeForwardMessages     = 200
+	maxMergeForwardTextRunes    = 64 << 10
+	maxReferencedMessageDepth   = 4
+	maxReferencedMessageFetches = 20
 )
 
 // FetchedMessage carries the minimal fields bridge needs to inline a quoted
@@ -48,23 +50,58 @@ func (s *SDKSender) FetchMessage(ctx context.Context, messageID string) (Fetched
 	if s == nil || s.getAPI == nil {
 		return FetchedMessage{}, fmt.Errorf("fetch feishu message: message API unavailable")
 	}
+	state := &messageFetchState{
+		active: make(map[string]bool),
+		cache:  make(map[string]messageFetchResult),
+	}
+	return s.fetchMessage(ctx, messageID, state, 0)
+}
+
+type messageFetchResult struct {
+	message FetchedMessage
+	err     error
+}
+
+type messageFetchState struct {
+	active  map[string]bool
+	cache   map[string]messageFetchResult
+	fetches int
+}
+
+func (s *SDKSender) fetchMessage(ctx context.Context, messageID string, state *messageFetchState, depth int) (FetchedMessage, error) {
+	if cached, ok := state.cache[messageID]; ok {
+		return cached.message, cached.err
+	}
+	if depth > maxReferencedMessageDepth {
+		return FetchedMessage{}, fmt.Errorf("fetch feishu message: quoted message depth exceeds %d", maxReferencedMessageDepth)
+	}
+	if state.active[messageID] {
+		return FetchedMessage{}, fmt.Errorf("fetch feishu message: quoted message cycle at id=%s", messageID)
+	}
+	if state.fetches >= maxReferencedMessageFetches {
+		return FetchedMessage{}, fmt.Errorf("fetch feishu message: quoted message fetch limit exceeds %d", maxReferencedMessageFetches)
+	}
+	state.fetches++
+	state.active[messageID] = true
+	defer delete(state.active, messageID)
+
 	req := larkim.NewGetMessageReqBuilder().MessageId(messageID).Build()
 	resp, err := s.getAPI.Get(ctx, req)
 	if err != nil {
-		return FetchedMessage{}, fmt.Errorf("fetch feishu message: %w", err)
+		return cacheMessageFetch(state, messageID, FetchedMessage{}, fmt.Errorf("fetch feishu message: %w", err))
 	}
 	if resp == nil {
-		return FetchedMessage{}, fmt.Errorf("fetch feishu message failed: empty response")
+		return cacheMessageFetch(state, messageID, FetchedMessage{}, fmt.Errorf("fetch feishu message failed: empty response"))
 	}
 	if !resp.Success() {
-		return FetchedMessage{}, fmt.Errorf("fetch feishu message failed: code=%d msg=%s", resp.Code, resp.Msg)
+		return cacheMessageFetch(state, messageID, FetchedMessage{}, fmt.Errorf("fetch feishu message failed: code=%d msg=%s", resp.Code, resp.Msg))
 	}
 	if resp.Data == nil || len(resp.Data.Items) == 0 || resp.Data.Items[0] == nil {
-		return FetchedMessage{}, fmt.Errorf("fetch feishu message failed: no items for id=%s", messageID)
+		return cacheMessageFetch(state, messageID, FetchedMessage{}, fmt.Errorf("fetch feishu message failed: no items for id=%s", messageID))
 	}
 	item := rootFetchedMessage(resp.Data.Items, messageID)
 	if item == nil {
-		return FetchedMessage{}, fmt.Errorf("fetch feishu message failed: no root item for id=%s", messageID)
+		return cacheMessageFetch(state, messageID, FetchedMessage{}, fmt.Errorf("fetch feishu message failed: no root item for id=%s", messageID))
 	}
 	out := FetchedMessage{MessageID: messageID}
 	if item.MsgType != nil {
@@ -79,9 +116,14 @@ func (s *SDKSender) FetchMessage(ctx context.Context, messageID string) (Fetched
 	}
 	if out.MessageType == "merge_forward" || hasMergeForwardChildren(resp.Data.Items, messageID) {
 		out.MessageType = "merge_forward"
-		out.Text, out.Attachments = renderMergeForward(messageID, resp.Data.Items)
+		out.Text, out.Attachments = s.renderMergeForward(ctx, messageID, resp.Data.Items, state, depth)
 	}
-	return out, nil
+	return cacheMessageFetch(state, messageID, out, nil)
+}
+
+func cacheMessageFetch(state *messageFetchState, messageID string, message FetchedMessage, err error) (FetchedMessage, error) {
+	state.cache[messageID] = messageFetchResult{message: message, err: err}
+	return message, err
 }
 
 func rootFetchedMessage(items []*larkim.Message, messageID string) *larkim.Message {
@@ -113,14 +155,18 @@ func hasMergeForwardChildren(items []*larkim.Message, messageID string) bool {
 	return false
 }
 
-func renderMergeForward(rootID string, items []*larkim.Message) (string, []media.Ref) {
+func (s *SDKSender) renderMergeForward(ctx context.Context, rootID string, items []*larkim.Message, state *messageFetchState, fetchDepth int) (string, []media.Ref) {
 	children := make(map[string][]*larkim.Message)
+	knownMessages := make(map[string]bool)
 	total := 0
 	for _, item := range items {
 		if item == nil {
 			continue
 		}
 		id := stringPtr(item.MessageId)
+		if id != "" {
+			knownMessages[id] = true
+		}
 		upper := stringPtr(item.UpperMessageId)
 		if id == rootID && upper == "" {
 			continue
@@ -141,22 +187,35 @@ func renderMergeForward(rootID string, items []*larkim.Message) (string, []media
 	attachments := make([]media.Ref, 0)
 	rendered := 0
 	path := make(map[string]bool)
+	renderedQuotes := make(map[string]bool)
 	var writeChildren func(string, int)
-	writeChildren = func(parent string, depth int) {
+	writeChildren = func(parent string, treeDepth int) {
 		for _, item := range children[parent] {
 			if rendered >= maxMergeForwardMessages {
 				return
 			}
 			rendered++
-			indent := strings.Repeat("  ", depth)
+			indent := strings.Repeat("  ", treeDepth)
 			fmt.Fprintf(&body, "%s%s\n", indent, mergeForwardMessageHeader(item))
+			parentID := stringPtr(item.ParentId)
+			if parentID != "" && !knownMessages[parentID] && !renderedQuotes[parentID] {
+				renderedQuotes[parentID] = true
+				body.WriteString(indent + "  [引用消息]\n")
+				quoted, err := s.fetchMessage(ctx, parentID, state, fetchDepth+1)
+				if err != nil {
+					body.WriteString(indent + "    [引用消息不可读取，可能无会话权限或已被删除]\n")
+				} else {
+					writeIndentedText(&body, quoted.Text, indent+"    ")
+					attachments = append(attachments, quoted.Attachments...)
+				}
+			}
 			msgType := stringPtr(item.MsgType)
 			content := mergeForwardMessageText(item)
 			id := stringPtr(item.MessageId)
 			if msgType == "merge_forward" && id != "" && !path[id] {
 				body.WriteString(indent + "  [嵌套合并转发]\n")
 				path[id] = true
-				writeChildren(id, depth+1)
+				writeChildren(id, treeDepth+1)
 				delete(path, id)
 			} else {
 				for _, line := range strings.Split(content, "\n") {
@@ -178,6 +237,12 @@ func renderMergeForward(rootID string, items []*larkim.Message) (string, []media
 	header += "]\n"
 	text := strings.TrimSpace(header + body.String())
 	return truncateMergeForwardText(text), attachments
+}
+
+func writeIndentedText(body *strings.Builder, text, indent string) {
+	for _, line := range strings.Split(strings.TrimSpace(text), "\n") {
+		fmt.Fprintf(body, "%s%s\n", indent, line)
+	}
 }
 
 func mergeForwardMessageHeader(item *larkim.Message) string {
@@ -241,6 +306,8 @@ func parseInteractiveMessageText(raw string) string {
 
 func renderCardText(value any) string {
 	switch node := value.(type) {
+	case string:
+		return node
 	case []any:
 		return joinCardParts(node, "\n")
 	case map[string]any:
@@ -285,7 +352,8 @@ func renderCardText(value any) string {
 		// Traverse only documented structural fields and in their display order.
 		// This avoids leaking action payloads, configuration, or duplicated
 		// markdownElements from the normalized CardKit response.
-		for _, key := range []string{"body", "newBody", "title", "elements", "columns", "items", "contents", "text"} {
+		parts := make([]string, 0)
+		for _, key := range []string{"title", "body", "newBody", "elements", "columns", "items", "contents", "text"} {
 			if child, ok := cardValue(node, key); ok {
 				separator := "\n"
 				if key == "contents" || key == "text" {
@@ -293,13 +361,14 @@ func renderCardText(value any) string {
 				}
 				if list, ok := child.([]any); ok {
 					if rendered := joinCardParts(list, separator); rendered != "" {
-						return rendered
+						parts = append(parts, rendered)
 					}
 				} else if rendered := renderCardText(child); rendered != "" {
-					return rendered
+					parts = append(parts, rendered)
 				}
 			}
 		}
+		return strings.TrimSpace(strings.Join(parts, "\n"))
 	}
 	return ""
 }

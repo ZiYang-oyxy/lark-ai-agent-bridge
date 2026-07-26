@@ -15,12 +15,22 @@ import (
 type captureGetMessageAPI struct {
 	reqs        []*larkim.GetMessageReq
 	resp        *larkim.GetMessageResp
+	resps       []*larkim.GetMessageResp
 	err         error
+	errs        []error
 	nilResponse bool
 }
 
 func (f *captureGetMessageAPI) Get(_ context.Context, req *larkim.GetMessageReq, _ ...larkcore.RequestOptionFunc) (*larkim.GetMessageResp, error) {
+	index := len(f.reqs)
 	f.reqs = append(f.reqs, req)
+	if index < len(f.resps) {
+		var err error
+		if index < len(f.errs) {
+			err = f.errs[index]
+		}
+		return f.resps[index], err
+	}
 	if f.nilResponse {
 		return nil, f.err
 	}
@@ -114,6 +124,58 @@ func TestSDKSenderFetchMessageExpandsMergeForwardTree(t *testing.T) {
 	}
 }
 
+func TestSDKSenderFetchMessageExpandsMissingQuotedParent(t *testing.T) {
+	outerRoot := fetchedMessageItem("om_outer", "", "merge_forward", "Merged and Forwarded Message", "ou_f", "1")
+	reply := fetchedMessageItem("om_reply", "om_outer", "text", `{"text":"外层回复"}`, "ou_a", "3")
+	parentID := "om_inner"
+	reply.ParentId = &parentID
+
+	innerRoot := fetchedMessageItem(parentID, "", "merge_forward", "Merged and Forwarded Message", "ou_f", "1")
+	innerText := fetchedMessageItem("om_inner_text", parentID, "text", `{"text":"INNER-QUOTE-731"}`, "ou_b", "2")
+	api := &captureGetMessageAPI{resps: []*larkim.GetMessageResp{
+		messageItemsResp(outerRoot, reply),
+		messageItemsResp(innerRoot, innerText),
+	}}
+
+	got, err := (&SDKSender{getAPI: api}).FetchMessage(t.Context(), "om_outer")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"[引用消息]", "INNER-QUOTE-731", "外层回复"} {
+		if !strings.Contains(got.Text, want) {
+			t.Fatalf("expanded text missing %q:\n%s", want, got.Text)
+		}
+	}
+	if len(api.reqs) != 2 {
+		t.Fatalf("Get calls = %d, want 2", len(api.reqs))
+	}
+}
+
+func TestSDKSenderFetchMessageMarksInaccessibleQuotedParent(t *testing.T) {
+	outerRoot := fetchedMessageItem("om_outer", "", "merge_forward", "Merged and Forwarded Message", "ou_f", "1")
+	first := fetchedMessageItem("om_first", "om_outer", "text", `{"text":"第一条"}`, "ou_a", "2")
+	second := fetchedMessageItem("om_second", "om_outer", "text", `{"text":"第二条"}`, "ou_b", "3")
+	parentID := "om_inaccessible"
+	first.ParentId = &parentID
+	second.ParentId = &parentID
+	denied := &larkim.GetMessageResp{CodeError: larkcore.CodeError{Code: 230002, Msg: "outside chat"}}
+	api := &captureGetMessageAPI{resps: []*larkim.GetMessageResp{
+		messageItemsResp(outerRoot, first, second),
+		denied,
+	}}
+
+	got, err := (&SDKSender{getAPI: api}).FetchMessage(t.Context(), "om_outer")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if count := strings.Count(got.Text, "引用消息不可读取"); count != 1 {
+		t.Fatalf("unavailable quote markers = %d, want 1:\n%s", count, got.Text)
+	}
+	if len(api.reqs) != 2 {
+		t.Fatalf("Get calls = %d, want cached 2", len(api.reqs))
+	}
+}
+
 func TestSDKSenderFetchMessageExtractsInteractiveCardText(t *testing.T) {
 	card := `{"body":{"property":{"elements":[{"id":"panel_thought","tag":"collapsible_panel","property":{"elements":[{"id":"thought","tag":"markdown","property":{"elements":[{"tag":"plain_text","property":{"content":"隐藏思考"}}]}}]}},{"id":"answer","tag":"markdown","property":{"elements":[{"tag":"plain_text","property":{"content":"结论："}},{"tag":"code_span","property":{"content":"state root"}},{"tag":"br"},{"tag":"list","property":{"items":[{"type":"bullet","elements":[{"tag":"plain_text","property":{"content":"保留配置"}}]},{"type":"ordered","elements":[{"tag":"plain_text","property":{"content":"执行迁移"}}]}]}}]}},{"id":"panel_tools","tag":"collapsible_panel","property":{"elements":[{"id":"tools","tag":"markdown","content":"工具过程"}]}},{"id":"meta_primary","tag":"markdown","content":"运行元数据"}]}}}`
 	interactive := fetchedMessageItem("om_card", "om_root", "interactive", fmt.Sprintf(`{"json_card":%q}`, card), "ou_bot", "1710500002000")
@@ -142,6 +204,16 @@ func TestParseInteractiveMessageTextSupportsFlatCard(t *testing.T) {
 	raw := `{"json_card":"{\"body\":{\"elements\":[{\"tag\":\"markdown\",\"element_id\":\"answer\",\"content\":\"桥接器正文\"}]}}"}`
 	if got := parseInteractiveMessageText(raw); got != "桥接器正文" {
 		t.Fatalf("text = %q", got)
+	}
+}
+
+func TestParseInteractiveMessageTextSupportsLegacyCard(t *testing.T) {
+	raw := `{"title":"旧卡片","elements":[[{"tag":"img","image_key":"img_x"},{"tag":"text","text":"请升级至最新版本客户端，以查看内容"}]]}`
+	got := parseInteractiveMessageText(raw)
+	for _, want := range []string{"旧卡片", "[图片]", "请升级至最新版本客户端，以查看内容"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("legacy card text missing %q: %q", want, got)
+		}
 	}
 }
 
@@ -184,6 +256,13 @@ func fetchedMessageItem(id, upper, msgType, content, sender, createTime string) 
 	item.Body = &larkim.MessageBody{Content: &content}
 	item.Sender = &larkim.Sender{Id: &sender}
 	return item
+}
+
+func messageItemsResp(items ...*larkim.Message) *larkim.GetMessageResp {
+	return &larkim.GetMessageResp{
+		CodeError: larkcore.CodeError{Code: 0},
+		Data:      &larkim.GetMessageRespData{Items: items},
+	}
 }
 
 func TestSDKSenderFetchMessageEmptyID(t *testing.T) {
