@@ -23,7 +23,7 @@ workspace：
 - 飞书消息通过 SDK 长连接进入 bridge。
 - `/config` 可从 `agents.json` 选择 `claude` / `codex` 及其 wrapper presets（包括 `cx1`～`cx4`）。
 - Claude 以 `claude -p --output-format stream-json --dangerously-skip-permissions --effort low` 启动。
-- Codex 以 `codex exec --json ... -` 启动，prompt 通过 stdin 传入；Bridge 不额外传 model、effort、sandbox、approval 或 profile 参数。
+- Codex 以 `codex exec [-c model_reasoning_effort="<value>"] --json ... -` 启动，prompt 通过 stdin 传入；非 `default` effort 由 Bridge 显式覆盖，`default` 继承所选 executable/home，model、sandbox、approval 和 profile 仍不由 Bridge 覆盖。
 - Codex 的 `exec --json` 会将过程 commentary 与最终回答都输出为 `agent_message`；Bridge 保留末答之前的过程消息原文并放入 thinking 折叠区，不依赖 reasoning summary 配置。
 - 默认使用普通聊天模式：回复进入聊天主消息流，同一 chat 按 Agent 共用 session 并串行执行。
 - `/config` 可切换为话题模式：回复进入话题，有 `ThreadID` 时每个 topic 独立 session，不同 topic 可并行执行。
@@ -258,7 +258,7 @@ Bridge 拥有主 Codex invocation 的顶层 `developer_instructions`。显式 Co
 }
 ```
 
-> Codex 的 model、reasoning effort、sandbox、approval、profile、plugins、MCP 和 rules 均由所选 `codex` / `cx*` executable 及其环境决定。Bridge 只传 JSONL、resume、image 和 stdin 协议所需参数。Claude 仍保持现有 Bridge 参数策略。
+> Codex 的 `default` reasoning effort 以及 model、sandbox、approval、profile、plugins、MCP 和 rules 由所选 `codex` / `cx*` executable 及其环境决定；`/config` 选择 `low` / `medium` / `high` 时，Bridge 通过 `model_reasoning_effort` 显式覆盖本轮推理深度。Claude 仍保持现有 Bridge 参数策略。
 
 > 当前 Codex 自动验收使用无网络 fake executable；真实飞书 + 真实 `codex`/`cx*` E2E 需在具备凭据和部署授权的环境另行执行。
 

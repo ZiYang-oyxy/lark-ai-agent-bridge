@@ -11,8 +11,8 @@
 bridge 不托管交互式终端，也不通过 tmux/PTY 捕获输出。每个已调度 batch 形成一次所选 Agent 子进程调用；一个 batch 可包含一条或多条经 debounce 判定兼容的飞书输入：
 
 - 启动命令：`claude -p --output-format stream-json --verbose --include-partial-messages --dangerously-skip-permissions --effort low <prompt>`
-- Codex 新会话使用 `codex exec --json [--image <path> ...] [--] -`，续接使用 `codex exec resume --json [--image <path> ...] <thread-id> -`；prompt 写入 stdin。
-- Bridge 不向 Codex 传 model、effort、sandbox、approval、profile、plugins、MCP、rules 或 git-check 参数，这些全部由所选 executable 和环境决定。
+- Codex 新会话使用 `codex exec [-c model_reasoning_effort="<value>"] --json [--image <path> ...] [--] -`，续接使用 `codex exec [-c model_reasoning_effort="<value>"] resume --json [--image <path> ...] <thread-id> -`；prompt 写入 stdin。
+- 非 `default` effort 由 Bridge 按入队时冻结的偏好通过 `model_reasoning_effort` 覆盖；`default` 以及 model、sandbox、approval、profile、plugins、MCP、rules 和 git-check 参数仍由所选 executable 和环境决定。
 - 子进程 `cmd.Dir` 和 `PWD` 都设置为本轮请求解析出的工作目录。工作目录决策链是三层权威（`internal/bridge` 的 `effectiveWorkDir`）：① 本条消息的一次性 `--workdir` 覆盖；② **topic workspace cwd —— 唯一持久权威**，由 `/cd` / `/ws` 写入 `internal/workspace` 的 store，按 topic scope（`ChatID` 或 `ChatID:ThreadID`）粒度保存；③ 全局 `--default-workdir` / 环境默认目录兜底。会话仍照常**记录**它运行用的 workdir（供 catalog resume 归组），但**决定用哪个目录时不再读 session 的记录值**——记录与决策分离；切目录（`/cd`、`/ws use`）会重置会话，重建时自然落到 scope cwd。simulate 等未接 workspace store 的模式跳过第二层，直接回退默认目录。
 - 如果当前 conversation scope 已保存 agent session id，后续消息使用对应 CLI 的 resume 协议续接。
 - `/new` 会清空当前 conversation scope 保存的 agent session id，并从新会话开始。

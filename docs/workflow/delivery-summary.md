@@ -19,7 +19,7 @@
 - `/new`、`/help`、`/status` 命令面。
 - `/resume`、`/codex` 等撤回入口不再开放。
 - Claude one-shot 命令构造，保留 `--dangerously-skip-permissions`；model/effort 由入队时冻结的个人偏好决定。
-- Codex one-shot 与 resume 命令构造；只传 JSONL/会话/图片/stdin 协议参数，model、effort、sandbox、approval 和 profile 交由 executable/environment。
+- Codex one-shot 与 resume 命令构造；除 JSONL/会话/图片/stdin 协议参数外，非 `default` effort 通过 `model_reasoning_effort` 覆盖，`default` effort 及 model、sandbox、approval 和 profile 交由 executable/environment。
 - Claude stream-json 输出解析：正文、思考、工具调用、model、tokens、session id，并支持增量更新卡片。
 - Codex JSONL 输出解析：thread、turn、agent message、reasoning、command、tokens 和 error；末答前的 `agent_message` 原文作为过程 thought 保留，不依赖 reasoning summary，并支持协议漂移 audit。
 - topic/chat 内普通文本续接对应 Agent 保存的 session/thread id。

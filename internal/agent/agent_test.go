@@ -133,6 +133,48 @@ func TestBuildCodexOneShotCommandUsesOnlyProtocolArguments(t *testing.T) {
 	}
 }
 
+func TestBuildCodexOneShotCommandUsesConfiguredEffort(t *testing.T) {
+	tests := []struct {
+		name string
+		cfg  OneShotConfig
+		want []string
+	}{
+		{
+			name: "fresh",
+			cfg:  OneShotConfig{Kind: Codex, Prompt: "inspect", Effort: "high"},
+			want: []string{"codex", "exec", "-c", `model_reasoning_effort="high"`, "--json", "-"},
+		},
+		{
+			name: "resume",
+			cfg:  OneShotConfig{Kind: Codex, Prompt: "next", AgentSessionID: "thread-1", Effort: "medium"},
+			want: []string{"codex", "exec", "-c", `model_reasoning_effort="medium"`, "resume", "--json", "thread-1", "-"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := BuildOneShotCommand(tt.cfg)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(got, tt.want) {
+				t.Fatalf("command = %#v, want %#v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestBuildCodexOneShotCommandOmitsDefaultEffort(t *testing.T) {
+	for _, effort := range []string{"", "default", " DEFAULT "} {
+		cmd, err := BuildOneShotCommand(OneShotConfig{Kind: Codex, Prompt: "inspect", Effort: effort})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(strings.Join(cmd, "\x00"), "model_reasoning_effort") {
+			t.Fatalf("effort %q must inherit Codex config: %#v", effort, cmd)
+		}
+	}
+}
+
 func TestParseKindAcceptsCodex(t *testing.T) {
 	got, ok := ParseKind(" CODEX ")
 	if !ok || got != Codex {

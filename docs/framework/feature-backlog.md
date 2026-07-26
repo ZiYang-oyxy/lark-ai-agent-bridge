@@ -101,7 +101,7 @@ gist 的企业级方案对当前体量**严重过度设计**,近期一律不进�
 ### P2-1 · Codex 适配
 
 - **状态（2026-07-20）**：✅ 已完成。`/config` 可解析和选择 `codex` 及 `cx1`～`cx4` presets，支持 JSONL 流式卡片、thread resume、`CODEX_HOME`、图片 `--image` 与文本附件路径。
-- **参数边界**：Bridge 只传 `exec`、`--json`、`resume`、`--image`、stdin marker/分隔符。model、effort、sandbox、approval、profile、plugins、MCP、rules 和 git checks 均由所选 executable 及环境决定。
+- **参数边界**：Bridge 传 `exec`、`--json`、`resume`、`--image`、stdin marker/分隔符，并在 effort 非 `default` 时传 `model_reasoning_effort` 覆盖。`default` effort 及 model、sandbox、approval、profile、plugins、MCP、rules 和 git checks 均由所选 executable 及环境决定。
 - **会话边界**：Claude/Codex 在 session key 上隔离，resolved bin/home 在入队时冻结，snapshot v1 可迁移到 agent-neutral v2。
 
 ### P2-2 · 人机审批闭环(收紧 skip-permissions)

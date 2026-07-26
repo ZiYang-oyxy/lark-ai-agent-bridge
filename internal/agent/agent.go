@@ -31,7 +31,7 @@ type OneShotConfig struct {
 	// longer need to fork after the seed run.
 	ForkFromAgentSessionID string
 	Model                  string
-	Effort         string
+	Effort                 string
 	// Home is the resolved agent home / config directory. Empty means "use the
 	// agent's default home" (no config-dir environment variable is injected).
 	Home string
@@ -76,6 +76,9 @@ func buildCodexOneShotCommand(cfg OneShotConfig) ([]string, error) {
 		bin = "codex"
 	}
 	global := []string{}
+	if effort := strings.ToLower(strings.TrimSpace(cfg.Effort)); effort != "" && effort != "default" {
+		global = append(global, "-c", fmt.Sprintf("model_reasoning_effort=%q", effort))
+	}
 	if cfg.DeveloperInstructions != "" {
 		encoded, err := codexDeveloperInstructionsArg(cfg.DeveloperInstructions)
 		if err != nil {
