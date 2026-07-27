@@ -1592,9 +1592,20 @@ func (s *Service) executeBatch(ctx context.Context, sess session.Session, batch 
 	if errors.Is(ctx.Err(), context.Canceled) {
 		status, cardStatus = session.InputCancelled, "stopped"
 	} else if err != nil {
-		status, cardStatus = session.InputFailed, "failed"
 		s.Audit.Record("system", "agent_run_failed", sess.ID, agentFailureAuditDetail(sess.Key.Agent, err))
-		result.Segments = append(result.Segments, card.Segment{Kind: card.SegmentError, Text: err.Error()})
+		if partialAgentInterruption(err, result) {
+			// The agent process died mid-stream (typically an upstream gateway
+			// cutting a long request while the agent waited on a subagent), but
+			// it had already streamed real content. Rather than discarding the
+			// whole turn behind an error card, keep what was produced and mark
+			// it interrupted so the user sees the partial work and can resend.
+			status, cardStatus = session.InputInterrupted, "interrupted"
+			s.Audit.Record("system", "agent_run_interrupted_partial", sess.ID, fmt.Sprintf("agent=%s segments=%d", sess.Key.Agent, len(result.OrderedSegments)))
+			result.Segments = append(result.Segments, card.Segment{Kind: card.SegmentText, Text: partialInterruptionNotice})
+		} else {
+			status, cardStatus = session.InputFailed, "failed"
+			result.Segments = append(result.Segments, card.Segment{Kind: card.SegmentError, Text: err.Error()})
+		}
 	}
 	if len(result.Segments) == 0 && status == session.InputCompleted {
 		result.Segments = []card.Segment{{Kind: card.SegmentText, Text: "Agent 未返回内容。"}}

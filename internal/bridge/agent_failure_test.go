@@ -11,6 +11,7 @@ import (
 
 	"lark-agent-bridge/internal/agent"
 	"lark-agent-bridge/internal/bridgeinstructions"
+	"lark-agent-bridge/internal/card"
 )
 
 func TestAgentFailureAuditDetailUsesStructuredSourceAndRedactedTail(t *testing.T) {
@@ -101,5 +102,44 @@ exit 19
 				t.Fatalf("process error = %#v, want source=%s tail=%q", processErr, tc.wantSource, tc.wantTail)
 			}
 		})
+	}
+}
+
+func TestPartialAgentInterruption(t *testing.T) {
+	segs := []card.Segment{{Kind: card.SegmentText, Text: "partial work"}}
+	procErr := newAgentProcessError(errors.New("exit status 1"), agentFailureSourceResult, "mid-stream")
+	cases := []struct {
+		name   string
+		err    error
+		result AgentRunResult
+		want   bool
+	}{
+		{"process error with streamed content", procErr, AgentRunResult{OrderedSegments: segs}, true},
+		{"process error with no content", procErr, AgentRunResult{}, false},
+		{"plain error even with content", errors.New("boom"), AgentRunResult{OrderedSegments: segs}, false},
+		{"nil error", nil, AgentRunResult{OrderedSegments: segs}, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := partialAgentInterruption(tc.err, tc.result); got != tc.want {
+				t.Fatalf("partialAgentInterruption = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestAgentCardStreamInterruptedTerminalMapping(t *testing.T) {
+	// The interrupted status must resolve to a complete, correctly-labelled
+	// terminal (orange, warning title) rather than falling through to the
+	// running-state default.
+	s := &agentCardStream{status: "interrupted"}
+	if got := s.statusEventTypeLocked(); got != "interrupted" {
+		t.Fatalf("event type = %q, want interrupted", got)
+	}
+	if got := s.headerTemplateLocked(); got != "orange" {
+		t.Fatalf("template = %q, want orange", got)
+	}
+	if !terminalStreamEvent(s.statusEventTypeLocked()) {
+		t.Fatal("interrupted must be a terminal stream event")
 	}
 }

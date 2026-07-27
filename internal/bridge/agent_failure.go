@@ -12,6 +12,28 @@ import (
 
 const agentFailureAuditTailBytes = 4096
 
+// partialInterruptionNotice is appended to the preserved partial output when an
+// agent process dies mid-stream after having produced real content.
+const partialInterruptionNotice = "⚠️ 上游连接中断，本轮未完成。以上为中断前已产出的内容，可重新发送以继续。"
+
+// partialAgentInterruption reports whether a failed run should be surfaced as a
+// content-preserving interruption rather than a bare error. It is true only
+// when the process itself failed (an agentProcessError — not a context cancel,
+// which is handled earlier) AND the stream had already yielded real ordered
+// content before the process died. Both conditions must hold: a process that
+// failed with no output is a genuine failure, and a non-process error never
+// reaches this path with partial stream content.
+func partialAgentInterruption(runErr error, result AgentRunResult) bool {
+	if runErr == nil {
+		return false
+	}
+	var processErr *agentProcessError
+	if !errors.As(runErr, &processErr) {
+		return false
+	}
+	return len(result.OrderedSegments) > 0
+}
+
 type agentFailureSource string
 
 const (

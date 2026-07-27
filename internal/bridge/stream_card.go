@@ -1843,6 +1843,8 @@ func (s *agentCardStream) statusEventTypeLocked() string {
 		return "error"
 	case "stopped":
 		return "stopped"
+	case "interrupted":
+		return "interrupted"
 	default:
 		return "stream"
 	}
@@ -1856,6 +1858,8 @@ func (s *agentCardStream) headerTemplateLocked() string {
 		return "red"
 	case "stopped":
 		return "grey"
+	case "interrupted":
+		return "orange"
 	default:
 		return "blue"
 	}
@@ -1873,6 +1877,8 @@ func (s *agentCardStream) headerTitleLocked() string {
 		return fmt.Sprintf("❌ 执行失败 · ⏱ %s", elapsed)
 	case "stopped":
 		return fmt.Sprintf("⏹ 已停止 · ⏱ %s", elapsed)
+	case "interrupted":
+		return fmt.Sprintf("⚠️ 上游中断 · ⏱ %s", elapsed)
 	}
 	switch s.activity {
 	case streamActivityTool:
