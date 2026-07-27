@@ -63,7 +63,7 @@ func TestResolveQuotedMessageReturnsParentAttachments(t *testing.T) {
 	attach := []media.Ref{{MessageID: "om_parent", FileKey: "img_key_1", Kind: "image"}}
 	fetcher := &quoteAttachmentsFetcher{msg: QuotedMessage{Text: "看这张图", SenderID: "ou_a", MessageType: "text", Attachments: attach}}
 	svc := &Service{Audit: audit.NewRecorder(), MessageFetcher: fetcher}
-	_, _, gotAtt := svc.resolveQuotedMessage(context.Background(), Message{ParentID: "om_parent"})
+	_, _, _, gotAtt := svc.resolveQuotedMessage(context.Background(), Message{ParentID: "om_parent"})
 	if len(gotAtt) != 1 || gotAtt[0].FileKey != "img_key_1" {
 		t.Fatalf("attachments passthrough = %#v", gotAtt)
 	}
@@ -74,7 +74,7 @@ func TestResolveQuotedMessageReturnsAttachmentsEvenWithEmptyText(t *testing.T) {
 	attach := []media.Ref{{MessageID: "om_parent", FileKey: "img_key_2", Kind: "image"}}
 	fetcher := &quoteAttachmentsFetcher{msg: QuotedMessage{Text: "", MessageType: "image", Attachments: attach}}
 	svc := &Service{Audit: audit.NewRecorder(), MessageFetcher: fetcher}
-	text, _, gotAtt := svc.resolveQuotedMessage(context.Background(), Message{ParentID: "om_parent"})
+	text, _, _, gotAtt := svc.resolveQuotedMessage(context.Background(), Message{ParentID: "om_parent"})
 	if text != "[image 消息]" {
 		t.Fatalf("text placeholder = %q", text)
 	}

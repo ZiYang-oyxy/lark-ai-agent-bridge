@@ -119,6 +119,24 @@ func RunAssert(assert Assert, output *SimulateOutput) (bool, string) {
 		}
 		return false, "期望可见文本包含 '" + assert.Text + "',实际可见文本:\n" + visible
 
+	case "any_segment_contains":
+		// segment_contains 只看 Events[0](通常是 stream 头帧,segments 为空)。多帧
+		// 场景(尤其是 simulate 里 stream + result 组合)真正承载可见文案的是后续
+		// event。any_segment_contains 遍历全部 event 的 extractVisibleText,只要
+		// 有一处匹配即通过。适合断言 prompt/answer/思考区等出现在 result 帧的内容。
+		var collected []string
+		for _, ev := range output.Events {
+			v := extractVisibleText(ev)
+			if v == "" {
+				continue
+			}
+			if strings.Contains(v, assert.Text) {
+				return true, ""
+			}
+			collected = append(collected, v)
+		}
+		return false, "期望任一 event 可见文本包含 '" + assert.Text + "',实际:\n" + strings.Join(collected, "\n---\n")
+
 	case "has_button":
 		// 只认数据模型里真实存在的按钮:Actions[].Label 与 StopButton。
 		for _, act := range event.Actions {

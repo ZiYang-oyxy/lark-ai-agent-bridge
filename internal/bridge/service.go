@@ -178,6 +178,11 @@ type QuotedMessage struct {
 	Text        string
 	SenderID    string
 	MessageType string
+	// SenderType 是引用消息发送者的主体类型，飞书原生 `user` / `app` / `anonymous` /
+	// `unknown`。上层用它给 prompt 里的引用块加主体身份边框（对来自 bot 的引用做
+	// 更严格的隔离提示），避免另一分身的第一人称自述被 agent 误认成自己的历史。
+	// 空表示未知；缺失时降级为普通消息处理。
+	SenderType string
 	// Attachments 是引用消息里可下载的图片/文件引用。topic seed 的 quote 模式会把
 	// 这些附件与当前消息的附件合并,喂给 agent 作 seed;fork 模式忽略。
 	Attachments []media.Ref
@@ -1096,7 +1101,7 @@ func (s *Service) runWithPreference(ctx context.Context, cmd Command, msg Messag
 	// 引用消息文本(下面 quotedText/quotedSender)+ 引用消息附件(此处并入 msg.Attachments)。
 	// fork 模式跳过合并,只走后面单独的 quotedText 内联。为避免 executeBatch 侧路径分裂,
 	// 这里两分支拿到的 quotedText 都填进 session.Input;区别只在附件合并与 forkFrom 是否传。
-	quotedText, quotedSender, quotedAttachments := s.resolveQuotedMessage(ctx, msg)
+	quotedText, quotedSender, quotedSenderType, quotedAttachments := s.resolveQuotedMessage(ctx, msg)
 	seedMode := preference.TopicSeedMode
 	if seedMode == "" {
 		seedMode = config.TopicSeedModeQuote
@@ -1124,7 +1129,7 @@ func (s *Service) runWithPreference(ctx context.Context, cmd Command, msg Messag
 	if seedMode == config.TopicSeedModeFork {
 		forkFrom = s.forkSeedForTopicSession(cmd.Agent, key, msg, preference.ConversationMode)
 	}
-	input := session.Input{ID: msg.ID, Sender: msg.Sender, Text: text, QuotedText: quotedText, QuotedSender: quotedSender, Attachments: attachments, ReplyToMessageID: msg.ID, CardSessionID: cardSessionID, WorkDir: workDir, RequestedModel: preference.Model, RequestedEffort: preference.Effort, AgentBin: bin, AgentHome: home, ForkFromAgentSessionID: forkFrom, ReplyMode: preference.ReplyMode, AppendOverflowMode: preference.AppendOverflowMode, ConversationMode: preference.ConversationMode, NotifyOnComplete: preference.NotifyOnComplete, BridgeInstructionsVersion: bridgeinstructions.CurrentVersion, ScheduleKind: cmd.ScheduleKind, ScheduleTargetThreadID: msg.ThreadID, IsGroup: msg.IsGroup, Time: effectiveMessageTime(msg), DebounceUntil: receivedAt.Add(debounceWindow), DebounceWindow: debounceWindow, State: session.InputDebouncing, Reset: cmd.Reset || cmd.ScheduleKind != ""}
+	input := session.Input{ID: msg.ID, Sender: msg.Sender, Text: text, QuotedText: quotedText, QuotedSender: quotedSender, QuotedSenderType: quotedSenderType, Attachments: attachments, ReplyToMessageID: msg.ID, CardSessionID: cardSessionID, WorkDir: workDir, RequestedModel: preference.Model, RequestedEffort: preference.Effort, AgentBin: bin, AgentHome: home, ForkFromAgentSessionID: forkFrom, ReplyMode: preference.ReplyMode, AppendOverflowMode: preference.AppendOverflowMode, ConversationMode: preference.ConversationMode, NotifyOnComplete: preference.NotifyOnComplete, BridgeInstructionsVersion: bridgeinstructions.CurrentVersion, ScheduleKind: cmd.ScheduleKind, ScheduleTargetThreadID: msg.ThreadID, IsGroup: msg.IsGroup, Time: effectiveMessageTime(msg), DebounceUntil: receivedAt.Add(debounceWindow), DebounceWindow: debounceWindow, State: session.InputDebouncing, Reset: cmd.Reset || cmd.ScheduleKind != ""}
 	accepted, queued, err := s.Sessions.AcceptAndEnqueue(key, input, receivedAt, s.dedupTTL(), s.dedupMaxEntries(), s.batchLimits())
 	if err != nil {
 		action := "queue_rejected"
@@ -3087,24 +3092,57 @@ func isTopicSeedFirstRun(sessions *session.Manager, key session.Key) bool {
 // body (image/file/etc.) yields a short type placeholder so the agent still
 // knows a quote existed. Downloadable attachments (image/file) in the parent
 // message come back as refs so callers can decide whether to pull them.
-func (s *Service) resolveQuotedMessage(ctx context.Context, msg Message) (text, sender string, attachments []media.Ref) {
+// resolveQuotedMessage 返回引用消息的正文、发送者 id、发送者主体类型、附件。
+// senderType 是 prompt 侧决定要不要加主体身份边框的信号：
+//   - "user"        普通用户 quote，正常引用块 + 语义提示
+//   - "app"         引用的是别的 bot（另一分身/别的 App），加强隔离提示
+//   - "self_bot"    引用的是本 bot 自己（sender == s.BotOpenID），说明是我自己发出的历史
+//   - "anonymous" / "unknown" / ""  未知，走通用隔离提示
+//
+// 语义：quote 只是被引用的**外部信息**，不是当前 agent 的历史；里面的第一人称不指
+// 当前 agent；quote 里声称的后台状态不构成事实。
+func (s *Service) resolveQuotedMessage(ctx context.Context, msg Message) (text, sender, senderType string, attachments []media.Ref) {
 	if msg.ParentID == "" || s.MessageFetcher == nil {
-		return "", "", nil
+		return "", "", "", nil
 	}
 	fetched, err := s.MessageFetcher.FetchMessage(ctx, msg.ParentID)
 	if err != nil {
 		s.Audit.Record(msg.Sender, "quoted_message_fetch_failed", msg.ChatID, err.Error())
-		return "", "", nil
+		return "", "", "", nil
 	}
+	senderType = normalizeQuotedSenderType(fetched.SenderType, fetched.SenderID, s.BotOpenID)
 	quoted := strings.TrimSpace(fetched.Text)
 	if quoted == "" {
 		if fetched.MessageType != "" {
 			quoted = "[" + fetched.MessageType + " 消息]"
 		} else {
-			return "", "", fetched.Attachments
+			return "", fetched.SenderID, senderType, fetched.Attachments
 		}
 	}
-	return quoted, fetched.SenderID, fetched.Attachments
+	return quoted, fetched.SenderID, senderType, fetched.Attachments
+}
+
+// normalizeQuotedSenderType 把 upstream 的 sender_type（"user"/"app"/…）与 self-bot
+// 识别归一到一个稳定的字面量，供 prompt 层做主体身份边框分支。self-bot 优先于
+// upstream 值：只要 sender open_id 等于本 bot 自己，就标 "self_bot"，与 upstream
+// SenderType 是否为 "app" 无关（对方 API 返回可能缺失或不一致）。
+func normalizeQuotedSenderType(raw, senderID, selfOpenID string) string {
+	if strings.TrimSpace(selfOpenID) != "" && strings.TrimSpace(senderID) == strings.TrimSpace(selfOpenID) {
+		return "self_bot"
+	}
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "user":
+		return "user"
+	case "app":
+		return "app"
+	case "anonymous":
+		return "anonymous"
+	case "self_bot":
+		// simulate/测试路径可以直接注入 self_bot 字面量，绕开需要 BotOpenID 上下文的
+		// open_id 比对。生产链路一律走 open_id 比对推导，不依赖 upstream 传值。
+		return "self_bot"
+	}
+	return ""
 }
 
 // expandDirectMergeForward replaces the abbreviated inbound merge-forward

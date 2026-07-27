@@ -78,6 +78,36 @@ func TestSDKSenderFetchMessageText(t *testing.T) {
 	}
 }
 
+// TestSDKSenderFetchMessagePropagatesSenderType 断言：飞书 Sender.SenderType（`user` /
+// `app` / `anonymous` / `unknown`）不再被丢弃，会透传到 FetchedMessage.SenderType，
+// 供上层 prompt 侧决定主体身份边框措辞。
+func TestSDKSenderFetchMessagePropagatesSenderType(t *testing.T) {
+	msgType := "text"
+	content := `{"text":"review subagent 已重新启动"}`
+	senderID := "ou_other_bot"
+	senderType := "app"
+	item := &larkim.Message{
+		MsgType: &msgType,
+		Body:    &larkim.MessageBody{Content: &content},
+		Sender:  &larkim.Sender{Id: &senderID, SenderType: &senderType},
+	}
+	api := &captureGetMessageAPI{resp: &larkim.GetMessageResp{
+		CodeError: larkcore.CodeError{Code: 0},
+		Data:      &larkim.GetMessageRespData{Items: []*larkim.Message{item}},
+	}}
+	sender := &SDKSender{getAPI: api}
+	got, err := sender.FetchMessage(t.Context(), "om_parent")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.SenderType != "app" {
+		t.Fatalf("SenderType passthrough = %q, want app", got.SenderType)
+	}
+	if got.SenderID != "ou_other_bot" {
+		t.Fatalf("SenderID = %q", got.SenderID)
+	}
+}
+
 func TestSDKSenderFetchMessagePost(t *testing.T) {
 	content := `{"title":"t","content":[[{"tag":"text","text":"line1"}],[{"tag":"text","text":"line2"}]]}`
 	api := &captureGetMessageAPI{resp: getMessageResp("post", content, "ou_x")}

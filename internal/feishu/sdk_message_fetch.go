@@ -29,6 +29,10 @@ type FetchedMessage struct {
 	MessageType string
 	Text        string
 	SenderID    string
+	// SenderType 是被引用消息发送者的主体类型，飞书 im.v1 message.Get 直接返回
+	// (`user` / `app` / `anonymous` / `unknown`)。上层用它在 prompt 里给引用块加
+	// 主体身份边框——避免另一个 bot 的第一人称自述被 agent 误当成自己的历史。
+	SenderType string
 	// Attachments 是被引用消息里可下载的图片/文件引用。上层(topic seed quote 模式)
 	// 用它把引用里的图片拉回来喂给 agent。文本消息返回 nil。
 	Attachments []media.Ref
@@ -111,8 +115,13 @@ func (s *SDKSender) fetchMessage(ctx context.Context, messageID string, state *m
 		out.Text = parseMessageText(*item.Body.Content)
 		out.Attachments = parseMessageAttachments(messageID, out.MessageType, *item.Body.Content)
 	}
-	if item.Sender != nil && item.Sender.Id != nil {
-		out.SenderID = *item.Sender.Id
+	if item.Sender != nil {
+		if item.Sender.Id != nil {
+			out.SenderID = *item.Sender.Id
+		}
+		if item.Sender.SenderType != nil {
+			out.SenderType = *item.Sender.SenderType
+		}
 	}
 	if out.MessageType == "merge_forward" || hasMergeForwardChildren(resp.Data.Items, messageID) {
 		out.MessageType = "merge_forward"

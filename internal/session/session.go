@@ -59,7 +59,11 @@ type Input struct {
 	QuotedText string `json:",omitempty"`
 	// QuotedSender is the open_id of the quoted message's author, used only to
 	// label the quoted block in the prompt. Empty when unknown.
-	QuotedSender     string `json:",omitempty"`
+	QuotedSender string `json:",omitempty"`
+	// QuotedSenderType 是引用消息发送者的归一化主体类型，供 prompt 侧决定要不要给
+	// 引用块加主体身份边框：`user` 普通用户；`app` 别的 bot（另一分身/别的 App）；
+	// `self_bot` 引用的是本 bot 自己发过的历史；`anonymous`；空表示未知。
+	QuotedSenderType string `json:",omitempty"`
 	Attachments      []media.Attachment
 	ReplyToMessageID string
 	CardSessionID    string

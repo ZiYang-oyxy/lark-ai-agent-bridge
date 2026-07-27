@@ -155,6 +155,17 @@ func (r *Runner) RunStep(step Step, workDir string) (*SimulateOutput, error) {
 				args = append(args, "--mentioned=false")
 			}
 		}
+		// 引用消息注入:仅当 QuoteText 非空时把 --quote-* 参数交给 simulate。
+		// 空 QuoteText + 非空 QuoteSender/Type 属误配置,由 simulate 侧短路(不注入 fetcher)。
+		if step.QuoteText != "" {
+			args = append(args, "--quote-text", step.QuoteText)
+			if step.QuoteSender != "" {
+				args = append(args, "--quote-sender", step.QuoteSender)
+			}
+			if step.QuoteSenderType != "" {
+				args = append(args, "--quote-sender-type", step.QuoteSenderType)
+			}
+		}
 	}
 	cmd := exec.Command(r.GoBin, args...)
 	cmd.Dir = r.SourceDir

@@ -288,6 +288,10 @@ func runSimulate(args []string) error {
 	fakeThread := fs.String("fake-thread", "", "if set, wire an in-memory Sender that returns this thread_id for SendReply so simulate can exercise the topic precreate path without Feishu")
 	timeoutNow := fs.Bool("timeout-now", false, "immediately trigger pending confirmation timeout after message handling")
 	defaultWorkDir := fs.String("default-workdir", cfg.DefaultWorkDir, "default workdir for messages without --workdir")
+	quoteText := fs.String("quote-text", "", "if set, simulate a Feishu quoted (replied-to) message with this text body; also sets --parent-id when unspecified")
+	quoteSender := fs.String("quote-sender", "", "sender open_id of the simulated quoted message; empty leaves the generic label")
+	quoteSenderType := fs.String("quote-sender-type", "", "sender_type of the simulated quoted message: user / app / anonymous / empty (unknown)")
+	parentID := fs.String("parent-id", "", "explicit parent_id for the simulated inbound message; defaults to a fake id when --quote-text is set")
 	var nextMessages stringList
 	fs.Var(&nextMessages, "next-text", "additional message text for the same chat, repeatable")
 	if err := fs.Parse(args); err != nil {
@@ -322,6 +326,20 @@ func runSimulate(args []string) error {
 	if strings.TrimSpace(*fakeThread) != "" {
 		svc.Notifier = &simulateFakeSender{threadID: *fakeThread}
 		svc.TopicAliases = bridge.NewTopicAliasStore()
+	}
+	// simulate 侧的引用消息注入：--quote-text 非空时装配 in-memory MessageFetcher，
+	// 让 bridge.resolveQuotedMessage 拿到我们预设的 QuotedMessage 而不走 SDK。
+	// 用来在无飞书链路下断言主体身份边框的渲染（L2）。
+	simulateParentID := strings.TrimSpace(*parentID)
+	if strings.TrimSpace(*quoteText) != "" {
+		if simulateParentID == "" {
+			simulateParentID = fmt.Sprintf("om_simulate_parent_%d", time.Now().UnixNano())
+		}
+		svc.MessageFetcher = simulateQuotedFetcher{
+			text:       *quoteText,
+			senderID:   strings.TrimSpace(*quoteSender),
+			senderType: strings.TrimSpace(*quoteSenderType),
+		}
 	}
 	loadAgentsInto(svc, cfg, recorder)
 	// 装配 PreferenceStore:任何走 handleActionCommand 的白名单动作(如 help.open_config /
@@ -362,6 +380,7 @@ func runSimulate(args []string) error {
 		Mentioned:          *mentioned,
 		ExplicitBotMention: *mentioned,
 		Time:               baseMsg.Time,
+		ParentID:           simulateParentID,
 	}
 	if err := svc.HandleMessage(context.Background(), msg); err != nil {
 		return err
@@ -937,12 +956,33 @@ func (f quotedMessageFetcher) FetchMessage(ctx context.Context, messageID string
 	return bridge.QuotedMessage{
 		Text:        fetched.Text,
 		SenderID:    fetched.SenderID,
+		SenderType:  fetched.SenderType,
 		MessageType: fetched.MessageType,
 		Attachments: fetched.Attachments,
 	}, nil
 }
 
 var _ bridge.MessageFetcher = quotedMessageFetcher{}
+
+// simulateQuotedFetcher 是 simulate 通道下的伪 MessageFetcher：任意 messageID
+// 都返回同一份注入的 QuotedMessage，用来在无 SDK/无飞书链路下模拟引用消息触发
+// 的 prompt 分支（含主体身份边框断言）。
+type simulateQuotedFetcher struct {
+	text       string
+	senderID   string
+	senderType string
+}
+
+func (f simulateQuotedFetcher) FetchMessage(_ context.Context, _ string) (bridge.QuotedMessage, error) {
+	return bridge.QuotedMessage{
+		Text:        f.text,
+		SenderID:    f.senderID,
+		SenderType:  f.senderType,
+		MessageType: "text",
+	}, nil
+}
+
+var _ bridge.MessageFetcher = simulateQuotedFetcher{}
 
 // firstNonEmpty returns the first non-empty (trimmed) string among the inputs,
 // or "" if all are blank. Used to accept a new env name while keeping the

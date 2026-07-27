@@ -39,8 +39,14 @@ type Step struct {
 	// L3 描述这条 L2 YAML 步骤能否映射到真实飞书验收。
 	// 空值表示可验；Skip 表示此步骤刻意覆盖 simulate 注入的依赖缺失，
 	// 真实 Test 已装配该依赖，不能把两者的文案差异误报为 L3 回归。
-	L3      *L3Options `yaml:"l3,omitempty"`
-	Asserts []Assert   `yaml:"asserts"`
+	L3 *L3Options `yaml:"l3,omitempty"`
+	// input 模式的引用消息注入(见 cmd/lark-agent-bridge/main.go 的 --quote-text /
+	// --quote-sender / --quote-sender-type / --parent-id)。用于覆盖 quote 主体身份
+	// 边框的三分支(user / app / self_bot)。QuoteText 非空时生效,其余字段均可选。
+	QuoteText       string   `yaml:"quote_text,omitempty"`
+	QuoteSender     string   `yaml:"quote_sender,omitempty"`
+	QuoteSenderType string   `yaml:"quote_sender_type,omitempty"`
+	Asserts         []Assert `yaml:"asserts"`
 }
 
 // L3Options 保存 L3 专属的可执行性元数据，不污染 L2 simulate 的行为契约。
