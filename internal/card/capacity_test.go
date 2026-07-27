@@ -339,6 +339,40 @@ func TestPrepareLarkCardDropsOldestToolOutputBeforeThoughtOrAnswer(t *testing.T)
 	}
 }
 
+func TestPrepareLarkCardKeepsTwoThreeSectionToolUpdatesWhenCapacityShrinks(t *testing.T) {
+	const separator = "\n────────────────────\n"
+	event := Event{
+		Type:               "result",
+		ThreeSectionLayout: true,
+		Segments: []Segment{
+			{Kind: SegmentText, Text: "answer " + strings.Repeat("detail ", 2600)},
+			{Kind: SegmentThought, Text: "**🔹 #7 · 12:00:07** · " + strings.Repeat("reasoning ", 700)},
+			{Kind: SegmentTool, Text: "**🔹 #9 · 12:00:09** · **Bash**\n`latest-command`\n" + strings.Repeat("latest-output ", 450) + separator +
+				"**🔹 #8 · 12:00:08** · **Read**\n`second-latest-command`\n" + strings.Repeat("second-output ", 450)},
+		},
+	}
+	if _, err := prepareLarkCard(event, true); !errors.Is(err, ErrCardPayloadOversize) {
+		t.Fatalf("regression fixture must exercise capacity fitting, got %v", err)
+	}
+
+	prepared, err := PrepareLarkCard(event)
+	if err != nil {
+		t.Fatalf("PrepareLarkCard() error: %v", err)
+	}
+	got := prepared.EventCopy()
+	var tools string
+	for _, segment := range got.Segments {
+		if segment.Kind == SegmentTool {
+			tools = segment.Text
+		}
+	}
+	for _, want := range []string{"#9", "latest-command", "#8", "second-latest-command"} {
+		if !strings.Contains(tools, want) {
+			t.Fatalf("capacity fitting lost tool update %q: %q", want, tools)
+		}
+	}
+}
+
 func TestPrepareLarkCardPreservesLatestActivityForToolOnlyAndThoughtOnlyEvents(t *testing.T) {
 	for _, kind := range []SegmentKind{SegmentTool, SegmentThought} {
 		t.Run(string(kind), func(t *testing.T) {

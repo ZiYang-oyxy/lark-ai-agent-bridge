@@ -162,20 +162,12 @@ func fitLarkCard(event Event) (PreparedLarkCard, bool) {
 			return prepared, true
 		}
 	}
-	// 如果是三段布局(单个思考/工具块内含多条历史,用 --- 分隔),优先收缩块内最旧的历史内容,
-	// 保留最新部分,而不是直接截断整个块的尾部导致最新内容丢失。
+	// 三段布局把最近两条记录合在单个 segment 内，需要作为一个结构联合拟合。
 	if event.ThreeSectionLayout {
-		// 收缩思考块:优先保留分隔线后的最新部分
-		if idx := findLatestSegmentIndex(event.Segments, SegmentThought); idx >= 0 {
-			if _, prepared, ok := shrinkSegmentKeepTail(event, idx, 1500, true); ok {
-				return prepared, true
-			}
-		}
-		// 收缩工具块:优先保留分隔线后的最新部分
-		if idx := findLatestSegmentIndex(event.Segments, SegmentTool); idx >= 0 {
-			if _, prepared, ok := shrinkSegmentKeepTail(event, idx, 4000, true); ok {
-				return prepared, true
-			}
+		// 三段布局的时间线是最新在前。分别限长每条可见记录，避免对整段
+		// keep-tail 时把最新记录和第二新记录的标题一起截掉。
+		if prepared, ok := fitThreeSectionCard(event); ok {
+			return prepared, true
 		}
 	}
 	if _, prepared, ok := shrinkLatestSegment(event, SegmentTool, true); ok {
@@ -194,6 +186,61 @@ func fitLarkCard(event Event) (PreparedLarkCard, bool) {
 		}
 	}
 	return PreparedLarkCard{}, false
+}
+
+const threeSectionTimelineSeparator = "\n────────────────────\n"
+
+// fitThreeSectionCard shrinks both timeline panels in one candidate. Trying the
+// panels independently can leave their combined payload oversized and fall
+// through to the generic keep-tail path, which destroys newest-first history.
+func fitThreeSectionCard(event Event) (PreparedLarkCard, bool) {
+	candidate := cloneEvent(event)
+	for _, target := range []struct {
+		kind     SegmentKind
+		maxRunes int
+	}{
+		{kind: SegmentThought, maxRunes: 1500},
+		{kind: SegmentTool, maxRunes: 4000},
+	} {
+		if index := findLatestSegmentIndex(candidate.Segments, target.kind); index >= 0 {
+			candidate.Segments[index].Text = shrinkThreeSectionTimelineText(candidate.Segments[index].Text, target.maxRunes)
+		}
+	}
+	if prepared, err := prepareLarkCard(candidate, true); err == nil {
+		return prepared, true
+	}
+	if _, prepared, ok := shrinkLatestAnswer(candidate); ok {
+		return prepared, true
+	}
+	return PreparedLarkCard{}, false
+}
+
+// shrinkThreeSectionTimelineText keeps the newest-first timeline structure
+// intact. Each visible update receives an equal budget so one verbose output
+// cannot consume the other update's title and command.
+func shrinkThreeSectionTimelineText(text string, maxRunes int) string {
+	if maxRunes <= 0 {
+		return text
+	}
+	parts := strings.Split(text, threeSectionTimelineSeparator)
+	if len(parts) == 0 {
+		return text
+	}
+
+	separatorRunes := len([]rune(threeSectionTimelineSeparator)) * (len(parts) - 1)
+	partBudget := (maxRunes - separatorRunes) / len(parts)
+	if partBudget < 1 {
+		partBudget = 1
+	}
+	shrunk := make([]string, 0, len(parts))
+	for _, part := range parts {
+		partRunes := []rune(part)
+		if len(partRunes) > partBudget {
+			part = truncatedRunes(partRunes, partBudget, false)
+		}
+		shrunk = append(shrunk, part)
+	}
+	return strings.Join(shrunk, threeSectionTimelineSeparator)
 }
 
 func fitMarkdownCardTail(event Event) (PreparedLarkCard, bool) {
@@ -322,47 +369,6 @@ func findLatestSegmentIndex(segments []Segment, kind SegmentKind) int {
 		}
 	}
 	return -1
-}
-
-// shrinkSegmentKeepTail 收缩指定索引的 segment,优先保留尾部内容(keepTail=true),
-// 内容中包含 --- 分隔线时优先保留最后一段分隔线后的最新内容,而不是简单从尾截断。
-func shrinkSegmentKeepTail(event Event, index int, maxRunes int, keepTail bool) (Event, PreparedLarkCard, bool) {
-	if index < 0 || index >= len(event.Segments) {
-		return event, PreparedLarkCard{}, false
-	}
-	text := event.Segments[index].Text
-	runes := []rune(text)
-	if len(runes) <= maxRunes {
-		// 已经够短,直接尝试prepare
-		if prepared, err := prepareLarkCard(event, true); err == nil {
-			return event, prepared, true
-		}
-		return event, PreparedLarkCard{}, false
-	}
-
-	// 尝试从最后一个 --- 分隔线截断,优先保留最新的部分(最后一个分隔线后的内容)
-	const separator = "\n\n---\n\n"
-	sepIdx := strings.LastIndex(text, separator)
-	candidate := cloneEvent(event)
-	if sepIdx >= 0 {
-		// 有分隔线:只保留分隔线后的最新内容,加上省略提示
-		latestPart := text[sepIdx+len(separator):]
-		if len([]rune(latestPart)) <= maxRunes {
-			candidate.Segments[index].Text = "…\n\n" + latestPart
-		} else {
-			// 最新部分本身就超长,按尾部截断
-			candidate.Segments[index].Text = truncatedRunes(runes, maxRunes, keepTail)
-		}
-	} else {
-		// 无分隔线:按普通尾部截断
-		candidate.Segments[index].Text = truncatedRunes(runes, maxRunes, keepTail)
-	}
-
-	if prepared, err := prepareLarkCard(candidate, true); err == nil {
-		return candidate, prepared, true
-	}
-	// 收缩失败,退回到普通shrink逻辑
-	return shrinkSegment(event, index, keepTail)
 }
 
 func shrinkLatestSegment(event Event, kind SegmentKind, keepTail bool) (Event, PreparedLarkCard, bool) {
