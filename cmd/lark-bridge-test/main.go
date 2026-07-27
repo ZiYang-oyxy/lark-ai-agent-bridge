@@ -4,7 +4,9 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"runtime"
 	"strings"
+	"time"
 
 	"lark-agent-bridge/internal/testfw"
 )
@@ -17,6 +19,9 @@ func main() {
 		tagsStr    = flag.String("tags", "", "要运行的测试标签，逗号分隔（如smoke,config）")
 		smoke      = flag.Bool("smoke", false, "仅运行冒烟测试（等价于--tags smoke）")
 		regression = flag.Bool("regression", false, "运行全量回归测试（等价于--tags smoke,regression）")
+		reportJSON      = flag.String("report-json", "", "可选:测试结束时把结构化 Report 写到此路径(JSON)。适合作为发布凭证 sidecar,发布脚本可读回 all_passed 字段。")
+		emitChecklist   = flag.String("emit-l3-checklist", "", "可选:从已加载的用例集生成 L3 E2E 手工/半自动 checklist(Markdown)到此路径。只输出用例,不执行测试(用 --smoke/--regression 决定用例范围)。")
+		checklistOnly   = flag.Bool("checklist-only", false, "配合 --emit-l3-checklist:只生成清单,跳过 simulate 执行。")
 	)
 	flag.Parse()
 
@@ -57,7 +62,35 @@ func main() {
 		os.Exit(0)
 	}
 
+	// L3 checklist:只依赖用例集本身,不需要执行 simulate。
+	if *emitChecklist != "" {
+		items := testfw.BuildL3Checklist(allTests, nil)
+		if err := testfw.WriteL3Checklist(items, *emitChecklist); err != nil {
+			fmt.Printf("生成 L3 checklist 失败: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Printf("📋 L3 checklist 已写入: %s (%d 条)\n", *emitChecklist, len(items))
+		if *checklistOnly {
+			return
+		}
+	}
+
 	fmt.Printf("找到 %d 个测试用例，开始执行...\n\n", len(allTests))
+	startedAt := time.Now()
 	results := runner.RunAll(allTests)
-	testfw.PrintReport(results)
+	finishedAt := time.Now()
+
+	// 先写 JSON 报告(即使 PrintReport 后续会 os.Exit(1) 也不影响),
+	// 让发布脚本/CI 可以拿到结构化 all_passed。
+	if *reportJSON != "" {
+		rep := testfw.BuildReport(results, startedAt, finishedAt, tags, *sourceDir)
+		rep.GoVersion = runtime.Version()
+		if err := testfw.WriteReport(rep, *reportJSON); err != nil {
+			fmt.Printf("写入 JSON 报告失败: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Printf("📄 JSON 报告已写入: %s\n", *reportJSON)
+	}
+
+	testfw.PrintReport(results) // 失败会 os.Exit(1)
 }
