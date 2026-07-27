@@ -2067,7 +2067,7 @@ func (s *Service) HandleActionResult(ctx context.Context, req ActionRequest) (Ac
 		result, err := s.renderActionEvent(card.Event{
 			Type:      "config_saved",
 			SessionID: req.SessionID,
-			Segments:  []card.Segment{{Kind: card.SegmentText, Text: fmt.Sprintf("偏好已保存。\n\n**Agent**：`%s`\n**Agent 主目录**：`%s`\n**Agent 可执行文件**：`%s`\n**模型**：`%s`\n**Effort**：`%s`\n**回复模式**：`%s`\n**超长回复处理**：`%s`\n**会话模式**：`%s`\n**新话题起点**：`%s`\n**群消息接收**：`%s`\n**响应其他 bot**：`%t`\n\n下一条新消息开始生效。", preference.Agent, orDefault(preference.AgentHome, config.DefaultHomeLabel), orDefault(preference.AgentBin, config.DefaultBinLabelFor(preference.Agent)), preference.Model, preference.Effort, preference.ReplyMode.Label(), preference.AppendOverflowMode, preference.ConversationMode, preference.TopicSeedMode, preference.GroupMessageMode, preference.RespondToBots)}},
+			Segments:  []card.Segment{{Kind: card.SegmentText, Text: savedPreferenceSummary("偏好已保存。", current, preference, "下一条新消息开始生效。")}},
 		})
 		if err == nil {
 			s.ensureGroupMessageScope(req.SessionID, preference.GroupMessageMode)
@@ -2088,6 +2088,7 @@ func (s *Service) HandleActionResult(ctx context.Context, req ActionRequest) (Ac
 		// user set to something different from the current global default.
 		// Fields left equal to global stay nil so they keep inheriting.
 		global := s.Preferences.Get()
+		previous := s.Preferences.GetForChat(chatID)
 		override := chatOverrideFromForm(req.FormValues, global)
 		if err := s.Preferences.SetChat(chatID, override); err != nil {
 			s.Audit.Record(req.Actor, "local_config_save_failed", chatID, err.Error())
@@ -2098,7 +2099,7 @@ func (s *Service) HandleActionResult(ctx context.Context, req ActionRequest) (Ac
 		return s.renderActionEvent(card.Event{
 			Type:      "local_config_saved",
 			SessionID: req.SessionID,
-			Segments:  []card.Segment{{Kind: card.SegmentText, Text: fmt.Sprintf("本群覆盖已保存 —— 仅本群生效，未改全局；未修改的项继承全局 `/config`。\n\n**Agent**：`%s`\n**模型**：`%s`\n**Effort**：`%s`\n**回复模式**：`%s`\n**超长回复处理**：`%s`\n**会话模式**：`%s`\n**新话题起点**：`%s`\n**群消息接收**：`%s`\n**响应其他 bot**：`%t`\n\n下一条新消息开始生效。", effective.Agent, effective.Model, effective.Effort, effective.ReplyMode.Label(), effective.AppendOverflowMode, effective.ConversationMode, effective.TopicSeedMode, effective.GroupMessageMode, effective.RespondToBots)}},
+			Segments:  []card.Segment{{Kind: card.SegmentText, Text: savedPreferenceSummary("本群覆盖已保存 —— 仅本群生效，未改全局；未修改的项继承全局 `/config`。", previous, effective, "下一条新消息开始生效。")}},
 		})
 	case "local_config.edit":
 		if s.Preferences == nil {
@@ -2474,6 +2475,57 @@ func respondToBotsText(v bool) string {
 		return "响应"
 	}
 	return "忽略"
+}
+
+func savedPreferenceSummary(intro string, before, after config.RuntimePreference, footer string) string {
+	changes := runtimePreferenceChanges(before, after)
+	if len(changes) == 0 {
+		return fmt.Sprintf("%s\n\n未检测到有效配置变更。", intro)
+	}
+	return fmt.Sprintf("%s\n\n%s\n\n%s", intro, strings.Join(changes, "\n"), footer)
+}
+
+// runtimePreferenceChanges returns only values whose effective runtime behavior
+// changed. This keeps confirmation cards useful after a full form submission.
+func runtimePreferenceChanges(before, after config.RuntimePreference) []string {
+	changes := make([]string, 0, 14)
+	appendChange := func(label, oldValue, newValue string) {
+		if oldValue != newValue {
+			changes = append(changes, fmt.Sprintf("- **%s**：`%s` → `%s`", label, oldValue, newValue))
+		}
+	}
+
+	appendChange("Agent", preferenceAgentLabel(before.Agent), preferenceAgentLabel(after.Agent))
+	appendChange("Agent 主目录", orDefault(before.AgentHome, config.DefaultHomeLabel), orDefault(after.AgentHome, config.DefaultHomeLabel))
+	appendChange("Agent 可执行文件", preferenceBinLabel(before), preferenceBinLabel(after))
+	appendChange("模型", before.Model, after.Model)
+	appendChange("Effort", before.Effort, after.Effort)
+	appendChange("回复模式", before.ReplyMode.Label(), after.ReplyMode.Label())
+	appendChange("超长回复处理", string(before.AppendOverflowMode), string(after.AppendOverflowMode))
+	appendChange("会话模式", string(before.ConversationMode), string(after.ConversationMode))
+	appendChange("新话题起点", string(before.TopicSeedMode), string(after.TopicSeedMode))
+	appendChange("群消息接收", groupMessageModeText(before.GroupMessageMode), groupMessageModeText(after.GroupMessageMode))
+	appendChange("响应其他 bot", respondToBotsText(before.RespondToBots), respondToBotsText(after.RespondToBots))
+	appendChange("完成提醒", onOffText(before.NotifyOnComplete), onOffText(after.NotifyOnComplete))
+	appendChange("状态栏 Agent 信息", onOffText(before.ShowMetaRowAgent), onOffText(after.ShowMetaRowAgent))
+	appendChange("状态栏运行信息", onOffText(before.ShowMetaRowRuntime), onOffText(after.ShowMetaRowRuntime))
+	appendChange("状态栏开发信息", onOffText(before.ShowMetaRowDeveloper), onOffText(after.ShowMetaRowDeveloper))
+	return changes
+}
+
+func preferenceAgentLabel(agent string) string {
+	return orDefault(agent, config.DefaultAgentKind)
+}
+
+func preferenceBinLabel(preference config.RuntimePreference) string {
+	return orDefault(preference.AgentBin, config.DefaultBinLabelFor(preferenceAgentLabel(preference.Agent)))
+}
+
+func onOffText(v bool) string {
+	if v {
+		return "开启"
+	}
+	return "关闭"
 }
 
 // chatOverrideFromForm derives a per-chat override from submitted form values.

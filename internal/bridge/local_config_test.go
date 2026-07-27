@@ -86,6 +86,32 @@ func TestLocalConfigSaveWritesOnlyTargetGroup(t *testing.T) {
 	}
 }
 
+func TestLocalConfigSaveConfirmationListsOnlyChangedPreferences(t *testing.T) {
+	svc, _ := localConfigService(t)
+	result, err := svc.HandleActionResult(context.Background(), ActionRequest{
+		SessionID: "local-config-card", ActionID: "local_config.save", Actor: "ou_user", Value: "oc-a",
+		FormValues: map[string]string{
+			"effort": "low", "reply_mode": "append", "append_overflow_mode": "truncate",
+			"conversation_mode": "topic", "topic_seed_mode": "quote", "group_message_mode": "mention_only",
+			"respond_to_bots": "false", "show_meta_row_agent": "false",
+			"show_meta_row_runtime": "false", "show_meta_row_developer": "false",
+			"agent": config.DefaultAgentKind,
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := segmentText(*result.Event)
+	if !strings.Contains(text, "**会话模式**：`chat` → `topic`") {
+		t.Fatalf("confirmation missing changed conversation mode: %q", text)
+	}
+	for _, unchanged := range []string{"**Effort**", "**回复模式**", "**Agent**", "**群消息接收**"} {
+		if strings.Contains(text, unchanged) {
+			t.Fatalf("confirmation includes unchanged field %q: %q", unchanged, text)
+		}
+	}
+}
+
 // local_config.save with no target chat id is rejected.
 func TestLocalConfigSaveRequiresChatID(t *testing.T) {
 	svc, store := localConfigService(t)

@@ -951,6 +951,55 @@ func TestServiceConfigSavePersistsValidValuesAndRejectsInvalidValues(t *testing.
 	}
 }
 
+func TestConfigSaveConfirmationListsOnlyChangedPreferences(t *testing.T) {
+	cfg := testConfig(t)
+	defaults := config.RuntimePreference{
+		Model: "default", Effort: "low", ReplyMode: config.ReplyModeAppend,
+		ConversationMode: config.ConversationModeChat, TopicSeedMode: config.TopicSeedModeQuote,
+		GroupMessageMode: config.GroupMessageModeMentionOnly, AppendOverflowMode: config.AppendOverflowModeTruncate,
+		Agent: config.DefaultAgentKind,
+	}
+	store, _ := testPreferenceStore(t, defaults, cfg.AllowedModels)
+	svc := NewService(cfg, card.NewFakeRenderer(), newFakeRunner(), audit.NewRecorder())
+	svc.Preferences = store
+
+	result, err := svc.HandleActionResult(context.Background(), ActionRequest{
+		SessionID: "config-card", ActionID: "config.save", Actor: "user",
+		FormValues: map[string]string{
+			"effort": "high", "reply_mode": "append", "append_overflow_mode": "truncate",
+			"conversation_mode": "chat", "topic_seed_mode": "quote", "group_message_mode": "mention_only",
+			"respond_to_bots": "false", "notify_on_complete": "false",
+			"show_meta_row_agent": "false", "show_meta_row_runtime": "false", "show_meta_row_developer": "false",
+			"agent": config.DefaultAgentKind,
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := segmentText(*result.Event)
+	if !strings.Contains(text, "**Effort**：`low` → `high`") {
+		t.Fatalf("confirmation missing changed effort: %q", text)
+	}
+	for _, unchanged := range []string{"**模型**", "**回复模式**", "**会话模式**", "**群消息接收**"} {
+		if strings.Contains(text, unchanged) {
+			t.Fatalf("confirmation includes unchanged field %q: %q", unchanged, text)
+		}
+	}
+}
+
+func TestSavedPreferenceSummaryWithoutChangesOmitsAllFields(t *testing.T) {
+	preference := config.RuntimePreference{Model: "default", Effort: "low", ReplyMode: config.ReplyModeAppend, Agent: config.DefaultAgentKind}
+	summary := savedPreferenceSummary("偏好已保存。", preference, preference, "下一条新消息开始生效。")
+	if !strings.Contains(summary, "未检测到有效配置变更") {
+		t.Fatalf("summary should report no change: %q", summary)
+	}
+	for _, field := range []string{"**Agent**", "**模型**", "**Effort**", "**回复模式**"} {
+		if strings.Contains(summary, field) {
+			t.Fatalf("no-change summary includes field %q: %q", field, summary)
+		}
+	}
+}
+
 func TestServiceConfigSaveMultiSelectMetaRows(t *testing.T) {
 	cfg := testConfig(t)
 	cfg.Model, cfg.Effort = "default", "low"
