@@ -1167,7 +1167,7 @@ func (s *agentCardStream) formatCleanTimelineLocked(kind card.SegmentKind) strin
 			b.WriteString(cleanTimelineSeparator)
 			b.WriteString("\n")
 		}
-		fmt.Fprintf(&b, "**Update #%d · %s** · %s", update.Number, update.At.Format("15:04:05"), body)
+		fmt.Fprintf(&b, "**🔹 #%d · %s** · %s", update.Number, update.At.Format("15:04:05"), body)
 		visible++
 	}
 	return b.String()

@@ -2045,7 +2045,7 @@ func TestBuildLarkCardThreeSectionLayout(t *testing.T) {
 				t.Fatalf("thought panel wrong: %#v", m)
 			}
 			title := m["header"].(map[string]any)["title"].(map[string]string)["content"]
-			if title != "思考推理 · 37（仅保留最新 2 条）" {
+			if title != "💭 思考推理 · 37（仅保留最新 2 条）" {
 				t.Fatalf("thought title = %q, want compact count", title)
 			}
 			if m["vertical_spacing"] != "4px" || m["padding"] != "4px 8px 4px 8px" {
@@ -2059,7 +2059,7 @@ func TestBuildLarkCardThreeSectionLayout(t *testing.T) {
 				t.Fatalf("tools panel wrong: %#v", m)
 			}
 			title := m["header"].(map[string]any)["title"].(map[string]string)["content"]
-			if title != "工具调用 · 6（仅保留最新 2 条）" {
+			if title != "🔧 工具调用 · 6（仅保留最新 2 条）" {
 				t.Fatalf("tools title = %q, want compact count", title)
 			}
 		}
@@ -2073,10 +2073,10 @@ func TestBuildLarkCardThreeSectionLayout(t *testing.T) {
 }
 
 func TestTimelineSectionTitleWithoutOmissionKeepsCompactCount(t *testing.T) {
-	if got := thoughtSectionTitle(Event{ThoughtRoundCount: 2}); got != "思考推理 · 2" {
+	if got := thoughtSectionTitle(Event{ThoughtRoundCount: 2}); got != "💭 思考推理 · 2" {
 		t.Fatalf("thought title = %q, want compact count without omission notice", got)
 	}
-	if got := toolsSectionTitle(Event{ToolRoundCount: 2}); got != "工具调用 · 2" {
+	if got := toolsSectionTitle(Event{ToolRoundCount: 2}); got != "🔧 工具调用 · 2" {
 		t.Fatalf("tool title = %q, want compact count without omission notice", got)
 	}
 }
@@ -2101,11 +2101,11 @@ func TestBuildLarkCardThreeSectionLayoutPutsStopBesideTitle(t *testing.T) {
 // 仅从 result 拿到 ToolCallCount)时回退到 ToolCallCount。
 func TestThreeSectionTitleFallsBackToToolCallCount(t *testing.T) {
 	title := toolsSectionTitle(Event{ToolCallCount: 4})
-	if title != "工具调用 · 4" {
+	if title != "🔧 工具调用 · 4" {
 		t.Fatalf("tools title = %q, want compact ToolCallCount fallback", title)
 	}
 	empty := toolsSectionTitle(Event{})
-	if empty != "工具调用" {
+	if empty != "🔧 工具调用" {
 		t.Fatalf("empty tools title = %q, want compact label", empty)
 	}
 }

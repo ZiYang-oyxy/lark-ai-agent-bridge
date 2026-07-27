@@ -772,9 +772,9 @@ func buildThreeSectionElements(e Event) []any {
 // exposes running/completed state and the chevron already conveys expansion.
 func thoughtSectionTitle(e Event) string {
 	if e.ThoughtRoundCount > 0 {
-		return timelineSectionTitle("思考推理", e.ThoughtRoundCount, e.ThoughtOmittedCount)
+		return timelineSectionTitle("💭 思考推理", e.ThoughtRoundCount, e.ThoughtOmittedCount)
 	}
-	return "思考推理"
+	return "💭 思考推理"
 }
 
 // toolsSectionTitle uses the per-run count and leaves expansion state to the
@@ -785,9 +785,9 @@ func toolsSectionTitle(e Event) string {
 		count = e.ToolCallCount
 	}
 	if count > 0 {
-		return timelineSectionTitle("工具调用", count, e.ToolOmittedCount)
+		return timelineSectionTitle("🔧 工具调用", count, e.ToolOmittedCount)
 	}
-	return "工具调用"
+	return "🔧 工具调用"
 }
 
 func timelineSectionTitle(label string, total, omitted int) string {

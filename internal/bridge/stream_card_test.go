@@ -1365,12 +1365,12 @@ func TestAppendCleanThreeSectionLatestOnly(t *testing.T) {
 		t.Fatalf("counts = thought:%d tool:%d, want 2/2", ev.ThoughtRoundCount, ev.ToolRoundCount)
 	}
 	thought := segmentTextByKind(ev, card.SegmentThought)
-	for _, want := range []string{"**Update #3 · 11:32:30** · 再想第二步", "**Update #1 · 11:32:00** · 先想第一步", cleanTimelineSeparator} {
+	for _, want := range []string{"**🔹 #3 · 11:32:30** · 再想第二步", "**🔹 #1 · 11:32:00** · 先想第一步", cleanTimelineSeparator} {
 		if !strings.Contains(thought, want) {
 			t.Fatalf("thought timeline missing %q: %q", want, thought)
 		}
 	}
-	if strings.Index(thought, "Update #3") > strings.Index(thought, "Update #1") {
+	if strings.Index(thought, "🔹 #3") > strings.Index(thought, "🔹 #1") {
 		t.Fatalf("thought timeline must be newest-first: %q", thought)
 	}
 	if strings.Contains(thought, "\n\n"+cleanTimelineSeparator) || strings.Contains(thought, cleanTimelineSeparator+"\n\n") {
@@ -1378,8 +1378,8 @@ func TestAppendCleanThreeSectionLatestOnly(t *testing.T) {
 	}
 	tool := segmentTextByKind(ev, card.SegmentTool)
 	for _, want := range []string{
-		"**Update #4 · 11:33:20** · **Bash**\n`cat x` → `hello`",
-		"**Update #2 · 11:32:10** · **Bash**\n`ls`\n输出：\n```\nfile1\nfile2\n```",
+		"**🔹 #4 · 11:33:20** · **Bash**\n`cat x` → `hello`",
+		"**🔹 #2 · 11:32:10** · **Bash**\n`ls`\n输出：\n```\nfile1\nfile2\n```",
 		cleanTimelineSeparator,
 	} {
 		if !strings.Contains(tool, want) {
@@ -1389,7 +1389,7 @@ func TestAppendCleanThreeSectionLatestOnly(t *testing.T) {
 	if strings.Contains(strings.Split(tool, cleanTimelineSeparator)[0], "```") {
 		t.Fatalf("short newest tool values should stay compact: %q", tool)
 	}
-	if strings.Index(tool, "Update #4") > strings.Index(tool, "Update #2") {
+	if strings.Index(tool, "🔹 #4") > strings.Index(tool, "🔹 #2") {
 		t.Fatalf("tool timeline must be newest-first: %q", tool)
 	}
 	if strings.Contains(tool, "\n\n"+cleanTimelineSeparator) || strings.Contains(tool, cleanTimelineSeparator+"\n\n") {
@@ -1425,10 +1425,10 @@ func TestAppendCleanThreeSectionLatestOnly(t *testing.T) {
 	if terminal.ThoughtRoundCount != 2 || terminal.ToolRoundCount != 2 {
 		t.Fatalf("terminal counts = thought:%d tool:%d, want 2/2", terminal.ThoughtRoundCount, terminal.ToolRoundCount)
 	}
-	if got := segmentTextByKind(terminal, card.SegmentThought); !strings.Contains(got, "Update #3 · 11:32:30") || !strings.Contains(got, "Update #1 · 11:32:00") {
+	if got := segmentTextByKind(terminal, card.SegmentThought); !strings.Contains(got, "🔹 #3 · 11:32:30") || !strings.Contains(got, "🔹 #1 · 11:32:00") {
 		t.Fatalf("terminal thought timeline should preserve two thoughts, got %q", got)
 	}
-	if got := segmentTextByKind(terminal, card.SegmentTool); !strings.Contains(got, "Update #4 · 11:33:20") || !strings.Contains(got, "Update #2 · 11:32:10") {
+	if got := segmentTextByKind(terminal, card.SegmentTool); !strings.Contains(got, "🔹 #4 · 11:33:20") || !strings.Contains(got, "🔹 #2 · 11:32:10") {
 		t.Fatalf("terminal tool timeline should preserve two tools, got %q", got)
 	}
 }
@@ -1461,10 +1461,10 @@ func TestLatestCardUsesAppendCleanThreeSectionLayout(t *testing.T) {
 	if preview.ThoughtRoundCount != 1 || preview.ToolRoundCount != 1 {
 		t.Fatalf("latest preview counts = thought:%d tool:%d, want 1/1", preview.ThoughtRoundCount, preview.ToolRoundCount)
 	}
-	if got := segmentTextByKind(preview, card.SegmentThought); !strings.Contains(got, "Update #1 · 12:10:00") || !strings.Contains(got, "先定位问题") {
+	if got := segmentTextByKind(preview, card.SegmentThought); !strings.Contains(got, "🔹 #1 · 12:10:00") || !strings.Contains(got, "先定位问题") {
 		t.Fatalf("latest thought timeline = %q", got)
 	}
-	if got := segmentTextByKind(preview, card.SegmentTool); !strings.Contains(got, "Update #2 · 12:10:10") || !strings.Contains(got, "go test ./...") {
+	if got := segmentTextByKind(preview, card.SegmentTool); !strings.Contains(got, "🔹 #2 · 12:10:10") || !strings.Contains(got, "go test ./...") {
 		t.Fatalf("latest tool timeline = %q", got)
 	}
 
@@ -1483,10 +1483,10 @@ func TestLatestCardUsesAppendCleanThreeSectionLayout(t *testing.T) {
 	if !terminal.ThreeSectionLayout || terminal.ThoughtExpanded || terminal.ToolsExpanded || terminal.StopButton.Visible {
 		t.Fatalf("latest terminal layout = %#v, want folded append-clean layout without stop", terminal)
 	}
-	if got := segmentTextByKind(terminal, card.SegmentThought); !strings.Contains(got, "Update #1 · 12:10:00") {
+	if got := segmentTextByKind(terminal, card.SegmentThought); !strings.Contains(got, "🔹 #1 · 12:10:00") {
 		t.Fatalf("latest terminal thought timeline = %q", got)
 	}
-	if got := segmentTextByKind(terminal, card.SegmentTool); !strings.Contains(got, "Update #2 · 12:10:10") {
+	if got := segmentTextByKind(terminal, card.SegmentTool); !strings.Contains(got, "🔹 #2 · 12:10:10") {
 		t.Fatalf("latest terminal tool timeline = %q", got)
 	}
 }
@@ -1532,8 +1532,8 @@ func TestAppendCleanTimelineKeepsTwoUpdatesPerPanel(t *testing.T) {
 		second    string
 		forbidden string
 	}{
-		{name: "thought", text: thought, newest: "Update #5", second: "Update #3", forbidden: "Update #1"},
-		{name: "tool", text: tool, newest: "Update #6", second: "Update #4", forbidden: "Update #2"},
+		{name: "thought", text: thought, newest: "🔹 #5", second: "🔹 #3", forbidden: "🔹 #1"},
+		{name: "tool", text: tool, newest: "🔹 #6", second: "🔹 #4", forbidden: "🔹 #2"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			for _, want := range []string{tc.newest, tc.second} {
@@ -1583,13 +1583,13 @@ func TestAppendCleanTerminalOnlyResultBuildsTimeline(t *testing.T) {
 		t.Fatal(err)
 	}
 	thought := segmentTextByKind(terminal, card.SegmentThought)
-	for _, want := range []string{"Update #1 · 12:00:01", "定位根因"} {
+	for _, want := range []string{"🔹 #1 · 12:00:01", "定位根因"} {
 		if !strings.Contains(thought, want) {
 			t.Fatalf("terminal-only thought timeline missing %q: %q", want, thought)
 		}
 	}
 	tool := segmentTextByKind(terminal, card.SegmentTool)
-	for _, want := range []string{"Update #2 · 12:00:01", "go test ./...", "ok"} {
+	for _, want := range []string{"🔹 #2 · 12:00:01", "go test ./...", "ok"} {
 		if !strings.Contains(tool, want) {
 			t.Fatalf("terminal-only tool timeline missing %q: %q", want, tool)
 		}
