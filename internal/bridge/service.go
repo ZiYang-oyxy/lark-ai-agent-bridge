@@ -4269,19 +4269,19 @@ func intFromJSONNumber(value any) int {
 // 而非黑名单:未知/新增 action 默认不可消息触发,直到经实测确认其对消息触发安全。
 //
 // 白名单成员均已用 simulate 实测:无渲染上下文时行为正确(要么产出正确卡片,要么给出
-// 明确的"未启用/未配置"提示,不会静默做错事)。特别地,help.open_config / help.status /
-// help.open_local_config / status.refresh / local_config.reset 都依赖 /help 或 /status
-// 卡片渲染时预存的 helpContext/statusContext(chatID 等),消息触发会"上下文已过期"或
-// "偏好保存失败",故不在白名单里。
+// 明确的"未启用/未配置"提示,不会静默做错事)。特别地,help.status / help.open_local_config /
+// status.refresh 都依赖 /help 或 /status 卡片渲染时预存的 helpContext/statusContext,消息
+// 触发会"上下文已过期",故不在白名单里。
 func messageTriggerableAction(actionID string) bool {
 	switch actionID {
 	case "stop", // 仅依赖运行时活动 run 状态
 		"schedule.confirm", "schedule.cancel", // 依赖 req.Value(draft id) + 持久化 Schedules
 		"update.install",                // 依赖 req.Value(version) + admin gate + deferred
 		"update.details", "update.help", // 只读,不依赖渲染上下文
-		"help.refresh",      // 只读重建 /help,不依赖 helpContext
-		"help.open_config",  // 只读渲染 /config 表单,不读任何内存态
-		"local_config.edit": // 只读渲染 local_config 编辑表单,只依赖 req.Value(chatID)
+		"help.refresh",       // 只读重建 /help,不依赖 helpContext
+		"help.open_config",   // 只读渲染 /config 表单,不读任何内存态
+		"local_config.edit",  // 只读渲染 local_config 编辑表单,只依赖 req.Value(chatID)
+		"local_config.reset": // 清空 chat 覆盖,只依赖 req.Value(chatID) + admin gate,不依赖 FormValues
 		return true
 	default:
 		return false
@@ -4306,8 +4306,6 @@ func messageTriggerRejectReason(actionID string) string {
 		return "该动作依赖 /resume 卡片的会话上下文,无法通过消息触发。请先用 /resume 再点击卡片选项。"
 	case "help.open_local_config", "help.status", "status.refresh":
 		return "该动作依赖 /help 或 /status 卡片的上下文,无法通过消息触发。请直接发送 /local-config、/status 等命令。"
-	case "local_config.reset":
-		return "该动作会写入偏好,需要显式指定目标群。请直接发送 /local-config reset。"
 	default:
 		return "该动作不支持通过消息触发。"
 	}

@@ -55,6 +55,17 @@ steps:
         expected: "local_config"
       - type: no_error
 
+  # 白名单新增:local_config.reset 清空指定群覆盖,只依赖 value=chatID + admin gate。
+  # simulate 里 s.Access==nil,admin gate 自动放行;PreferenceStore 由 runner 装配,
+  # 无 chat override 时 ResetChat 也返回 nil,产出 local_config_saved 成功事件。
+  - input: "/action local_config.reset chat-demo"
+    asserts:
+      - type: event_type
+        expected: "local_config_saved"
+      - type: segment_contains
+        text: "已清空本群覆盖"
+      - type: no_error
+
   # action 型 step 专属:测试自动化通过 FormValues 注入,绕过消息路径的白名单,
   # 直接覆盖 config.save 分支。这条能力仅存在于 simulate-action / 测试框架,不给 /action 消息使用。
   - action: "config.save"

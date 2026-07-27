@@ -56,6 +56,7 @@ func TestMessageTriggerableActionWhitelist(t *testing.T) {
 		"stop", "schedule.confirm", "schedule.cancel",
 		"update.install", "update.details", "update.help",
 		"help.refresh", "help.open_config", "local_config.edit",
+		"local_config.reset", // 只依赖 req.Value(chatID) + admin gate,与 edit 同类
 	}
 	for _, a := range triggerable {
 		if !messageTriggerableAction(a) {
@@ -70,7 +71,7 @@ func TestMessageTriggerableActionWhitelist(t *testing.T) {
 		"create_workdir", "cancel_workdir",      // 依赖 pendingRun
 		"resume.select",                         // 依赖 resumeContext
 		"help.open_local_config", "help.status", // 依赖 helpContext
-		"status.refresh", "local_config.reset", // 需目标群/上下文
+		"status.refresh",    // 依赖 statusContext
 		"bogus.unknown", "", // 未知/空 → 白名单默认拒绝
 	}
 	for _, a := range rejected {
