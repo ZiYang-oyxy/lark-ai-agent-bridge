@@ -2045,7 +2045,7 @@ func TestBuildLarkCardThreeSectionLayout(t *testing.T) {
 				t.Fatalf("thought panel wrong: %#v", m)
 			}
 			title := m["header"].(map[string]any)["title"].(map[string]string)["content"]
-			if title != "思考推理 · 37（仅保留最新 2 条，较早 35 条已省略）" {
+			if title != "思考推理 · 37（仅保留最新 2 条）" {
 				t.Fatalf("thought title = %q, want compact count", title)
 			}
 			if m["vertical_spacing"] != "4px" || m["padding"] != "4px 8px 4px 8px" {
@@ -2059,7 +2059,7 @@ func TestBuildLarkCardThreeSectionLayout(t *testing.T) {
 				t.Fatalf("tools panel wrong: %#v", m)
 			}
 			title := m["header"].(map[string]any)["title"].(map[string]string)["content"]
-			if title != "工具调用 · 6（仅保留最新 2 条，较早 4 条已省略）" {
+			if title != "工具调用 · 6（仅保留最新 2 条）" {
 				t.Fatalf("tools title = %q, want compact count", title)
 			}
 		}

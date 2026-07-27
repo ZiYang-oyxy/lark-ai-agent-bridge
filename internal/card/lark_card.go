@@ -799,7 +799,7 @@ func timelineSectionTitle(label string, total, omitted int) string {
 	if visible < 0 {
 		visible = 0
 	}
-	return fmt.Sprintf("%s（仅保留最新 %d 条，较早 %d 条已省略）", title, visible, omitted)
+	return fmt.Sprintf("%s（仅保留最新 %d 条）", title, visible)
 }
 
 // processPanelBody 把思考与工具收进一个折叠区,内部仍保留 thought / tools 两个 element_id。
