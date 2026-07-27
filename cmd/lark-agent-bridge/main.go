@@ -249,8 +249,12 @@ func runDoctor(args []string) error {
 	}
 	defaultWorkDir := fs.String("default-workdir", cfg.DefaultWorkDir, "default workdir for messages without --workdir")
 	strict := fs.Bool("strict", false, "treat wrapper preflight warnings as failures")
+	preflightTimeout := fs.Duration("preflight-timeout", 20*time.Second, "bounded wrapper preflight timeout")
 	if err := fs.Parse(args); err != nil {
 		return err
+	}
+	if *preflightTimeout <= 0 {
+		return errors.New("doctor preflight timeout must be positive")
 	}
 	if err := applyDefaultWorkDir(&cfg, *defaultWorkDir); err != nil {
 		return err
@@ -258,7 +262,7 @@ func runDoctor(args []string) error {
 	checks := doctor.RunWithOptions(context.Background(), cfg, doctor.RunOptions{
 		WrapperPreflight: true,
 		Strict:           *strict,
-		PreflightTimeout: 20 * time.Second,
+		PreflightTimeout: *preflightTimeout,
 	})
 	fmt.Println(doctor.Summary(checks))
 	if *strict {
@@ -754,7 +758,7 @@ func printUsage() {
 
 Usage:
   lark-agent-bridge version [--json]
-  lark-agent-bridge doctor [--strict] [--default-workdir /path]
+  lark-agent-bridge doctor [--strict] [--preflight-timeout 20s] [--default-workdir /path]
   lark-agent-bridge simulate [--default-workdir /path] -text "/new hello"
   lark-agent-bridge simulate -text "/new first" -next-text "/new second"
   lark-agent-bridge simulate -text "/new --workdir /tmp/missing hello" -timeout-now

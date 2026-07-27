@@ -574,6 +574,35 @@ func TestRunDoctorWrapperPreflightWarningFailsOnlyInStrictMode(t *testing.T) {
 	}
 }
 
+func TestRunDoctorAcceptsBoundedPreflightTimeout(t *testing.T) {
+	workDir, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	bin := filepath.Join(workDir, "fake-claude")
+	if err := os.WriteFile(bin, []byte("#!/bin/sh\nsleep 0.1\nexit 0\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	stateDir := filepath.Join(workDir, ".state")
+	if err := os.Mkdir(stateDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("E2E_CLAUDE_BIN", bin)
+	t.Setenv("E2E_PREFERENCE_STORE", filepath.Join(stateDir, "preferences.json"))
+	t.Setenv("LARK_APP_ID", "app")
+	t.Setenv("LARK_APP_SECRET", "secret")
+
+	if err := runDoctor([]string{"--strict", "--preflight-timeout", "1ms", "--default-workdir", workDir}); err == nil {
+		t.Fatal("strict doctor unexpectedly accepted a timed-out wrapper")
+	}
+	if err := runDoctor([]string{"--strict", "--preflight-timeout", "1s", "--default-workdir", workDir}); err != nil {
+		t.Fatalf("strict doctor with explicit timeout: %v", err)
+	}
+	if err := runDoctor([]string{"--preflight-timeout", "0s", "--default-workdir", workDir}); err == nil || err.Error() != "doctor preflight timeout must be positive" {
+		t.Fatalf("non-positive timeout error = %v", err)
+	}
+}
+
 func TestNewServeMediaUsesConfiguredLimitsAndSharedTokenSource(t *testing.T) {
 	tokens := feishu.NewTenantTokenSource("app", "secret")
 	cfg := config.Config{
