@@ -2,6 +2,7 @@ package card
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 
 	"lark-agent-bridge/internal/config"
@@ -279,7 +280,7 @@ func buildConfigFormElements(sessionID string, form ConfigForm) []any {
 		"type":             "primary",
 		"width":            "fill",
 		"form_action_type": "submit",
-		"behaviors":        callbackBehavior(sessionID, saveAction, saveValue),
+		"behaviors":        configCallbackBehavior(sessionID, saveAction, saveValue, form.PreferenceRevision),
 	}
 	closeButton := map[string]any{
 		"tag":       "button",
@@ -919,6 +920,13 @@ func stopButtonLabel(e Event) string {
 
 func callbackBehavior(sessionID, actionID, value string) []any {
 	return callbackBehaviorWithGrant(sessionID, actionID, value, "")
+}
+
+func configCallbackBehavior(sessionID, actionID, value string, revision uint64) []any {
+	behaviors := callbackBehavior(sessionID, actionID, value)
+	payload := behaviors[0].(map[string]any)["value"].(map[string]any)
+	payload["preference_revision"] = strconv.FormatUint(revision, 10)
+	return behaviors
 }
 
 func callbackBehaviorWithGrant(sessionID, actionID, value, grantID string) []any {

@@ -103,6 +103,7 @@ type SelectOption struct {
 }
 
 type ConfigForm struct {
+	PreferenceRevision uint64
 	Agent              string
 	AgentHome          string
 	AgentBin           string

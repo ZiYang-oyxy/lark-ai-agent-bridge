@@ -12,10 +12,11 @@ func TestBuildCardActionFromLarkValueObject(t *testing.T) {
 		Operator: &callback.Operator{OpenID: "ou_user"},
 		Context:  &callback.Context{OpenChatID: "oc_chat", OpenMessageID: "om_config"},
 		Action: &callback.CallBackAction{Tag: "button", Value: map[string]any{
-			"session":   "claude:chat",
-			"action_id": "stop",
-			"value":     "ignored",
-			"grant_id":  "grant-1",
+			"session":             "claude:chat",
+			"action_id":           "stop",
+			"value":               "ignored",
+			"grant_id":            "grant-1",
+			"preference_revision": "7",
 		}},
 	}}
 
@@ -23,7 +24,7 @@ func TestBuildCardActionFromLarkValueObject(t *testing.T) {
 	if err != nil {
 		t.Fatalf("BuildCardActionFromLark error: %v", err)
 	}
-	if got.SessionID != "claude:chat" || got.ActionID != "stop" || got.Value != "ignored" || got.Actor != "ou_user" || got.ChatID != "oc_chat" || got.Tag != "button" || got.OpenMessageID != "om_config" || got.GrantID != "grant-1" {
+	if got.SessionID != "claude:chat" || got.ActionID != "stop" || got.Value != "ignored" || got.Actor != "ou_user" || got.ChatID != "oc_chat" || got.Tag != "button" || got.OpenMessageID != "om_config" || got.GrantID != "grant-1" || !got.HasPreferenceRevision || got.PreferenceRevision != 7 {
 		t.Fatalf("action = %#v", got)
 	}
 }

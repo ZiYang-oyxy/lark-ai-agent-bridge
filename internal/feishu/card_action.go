@@ -2,21 +2,24 @@ package feishu
 
 import (
 	"fmt"
+	"strconv"
 
 	"github.com/larksuite/oapi-sdk-go/v3/event/dispatcher/callback"
 )
 
 type CardAction struct {
-	SessionID     string
-	ActionID      string
-	Value         string
-	Actor         string
-	ChatID        string
-	OpenMessageID string
-	Tag           string
-	Option        string
-	FormValues    map[string]string
-	GrantID       string
+	SessionID             string
+	ActionID              string
+	Value                 string
+	Actor                 string
+	ChatID                string
+	OpenMessageID         string
+	Tag                   string
+	Option                string
+	FormValues            map[string]string
+	GrantID               string
+	PreferenceRevision    uint64
+	HasPreferenceRevision bool
 }
 
 func BuildCardActionFromLark(event *callback.CardActionTriggerEvent) (CardAction, error) {
@@ -41,6 +44,14 @@ func BuildCardActionFromLark(event *callback.CardActionTriggerEvent) (CardAction
 		Option:        action.Option,
 		FormValues:    formValues,
 		GrantID:       anyString(value["grant_id"]),
+	}
+	if rawRevision := anyString(value["preference_revision"]); rawRevision != "" {
+		revision, parseErr := strconv.ParseUint(rawRevision, 10, 64)
+		if parseErr != nil {
+			return CardAction{}, fmt.Errorf("invalid preference revision")
+		}
+		req.PreferenceRevision = revision
+		req.HasPreferenceRevision = true
 	}
 	if req.SessionID == "" {
 		req.SessionID = anyString(formValue["session"])

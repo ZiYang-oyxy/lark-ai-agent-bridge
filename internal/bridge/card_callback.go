@@ -3,6 +3,7 @@ package bridge
 import (
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 )
 
@@ -45,6 +46,14 @@ func ActionRequestFromCardCallback(payload []byte) (ActionRequest, error) {
 		OpenMessageID: stringField(contextValue, "open_message_id"),
 		FormValues:    formValues,
 		GrantID:       stringField(value, "grant_id"),
+	}
+	if rawRevision := stringField(value, "preference_revision"); rawRevision != "" {
+		revision, parseErr := strconv.ParseUint(rawRevision, 10, 64)
+		if parseErr != nil {
+			return ActionRequest{}, fmt.Errorf("invalid preference revision")
+		}
+		req.PreferenceRevision = revision
+		req.HasPreferenceRevision = true
 	}
 	if req.ActionID == "" {
 		req.ActionID = stringField(action, "action_id")

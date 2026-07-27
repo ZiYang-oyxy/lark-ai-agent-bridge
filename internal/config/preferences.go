@@ -13,6 +13,8 @@ import (
 
 const PreferenceSchemaVersion = 1
 
+var ErrPreferenceConflict = errors.New("config: preference revision conflict")
+
 type ReplyMode string
 
 type ConversationMode string
@@ -233,6 +235,14 @@ func (s *PreferenceStore) Get() RuntimePreference {
 	return s.defaults
 }
 
+// Snapshot returns the effective global preference and the revision observed
+// with it. The revision can later be used to reject stale full-form saves.
+func (s *PreferenceStore) Snapshot() (RuntimePreference, uint64) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.effectiveGlobalLocked(), s.revision
+}
+
 func (s *PreferenceStore) Set(preference RuntimePreference) error {
 	preference = normalizeRuntimePreference(preference)
 	s.mu.Lock()
@@ -258,6 +268,24 @@ func (s *PreferenceStore) Update(update func(RuntimePreference) (RuntimePreferen
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	return s.updateLocked(update)
+}
+
+// UpdateAtRevision applies a full-form update only if no preference write has
+// occurred since the form snapshot was rendered.
+func (s *PreferenceStore) UpdateAtRevision(expected uint64, update func(RuntimePreference) (RuntimePreference, error)) (RuntimePreference, error) {
+	if update == nil {
+		return RuntimePreference{}, errors.New("config: nil preference update")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.revision != expected {
+		return RuntimePreference{}, ErrPreferenceConflict
+	}
+	return s.updateLocked(update)
+}
+
+func (s *PreferenceStore) updateLocked(update func(RuntimePreference) (RuntimePreference, error)) (RuntimePreference, error) {
 	preference, err := update(s.effectiveGlobalLocked())
 	if err != nil {
 		return RuntimePreference{}, err

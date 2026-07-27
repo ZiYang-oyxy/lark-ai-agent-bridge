@@ -719,14 +719,16 @@ func actionRequestFromFeishu(action feishu.CardAction) bridge.ActionRequest {
 		formValues = nil
 	}
 	return bridge.ActionRequest{
-		SessionID:     action.SessionID,
-		ActionID:      action.ActionID,
-		Value:         action.Value,
-		Actor:         action.Actor,
-		ChatID:        action.ChatID,
-		OpenMessageID: action.OpenMessageID,
-		FormValues:    formValues,
-		GrantID:       action.GrantID,
+		SessionID:             action.SessionID,
+		ActionID:              action.ActionID,
+		Value:                 action.Value,
+		Actor:                 action.Actor,
+		ChatID:                action.ChatID,
+		OpenMessageID:         action.OpenMessageID,
+		FormValues:            formValues,
+		GrantID:               action.GrantID,
+		PreferenceRevision:    action.PreferenceRevision,
+		HasPreferenceRevision: action.HasPreferenceRevision,
 	}
 }
 

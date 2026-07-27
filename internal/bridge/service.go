@@ -301,14 +301,16 @@ type pendingCompletion struct {
 }
 
 type ActionRequest struct {
-	SessionID     string
-	ActionID      string
-	Value         string
-	Actor         string
-	ChatID        string
-	OpenMessageID string
-	FormValues    map[string]string
-	GrantID       string
+	SessionID             string
+	ActionID              string
+	Value                 string
+	Actor                 string
+	ChatID                string
+	OpenMessageID         string
+	FormValues            map[string]string
+	GrantID               string
+	PreferenceRevision    uint64
+	HasPreferenceRevision bool
 }
 
 type ActionResult struct {
@@ -717,6 +719,10 @@ func (s *Service) handleMkdirCommand(_ context.Context, msg Message, cmd Command
 }
 
 func createWorkspaceBoundedDir(raw string, roots []string) (string, error) {
+	return createWorkspaceBoundedDirAfterOpen(raw, roots, nil)
+}
+
+func createWorkspaceBoundedDirAfterOpen(raw string, roots []string, afterOpen func(string)) (string, error) {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
 		return "", errors.New("路径不能为空")
@@ -728,33 +734,28 @@ func createWorkspaceBoundedDir(raw string, roots []string) (string, error) {
 			lastErr = err
 			continue
 		}
-		rootPath, err := filepath.EvalSymlinks(rootAbs)
+		root, err := os.OpenRoot(rootAbs)
 		if err != nil {
 			lastErr = err
 			continue
+		}
+		if afterOpen != nil {
+			afterOpen(rootAbs)
 		}
 		candidate := raw
 		if !filepath.IsAbs(candidate) {
-			candidate = filepath.Join(rootPath, candidate)
+			candidate = filepath.Join(rootAbs, candidate)
 		}
 		candidate, err = filepath.Abs(candidate)
 		if err != nil {
+			_ = root.Close()
 			lastErr = err
 			continue
 		}
-		candidate, err = resolvePathWithMissingTail(candidate)
-		if err != nil {
-			lastErr = err
-			continue
-		}
-		relative, err := filepath.Rel(rootPath, candidate)
+		relative, err := filepath.Rel(rootAbs, candidate)
 		if err != nil || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
-			lastErr = fmt.Errorf("path %q escapes configured root %q", raw, rootPath)
-			continue
-		}
-		root, err := os.OpenRoot(rootPath)
-		if err != nil {
-			lastErr = err
+			_ = root.Close()
+			lastErr = fmt.Errorf("path %q escapes configured root %q", raw, rootAbs)
 			continue
 		}
 		err = root.MkdirAll(relative, 0o755)
@@ -2087,7 +2088,6 @@ func (s *Service) HandleActionResult(ctx context.Context, req ActionRequest) (Ac
 			s.Audit.Record(req.Actor, "config_save_failed", req.SessionID, err.Error())
 			return s.renderActionEvent(configSaveErrorEvent(req.SessionID))
 		}
-		current := s.Preferences.Get()
 		values := make(map[string]string, len(req.FormValues))
 		for key, value := range req.FormValues {
 			// Model is not editable from the card. Ignore stale or malicious values
@@ -2096,24 +2096,39 @@ func (s *Service) HandleActionResult(ctx context.Context, req ActionRequest) (Ac
 				values[key] = value
 			}
 		}
-		preference, err := preferenceFromFields(values, current)
+		if !req.HasPreferenceRevision && req.OpenMessageID != "" {
+			s.Audit.Record(req.Actor, "config_save_conflict", req.SessionID, "missing preference revision")
+			return s.renderActionEvent(configSaveConflictEvent(req.SessionID, false))
+		}
+		expected := req.PreferenceRevision
+		if !req.HasPreferenceRevision {
+			_, expected = s.Preferences.Snapshot()
+		}
+		var current config.RuntimePreference
+		preference, err := s.Preferences.UpdateAtRevision(expected, func(observed config.RuntimePreference) (config.RuntimePreference, error) {
+			current = observed
+			next, err := preferenceFromFields(values, observed)
+			if err != nil {
+				return config.RuntimePreference{}, err
+			}
+			if !strings.EqualFold(strings.TrimSpace(observed.Agent), strings.TrimSpace(next.Agent)) {
+				if _, ok := s.Agents.HomePath(next.Agent, next.AgentHome); !ok {
+					next.AgentHome = ""
+				}
+				if _, ok := s.Agents.BinPath(next.Agent, next.AgentBin); !ok {
+					next.AgentBin = ""
+				}
+			}
+			return next, nil
+		})
+		if errors.Is(err, config.ErrPreferenceConflict) {
+			s.Audit.Record(req.Actor, "config_save_conflict", req.SessionID, err.Error())
+			return s.renderActionEvent(configSaveConflictEvent(req.SessionID, false))
+		}
 		if err != nil {
 			s.Audit.Record(req.Actor, "config_save_failed", req.SessionID, err.Error())
 			return s.renderActionEvent(configSaveErrorEvent(req.SessionID))
 		}
-		if !strings.EqualFold(strings.TrimSpace(current.Agent), strings.TrimSpace(preference.Agent)) {
-			if _, ok := s.Agents.HomePath(preference.Agent, preference.AgentHome); !ok {
-				preference.AgentHome = ""
-			}
-			if _, ok := s.Agents.BinPath(preference.Agent, preference.AgentBin); !ok {
-				preference.AgentBin = ""
-			}
-		}
-		if err := s.Preferences.Set(preference); err != nil {
-			s.Audit.Record(req.Actor, "config_save_failed", req.SessionID, err.Error())
-			return s.renderActionEvent(configSaveErrorEvent(req.SessionID))
-		}
-		preference = s.Preferences.Get()
 		s.Audit.Record(req.Actor, "config_saved", req.SessionID, fmt.Sprintf("agent=%s agent_home=%s agent_bin=%s model=%s effort=%s reply_mode=%s append_overflow_mode=%s conversation_mode=%s topic_seed_mode=%s group_message_mode=%s respond_to_bots=%t notify_on_complete=%t show_meta_row_agent=%t show_meta_row_runtime=%t show_meta_row_developer=%t", preference.Agent, preference.AgentHome, preference.AgentBin, preference.Model, preference.Effort, preference.ReplyMode, preference.AppendOverflowMode, preference.ConversationMode, preference.TopicSeedMode, preference.GroupMessageMode, preference.RespondToBots, preference.NotifyOnComplete, preference.ShowMetaRowAgent, preference.ShowMetaRowRuntime, preference.ShowMetaRowDeveloper))
 		s.Audit.Record(req.Actor, "group_message_mode_saved", req.SessionID, fmt.Sprintf("mode=%s respond_to_bots=%t", preference.GroupMessageMode, preference.RespondToBots))
 		result, err := s.renderActionEvent(card.Event{
@@ -2139,14 +2154,25 @@ func (s *Service) HandleActionResult(ctx context.Context, req ActionRequest) (Ac
 		// Build a per-field override from the form, keeping only the fields the
 		// user set to something different from the current global default.
 		// Fields left equal to global stay nil so they keep inheriting.
-		global := s.Preferences.Get()
-		previous := s.Preferences.GetForChat(chatID)
-		override := chatOverrideFromForm(req.FormValues, global)
-		if err := s.Preferences.SetChat(chatID, override); err != nil {
+		if !req.HasPreferenceRevision && req.OpenMessageID != "" {
+			s.Audit.Record(req.Actor, "local_config_save_conflict", chatID, "missing preference revision")
+			return s.renderActionEvent(configSaveConflictEvent(req.SessionID, true))
+		}
+		expected := req.PreferenceRevision
+		if !req.HasPreferenceRevision {
+			_, _, expected = s.Preferences.SnapshotForChat(chatID)
+		}
+		previous, effective, err := s.Preferences.UpdateChatAtRevision(chatID, expected, func(global config.RuntimePreference, _ config.ChatOverride) (config.ChatOverride, error) {
+			return chatOverrideFromForm(req.FormValues, global), nil
+		})
+		if errors.Is(err, config.ErrPreferenceConflict) {
+			s.Audit.Record(req.Actor, "local_config_save_conflict", chatID, err.Error())
+			return s.renderActionEvent(configSaveConflictEvent(req.SessionID, true))
+		}
+		if err != nil {
 			s.Audit.Record(req.Actor, "local_config_save_failed", chatID, err.Error())
 			return s.renderActionEvent(configSaveErrorEvent(req.SessionID))
 		}
-		effective := s.Preferences.GetForChat(chatID)
 		s.Audit.Record(req.Actor, "local_config_saved", chatID, fmt.Sprintf("agent=%s model=%s effort=%s reply_mode=%s append_overflow_mode=%s conversation_mode=%s topic_seed_mode=%s group_message_mode=%s respond_to_bots=%t", effective.Agent, effective.Model, effective.Effort, effective.ReplyMode, effective.AppendOverflowMode, effective.ConversationMode, effective.TopicSeedMode, effective.GroupMessageMode, effective.RespondToBots))
 		return s.renderActionEvent(card.Event{
 			Type:      "local_config_saved",
@@ -2428,12 +2454,21 @@ func metaRowsFromForm(values map[string]string, current config.RuntimePreference
 }
 
 func (s *Service) configForm(preference config.RuntimePreference) *card.ConfigForm {
+	revision := uint64(0)
+	if s.Preferences != nil {
+		preference, revision = s.Preferences.Snapshot()
+	}
+	return s.configFormAtRevision(preference, revision)
+}
+
+func (s *Service) configFormAtRevision(preference config.RuntimePreference, revision uint64) *card.ConfigForm {
 	agentKind := strings.TrimSpace(preference.Agent)
 	if agentKind == "" {
 		agentKind = config.DefaultAgentKind
 	}
 	form := &card.ConfigForm{
-		Agent: agentKind, AgentHome: preference.AgentHome, AgentBin: preference.AgentBin,
+		PreferenceRevision: revision,
+		Agent:              agentKind, AgentHome: preference.AgentHome, AgentBin: preference.AgentBin,
 		Model: preference.Model, Effort: preference.Effort, ReplyMode: string(preference.ReplyMode), AppendOverflowMode: string(preference.AppendOverflowMode), ConversationMode: string(preference.ConversationMode),
 		TopicSeedMode:        string(preference.TopicSeedMode),
 		GroupMessageMode:     string(preference.GroupMessageMode),
@@ -2458,7 +2493,11 @@ func (s *Service) configForm(preference config.RuntimePreference) *card.ConfigFo
 // carries the ChatID and drops the access panel: access control is never
 // per-chat and is managed only via /invite in the global surface.
 func (s *Service) localConfigForm(preference config.RuntimePreference, chatID string) *card.ConfigForm {
-	form := s.configForm(preference)
+	revision := uint64(0)
+	if s.Preferences != nil {
+		_, preference, revision = s.Preferences.SnapshotForChat(chatID)
+	}
+	form := s.configFormAtRevision(preference, revision)
 	form.ChatID = chatID
 	form.AllowedUsers = nil
 	form.AllowedChats = nil
@@ -2784,6 +2823,18 @@ func configSaveErrorEvent(sessionID string) card.Event {
 		Type:      "error",
 		SessionID: sessionID,
 		Segments:  []card.Segment{{Kind: card.SegmentError, Text: "偏好保存失败，请检查选项或存储状态。"}},
+	}
+}
+
+func configSaveConflictEvent(sessionID string, local bool) card.Event {
+	target := "全局 `/config`"
+	if local {
+		target = "本群 `/local-config`"
+	}
+	return card.Event{
+		Type:      "error",
+		SessionID: sessionID,
+		Segments:  []card.Segment{{Kind: card.SegmentError, Text: "配置已被其他操作更新。请重新打开 " + target + " 后再保存。"}},
 	}
 }
 

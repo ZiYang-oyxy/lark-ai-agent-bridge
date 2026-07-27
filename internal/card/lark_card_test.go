@@ -519,6 +519,7 @@ func TestBuildLarkCardRendersRuntimeConfigForm(t *testing.T) {
 		Type:      "config",
 		SessionID: "claude:chat:message:config-1",
 		ConfigForm: &ConfigForm{
+			PreferenceRevision:   7,
 			Agent:                "claude",
 			AgentHome:            "默认",
 			AgentBin:             "主机 claude",
@@ -672,7 +673,7 @@ func TestBuildLarkCardRendersRuntimeConfigForm(t *testing.T) {
 	}
 	behaviors := submit["behaviors"].([]any)
 	value := behaviors[0].(map[string]any)["value"].(map[string]any)
-	if value["action_id"] != "config.save" || value["session"] != "claude:chat:message:config-1" {
+	if value["action_id"] != "config.save" || value["session"] != "claude:chat:message:config-1" || value["preference_revision"] != "7" {
 		t.Fatalf("submit callback = %#v", value)
 	}
 	closeBehaviors := closeButton["behaviors"].([]any)

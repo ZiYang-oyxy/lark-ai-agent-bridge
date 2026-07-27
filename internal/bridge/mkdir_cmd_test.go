@@ -92,3 +92,36 @@ func TestCreateWorkspaceBoundedDirRejectsReplacedSymlink(t *testing.T) {
 		t.Fatalf("outside directory unexpectedly created: %v", err)
 	}
 }
+
+func TestCreateWorkspaceBoundedDirPinsRootBeforePathReplacement(t *testing.T) {
+	parent := t.TempDir()
+	root := filepath.Join(parent, "workspace")
+	moved := filepath.Join(parent, "workspace-opened")
+	outside := t.TempDir()
+	if err := os.Mkdir(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	var hookErr error
+	created, err := createWorkspaceBoundedDirAfterOpen("nested", []string{root}, func(string) {
+		if renameErr := os.Rename(root, moved); renameErr != nil {
+			hookErr = renameErr
+			return
+		}
+		hookErr = os.Symlink(outside, root)
+	})
+	if hookErr != nil {
+		t.Fatal(hookErr)
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	if created != filepath.Join(root, "nested") {
+		t.Fatalf("created path = %q", created)
+	}
+	if info, err := os.Stat(filepath.Join(moved, "nested")); err != nil || !info.IsDir() {
+		t.Fatalf("pinned root did not receive directory: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(outside, "nested")); !os.IsNotExist(err) {
+		t.Fatalf("replacement root escaped workspace: %v", err)
+	}
+}

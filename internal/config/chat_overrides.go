@@ -192,6 +192,24 @@ func (s *PreferenceStore) GetForChat(chatID string) RuntimePreference {
 	return merged
 }
 
+// SnapshotForChat returns the global and effective chat preferences together
+// with one shared store revision.
+func (s *PreferenceStore) SnapshotForChat(chatID string) (RuntimePreference, RuntimePreference, uint64) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	global := s.effectiveGlobalLocked()
+	chatID = strings.TrimSpace(chatID)
+	override, ok := s.chatOverrides[chatID]
+	if !ok || override.IsEmpty() {
+		return global, global, s.revision
+	}
+	effective, err := mergeChatOverride(global, override, s.allowedModels, s.agents)
+	if err != nil {
+		return global, global, s.revision
+	}
+	return global, effective, s.revision
+}
+
 // ChatOverride returns the stored override for a chat and whether one exists.
 func (s *PreferenceStore) ChatOverride(chatID string) (ChatOverride, bool) {
 	s.mu.RLock()
@@ -239,30 +257,63 @@ func (s *PreferenceStore) UpdateChat(chatID string, update func(ChatOverride) (C
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	_, effective, err := s.updateChatLocked(chatID, update)
+	return effective, err
+}
+
+// UpdateChatAtRevision rejects a stale full-form save. It returns the effective
+// preference before and after the successful update for confirmation copy.
+func (s *PreferenceStore) UpdateChatAtRevision(chatID string, expected uint64, update func(RuntimePreference, ChatOverride) (ChatOverride, error)) (RuntimePreference, RuntimePreference, error) {
+	chatID = strings.TrimSpace(chatID)
+	if chatID == "" {
+		return RuntimePreference{}, RuntimePreference{}, fmt.Errorf("config: empty chat id")
+	}
+	if update == nil {
+		return RuntimePreference{}, RuntimePreference{}, fmt.Errorf("config: nil chat preference update")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.revision != expected {
+		return RuntimePreference{}, RuntimePreference{}, ErrPreferenceConflict
+	}
+	global := s.effectiveGlobalLocked()
+	return s.updateChatLocked(chatID, func(current ChatOverride) (ChatOverride, error) {
+		return update(global, current)
+	})
+}
+
+func (s *PreferenceStore) updateChatLocked(chatID string, update func(ChatOverride) (ChatOverride, error)) (RuntimePreference, RuntimePreference, error) {
+	global := s.effectiveGlobalLocked()
+	previous := global
+	if current, ok := s.chatOverrides[chatID]; ok && !current.IsEmpty() {
+		if merged, err := mergeChatOverride(global, current, s.allowedModels, s.agents); err == nil {
+			previous = merged
+		}
+	}
 	override, err := update(s.chatOverrides[chatID])
 	if err != nil {
-		return RuntimePreference{}, err
+		return RuntimePreference{}, RuntimePreference{}, err
 	}
 	override = normalizeChatOverride(override)
 	if override.IsEmpty() {
 		if err := s.resetChatLocked(chatID); err != nil {
-			return RuntimePreference{}, err
+			return RuntimePreference{}, RuntimePreference{}, err
 		}
-		return s.effectiveGlobalLocked(), nil
+		return previous, global, nil
 	}
-	effective, err := mergeChatOverride(s.effectiveGlobalLocked(), override, s.allowedModels, s.agents)
+	effective, err := mergeChatOverride(global, override, s.allowedModels, s.agents)
 	if err != nil {
-		return RuntimePreference{}, err
+		return RuntimePreference{}, RuntimePreference{}, err
 	}
 	next := cloneChatOverrides(s.chatOverrides)
 	next[chatID] = override
 	revision := s.revision + 1
 	if err := savePreferenceSnapshot(s.path, preferenceSnapshot{SchemaVersion: PreferenceSchemaVersion, Revision: revision, Override: s.override, ChatOverrides: next}); err != nil {
-		return RuntimePreference{}, err
+		return RuntimePreference{}, RuntimePreference{}, err
 	}
 	s.chatOverrides = next
 	s.revision = revision
-	return effective, nil
+	return previous, effective, nil
 }
 
 // ResetChat removes any override for a chat. Resetting an unset chat is a no-op

@@ -2,6 +2,7 @@ package config
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -53,6 +54,30 @@ func TestPreferenceStoreUpdateSerializesReadModifyWrite(t *testing.T) {
 	got := store.Get()
 	if got.Effort != "high" || got.ReplyMode != ReplyModeLatestCard {
 		t.Fatalf("preference = %#v, want both concurrent patches", got)
+	}
+}
+
+func TestPreferenceStoreUpdateAtRevisionRejectsStaleSnapshot(t *testing.T) {
+	store, err := OpenPreferenceStore(filepath.Join(t.TempDir(), "preferences.json"), RuntimePreference{Model: "default", Effort: "low", ReplyMode: ReplyModeAppend}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, revision := store.Snapshot()
+	if _, err := store.Update(func(current RuntimePreference) (RuntimePreference, error) {
+		current.Effort = "high"
+		return current, nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.UpdateAtRevision(revision, func(current RuntimePreference) (RuntimePreference, error) {
+		current.ReplyMode = ReplyModeLatestCard
+		return current, nil
+	}); !errors.Is(err, ErrPreferenceConflict) {
+		t.Fatalf("stale update error = %v", err)
+	}
+	got := store.Get()
+	if got.Effort != "high" || got.ReplyMode != ReplyModeAppend {
+		t.Fatalf("stale update changed preference: %#v", got)
 	}
 }
 

@@ -35,6 +35,19 @@ func TestActionRequestFromCardCallback(t *testing.T) {
 	}
 }
 
+func TestActionRequestFromCardCallbackParsesPreferenceRevision(t *testing.T) {
+	req, err := ActionRequestFromCardCallback([]byte(`{
+		"action":{"value":{"session":"config","action_id":"config.save","preference_revision":"7"}},
+		"context":{"open_message_id":"om_config"}
+	}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !req.HasPreferenceRevision || req.PreferenceRevision != 7 {
+		t.Fatalf("preference revision = %d/%t", req.PreferenceRevision, req.HasPreferenceRevision)
+	}
+}
+
 // checker 组件的 form_value 是 bool、multi_select_static 是 []any(string element)。
 // 二者过去都会被旧的 `text, ok := value.(string)` 断言直接 continue 掉,导致丢字段。
 // 新的 cardFormValueToString 把 bool 规约成 "true"/"false"、把 []any 规约成 CSV,

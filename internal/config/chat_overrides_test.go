@@ -1,6 +1,7 @@
 package config
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -58,6 +59,30 @@ func TestPreferenceStoreUpdateChatSerializesReadModifyWrite(t *testing.T) {
 	override, ok := store.ChatOverride("oc-a")
 	if !ok || override.Effort == nil || *override.Effort != "high" || override.ReplyMode == nil || *override.ReplyMode != ReplyModeLatestCard {
 		t.Fatalf("override = %#v, want both concurrent patches", override)
+	}
+}
+
+func TestPreferenceStoreUpdateChatAtRevisionRejectsStaleSnapshot(t *testing.T) {
+	store, err := OpenPreferenceStore(filepath.Join(t.TempDir(), "preferences.json"), baseDefaults(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _, revision := store.SnapshotForChat("oc-a")
+	if _, err := store.Update(func(current RuntimePreference) (RuntimePreference, error) {
+		current.Effort = "high"
+		return current, nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	_, _, err = store.UpdateChatAtRevision("oc-a", revision, func(RuntimePreference, ChatOverride) (ChatOverride, error) {
+		mode := ReplyModeLatestCard
+		return ChatOverride{ReplyMode: &mode}, nil
+	})
+	if !errors.Is(err, ErrPreferenceConflict) {
+		t.Fatalf("stale chat update error = %v", err)
+	}
+	if _, ok := store.ChatOverride("oc-a"); ok {
+		t.Fatal("stale chat update created an override")
 	}
 }
 
