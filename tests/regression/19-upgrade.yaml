@@ -1,0 +1,14 @@
+name: /upgrade 边界
+description: Updates=nil 在 simulate 里恒早退。锁死文案防未来退化。
+tags: [regression, upgrade]
+steps:
+  - input: "/upgrade"
+    asserts:
+      - {type: event_type, expected: "message"}
+      - {type: segment_contains, text: "当前 Bridge 未启用自升级"}
+  - input: "/upgrade stable"
+    asserts:
+      - {type: segment_contains, text: "当前 Bridge 未启用自升级"}
+  - input: "/upgrade prerelease"
+    asserts:
+      - {type: segment_contains, text: "当前 Bridge 未启用自升级"}

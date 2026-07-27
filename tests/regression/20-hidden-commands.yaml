@@ -1,0 +1,12 @@
+name: /.go 与 /todo 边界
+description: /.go 是 self-loop 隐藏入口,只测无参 usage 分支(有参会真跑一次 agent run)。
+  /todo 未注册应命中 unknown。
+tags: [regression, hidden]
+steps:
+  - input: "/todo anything"
+    asserts:
+      - {type: segment_contains, text: "unknown command /todo"}
+  - input: "/.go"
+    asserts:
+      - {type: event_type, expected: "message"}
+      - {type: segment_contains, text: "用法：`/.go <需求>`"}

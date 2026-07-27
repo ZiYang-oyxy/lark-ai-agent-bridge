@@ -1,0 +1,9 @@
+name: /status 边界
+description: 空 session 的 NotStarted 卡片。有 session 分支超范围(需 prime run)。
+tags: [regression, status]
+steps:
+  - input: "/status"
+    asserts:
+      - {type: event_type, expected: "status"}
+      - {type: stop_button_disabled}    # NotStarted 无 running,stop 按钮应不可用
+      - {type: no_error}

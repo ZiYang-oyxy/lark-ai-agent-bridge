@@ -1,0 +1,18 @@
+name: /help 边界
+description: HelpCard 的 4 组标题(会话/配置/定时/权限)锁死,防退化。P2P 与群一致。
+tags: [regression, help]
+steps:
+  - input: "/help"
+    asserts:
+      - {type: event_type, expected: "help"}
+      - {type: segment_contains, text: "会话"}
+      - {type: segment_contains, text: "配置"}
+      - {type: segment_contains, text: "定时"}
+      - {type: segment_contains, text: "权限"}
+      - {type: audit_empty}       # 查询无 audit
+      - {type: no_error}
+  - input: "/help"
+    group: true
+    asserts:
+      - {type: event_type, expected: "help"}
+      - {type: no_error}

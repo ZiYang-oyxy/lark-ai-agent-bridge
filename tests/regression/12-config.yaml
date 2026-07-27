@@ -1,0 +1,21 @@
+name: /config 边界
+description: 全局配置查看/重置/未知参数。Preferences 已装配,reset 真跑到写偏好路径。
+tags: [regression, config]
+steps:
+  - input: "/config"
+    asserts:
+      - {type: event_type, expected: "config"}
+      - {type: audit_empty}     # 打开表单是纯查询,无 audit 副作用
+      - {type: no_error}
+  - input: "/config help"
+    asserts:
+      - {type: event_type, expected: "message"}
+      - {type: segment_contains, text: "用法：/config 或 /config reset"}
+  - input: "/config reset"
+    asserts:
+      - {type: event_type, expected: "message"}
+      - {type: segment_contains, text: "已恢复环境默认"}
+      - {type: no_error}
+  - input: "/config bogus-subcommand"
+    asserts:
+      - {type: segment_contains, text: "用法：/config"}

@@ -1,0 +1,14 @@
+name: /ws 边界
+description: 工作空间管理。simulate 环境 Workspaces=nil,统一命中早退分支;正常路径超范围。
+tags: [regression, ws]
+steps:
+  - input: "/ws"
+    asserts:
+      - {type: event_type, expected: "message"}
+      - {type: segment_contains, text: "工作区存储不可用"}
+  - input: "/ws list"
+    asserts:
+      - {type: segment_contains, text: "工作区存储不可用"}
+  - input: "/ws save my-alias"
+    asserts:
+      - {type: segment_contains, text: "工作区存储不可用"}

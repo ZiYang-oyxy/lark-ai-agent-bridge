@@ -1,0 +1,13 @@
+name: /stop 边界
+description: idle 提示 / 带参错误。有活跃 run 的 disabled 场景超 simulate 范围。
+tags: [regression, stop]
+steps:
+  - input: "/stop"
+    asserts:
+      - {type: event_type, expected: "notice"}  # assert 层 message→notice 特判
+      - {type: segment_contains, text: "当前会话没有正在运行的任务"}
+      - {type: stop_button_disabled}            # idle 场景不应亮出可用 stop
+      - {type: no_error}
+  - input: "/stop something"
+    asserts:
+      - {type: segment_contains, text: "用法：/stop"}

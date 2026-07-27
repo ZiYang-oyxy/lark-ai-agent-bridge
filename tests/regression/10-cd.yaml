@@ -1,0 +1,13 @@
+name: /cd 边界
+description: 查看/切换工作目录。simulate 环境 Workspaces=nil,只覆盖查询与错误分支;切换成功路径超范围。
+tags: [regression, cd]
+steps:
+  - input: "/cd"
+    asserts:
+      - {type: event_type, expected: "message"}
+      - {type: segment_contains, text: "当前工作目录"}
+      - {type: no_error}
+  - input: "/cd /tmp/definitely-nonexistent-bridge-test-dir-xyz"
+    asserts:
+      - {type: event_type, expected: "message"}
+      - {type: segment_contains, text: "工作区存储不可用"}

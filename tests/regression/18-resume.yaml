@@ -1,0 +1,11 @@
+name: /resume 边界
+description: simulate 环境 SessionStore 未装配,恒早退。正常列表/精确恢复超范围。
+tags: [regression, resume]
+steps:
+  - input: "/resume"
+    asserts:
+      - {type: event_type, expected: "message"}
+      - {type: segment_contains, text: "Session 历史存储不可用"}
+  - input: "/resume a b"
+    asserts:
+      - {type: segment_contains, text: "用法：/resume 或 /resume <session-id>"}

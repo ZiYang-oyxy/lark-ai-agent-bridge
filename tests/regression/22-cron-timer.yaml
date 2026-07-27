@@ -1,0 +1,23 @@
+name: /cron /timer 边界
+description: simulate 环境 Schedules=nil,统一命中早退分支。锁死文案防退化。
+tags: [regression, schedule]
+steps:
+  - input: "/cron"
+    asserts:
+      - {type: event_type, expected: "message"}
+      - {type: segment_contains, text: "定时任务服务尚未配置"}
+  - input: "/cron add 每天 9 点提醒"
+    asserts:
+      - {type: segment_contains, text: "定时任务服务尚未配置"}
+  - input: "/cron list"
+    asserts:
+      - {type: segment_contains, text: "定时任务服务尚未配置"}
+  - input: "/timer"
+    asserts:
+      - {type: segment_contains, text: "定时任务服务尚未配置"}
+  - input: "/timer list"
+    asserts:
+      - {type: segment_contains, text: "定时任务服务尚未配置"}
+  - input: "/timer info abc"
+    asserts:
+      - {type: segment_contains, text: "定时任务服务尚未配置"}

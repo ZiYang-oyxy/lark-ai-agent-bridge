@@ -1,0 +1,17 @@
+name: /.devel 边界
+description: simulate 环境 DevMode=nil,统一命中早退分支。锁死文案防退化。
+tags: [regression, devel]
+steps:
+  - input: "/.devel"
+    asserts:
+      - {type: event_type, expected: "message"}
+      - {type: segment_contains, text: "开发者模式存储不可用"}
+  - input: "/.devel 1"
+    asserts:
+      - {type: segment_contains, text: "开发者模式存储不可用"}
+  - input: "/.devel 0"
+    asserts:
+      - {type: segment_contains, text: "开发者模式存储不可用"}
+  - input: "/.devel bogus"
+    asserts:
+      - {type: segment_contains, text: "开发者模式存储不可用"}

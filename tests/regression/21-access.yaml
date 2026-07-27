@@ -1,0 +1,20 @@
+name: /invite /remove /group-access 边界
+description: 参数缺失 / 群非群 / 未加白等**用户可见**错误分支。admin 门在 simulate 里失效
+  (Access=nil,canRunAdminCommand 恒 true),因此不测 admin 拒绝路径。
+tags: [regression, access]
+steps:
+  - input: "/invite"
+    asserts:
+      - {type: segment_contains, text: "用法：/invite user|admin|member"}
+  - input: "/invite group"
+    asserts:
+      - {type: segment_contains, text: "/invite group 只能在群里发"}
+  - input: "/remove"
+    asserts:
+      - {type: segment_contains, text: "用法：/remove"}
+  - input: "/remove group"
+    asserts:
+      - {type: segment_contains, text: "/remove group 请在要移除的群里发"}
+  - input: "/group-access"
+    asserts:
+      - {type: segment_contains, text: "/group-access 只能在目标群里使用"}

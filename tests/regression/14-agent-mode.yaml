@@ -1,0 +1,17 @@
+name: /agent-mode 边界
+description: agent 切换。表单 / 非法参数 / 成功切换。
+tags: [regression, agent-mode]
+steps:
+  - input: "/agent-mode"
+    asserts:
+      - {type: event_type, expected: "agent_mode"}
+      - {type: no_error}
+  - input: "/agent-mode bogus"
+    asserts:
+      - {type: event_type, expected: "message"}
+      - {type: segment_contains, text: "用法：/agent-mode 或 /agent-mode claude|codex"}
+  - input: "/agent-mode claude"
+    asserts:
+      - {type: event_type, expected: "message"}
+      - {type: segment_contains, text: "已切换到"}
+      - {type: no_error}

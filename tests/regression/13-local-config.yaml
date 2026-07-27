@@ -1,0 +1,24 @@
+name: /local-config 边界
+description: 本群 override。P2P 引导 / 群里表单 / 群里 reset / 未知参数。
+tags: [regression, local-config]
+steps:
+  - input: "/local-config"
+    asserts:
+      - {type: event_type, expected: "message"}
+      - {type: segment_contains, text: "只用于群里设置本群覆盖"}
+      - {type: no_error}
+  - input: "/local-config"
+    group: true
+    asserts:
+      - {type: event_type, expected: "local_config_overview"}
+      - {type: no_error}
+  - input: "/local-config reset"
+    group: true
+    asserts:
+      - {type: event_type, expected: "message"}
+      - {type: segment_contains, text: "已清空本群覆盖"}
+      - {type: no_error}
+  - input: "/local-config bogus"
+    group: true
+    asserts:
+      - {type: segment_contains, text: "用法：/local-config"}
