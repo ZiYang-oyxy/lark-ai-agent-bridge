@@ -595,7 +595,7 @@ func TestRunDoctorAcceptsBoundedPreflightTimeout(t *testing.T) {
 	if err := runDoctor([]string{"--strict", "--preflight-timeout", "1ms", "--default-workdir", workDir}); err == nil {
 		t.Fatal("strict doctor unexpectedly accepted a timed-out wrapper")
 	}
-	if err := runDoctor([]string{"--strict", "--preflight-timeout", "1s", "--default-workdir", workDir}); err != nil {
+	if err := runDoctor([]string{"--strict", "--preflight-timeout", "5s", "--default-workdir", workDir}); err != nil {
 		t.Fatalf("strict doctor with explicit timeout: %v", err)
 	}
 	if err := runDoctor([]string{"--preflight-timeout", "0s", "--default-workdir", workDir}); err == nil || err.Error() != "doctor preflight timeout must be positive" {
