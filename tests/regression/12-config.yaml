@@ -10,7 +10,7 @@ steps:
   - input: "/config help"
     asserts:
       - {type: event_type, expected: "message"}
-      - {type: segment_contains, text: "用法：/config 或 /config reset"}
+      - {type: segment_contains, text: "用法：/config、/config reset 或 /config set key=value [key=value ...]"}
   - input: "/config reset"
     asserts:
       - {type: event_type, expected: "message"}

@@ -536,6 +536,7 @@ native_text_stream
 reaction_lifecycle
 latest_restart_fallback
 wrapper_preflight
+quote_readback
 group_message_intake
 EOF
 )"
