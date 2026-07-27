@@ -7,6 +7,55 @@ import (
 	"testing"
 )
 
+func TestPreferenceStoreUpdateSerializesReadModifyWrite(t *testing.T) {
+	store, err := OpenPreferenceStore(filepath.Join(t.TempDir(), "preferences.json"), RuntimePreference{Model: "default", Effort: "low", ReplyMode: ReplyModeAppend}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstEntered := make(chan struct{})
+	releaseFirst := make(chan struct{})
+	firstDone := make(chan error, 1)
+	go func() {
+		_, err := store.Update(func(current RuntimePreference) (RuntimePreference, error) {
+			close(firstEntered)
+			<-releaseFirst
+			current.Effort = "high"
+			return current, nil
+		})
+		firstDone <- err
+	}()
+	<-firstEntered
+	secondStarted := make(chan struct{})
+	secondEntered := make(chan struct{})
+	secondDone := make(chan error, 1)
+	go func() {
+		close(secondStarted)
+		_, err := store.Update(func(current RuntimePreference) (RuntimePreference, error) {
+			close(secondEntered)
+			current.ReplyMode = ReplyModeLatestCard
+			return current, nil
+		})
+		secondDone <- err
+	}()
+	<-secondStarted
+	select {
+	case <-secondEntered:
+		t.Error("second update entered while first update held the store lock")
+	default:
+	}
+	close(releaseFirst)
+	if err := <-firstDone; err != nil {
+		t.Fatal(err)
+	}
+	if err := <-secondDone; err != nil {
+		t.Fatal(err)
+	}
+	got := store.Get()
+	if got.Effort != "high" || got.ReplyMode != ReplyModeLatestCard {
+		t.Fatalf("preference = %#v, want both concurrent patches", got)
+	}
+}
+
 func TestPreferenceStoreUsesDefaultsWhenSnapshotIsMissing(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "preferences.json")
 	defaults := RuntimePreference{Model: "default", Effort: "low", ReplyMode: ReplyModeAppend, ConversationMode: ConversationModeChat, TopicSeedMode: TopicSeedModeQuote, GroupMessageMode: GroupMessageModeMentionOnly, AppendOverflowMode: AppendOverflowModeTruncate, Agent: DefaultAgentKind}

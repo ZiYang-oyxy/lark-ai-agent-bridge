@@ -249,6 +249,32 @@ func (s *PreferenceStore) Set(preference RuntimePreference) error {
 	return nil
 }
 
+// Update atomically applies a partial preference change. The callback runs
+// while the store lock is held, so concurrent command handlers cannot overwrite
+// fields written by another handler between a Get and Set pair.
+func (s *PreferenceStore) Update(update func(RuntimePreference) (RuntimePreference, error)) (RuntimePreference, error) {
+	if update == nil {
+		return RuntimePreference{}, errors.New("config: nil preference update")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	preference, err := update(s.effectiveGlobalLocked())
+	if err != nil {
+		return RuntimePreference{}, err
+	}
+	preference = normalizeRuntimePreference(preference)
+	if err := validateRuntimePreferenceWith(preference, s.allowedModels, s.agents); err != nil {
+		return RuntimePreference{}, err
+	}
+	revision := s.revision + 1
+	if err := savePreferenceSnapshot(s.path, preferenceSnapshot{SchemaVersion: PreferenceSchemaVersion, Revision: revision, Override: &preference, ChatOverrides: s.chatOverrides}); err != nil {
+		return RuntimePreference{}, err
+	}
+	s.override = &preference
+	s.revision = revision
+	return preference, nil
+}
+
 func (s *PreferenceStore) Reset() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()

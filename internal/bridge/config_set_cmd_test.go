@@ -23,6 +23,26 @@ func TestConfigSetWritesSpecifiedFieldsAndPreservesCurrent(t *testing.T) {
 	}
 }
 
+func TestConfigSetAllowsClearingOptionalFields(t *testing.T) {
+	svc, store := localConfigService(t)
+	current := store.Get()
+	current.AgentHome = "home-a"
+	current.AgentBin = "bin-a"
+	current.ShowMetaRowAgent = true
+	current.ShowMetaRowRuntime = true
+	if err := store.Set(current); err != nil {
+		// The local test store has no agent catalogue, so labels remain valid.
+		t.Fatal(err)
+	}
+	if err := svc.handleConfigCommand(context.Background(), Message{ID: "clear", Sender: "ou_admin"}, Command{Type: CommandConfig, Text: "set agent_home= agent_bin= meta_rows="}, current, current.ConversationMode); err != nil {
+		t.Fatal(err)
+	}
+	got := store.Get()
+	if got.AgentHome != "" || got.AgentBin != "" || got.ShowMetaRowAgent || got.ShowMetaRowRuntime || got.ShowMetaRowDeveloper {
+		t.Fatalf("cleared preference = %#v", got)
+	}
+}
+
 func TestConfigSetRejectsInvalidOrUnsupportedFieldsWithoutWriting(t *testing.T) {
 	for _, text := range []string{"set effort=turbo", "set model=x", "set unknown=value"} {
 		t.Run(text, func(t *testing.T) {

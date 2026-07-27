@@ -67,3 +67,28 @@ func TestMkdirRequiresAdmin(t *testing.T) {
 		t.Fatalf("non-admin target exists: %v", err)
 	}
 }
+
+func TestCreateWorkspaceBoundedDirRejectsReplacedSymlink(t *testing.T) {
+	root := t.TempDir()
+	outside := t.TempDir()
+	link := filepath.Join(root, "mutable")
+	inside := filepath.Join(root, "inside")
+	if err := os.Mkdir(inside, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(inside, link); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(link); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, link); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := createWorkspaceBoundedDir(filepath.Join(link, "escaped"), []string{root}); err == nil {
+		t.Fatal("createWorkspaceBoundedDir followed a replaced symlink outside the root")
+	}
+	if _, err := os.Stat(filepath.Join(outside, "escaped")); !os.IsNotExist(err) {
+		t.Fatalf("outside directory unexpectedly created: %v", err)
+	}
+}

@@ -240,9 +240,9 @@ func (s *Service) handleScheduleCommand(ctx context.Context, msg Message, cmd Co
 func scheduleHelpLines() []string {
 	return []string{
 		"**`/cron`** `[list [all]]` 查看周期任务",
-		"**`/cron`** `add <自然语言任务>` 创建 · **`info|run|enable|disable|del <id>`** 管理",
+		"**`/cron`** `add <自然语言任务>` 创建 · **`confirm|cancel [draft-id]`** 确认或取消草稿 · **`info|run|enable|disable|del <id>`** 管理",
 		"**`/timer`** `[list [all]]` 查看一次性任务",
-		"**`/timer`** `add <自然语言任务>` 创建 · **`info|del <id>`** 管理",
+		"**`/timer`** `add <自然语言任务>` 创建 · **`confirm|cancel [draft-id]`** 确认或取消草稿 · **`info|del <id>`** 管理",
 	}
 }
 

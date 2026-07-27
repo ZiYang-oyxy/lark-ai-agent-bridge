@@ -10,6 +10,57 @@ func baseDefaults() RuntimePreference {
 	return RuntimePreference{Model: "default", Effort: "low", ReplyMode: ReplyModeAppend, ConversationMode: ConversationModeChat, GroupMessageMode: GroupMessageModeMentionOnly, AppendOverflowMode: AppendOverflowModeTruncate, Agent: DefaultAgentKind}
 }
 
+func TestPreferenceStoreUpdateChatSerializesReadModifyWrite(t *testing.T) {
+	store, err := OpenPreferenceStore(filepath.Join(t.TempDir(), "preferences.json"), baseDefaults(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstEntered := make(chan struct{})
+	releaseFirst := make(chan struct{})
+	firstDone := make(chan error, 1)
+	go func() {
+		_, err := store.UpdateChat("oc-a", func(current ChatOverride) (ChatOverride, error) {
+			close(firstEntered)
+			<-releaseFirst
+			effort := "high"
+			current.Effort = &effort
+			return current, nil
+		})
+		firstDone <- err
+	}()
+	<-firstEntered
+	secondStarted := make(chan struct{})
+	secondEntered := make(chan struct{})
+	secondDone := make(chan error, 1)
+	go func() {
+		close(secondStarted)
+		_, err := store.UpdateChat("oc-a", func(current ChatOverride) (ChatOverride, error) {
+			close(secondEntered)
+			mode := ReplyModeLatestCard
+			current.ReplyMode = &mode
+			return current, nil
+		})
+		secondDone <- err
+	}()
+	<-secondStarted
+	select {
+	case <-secondEntered:
+		t.Error("second chat update entered while first update held the store lock")
+	default:
+	}
+	close(releaseFirst)
+	if err := <-firstDone; err != nil {
+		t.Fatal(err)
+	}
+	if err := <-secondDone; err != nil {
+		t.Fatal(err)
+	}
+	override, ok := store.ChatOverride("oc-a")
+	if !ok || override.Effort == nil || *override.Effort != "high" || override.ReplyMode == nil || *override.ReplyMode != ReplyModeLatestCard {
+		t.Fatalf("override = %#v, want both concurrent patches", override)
+	}
+}
+
 // GetForChat with no override for the chat must equal the global effective
 // preference exactly.
 func TestGetForChatFallsBackToGlobal(t *testing.T) {

@@ -705,18 +705,73 @@ func (s *Service) handleMkdirCommand(_ context.Context, msg Message, cmd Command
 		s.Audit.Record(msg.Sender, "admin_denied", msg.ChatID, string(CommandMkdir))
 		return s.renderTextWithMode("mkdir-denied", msg.ID, card.SegmentError, "❌ 此命令仅管理员可用。", preference.ConversationMode)
 	}
-	target, err := resolveWorkspaceBoundedPath(cmd.Text, []string{s.Config.DefaultWorkDir})
+	target, err := createWorkspaceBoundedDir(cmd.Text, []string{s.Config.DefaultWorkDir})
 	if err != nil {
 		return s.renderTextWithMode("mkdir-invalid", msg.ID, card.SegmentError, "目录不在允许的 workspace 范围内："+err.Error(), preference.ConversationMode)
-	}
-	if err := os.MkdirAll(target, 0o755); err != nil {
-		return s.renderTextWithMode("mkdir-failed", msg.ID, card.SegmentError, "创建目录失败："+err.Error(), preference.ConversationMode)
 	}
 	s.Audit.Record(msg.Sender, "workdir_created", msg.ChatID, target)
 	event := workDirActionEvent("workdir_created", runID("mkdir", msg.ID), target)
 	event.ReplyToMessageID = msg.ID
 	event.ReplyInThread = preference.ConversationMode == config.ConversationModeTopic
 	return s.Cards.Render(event)
+}
+
+func createWorkspaceBoundedDir(raw string, roots []string) (string, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return "", errors.New("路径不能为空")
+	}
+	var lastErr error
+	for _, configuredRoot := range roots {
+		rootAbs, err := filepath.Abs(strings.TrimSpace(configuredRoot))
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		rootPath, err := filepath.EvalSymlinks(rootAbs)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		candidate := raw
+		if !filepath.IsAbs(candidate) {
+			candidate = filepath.Join(rootPath, candidate)
+		}
+		candidate, err = filepath.Abs(candidate)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		candidate, err = resolvePathWithMissingTail(candidate)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		relative, err := filepath.Rel(rootPath, candidate)
+		if err != nil || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+			lastErr = fmt.Errorf("path %q escapes configured root %q", raw, rootPath)
+			continue
+		}
+		root, err := os.OpenRoot(rootPath)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		err = root.MkdirAll(relative, 0o755)
+		closeErr := root.Close()
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		if closeErr != nil {
+			return "", closeErr
+		}
+		return filepath.Clean(candidate), nil
+	}
+	if lastErr != nil {
+		return "", fmt.Errorf("path %q is not creatable within configured roots: %w", raw, lastErr)
+	}
+	return "", fmt.Errorf("path %q escapes configured roots", raw)
 }
 
 func resolveWorkspaceBoundedPath(raw string, roots []string) (string, error) {
@@ -943,33 +998,37 @@ func (s *Service) handleConfigCommand(ctx context.Context, msg Message, cmd Comm
 			if len(pair) != 2 {
 				return s.renderTextWithMode("config-set", msg.ID, card.SegmentError, "用法：/config set key=value [key=value ...]", replyMode)
 			}
-			key, value := strings.TrimSpace(pair[0]), strings.TrimSpace(pair[1])
-			if key == "" || value == "" {
+			key, value := strings.ToLower(strings.TrimSpace(pair[0])), strings.TrimSpace(pair[1])
+			if key == "" || value == "" && key != "agent_home" && key != "agent_bin" && key != "meta_rows" {
 				return s.renderTextWithMode("config-set", msg.ID, card.SegmentError, "用法：/config set key=value [key=value ...]", replyMode)
+			}
+			if _, duplicate := values[key]; duplicate {
+				return s.renderTextWithMode("config-set", msg.ID, card.SegmentError, "偏好保存失败：字段重复："+key, replyMode)
 			}
 			values[key] = value
 		}
 		if len(values) == 0 {
 			return s.renderTextWithMode("config-set", msg.ID, card.SegmentError, "用法：/config set key=value [key=value ...]", replyMode)
 		}
-		updated, err := preferenceFromFields(values, s.Preferences.Get())
+		updated, err := s.Preferences.Update(func(current config.RuntimePreference) (config.RuntimePreference, error) {
+			next, err := preferenceFromFields(values, current)
+			if err != nil {
+				return config.RuntimePreference{}, err
+			}
+			if !strings.EqualFold(strings.TrimSpace(current.Agent), strings.TrimSpace(next.Agent)) {
+				if _, ok := s.Agents.HomePath(next.Agent, next.AgentHome); !ok {
+					next.AgentHome = ""
+				}
+				if _, ok := s.Agents.BinPath(next.Agent, next.AgentBin); !ok {
+					next.AgentBin = ""
+				}
+			}
+			return next, nil
+		})
 		if err != nil {
 			s.Audit.Record(msg.Sender, "config_save_failed", "", err.Error())
 			return s.renderTextWithMode("config-set", msg.ID, card.SegmentError, "偏好保存失败："+err.Error(), replyMode)
 		}
-		if !strings.EqualFold(strings.TrimSpace(s.Preferences.Get().Agent), strings.TrimSpace(updated.Agent)) {
-			if _, ok := s.Agents.HomePath(updated.Agent, updated.AgentHome); !ok {
-				updated.AgentHome = ""
-			}
-			if _, ok := s.Agents.BinPath(updated.Agent, updated.AgentBin); !ok {
-				updated.AgentBin = ""
-			}
-		}
-		if err := s.Preferences.Set(updated); err != nil {
-			s.Audit.Record(msg.Sender, "config_save_failed", "", err.Error())
-			return s.renderTextWithMode("config-set", msg.ID, card.SegmentError, "偏好保存失败："+err.Error(), replyMode)
-		}
-		updated = s.Preferences.Get()
 		s.Audit.Record(msg.Sender, "config_saved", "", fmt.Sprintf("agent=%s agent_home=%s agent_bin=%s model=%s effort=%s reply_mode=%s append_overflow_mode=%s conversation_mode=%s topic_seed_mode=%s group_message_mode=%s respond_to_bots=%t notify_on_complete=%t show_meta_row_agent=%t show_meta_row_runtime=%t show_meta_row_developer=%t", updated.Agent, updated.AgentHome, updated.AgentBin, updated.Model, updated.Effort, updated.ReplyMode, updated.AppendOverflowMode, updated.ConversationMode, updated.TopicSeedMode, updated.GroupMessageMode, updated.RespondToBots, updated.NotifyOnComplete, updated.ShowMetaRowAgent, updated.ShowMetaRowRuntime, updated.ShowMetaRowDeveloper))
 		return s.renderTextWithMode("config-set", msg.ID, card.SegmentText, "偏好已保存；下一条新消息开始生效。", replyMode)
 	default:
@@ -1043,20 +1102,13 @@ func (s *Service) handleLocalConfigCommand(ctx context.Context, msg Message, cmd
 		if len(values) == 0 {
 			return s.renderTextWithMode("local-config-set", msg.ID, card.SegmentError, "用法：/local-config set key=value|inherit [key=value|inherit ...]", replyMode)
 		}
-		// This is deliberately a sequential read-modify-write. PreferenceStore
-		// has no atomic PatchChat/CAS API; concurrent admin commands may lose an
-		// update, which is accepted for this low-frequency management operation.
-		existing, _ := s.Preferences.ChatOverride(msg.ChatID)
-		override, err := applyChatOverrideFields(existing, values)
+		effective, err := s.Preferences.UpdateChat(msg.ChatID, func(existing config.ChatOverride) (config.ChatOverride, error) {
+			return applyChatOverrideFields(existing, values)
+		})
 		if err != nil {
 			s.Audit.Record(msg.Sender, "local_config_save_failed", msg.ChatID, err.Error())
 			return s.renderTextWithMode("local-config-set", msg.ID, card.SegmentError, "本群覆盖保存失败："+err.Error(), replyMode)
 		}
-		if err := s.Preferences.SetChat(msg.ChatID, override); err != nil {
-			s.Audit.Record(msg.Sender, "local_config_save_failed", msg.ChatID, err.Error())
-			return s.renderTextWithMode("local-config-set", msg.ID, card.SegmentError, "本群覆盖保存失败："+err.Error(), replyMode)
-		}
-		effective := s.Preferences.GetForChat(msg.ChatID)
 		s.Audit.Record(msg.Sender, "local_config_saved", msg.ChatID, fmt.Sprintf("agent=%s model=%s effort=%s reply_mode=%s append_overflow_mode=%s conversation_mode=%s topic_seed_mode=%s group_message_mode=%s respond_to_bots=%t", effective.Agent, effective.Model, effective.Effort, effective.ReplyMode, effective.AppendOverflowMode, effective.ConversationMode, effective.TopicSeedMode, effective.GroupMessageMode, effective.RespondToBots))
 		return s.renderTextWithMode("local-config-set", msg.ID, card.SegmentText, "本群覆盖已保存；未指定的字段保持原状，`inherit` 的字段回到全局 `/config`；下一条新消息开始生效。", replyMode)
 	default:

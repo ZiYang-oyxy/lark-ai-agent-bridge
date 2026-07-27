@@ -501,17 +501,45 @@ fi
 expected_l2_cases="$(cat <<'EOF'
 new_basic
 streaming_card
+help
+status
+workdir_existing
+topic_reply_at
+topic_reply_without_at_negative
 session_restart_context
+restart_queued_cancel
+restart_running_interrupted
+debounce_dm
+debounce_group
+busy_merge
+queue_full
+scope_parallel
+stop_preserves_queue
 recall_state
+message_revoke
+message_revoke_pending_workdir
+message_revoke_queued_input
 media_attachment_only
 media_images
 media_text_files
+media_partial
+media_rejected
+config_roundtrip
+config_reset
+config_frozen_queue
+requested_actual_model
+reply_append
+reply_clean
+reply_latest
+preview_thresholds
 native_text_stream
+reaction_lifecycle
 latest_restart_fallback
+wrapper_preflight
 group_message_intake
 EOF
 )"
-assert_eq "$expected_l2_cases" "$native_cases" "real E2E must contain only the L2 platform subset"
+assert_eq "$expected_l2_cases" "$native_cases" "real E2E registered case inventory"
 
 latest_restart_source="$(sed -n '/^case_latest_restart_fallback() {/,/^}/p' "$ROOT/scripts/e2e-real.sh")"
 if ! printf '%s\n' "$latest_restart_source" | rg -F '服务重启，已中断，请重新发送' >/dev/null; then

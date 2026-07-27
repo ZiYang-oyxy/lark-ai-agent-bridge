@@ -450,7 +450,7 @@ func TestHelpCardDataMatchesHelpText(t *testing.T) {
 	if want := scheduleHelpLines(); !reflect.DeepEqual(scheduleLines, want) {
 		t.Fatalf("schedule help lines = %#v, want %#v", scheduleLines, want)
 	}
-	for _, want := range []string{"add <自然语言任务>", "info|run|enable|disable|del <id>", "info|del <id>"} {
+	for _, want := range []string{"add <自然语言任务>", "confirm|cancel [draft-id]", "info|run|enable|disable|del <id>", "info|del <id>"} {
 		if !strings.Contains(strings.Join(scheduleLines, "\n"), want) {
 			t.Fatalf("schedule help is missing %q: %#v", want, scheduleLines)
 		}

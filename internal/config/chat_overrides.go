@@ -228,6 +228,43 @@ func (s *PreferenceStore) SetChat(chatID string, override ChatOverride) error {
 	return nil
 }
 
+// UpdateChat atomically applies a partial per-chat override change.
+func (s *PreferenceStore) UpdateChat(chatID string, update func(ChatOverride) (ChatOverride, error)) (RuntimePreference, error) {
+	chatID = strings.TrimSpace(chatID)
+	if chatID == "" {
+		return RuntimePreference{}, fmt.Errorf("config: empty chat id")
+	}
+	if update == nil {
+		return RuntimePreference{}, fmt.Errorf("config: nil chat preference update")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	override, err := update(s.chatOverrides[chatID])
+	if err != nil {
+		return RuntimePreference{}, err
+	}
+	override = normalizeChatOverride(override)
+	if override.IsEmpty() {
+		if err := s.resetChatLocked(chatID); err != nil {
+			return RuntimePreference{}, err
+		}
+		return s.effectiveGlobalLocked(), nil
+	}
+	effective, err := mergeChatOverride(s.effectiveGlobalLocked(), override, s.allowedModels, s.agents)
+	if err != nil {
+		return RuntimePreference{}, err
+	}
+	next := cloneChatOverrides(s.chatOverrides)
+	next[chatID] = override
+	revision := s.revision + 1
+	if err := savePreferenceSnapshot(s.path, preferenceSnapshot{SchemaVersion: PreferenceSchemaVersion, Revision: revision, Override: s.override, ChatOverrides: next}); err != nil {
+		return RuntimePreference{}, err
+	}
+	s.chatOverrides = next
+	s.revision = revision
+	return effective, nil
+}
+
 // ResetChat removes any override for a chat. Resetting an unset chat is a no-op
 // that still bumps the revision for auditability.
 func (s *PreferenceStore) ResetChat(chatID string) error {
