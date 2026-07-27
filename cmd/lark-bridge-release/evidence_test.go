@@ -164,6 +164,56 @@ func TestReleaseTestEvidenceFailureDoesNotCreatePassingReceipt(t *testing.T) {
 	}
 }
 
+// go test 通过但 testfw regression all_passed=false 时,evidence 必须失败,
+// 不能落下 passing 的 receipt。sidecar 是独立于 go test exit code 的失败信号。
+func TestReleaseTestEvidenceTestfwFailureBlocksPassingReceipt(t *testing.T) {
+	repo, goBin, countFile := releaseEvidenceFixture(t)
+	t.Chdir(repo)
+	t.Setenv("LAB_RELEASE_GO_BIN", goBin)
+	t.Setenv("FAKE_GO_COUNT", countFile)
+	t.Setenv("FAKE_GO_ROOT", filepath.Join(filepath.Dir(goBin), "toolchain"))
+	t.Setenv("FAKE_TESTFW_FAIL", "1")
+
+	_, err := ensureReleaseTestEvidence(&bytes.Buffer{})
+	if err == nil {
+		t.Fatal("expected ensure to fail when testfw all_passed=false")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "testfw") && !strings.Contains(msg, "lark-bridge-test") {
+		t.Fatalf("expected testfw-related error, got %v", err)
+	}
+	// go test 本身跑成功过,run count 应为 1(sidecar path 不计数)。
+	if got := releaseEvidenceRunCount(t, countFile); got != 1 {
+		t.Fatalf("go test runs = %d, want 1", got)
+	}
+	evidenceDir, err := releaseTestEvidenceDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 主 evidence json 不应被写入(只有全绿才写)。
+	jsonFiles, err := filepath.Glob(filepath.Join(evidenceDir, "*-testfw-report.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(jsonFiles) != 1 {
+		t.Fatalf("testfw sidecar count = %d, want 1", len(jsonFiles))
+	}
+	mainEvidence, err := filepath.Glob(filepath.Join(evidenceDir, "*[0-9a-f].json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 排除 sidecar,主 evidence 应为空。
+	remaining := 0
+	for _, p := range mainEvidence {
+		if !strings.HasSuffix(p, "-testfw-report.json") {
+			remaining++
+		}
+	}
+	if remaining != 0 {
+		t.Fatalf("main evidence written despite testfw failure: %v", mainEvidence)
+	}
+}
+
 func TestReleaseTestEvidenceConcurrentEnsureRunsTestsOnce(t *testing.T) {
 	repo, goBin, countFile := releaseEvidenceFixture(t)
 	t.Chdir(repo)
@@ -281,6 +331,32 @@ JSON
     sleep "${FAKE_GO_SLEEP:-0}"
     [ "${FAKE_GO_FAIL:-0}" = 0 ] || exit 23
     echo 'ok fixture'
+    ;;
+  run)
+    # evidence.go 在 go test 通过后额外调 go run ./cmd/lark-bridge-test ... --report-json path
+    # 生成 testfw regression sidecar。fixture 里没有真正的 bridge 源码,只需伪造出
+    # 合法的 all_passed=true 报告即可让主流程继续。此路径不计入 FAKE_GO_COUNT。
+    shift # 丢掉 "./cmd/lark-bridge-test"
+    report_path=""
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        --report-json)
+          report_path="$2"; shift 2 ;;
+        --report-json=*)
+          report_path="${1#--report-json=}"; shift ;;
+        *)
+          shift ;;
+      esac
+    done
+    if [ -z "$report_path" ]; then
+      echo "fake go run: missing --report-json" >&2
+      exit 3
+    fi
+    if [ "${FAKE_TESTFW_FAIL:-0}" != 0 ]; then
+      printf '{"schema_version":1,"all_passed":false,"total":1,"passed":0,"failed":1}\n' > "$report_path"
+      exit 1
+    fi
+    printf '{"schema_version":1,"all_passed":true,"total":1,"passed":1,"failed":0}\n' > "$report_path"
     ;;
   *)
     echo "unexpected fake go args: $*" >&2

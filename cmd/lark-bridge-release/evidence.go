@@ -16,7 +16,10 @@ import (
 )
 
 const (
-	releaseTestEvidenceSchema      = 1
+	// schema v2:additionally captures testfw regression report sidecar
+	// (all_passed + report path + SHA). identity/suite/command 保持不变以
+	// 让 fingerprint 稳定,老 evidence 因 schema 不匹配自然失效重跑。
+	releaseTestEvidenceSchema      = 2
 	releaseTestSuite               = "release-l1-v1"
 	releaseTestEnvironmentContract = "unset-runtime-state-v1"
 	releaseTestLockStaleAfter      = 15 * time.Minute
@@ -60,6 +63,16 @@ type releaseTestEvidence struct {
 	FinishedAt    string              `json:"finished_at"`
 	LogFile       string              `json:"log_file"`
 	LogSHA256     string              `json:"log_sha256"`
+
+	// testfw regression sidecar(schema v2 起写入):在 `go test ./...` 通过后额外
+	// 跑 lark-bridge-test --tags regression 生成的结构化报告。all_passed=false
+	// 视为 evidence 独立失败信号,不依赖 `go test` exit code。
+	// TestfwReport 是 sidecar 的绝对路径(位于 evidenceDir 内),TestfwReportSHA256
+	// 用来在 reuse 时校验文件未被篡改。TestfwAllPassed 是 sidecar 里 Report.AllPassed
+	// 的直接映射,写入 evidence 时必为 true(否则 ensure 已在写入前失败退出)。
+	TestfwReport       string `json:"testfw_report,omitempty"`
+	TestfwReportSHA256 string `json:"testfw_report_sha256,omitempty"`
+	TestfwAllPassed    bool   `json:"testfw_all_passed,omitempty"`
 }
 
 type releaseTestEvidenceOutcome struct {
@@ -167,6 +180,42 @@ func ensureReleaseTestEvidence(out io.Writer) (releaseTestEvidenceOutcome, error
 	if err != nil {
 		return releaseTestEvidenceOutcome{}, err
 	}
+
+	// testfw regression sidecar:在 `go test ./...` 通过后跑 lark-bridge-test
+	// --tags regression 生成结构化报告,让发布凭证纳入 simulate 层跨命令的
+	// end-to-end 断言。all_passed=false 视为独立失败信号(不改主 fingerprint)。
+	// smoke 已在 go test ./... 里通过 TestSmokeSuite 强跑,此处只补 regression tag。
+	sidecarPath := filepath.Join(evidenceDir, base+"-testfw-report.json")
+	// 老文件残留会污染 sha 校验,先清掉再让子进程原子写。
+	if err := os.Remove(sidecarPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return releaseTestEvidenceOutcome{}, fmt.Errorf("clean stale testfw sidecar: %w", err)
+	}
+	testfwCmd := exec.Command(identity.Toolchain.GoBinary, "run", "./cmd/lark-bridge-test",
+		"--source", ".",
+		"--go-bin", identity.Toolchain.GoBinary,
+		"--tags", "regression",
+		"--report-json", sidecarPath,
+	)
+	testfwCmd.Env = sanitizedReleaseTestEnvironment()
+	testfwCmd.Stdout, testfwCmd.Stderr = out, out
+	if err := testfwCmd.Run(); err != nil {
+		return releaseTestEvidenceOutcome{}, fmt.Errorf("lark-bridge-test regression failed: %w", err)
+	}
+	testfwAllPassed, err := readTestfwAllPassed(sidecarPath)
+	if err != nil {
+		return releaseTestEvidenceOutcome{}, fmt.Errorf("read testfw sidecar: %w", err)
+	}
+	if !testfwAllPassed {
+		return releaseTestEvidenceOutcome{}, fmt.Errorf("testfw regression reported all_passed=false (sidecar %s)", sidecarPath)
+	}
+	if err := os.Chmod(sidecarPath, 0o600); err != nil {
+		return releaseTestEvidenceOutcome{}, err
+	}
+	sidecarSHA, err := fileSHA256(sidecarPath)
+	if err != nil {
+		return releaseTestEvidenceOutcome{}, err
+	}
+
 	evidence := releaseTestEvidence{
 		SchemaVersion: releaseTestEvidenceSchema,
 		Fingerprint:   fingerprint,
@@ -177,6 +226,10 @@ func ensureReleaseTestEvidence(out io.Writer) (releaseTestEvidenceOutcome, error
 		FinishedAt:    time.Now().UTC().Format(time.RFC3339),
 		LogFile:       logPath,
 		LogSHA256:     logSHA,
+
+		TestfwReport:       sidecarPath,
+		TestfwReportSHA256: sidecarSHA,
+		TestfwAllPassed:    true,
 	}
 	if err := writeJSONAtomic(evidencePath, evidence); err != nil {
 		return releaseTestEvidenceOutcome{}, fmt.Errorf("write release test evidence: %w", err)
@@ -381,7 +434,54 @@ func validReleaseTestEvidence(path, evidenceDir string, identity releaseTestIden
 	if gotLogSHA != evidence.LogSHA256 {
 		return errors.New("release test evidence log hash mismatch")
 	}
+
+	// testfw sidecar 校验(schema v2 起必须存在):evidence 记的路径必须在 evidenceDir 内、
+	// SHA 匹配、all_passed=true。任一失败即视作 evidence 失效,触发重跑。
+	if evidence.TestfwReport == "" || !evidence.TestfwAllPassed {
+		return errors.New("release test evidence missing testfw sidecar")
+	}
+	sidecarPath, err := filepath.Abs(evidence.TestfwReport)
+	if err != nil {
+		return err
+	}
+	sidecarRel, err := filepath.Rel(evidenceDir, sidecarPath)
+	if err != nil || sidecarRel == "." || sidecarRel == ".." || strings.HasPrefix(sidecarRel, ".."+string(filepath.Separator)) {
+		return errors.New("release test evidence testfw sidecar escapes evidence directory")
+	}
+	if err := privateFile(sidecarPath); err != nil {
+		return err
+	}
+	gotSidecarSHA, err := fileSHA256(sidecarPath)
+	if err != nil {
+		return err
+	}
+	if gotSidecarSHA != evidence.TestfwReportSHA256 {
+		return errors.New("release test evidence testfw sidecar hash mismatch")
+	}
+	if allPassed, err := readTestfwAllPassed(sidecarPath); err != nil || !allPassed {
+		if err != nil {
+			return fmt.Errorf("release test evidence testfw sidecar unreadable: %w", err)
+		}
+		return errors.New("release test evidence testfw sidecar reports all_passed=false")
+	}
 	return nil
+}
+
+// readTestfwAllPassed 读取 testfw 报告 sidecar,只抽取 all_passed 字段。
+// sidecar 结构定义在 internal/testfw/report.go,这里刻意不 import 该包以避免
+// 发布凭证工具依赖测试框架实现。字段名与 Report.AllPassed 的 JSON tag 对齐。
+func readTestfwAllPassed(path string) (bool, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return false, err
+	}
+	var probe struct {
+		AllPassed bool `json:"all_passed"`
+	}
+	if err := json.Unmarshal(data, &probe); err != nil {
+		return false, err
+	}
+	return probe.AllPassed, nil
 }
 
 func privateFile(path string) error {
