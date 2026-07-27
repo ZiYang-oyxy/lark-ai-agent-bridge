@@ -18,7 +18,10 @@ type L3ChecklistItem struct {
 	Source string
 	// CaseName 是 TestCase.Name。
 	CaseName string
-	// Command 是要发给飞书 Test bot 的消息文本(用 supervisor 的 --as user 身份)。
+	// Command 是要发给飞书 Test bot 的消息文本(由 L3 sender 用 --as user 身份发送)。
+	// L3 sender 是本机具备 `im:message.send_as_user` scope 的一方,归属按环境不同:
+	// Linux 服务器上是 Test bot 的 App client,Mac 上是 supervisor 的 App client。
+	// 具体分工见 self-loop GUIDE.md「L3」章节。
 	Command string
 	// Transport 指明必须投递的会话类型和 mention 方式。L3 不可把 P2P
 	// 和群聊混用：后者的 IsGroup/mentioned 会改变 bridge 行为。
@@ -89,13 +92,14 @@ func BuildL3Checklist(cases []TestCase, sourceHint map[string]string) []L3Checkl
 }
 
 // WriteL3Checklist 把 checklist 写成 Markdown,固定格式便于 supervisor 逐条勾选。
-// L3 由 supervisor 使用飞书能力(lark-im 等 skill)执行,本文件是操作手册,
-// 不是自动化脚本——真正的自动化需要 lark-cli 认证与 chat_id 等具体环境,
-// 那属于每台机器的私有配置,不进入通用测试框架。
+// L3 由 supervisor 编排、由本机 L3 sender(具备 im:message.send_as_user scope
+// 的一方)使用飞书能力(lark-im 等 skill)执行,本文件是操作手册,不是自动化
+// 脚本——真正的自动化需要 lark-cli 认证与 chat_id 等具体环境,那属于每台机器
+// 的私有配置,不进入通用测试框架。
 func WriteL3Checklist(items []L3ChecklistItem, path string) error {
 	var b strings.Builder
 	b.WriteString("# Bridge L3 E2E Checklist\n\n")
-	b.WriteString("由 supervisor 用 `lark-im +send-message --as user` 按「通道」列逐条发送，\n")
+	b.WriteString("由 L3 sender（本机具备 `im:message.send_as_user` 权限的一方；Linux 上是 Test，Mac 上是 supervisor）用 `lark-cli im +messages-send --as user` 按「通道」列逐条发送，\n")
 	b.WriteString("再用 `+message-mget` 或 audit.jsonl 回读断言。每条命中即 L3 通过。\n\n")
 	b.WriteString("> ⚠️ `P2P` 条目必须发到 Test 的私聊，不能 @；`群聊（@ Test）` 条目必须发到 chat_mode=group 的测试群，并 @ 动态核验的 Test open_id。\n")
 	b.WriteString("> ⚠️ `群聊（不 @ Test）` 是负向验收：发到同一测试群但不能 @，并断言无卡片。目标 chat_mode 不匹配时停止，不得把结果记为通过。\n")
