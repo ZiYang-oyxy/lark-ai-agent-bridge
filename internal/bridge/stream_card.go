@@ -1170,19 +1170,6 @@ func (s *agentCardStream) formatCleanTimelineLocked(kind card.SegmentKind) strin
 		fmt.Fprintf(&b, "**Update #%d · %s** · %s", update.Number, update.At.Format("15:04:05"), body)
 		visible++
 	}
-	total := s.thoughtUpdateCount
-	if kind == card.SegmentTool {
-		total = s.toolUpdateCount
-	}
-	omitted := total - visible
-	if omitted > 0 {
-		if b.Len() > 0 {
-			b.WriteString("\n")
-			b.WriteString(cleanTimelineSeparator)
-			b.WriteString("\n")
-		}
-		fmt.Fprintf(&b, "_仅保留最新 %d 条，较早 %d 条已省略_", maxVisibleSegments, omitted)
-	}
 	return b.String()
 }
 
@@ -1781,10 +1768,12 @@ func (s *agentCardStream) eventLocked(initial bool) card.Event {
 		OrderedLayout:      s.replyMode == config.ReplyModeAppend,
 		ThreeSectionLayout: usesCleanCardLayout(s.replyMode),
 		// 三段布局:思考默认展开(用户要求),终态折叠让最终答案更清爽;工具恒默认折叠。
-		ThoughtExpanded:   usesCleanCardLayout(s.replyMode) && s.status == "running",
-		ToolsExpanded:     false,
-		ThoughtRoundCount: s.thoughtRounds,
-		ToolRoundCount:    s.toolRounds,
+		ThoughtExpanded:     usesCleanCardLayout(s.replyMode) && s.status == "running",
+		ToolsExpanded:       false,
+		ThoughtRoundCount:   s.thoughtRounds,
+		ToolRoundCount:      s.toolRounds,
+		ThoughtOmittedCount: max(0, s.thoughtRounds-maxVisibleSegments),
+		ToolOmittedCount:    max(0, s.toolRounds-maxVisibleSegments),
 	}
 }
 

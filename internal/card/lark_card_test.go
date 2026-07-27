@@ -2018,13 +2018,15 @@ func TestBuildLarkCardResumeEmptyShowsHint(t *testing.T) {
 // above the answer and the tool timeline remains below it.
 func TestBuildLarkCardThreeSectionLayout(t *testing.T) {
 	payload := BuildLarkCard(Event{
-		Type:               "stream",
-		Streaming:          true,
-		ThreeSectionLayout: true,
-		ThoughtExpanded:    true,
-		ToolsExpanded:      false,
-		ThoughtRoundCount:  3,
-		ToolRoundCount:     6,
+		Type:                "stream",
+		Streaming:           true,
+		ThreeSectionLayout:  true,
+		ThoughtExpanded:     true,
+		ToolsExpanded:       false,
+		ThoughtRoundCount:   37,
+		ToolRoundCount:      6,
+		ThoughtOmittedCount: 35,
+		ToolOmittedCount:    4,
 		Segments: []Segment{
 			{Kind: SegmentText, Text: "正文答复"},
 			{Kind: SegmentThought, Text: "最新一轮思考"},
@@ -2043,7 +2045,7 @@ func TestBuildLarkCardThreeSectionLayout(t *testing.T) {
 				t.Fatalf("thought panel wrong: %#v", m)
 			}
 			title := m["header"].(map[string]any)["title"].(map[string]string)["content"]
-			if title != "思考推理 · 3" {
+			if title != "思考推理 · 37（仅保留最新 2 条，较早 35 条已省略）" {
 				t.Fatalf("thought title = %q, want compact count", title)
 			}
 			if m["vertical_spacing"] != "4px" || m["padding"] != "4px 8px 4px 8px" {
@@ -2057,7 +2059,7 @@ func TestBuildLarkCardThreeSectionLayout(t *testing.T) {
 				t.Fatalf("tools panel wrong: %#v", m)
 			}
 			title := m["header"].(map[string]any)["title"].(map[string]string)["content"]
-			if title != "工具调用 · 6" {
+			if title != "工具调用 · 6（仅保留最新 2 条，较早 4 条已省略）" {
 				t.Fatalf("tools title = %q, want compact count", title)
 			}
 		}
@@ -2067,6 +2069,15 @@ func TestBuildLarkCardThreeSectionLayout(t *testing.T) {
 	}
 	if !(thoughtIdx < answerIdx && answerIdx < toolsIdx) {
 		t.Fatalf("order wrong: thought=%d answer=%d tools=%d", thoughtIdx, answerIdx, toolsIdx)
+	}
+}
+
+func TestTimelineSectionTitleWithoutOmissionKeepsCompactCount(t *testing.T) {
+	if got := thoughtSectionTitle(Event{ThoughtRoundCount: 2}); got != "思考推理 · 2" {
+		t.Fatalf("thought title = %q, want compact count without omission notice", got)
+	}
+	if got := toolsSectionTitle(Event{ToolRoundCount: 2}); got != "工具调用 · 2" {
+		t.Fatalf("tool title = %q, want compact count without omission notice", got)
 	}
 }
 

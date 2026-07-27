@@ -772,7 +772,7 @@ func buildThreeSectionElements(e Event) []any {
 // exposes running/completed state and the chevron already conveys expansion.
 func thoughtSectionTitle(e Event) string {
 	if e.ThoughtRoundCount > 0 {
-		return fmt.Sprintf("思考推理 · %d", e.ThoughtRoundCount)
+		return timelineSectionTitle("思考推理", e.ThoughtRoundCount, e.ThoughtOmittedCount)
 	}
 	return "思考推理"
 }
@@ -785,9 +785,21 @@ func toolsSectionTitle(e Event) string {
 		count = e.ToolCallCount
 	}
 	if count > 0 {
-		return fmt.Sprintf("工具调用 · %d", count)
+		return timelineSectionTitle("工具调用", count, e.ToolOmittedCount)
 	}
 	return "工具调用"
+}
+
+func timelineSectionTitle(label string, total, omitted int) string {
+	title := fmt.Sprintf("%s · %d", label, total)
+	if omitted <= 0 {
+		return title
+	}
+	visible := total - omitted
+	if visible < 0 {
+		visible = 0
+	}
+	return fmt.Sprintf("%s（仅保留最新 %d 条，较早 %d 条已省略）", title, visible, omitted)
 }
 
 // processPanelBody 把思考与工具收进一个折叠区,内部仍保留 thought / tools 两个 element_id。

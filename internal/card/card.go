@@ -274,10 +274,12 @@ type Event struct {
 	ProcessExpanded bool
 	ToolCallCount   int
 	// ThoughtRoundCount / ToolRoundCount 是本轮 run 累计的思考轮次 / 工具调用次数,
-	// 用于三段布局(ThreeSectionLayout)下折叠区标题的「× N」计数。卡片正文只显示最新一次,
-	// 计数让用户知道背后发生了多少轮而不必展开历史。
-	ThoughtRoundCount int
-	ToolRoundCount    int
+	// 用于三段布局(ThreeSectionLayout)下折叠区标题的累计计数。OmittedCount 把正文滚动
+	// 窗口之外的数量显式传给渲染层，避免 Card 层复制窗口大小业务规则。
+	ThoughtRoundCount   int
+	ToolRoundCount      int
+	ThoughtOmittedCount int
+	ToolOmittedCount    int
 	// ThreeSectionLayout 打开时(append-clean-card 运行/终态),普通分支改用三段结构:
 	// 思考推理折叠区 → 正文流式 → 工具调用折叠区。
 	ThreeSectionLayout   bool

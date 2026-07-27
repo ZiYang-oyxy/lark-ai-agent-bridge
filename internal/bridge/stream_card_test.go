@@ -1517,27 +1517,35 @@ func TestAppendCleanTimelineKeepsTwoUpdatesPerPanel(t *testing.T) {
 	if len(stream.cleanUpdates) != 4 {
 		t.Fatalf("retained update count=%d, want two thoughts + two tools", len(stream.cleanUpdates))
 	}
+	stream.thoughtRounds = 3
+	stream.toolRounds = 3
 	thought := stream.formatCleanTimelineLocked(card.SegmentThought)
 	tool := stream.formatCleanTimelineLocked(card.SegmentTool)
+	event := stream.eventLocked(false)
+	if event.ThoughtOmittedCount != 1 || event.ToolOmittedCount != 1 {
+		t.Fatalf("omitted counts = thought:%d tool:%d, want 1/1", event.ThoughtOmittedCount, event.ToolOmittedCount)
+	}
 	for _, tc := range []struct {
 		name      string
 		text      string
 		newest    string
 		second    string
-		omitted   string
 		forbidden string
 	}{
-		{name: "thought", text: thought, newest: "Update #5", second: "Update #3", omitted: "较早 1 条已省略", forbidden: "Update #1"},
-		{name: "tool", text: tool, newest: "Update #6", second: "Update #4", omitted: "较早 1 条已省略", forbidden: "Update #2"},
+		{name: "thought", text: thought, newest: "Update #5", second: "Update #3", forbidden: "Update #1"},
+		{name: "tool", text: tool, newest: "Update #6", second: "Update #4", forbidden: "Update #2"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			for _, want := range []string{tc.newest, tc.second, tc.omitted} {
+			for _, want := range []string{tc.newest, tc.second} {
 				if !strings.Contains(tc.text, want) {
 					t.Fatalf("timeline missing %q: %q", want, tc.text)
 				}
 			}
 			if strings.Contains(tc.text, tc.forbidden) {
 				t.Fatalf("timeline retained oldest update %q: %q", tc.forbidden, tc.text)
+			}
+			if strings.Contains(tc.text, "已省略") {
+				t.Fatalf("timeline omission notice must live in panel title: %q", tc.text)
 			}
 			if strings.Contains(tc.text, "\n\n"+cleanTimelineSeparator) || strings.Contains(tc.text, cleanTimelineSeparator+"\n\n") {
 				t.Fatalf("separator must not have blank lines: %q", tc.text)
