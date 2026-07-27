@@ -482,7 +482,11 @@ func TestServiceResolvesAttachmentsBeforeDurableEnqueue(t *testing.T) {
 	}
 }
 
-func TestServiceExpandsDirectMergeForwardBeforeCommandParsing(t *testing.T) {
+// P2P 场景下 merge_forward 单独不再触发独立 agent run。素材消息进 pending 暂存
+// 区,紧跟着 text 消息才触发一次 agent run,并把展开后的转发内容 attach 进 prompt。
+// 这与"用户在 P2P 转发一张卡片并 @bot 追问"的真实预期一致——只回一次、内容里有
+// 转发上下文,而不是既回一次"看到你的转发"、又回一次"回答追问"。
+func TestServiceP2PMergeForwardDefersUntilFollowUp(t *testing.T) {
 	now := time.Now()
 	runner := newFakeRunner()
 	svc := NewService(testConfig(t), card.NewFakeRenderer(), runner, audit.NewRecorder())
@@ -492,25 +496,38 @@ func TestServiceExpandsDirectMergeForwardBeforeCommandParsing(t *testing.T) {
 	}}
 	svc.MessageFetcher = fetcher
 
+	// 第一条:P2P 里用户转发一份 merge_forward。应被 defer,不入队、不跑 agent。
 	if err := svc.HandleMessage(context.Background(), Message{
 		ID: "om_forward", ChatID: "chat", Sender: "user", MessageType: "merge_forward", Time: now,
 	}); err != nil {
 		t.Fatal(err)
 	}
 	key := session.Key{Agent: agent.Claude, ChatID: "chat"}
+	if sess, ok := svc.Sessions.Get(key); ok && len(sess.Queue) != 0 {
+		t.Fatalf("session after forward-only = %#v, want empty queue (deferred)", sess)
+	}
+
+	// 第二条:紧跟着的 text 追问。此时应触发一次 agent run,prompt 里同时含转发
+	// 内容和用户追问。
+	if err := svc.HandleMessage(context.Background(), Message{
+		ID: "om_follow", ChatID: "chat", Sender: "user", MessageType: "text", Text: "总结一下", Time: now.Add(500 * time.Millisecond),
+	}); err != nil {
+		t.Fatal(err)
+	}
 	sess, ok := svc.Sessions.Get(key)
 	if !ok || len(sess.Queue) != 1 {
-		t.Fatalf("queued session = %#v, want one expanded input", sess)
+		t.Fatalf("queued session after follow-up = %#v, want one input", sess)
 	}
 	if err := svc.DrainReady(sess.Queue[0].DebounceUntil); err != nil {
 		t.Fatal(err)
 	}
 	waitForCalls(t, runner, 1)
-	if prompt := runner.Calls()[0].Prompt; !strings.Contains(prompt, "已完成：卡片正文") {
-		t.Fatalf("agent prompt = %q, want expanded forwarded card text", prompt)
+	prompt := runner.Calls()[0].Prompt
+	if !strings.Contains(prompt, "已完成：卡片正文") || !strings.Contains(prompt, "总结一下") {
+		t.Fatalf("agent prompt = %q, want both forwarded body and follow-up text", prompt)
 	}
 	if len(fetcher.calls) != 1 || fetcher.calls[0] != "om_forward" {
-		t.Fatalf("fetch calls = %v, want current merge-forward message", fetcher.calls)
+		t.Fatalf("fetch calls = %v, want fetch of deferred forward message", fetcher.calls)
 	}
 }
 
@@ -1971,7 +1988,9 @@ func TestServiceBatchesPlainDMInputsWithinDebounceCohort(t *testing.T) {
 	}
 }
 
-func TestServiceFreezesInteractiveDebounceWindowAtIntake(t *testing.T) {
+// P2P interactive(用户转发/分享的卡片素材)不再独立入队。它被 defer 到
+// pendingMergeForward 暂存,由后续 text/post 消息触发时 attach。
+func TestServiceP2PInteractiveDeferredNotQueued(t *testing.T) {
 	cfg := testConfig(t)
 	svc := NewService(cfg, card.NewFakeRenderer(), newFakeRunner(), audit.NewRecorder())
 	now := time.Now()
@@ -1980,30 +1999,33 @@ func TestServiceFreezesInteractiveDebounceWindowAtIntake(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	sess, ok := svc.Sessions.Get(session.Key{Agent: agent.Claude, ChatID: "chat"})
-	if !ok || len(sess.Queue) != 1 {
-		t.Fatalf("session = %#v, want one queued input", sess)
-	}
-	if got := sess.Queue[0].DebounceWindow; got != time.Second {
-		t.Fatalf("debounce window = %s, want 1s", got)
+	if sess, ok := svc.Sessions.Get(session.Key{Agent: agent.Claude, ChatID: "chat"}); ok && len(sess.Queue) != 0 {
+		t.Fatalf("session = %#v, want no queued input (deferred as forward material)", sess)
 	}
 }
 
-func TestServiceBatchesInteractiveAndText(t *testing.T) {
+// P2P 里"转发一张卡片 + 追问"应合并成一次 agent run:interactive 被 defer,
+// text 触发时通过 attachPendingMergeForward 把卡片正文 attach 到 prompt。
+func TestServiceP2PInteractiveThenTextMergedIntoOneRun(t *testing.T) {
 	cfg := testConfig(t)
 	runner := newFakeRunner()
 	svc := NewService(cfg, card.NewFakeRenderer(), runner, audit.NewRecorder())
+	svc.MessageFetcher = &fakeMessageFetcher{msg: QuotedMessage{
+		Text:        "rich card payload",
+		MessageType: "interactive",
+	}}
 	receivedBefore := time.Now()
 	if err := svc.HandleMessage(context.Background(), Message{
 		ID: "interactive", ChatID: "chat", Sender: "u", Text: "rich card payload", MessageType: "interactive", Time: receivedBefore,
 	}); err != nil {
 		t.Fatal(err)
 	}
+	// interactive 被 defer,不产生 agent call。
 	if err := svc.DrainReady(receivedBefore.Add(750 * time.Millisecond)); err != nil {
 		t.Fatal(err)
 	}
 	if got := len(runner.Calls()); got != 0 {
-		t.Fatalf("runner calls at 750ms = %d, want rich message still debouncing", got)
+		t.Fatalf("runner calls after interactive-only = %d, want 0 (deferred)", got)
 	}
 	if err := svc.HandleMessage(context.Background(), Message{
 		ID: "text", ChatID: "chat", Sender: "u", Text: "follow-up text", MessageType: "text", Time: receivedBefore.Add(750 * time.Millisecond),
@@ -2016,7 +2038,7 @@ func TestServiceBatchesInteractiveAndText(t *testing.T) {
 	waitForCalls(t, runner, 1)
 	calls := runner.Calls()
 	if len(calls) != 1 || !containsAll(calls[0].Prompt, "rich card payload", "follow-up text") {
-		t.Fatalf("runner calls = %#v, want one interactive+text batch", calls)
+		t.Fatalf("runner calls = %#v, want one run merging interactive body and follow-up", calls)
 	}
 }
 
@@ -2638,11 +2660,18 @@ func TestServiceQueuesSecondInputUntilFirstCompletes(t *testing.T) {
 	}
 }
 
-func TestServiceRearmsBusyRichMessageCohort(t *testing.T) {
+// active agent 正在跑时,用户在 P2P 又转发一份 interactive 素材 + 追问 text。
+// interactive 被 defer 到 pendingMergeForward,追问 text 才入队;等 active 完成
+// 后触发第二次 agent run,prompt 里带上转发内容和追问。
+func TestServiceP2PInteractiveMaterialAttachedAfterBusy(t *testing.T) {
 	cfg := testConfig(t)
 	runner := newFakeRunner()
 	runner.block = make(chan struct{})
 	svc := NewService(cfg, card.NewFakeRenderer(), runner, audit.NewRecorder())
+	svc.MessageFetcher = &fakeMessageFetcher{msg: QuotedMessage{
+		Text:        "rich payload",
+		MessageType: "interactive",
+	}}
 
 	if err := svc.HandleMessage(context.Background(), Message{ID: "active", ChatID: "chat", Sender: "u", Text: "active", MessageType: "text", Time: time.Now()}); err != nil {
 		t.Fatal(err)
@@ -2651,42 +2680,33 @@ func TestServiceRearmsBusyRichMessageCohort(t *testing.T) {
 		t.Fatal(err)
 	}
 	<-runner.started
+
+	// active 正在跑;interactive 素材应被 defer,不入队。
 	if err := svc.HandleMessage(context.Background(), Message{ID: "rich", ChatID: "chat", Sender: "u", Text: "rich payload", MessageType: "interactive", Time: time.Now()}); err != nil {
 		t.Fatal(err)
 	}
-	queuedBeforeCompletion, ok := svc.Sessions.Get(session.Key{Agent: agent.Claude, ChatID: "chat"})
-	if !ok || len(queuedBeforeCompletion.Queue) != 1 {
-		t.Fatalf("queued session = %#v", queuedBeforeCompletion)
-	}
-	deadlineBeforeCompletion := queuedBeforeCompletion.Queue[0].DebounceUntil
-	close(runner.block)
 	key := session.Key{Agent: agent.Claude, ChatID: "chat"}
-	waitForSessionNoActiveBatch(t, svc, key)
+	if sess, ok := svc.Sessions.Get(key); ok && len(sess.Queue) != 0 {
+		t.Fatalf("queued session after interactive = %#v, want empty queue (deferred)", sess)
+	}
 
-	sess, ok := svc.Sessions.Get(key)
-	if !ok || len(sess.Queue) != 1 {
-		t.Fatalf("session = %#v, want one rearmed rich input", sess)
-	}
-	deadline := sess.Queue[0].DebounceUntil
-	if !deadline.After(deadlineBeforeCompletion) {
-		t.Fatalf("rearmed deadline = %s, want after receipt deadline %s", deadline, deadlineBeforeCompletion)
-	}
+	// 追问 text 进来才入队。
 	if err := svc.HandleMessage(context.Background(), Message{ID: "follow-up", ChatID: "chat", Sender: "u", Text: "follow-up text", MessageType: "text", Time: time.Now()}); err != nil {
 		t.Fatal(err)
 	}
-	if err := svc.DrainReady(deadline.Add(-time.Nanosecond)); err != nil {
-		t.Fatal(err)
+	sess, ok := svc.Sessions.Get(key)
+	if !ok || len(sess.Queue) != 1 {
+		t.Fatalf("queued session after follow-up = %#v, want one input", sess)
 	}
-	if got := len(runner.Calls()); got != 1 {
-		t.Fatalf("runner calls before rearmed deadline = %d, want 1", got)
-	}
-	if err := svc.DrainReady(deadline); err != nil {
+	close(runner.block)
+	waitForSessionNoActiveBatch(t, svc, key)
+	if err := svc.DrainReady(time.Now().Add(2 * time.Second)); err != nil {
 		t.Fatal(err)
 	}
 	waitForCalls(t, runner, 2)
 	calls := runner.Calls()
-	if !containsAll(calls[1].Prompt, "rich payload", "follow-up text") || strings.Index(calls[1].Prompt, "rich payload") > strings.Index(calls[1].Prompt, "follow-up text") {
-		t.Fatalf("second runner prompt = %q, want ordered rich cohort", calls[1].Prompt)
+	if !containsAll(calls[1].Prompt, "rich payload", "follow-up text") {
+		t.Fatalf("second runner prompt = %q, want forwarded material + follow-up", calls[1].Prompt)
 	}
 }
 

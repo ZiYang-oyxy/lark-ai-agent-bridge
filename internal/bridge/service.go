@@ -576,7 +576,13 @@ func (s *Service) HandleMessage(ctx context.Context, msg Message) error {
 	intake := DecideIntake(msg, preference, s.BotOpenID, participated)
 	if !intake.Accept {
 		s.rememberSkippedMergeForward(msg, intake.Reason)
-		s.Audit.Record(msg.Sender, "group_message_skipped", msg.ChatID, intake.Reason+" message="+msg.ID+" thread="+msg.ThreadID)
+		action := "group_message_skipped"
+		if intake.Reason == IntakeReasonForwardMaterial {
+			// P2P 里被视为素材、暂缓触发 agent run 的转发/分享消息;与群 intake 拒
+			// 绝不同,不属于"group_message_skipped"。
+			action = "p2p_forward_material_deferred"
+		}
+		s.Audit.Record(msg.Sender, action, msg.ChatID, intake.Reason+" message="+msg.ID+" thread="+msg.ThreadID+" type="+msg.MessageType)
 		return nil
 	}
 	if intake.Mark && s.TopicParticipation != nil {
@@ -3139,10 +3145,24 @@ func mergeForwardContextKey(chatID, sender string) string {
 }
 
 func (s *Service) rememberSkippedMergeForward(msg Message, intakeReason string) {
-	if !msg.IsGroup || !strings.EqualFold(strings.TrimSpace(msg.MessageType), "merge_forward") || msg.ID == "" {
+	if msg.ID == "" {
 		return
 	}
-	if intakeReason != IntakeReasonMentionRequired && intakeReason != IntakeReasonTopicNotJoined {
+	// 两条登记路径:
+	//   - 群里 mention-only / topic-not-joined 跳过的 merge_forward:走原逻辑,等
+	//     用户 @bot 时 attach。
+	//   - P2P 里被 forward_material 分支跳过的 interactive/share_*/merge_forward:
+	//     用户下一条 text/post 消息会 attach 这段素材。
+	switch intakeReason {
+	case IntakeReasonMentionRequired, IntakeReasonTopicNotJoined:
+		if !msg.IsGroup || !strings.EqualFold(strings.TrimSpace(msg.MessageType), "merge_forward") {
+			return
+		}
+	case IntakeReasonForwardMaterial:
+		if msg.IsGroup || !isForwardMaterial(msg.MessageType) {
+			return
+		}
+	default:
 		return
 	}
 	now := time.Now()
@@ -3163,7 +3183,12 @@ func (s *Service) rememberSkippedMergeForward(msg Message, intakeReason string) 
 }
 
 func (s *Service) attachPendingMergeForward(ctx context.Context, msg Message, cmd Command) (Message, Command) {
-	if !msg.IsGroup || !msg.Mentioned || s.MessageFetcher == nil {
+	if s.MessageFetcher == nil {
+		return msg, cmd
+	}
+	// 群聊仅在 @bot 时 attach(避免每条 @ 都夹带旧转发);P2P 场景每条消息都是与
+	// bot 的直接对话,遇到 pending forwarded 素材就一次性 attach。
+	if msg.IsGroup && !msg.Mentioned {
 		return msg, cmd
 	}
 	now := time.Now()
@@ -3192,11 +3217,12 @@ func (s *Service) attachPendingMergeForward(ctx context.Context, msg Message, cm
 	}
 	forwarded := strings.TrimSpace(fetched.Text)
 	if forwarded == "" {
-		forwarded = "[合并转发内容不可用]"
+		forwarded = "[转发内容不可用]"
 	}
-	cmd.Text = "以下是用户刚刚合并转发的内容：\n" + forwarded + "\n\n用户的请求：\n" + cmd.Text
+	// 措辞对 merge_forward 与其它转发/分享素材通用;msg_type 由 audit 详情记录。
+	cmd.Text = "以下是用户刚刚转发/分享的内容：\n" + forwarded + "\n\n用户的请求：\n" + cmd.Text
 	msg.Attachments = append(msg.Attachments, fetched.Attachments...)
-	s.Audit.Record(msg.Sender, "merge_forward_context_attached", msg.ChatID, "source="+pending.MessageID+" request="+msg.ID)
+	s.Audit.Record(msg.Sender, "merge_forward_context_attached", msg.ChatID, "source="+pending.MessageID+" type="+fetched.MessageType+" request="+msg.ID)
 	return msg, cmd
 }
 

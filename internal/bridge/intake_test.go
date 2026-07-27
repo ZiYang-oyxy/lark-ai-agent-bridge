@@ -16,8 +16,21 @@ func TestDecideIntakeGroupMessageMatrix(t *testing.T) {
 		wantAccept   bool
 		wantMark     bool
 		wantTouch    bool
+		wantReason   string
 	}{
 		{name: "dm", msg: Message{}, mode: config.GroupMessageModeMentionOnly, wantAccept: true},
+		{name: "dm text", msg: Message{MessageType: "text"}, mode: config.GroupMessageModeMentionOnly, wantAccept: true},
+		{name: "dm image", msg: Message{MessageType: "image"}, mode: config.GroupMessageModeMentionOnly, wantAccept: true},
+		{name: "dm file", msg: Message{MessageType: "file"}, mode: config.GroupMessageModeMentionOnly, wantAccept: true},
+		{name: "dm post", msg: Message{MessageType: "post"}, mode: config.GroupMessageModeMentionOnly, wantAccept: true},
+		{name: "dm interactive forwarded", msg: Message{MessageType: "interactive"}, mode: config.GroupMessageModeMentionOnly, wantReason: IntakeReasonForwardMaterial},
+		{name: "dm share_message forwarded", msg: Message{MessageType: "share_message"}, mode: config.GroupMessageModeMentionOnly, wantReason: IntakeReasonForwardMaterial},
+		{name: "dm share_chat forwarded", msg: Message{MessageType: "share_chat"}, mode: config.GroupMessageModeMentionOnly, wantReason: IntakeReasonForwardMaterial},
+		{name: "dm share_user forwarded", msg: Message{MessageType: "share_user"}, mode: config.GroupMessageModeMentionOnly, wantReason: IntakeReasonForwardMaterial},
+		{name: "dm merge_forward", msg: Message{MessageType: "merge_forward"}, mode: config.GroupMessageModeMentionOnly, wantReason: IntakeReasonForwardMaterial},
+		// 群里 interactive/merge_forward 走原来的 mention-only 门禁,不被 forward
+		// material 分支影响(groups already gate on Mentioned)。
+		{name: "group interactive mentioned still accepts", msg: Message{IsGroup: true, MessageType: "interactive", Mentioned: true}, mode: config.GroupMessageModeMentionOnly, wantAccept: true},
 		{name: "mention only mentioned", msg: Message{IsGroup: true, Mentioned: true}, mode: config.GroupMessageModeMentionOnly, wantAccept: true},
 		{name: "mention only mention all", msg: Message{IsGroup: true, MentionAll: true}, mode: config.GroupMessageModeMentionOnly},
 		{name: "participated new topic mention", msg: Message{IsGroup: true, ThreadID: "t", Mentioned: true}, mode: config.GroupMessageModeParticipatedTopics, wantAccept: true, wantMark: true},
@@ -35,6 +48,9 @@ func TestDecideIntakeGroupMessageMatrix(t *testing.T) {
 			got := DecideIntake(tc.msg, config.RuntimePreference{GroupMessageMode: tc.mode, RespondToBots: tc.respondBots}, "ou_self", tc.participated)
 			if got.Accept != tc.wantAccept || got.Mark != tc.wantMark || got.Touch != tc.wantTouch {
 				t.Fatalf("decision = %#v", got)
+			}
+			if tc.wantReason != "" && got.Reason != tc.wantReason {
+				t.Fatalf("reason = %q, want %q", got.Reason, tc.wantReason)
 			}
 		})
 	}
