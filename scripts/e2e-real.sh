@@ -52,6 +52,7 @@ FULL_EXTRA_CASES=(
   reaction_lifecycle
   latest_restart_fallback
   wrapper_preflight
+  quote_readback
 )
 
 FEATURE_CASES=(
@@ -1052,6 +1053,26 @@ reply_thread() {
   printf '%s\n' "$msg_id"
 }
 
+# reply_quote 发一条 quote(引用回复)到 root_msg,不进 thread。用 rich content
+# 承载 <at bot> + 用户文本,飞书渲染为 quote 卡片、bridge 侧解析到 QuotedText。
+# 与 reply_thread 的差别:不带 --reply-in-thread,行为等价于用户在群里 hover 消息
+# 选"回复引用"。
+reply_quote() {
+  local root_msg="$1"
+  local text="$2"
+  local content msg_id
+  content="$(jq -nc --arg bot "$BOT_OPEN_ID" --arg text "$text" \
+    '{zh_cn:{title:"",content:[[{tag:"at",user_id:$bot},{tag:"text",text:$text}]]}}')"
+  msg_id="$(lark_cli im +messages-reply --as user --message-id "$root_msg" \
+    --msg-type post --content "$content" \
+    --jq '.data.message_id // .message_id // .data.message_id' | tail -n 1)"
+  if [[ -z "$msg_id" || "$msg_id" == "null" ]]; then
+    echo "failed to reply-quote: $root_msg" >&2
+    exit 1
+  fi
+  printf '%s\n' "$msg_id"
+}
+
 mget() {
   local case_name="$1"
   local msg_id="$2"
@@ -1604,6 +1625,33 @@ case_streaming_card() {
   file="$(mget streaming_card "$msg")"
   assert_file_contains "$file" "$marker"
   record_message streaming_card root "$msg" "$file"
+}
+
+# case_quote_readback 真实链路验证 quote 内容完整送达 agent。
+# 触发过 2026-07-27 那次"quote 告警卡 + @ + 帮我分析" 被误回 HEARTBEAT_OK 的现场:
+# 顺序契约 + prompt 结构靠 L1 unit test + testfw smoke/regression 的 segments_order
+# 锁死;本 case 走真 Feishu + 真 Claude,证明 bridge 侧真的把引用体读进了 prompt、
+# agent 拿到、并能在回复里复现。步骤:
+#   1) send_at 发一条含独一无二 QMARK 的锚点消息(带 @Test,群里可见);
+#   2) reply_quote 引用该锚点 + @Test + 明确指令"请只回复引用中出现的以 E2E_ 开头
+#      的完整字符串,不要解释、不要调用工具";
+#   3) wait_audit 到 event=result,mget 引用回复的卡片;
+#   4) assert_file_contains 验证 QMARK 出现在回复正文——真通路里 quote 数据丢失
+#      / prompt 顺序颠倒导致 agent 忽略指令,都会让此断言失败。
+# marker 用 $RUN_ID 保证幂等:多次 canary 各自的 marker 相互隔离,不受历史消息干扰。
+case_quote_readback() {
+  local qmark="E2E_${RUN_ID}_QMARK"
+  local anchor_msg reply_msg file
+  anchor_msg="$(send_at "canary anchor: ${qmark}")"
+  # 给锚点一点时间被服务端索引;不 wait_audit 是因为群里未 @ 的锚点会走
+  # group_message_skipped(mention_required),这是预期的负向路径,不产生 result。
+  sleep 2
+  reply_msg="$(reply_quote "$anchor_msg" "/new 请只回复引用消息里出现的以 E2E_ 开头的完整字符串本身,不要解释、不要调用工具。")"
+  wait_audit "$reply_msg.*event=result"
+  file="$(mget quote_readback "$reply_msg")"
+  assert_file_contains "$file" "$qmark"
+  record_message quote_readback anchor "$anchor_msg" ""
+  record_message quote_readback reply "$reply_msg" "$file"
 }
 
 case_help() {
