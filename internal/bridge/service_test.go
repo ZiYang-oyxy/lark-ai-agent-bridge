@@ -5006,25 +5006,29 @@ func TestCLIExecRunnerBridgeInstructionsUseNativeChannels(t *testing.T) {
 	binDir := t.TempDir()
 
 	claudeBin := filepath.Join(binDir, "claude")
+	// Prompt now arrives on stdin (E2BIG fix), so the fake reads it there and
+	// records the instruction file resolved from argv plus whether the prompt
+	// leaked into argv at all.
 	claudeScript := `#!/bin/sh
 previous=
 instruction_file=
-last=
+prompt_in_argv=no
 for arg in "$@"; do
   if [ "$previous" = "--append-system-prompt-file" ]; then instruction_file="$arg"; fi
+  case "$arg" in *"CLAUDE_PROMPT_"*) prompt_in_argv=yes ;; esac
   previous="$arg"
-  last="$arg"
 done
 test -r "$instruction_file"
 grep -q 'Feishu Bridge Runtime Instructions' "$instruction_file"
-printf '%s\n%s\n' "$instruction_file" "$last" >"$FAKE_AGENT_LOG"
+IFS= read -r prompt || true
+printf '%s\n%s\n%s\n' "$instruction_file" "$prompt" "$prompt_in_argv" >"$FAKE_AGENT_LOG"
 printf '%s\n' '{"type":"assistant","message":{"model":"fake-claude","content":[{"type":"text","text":"ok"}]},"session_id":"claude-session"}'
 `
 	if err := os.WriteFile(claudeBin, []byte(claudeScript), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	var claudeInstructionPath string
-	for i, prompt := range []string{"first prompt", "second prompt"} {
+	for i, prompt := range []string{"CLAUDE_PROMPT_first", "CLAUDE_PROMPT_second"} {
 		logPath := filepath.Join(t.TempDir(), fmt.Sprintf("claude-%d.log", i))
 		t.Setenv("FAKE_AGENT_LOG", logPath)
 		if _, err := runner.Run(context.Background(), AgentRunRequest{Kind: agent.Claude, Bin: claudeBin, Prompt: prompt, BridgeInstructionsVersion: bridgeinstructions.CurrentVersion}); err != nil {
@@ -5035,8 +5039,8 @@ printf '%s\n' '{"type":"assistant","message":{"model":"fake-claude","content":[{
 			t.Fatal(err)
 		}
 		lines := strings.Split(strings.TrimSpace(string(data)), "\n")
-		if len(lines) != 2 || lines[1] != prompt {
-			t.Fatalf("claude log = %q", data)
+		if len(lines) != 3 || lines[1] != prompt || lines[2] != "no" {
+			t.Fatalf("claude log = %q (prompt must arrive on stdin, never argv)", data)
 		}
 		if i == 0 {
 			claudeInstructionPath = lines[0]

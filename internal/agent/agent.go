@@ -122,8 +122,10 @@ func codexDeveloperInstructionsArg(text string) (string, error) {
 }
 
 // PromptOnStdin reports whether the agent protocol reads the prompt from
-// stdin rather than from argv.
-func PromptOnStdin(kind Kind) bool { return kind == Codex }
+// stdin rather than from argv. Both Codex (`codex exec … -`) and Claude
+// (`claude -p` with no positional prompt) do, which keeps large prompts off
+// argv and clear of the kernel's per-argument MAX_ARG_STRLEN limit.
+func PromptOnStdin(kind Kind) bool { return kind == Codex || kind == Claude }
 
 // AgentEnv returns the environment variables that select the agent's home /
 // config directory for a child process. It returns nil when home is empty,
@@ -197,6 +199,11 @@ func buildClaudeOneShotCommand(cfg OneShotConfig) ([]string, error) {
 		// AgentSessionID and the else branch above stops firing.
 		args = append(args, "--resume", forkFrom, "--fork-session")
 	}
-	args = append(args, prompt)
+	// Prompt is delivered on stdin, not argv: a single argv element is capped by
+	// the kernel's MAX_ARG_STRLEN (~128KB on Linux) regardless of the far larger
+	// ARG_MAX total. Large prompts (pasted logs, forwarded/quoted material) blew
+	// past that cap and fork/exec failed with "argument list too long", killing
+	// the whole run. `claude -p` with no positional prompt reads it from stdin,
+	// which has no such size limit. See PromptOnStdin + service.go stdin wiring.
 	return args, nil
 }

@@ -12,7 +12,7 @@ func TestBuildClaudeOneShotCommand(t *testing.T) {
 		t.Fatalf("one-shot command error: %v", err)
 	}
 	got := strings.Join(cmd, " ")
-	want := "claude -p --output-format stream-json --verbose --include-partial-messages --dangerously-skip-permissions --effort low hello"
+	want := "claude -p --output-format stream-json --verbose --include-partial-messages --dangerously-skip-permissions --effort low"
 	if got != want {
 		t.Fatalf("one-shot command = %q, want %q", got, want)
 	}
@@ -24,7 +24,7 @@ func TestBuildClaudeOneShotCommandForksFromSourceWhenNoOwnSession(t *testing.T) 
 		t.Fatalf("one-shot command error: %v", err)
 	}
 	got := strings.Join(cmd, " ")
-	want := "claude -p --output-format stream-json --verbose --include-partial-messages --dangerously-skip-permissions --effort low --resume src-uuid --fork-session topic first"
+	want := "claude -p --output-format stream-json --verbose --include-partial-messages --dangerously-skip-permissions --effort low --resume src-uuid --fork-session"
 	if got != want {
 		t.Fatalf("fork command = %q, want %q", got, want)
 	}
@@ -38,7 +38,7 @@ func TestBuildClaudeOneShotCommandPrefersOwnSessionOverFork(t *testing.T) {
 		t.Fatalf("one-shot command error: %v", err)
 	}
 	got := strings.Join(cmd, " ")
-	want := "claude -p --output-format stream-json --verbose --include-partial-messages --dangerously-skip-permissions --effort low --resume own topic later"
+	want := "claude -p --output-format stream-json --verbose --include-partial-messages --dangerously-skip-permissions --effort low --resume own"
 	if got != want {
 		t.Fatalf("resume command = %q, want %q", got, want)
 	}
@@ -63,7 +63,7 @@ func TestBuildClaudeOneShotCommandResumesInternalSession(t *testing.T) {
 		t.Fatalf("one-shot command error: %v", err)
 	}
 	got := strings.Join(cmd, " ")
-	want := "claude -p --output-format stream-json --verbose --include-partial-messages --dangerously-skip-permissions --effort low --resume sess-123 next"
+	want := "claude -p --output-format stream-json --verbose --include-partial-messages --dangerously-skip-permissions --effort low --resume sess-123"
 	if got != want {
 		t.Fatalf("one-shot command = %q, want %q", got, want)
 	}
@@ -74,7 +74,7 @@ func TestClaudeOneShotAppendsBridgeSystemPromptFileBeforeUserPrompt(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"claude", "-p", "--output-format", "stream-json", "--verbose", "--include-partial-messages", "--dangerously-skip-permissions", "--effort", "low", "--append-system-prompt-file", "/private/v1.md", "--resume", "sess", "hello"}
+	want := []string{"claude", "-p", "--output-format", "stream-json", "--verbose", "--include-partial-messages", "--dangerously-skip-permissions", "--effort", "low", "--append-system-prompt-file", "/private/v1.md", "--resume", "sess"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("argv = %#v, want %#v", got, want)
 	}
@@ -85,7 +85,7 @@ func TestBuildClaudeOneShotCommandUsesConfiguredModelAndEffort(t *testing.T) {
 	if err != nil {
 		t.Fatalf("one-shot command error: %v", err)
 	}
-	want := []string{"claude", "-p", "--output-format", "stream-json", "--verbose", "--include-partial-messages", "--dangerously-skip-permissions", "--effort", "high", "--model", "opus", "hello"}
+	want := []string{"claude", "-p", "--output-format", "stream-json", "--verbose", "--include-partial-messages", "--dangerously-skip-permissions", "--effort", "high", "--model", "opus"}
 	if got := strings.Join(cmd, "\x00"); got != strings.Join(want, "\x00") {
 		t.Fatalf("one-shot command = %#v, want %#v", cmd, want)
 	}
@@ -223,6 +223,30 @@ func TestCodexFreshUsesOneDeveloperInstructionsOverrideBeforeProtocolArgs(t *tes
 	}
 	if strings.Contains(strings.Join(got, "\x00"), "hello") {
 		t.Fatalf("user prompt leaked into argv: %#v", got)
+	}
+}
+
+// TestBuildClaudeOneShotKeepsPromptOffArgv locks in the E2BIG fix: the user
+// prompt must never appear in argv (a single argv element is capped by the
+// kernel MAX_ARG_STRLEN ~128KB), and Claude must be flagged to read it on
+// stdin — mirroring the Codex contract above.
+func TestBuildClaudeOneShotKeepsPromptOffArgv(t *testing.T) {
+	if !PromptOnStdin(Claude) {
+		t.Fatal("Claude prompt must be delivered on stdin, not argv")
+	}
+	marker := strings.Repeat("PROMPT_MARKER_", 20000) // ~280KB, well past MAX_ARG_STRLEN
+	for _, cfg := range []OneShotConfig{
+		{Kind: Claude, Prompt: marker},
+		{Kind: Claude, Prompt: marker, AgentSessionID: "sess-123"},
+		{Kind: Claude, Prompt: marker, ForkFromAgentSessionID: "src-uuid"},
+	} {
+		got, err := BuildOneShotCommand(cfg)
+		if err != nil {
+			t.Fatalf("config error: %v", err)
+		}
+		if strings.Contains(strings.Join(got, "\x00"), "PROMPT_MARKER_") {
+			t.Fatalf("user prompt leaked into argv: len=%d", len(strings.Join(got, "")))
+		}
 	}
 }
 
