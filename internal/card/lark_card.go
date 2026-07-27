@@ -366,7 +366,7 @@ func buildAgentModeFormElements(sessionID string, form AgentModeForm) []any {
 			"tag":  "form",
 			"name": "agent_mode_form",
 			"elements": []any{
-				markdownElement("agent_mode_select_label", "**使用 Agent**\n选择 `claude` 或 `codex`。"),
+				markdownElement("agent_mode_label", "**使用 Agent**\n选择 `claude` 或 `codex`。"),
 				configSelectOptions("agent", form.Agent, form.Agents),
 				map[string]any{
 					"tag":              "button",

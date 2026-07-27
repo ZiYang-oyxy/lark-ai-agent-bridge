@@ -3,21 +3,29 @@ description: simulate 环境 Schedules=nil,统一命中早退分支。锁死文�
 tags: [regression, schedule]
 steps:
   - input: "/cron"
+    l3: &simulate_only
+      skip: true
+      skip_reason: "仅覆盖 simulate 中 Schedule 服务未装配的早退分支；真实 Test 已装配服务，且 add 会产生外部调度副作用。"
     asserts:
       - {type: event_type, expected: "message"}
       - {type: segment_contains, text: "定时任务服务尚未配置"}
   - input: "/cron add 每天 9 点提醒"
+    l3: *simulate_only
     asserts:
       - {type: segment_contains, text: "定时任务服务尚未配置"}
   - input: "/cron list"
+    l3: *simulate_only
     asserts:
       - {type: segment_contains, text: "定时任务服务尚未配置"}
   - input: "/timer"
+    l3: *simulate_only
     asserts:
       - {type: segment_contains, text: "定时任务服务尚未配置"}
   - input: "/timer list"
+    l3: *simulate_only
     asserts:
       - {type: segment_contains, text: "定时任务服务尚未配置"}
   - input: "/timer info abc"
+    l3: *simulate_only
     asserts:
       - {type: segment_contains, text: "定时任务服务尚未配置"}

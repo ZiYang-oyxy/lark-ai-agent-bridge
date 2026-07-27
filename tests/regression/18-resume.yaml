@@ -3,6 +3,9 @@ description: simulate 环境 SessionStore 未装配,恒早退。正常列表/精
 tags: [regression, resume]
 steps:
   - input: "/resume"
+    l3:
+      skip: true
+      skip_reason: "仅覆盖 simulate 中 SessionStore 未装配的早退分支；真实 Test 的历史存储已装配且结果依赖环境状态。"
     asserts:
       - {type: event_type, expected: "message"}
       - {type: segment_contains, text: "Session 历史存储不可用"}

@@ -263,6 +263,13 @@ func TestBuildLarkCardUsesValidElementIDs(t *testing.T) {
 			},
 		}),
 		BuildLarkCard(Event{
+			Type:      "agent_mode",
+			SessionID: "claude:chat:message:agent-mode-1",
+			AgentModeForm: &AgentModeForm{
+				Agent: "claude", Agents: []SelectOption{{Value: "claude", Label: "Claude"}},
+			},
+		}),
+		BuildLarkCard(Event{
 			Type: "stream", SessionID: "claude:chat", Streaming: true,
 			Segments: []Segment{{Kind: SegmentText, Text: "answer"}, {Kind: SegmentThought, Text: "thought"}, {Kind: SegmentTool, Text: "tool"}},
 			Actions:  WorkDirCreateActions("/tmp/work"), StopButton: StopButton{Visible: true},

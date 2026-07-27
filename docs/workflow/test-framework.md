@@ -103,6 +103,17 @@ steps:
 
 `input` 步骤可设置 `group: true` 与 `mentioned: false` 来覆盖群聊未 @ bot 的过滤。`action` 步骤可通过 `prime_text` 预建会话，并按需提供 `value`、`chat_id`、`open_message_id`、`form_values`、`prime_is_group` 和 `prime_chat_id`，用于模拟依赖卡片上下文的动作。
 
+L3 不是把命令文本复制到任意聊天即可。清单会将 `group` / `mentioned` 投影为明确的传输约束：未设置 `group` 的步骤发到 Test P2P 且不 @；`group: true` 的步骤发到 `chat_mode=group` 的测试群，默认必须 @ Test；`mentioned: false` 则是同一测试群内的负向验证，必须确认没有机器人卡片。生成清单前应动态核验目标 chat 的 `chat_mode` 和 Test bot `open_id`，目标不匹配时停止验收。
+
+当某条 YAML 只覆盖 simulate 有意未装配的依赖分支时，使用 `l3.skip` 显式排除真实回放，并留下原因。例如真实 Test 已装配 Session/Schedule 服务，不能把 `/resume` 或 `/cron` 在真实环境中的正常结果误判为回归：
+
+```yaml
+- input: /resume
+  l3:
+    skip: true
+    skip_reason: 仅覆盖 simulate 中 SessionStore 未装配的早退分支
+```
+
 支持的断言如下：
 
 - `event_type`：首个事件类型；空闲 `/stop` 的提示消息可按 `notice` 断言。
@@ -137,7 +148,8 @@ Smoke 和 regression 的职责不同，不能只把二者都当作“跑一次 Y
 - L2 检查的是 bridge 产生的卡片数据模型，不是飞书最终渲染后的 UI；表单提交按钮等渲染期元素应由 L3 或专门渲染测试覆盖。
 - runner 每个用例使用新临时状态目录。它不能证明跨进程持久化、真实 bot 权限或飞书投递时序。
 - 当前 simulate 只装配 Preference、DevMode 和 Workspaces store；Updates、Schedules、Access 依赖仍未在 simulate 中装配。因此相关 YAML 应断言可观察的当前行为，不能虚构本地模拟尚未提供的状态。
-- L3 checklist 只投影消息型 `input` 步骤，跳过 `action` 步骤；它不能证明真实的 `card.action.trigger` 投递。将来若需要按用例排除 L3，不能依赖注释中提到但 YAML schema 尚未实现的 `skip_l3` 字段。
+- L3 checklist 只投影消息型 `input` 步骤，跳过 `action` 步骤；它不能证明真实的 `card.action.trigger` 投递。带 `form_values` 等卡片专属注入字段的动作，应另行执行真实卡片点击验收，不能把 `/action` 消息等价路径误记为卡片回调通过。
+- L3 checklist 会跳过 `l3.skip: true` 的步骤；跳过只适用于 L2 特有的依赖缺失或不可控外部副作用，必须填写 `skip_reason`。它不是跳过真实链路回归的通用开关。
 
 ## 相关代码
 

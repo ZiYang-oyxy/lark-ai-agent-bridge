@@ -20,6 +20,9 @@ type L3ChecklistItem struct {
 	CaseName string
 	// Command 是要发给飞书 Test bot 的消息文本(用 supervisor 的 --as user 身份)。
 	Command string
+	// Transport 指明必须投递的会话类型和 mention 方式。L3 不可把 P2P
+	// 和群聊混用：后者的 IsGroup/mentioned 会改变 bridge 行为。
+	Transport string
 	// Assertions 是这条步骤在 L3 期望观察到的可见事实,按"audit key" + "飞书回读"分列。
 	// L3 断言不重造 assert.go 的语义,只挑用户/审计员能亲眼看到的:
 	//   - audit: cardkit_create / cardkit_reply / cardkit_update 等 action 名
@@ -29,7 +32,7 @@ type L3ChecklistItem struct {
 
 // BuildL3Checklist 从测试用例集里挑出适合 L3 复验的**消息触发用例**,
 // 产出一份可读的清单。选择规则:
-//   - 有 input(消息触发)且未显式标记 skip_l3。
+//   - 有 input(消息触发)且未显式标记 l3.skip。
 //   - action 型 step 跳过(卡片按钮点击 L3 用消息路径的等价 /action 覆盖,不能凭空点)。
 //
 // 目的是让 supervisor 到 L3 阶段有一份**行为对齐 simulate 用例**的可执行清单,
@@ -39,7 +42,7 @@ func BuildL3Checklist(cases []TestCase, sourceHint map[string]string) []L3Checkl
 	for _, tc := range cases {
 		src := sourceHint[tc.Name]
 		for i, step := range tc.Steps {
-			if step.Input == "" {
+			if step.Input == "" || (step.L3 != nil && step.L3.Skip) {
 				continue // action 型 step 跳过
 			}
 			item := L3ChecklistItem{
@@ -47,19 +50,32 @@ func BuildL3Checklist(cases []TestCase, sourceHint map[string]string) []L3Checkl
 				CaseName: fmt.Sprintf("%s [step %d]", tc.Name, i+1),
 				Command:  step.Input,
 			}
-			// audit 期望:任何非群未@过滤的消息都应触发 cardkit_create+cardkit_reply。
-			// 群未@场景显式排除。
+			// 将 YAML 的群聊上下文显式投影出来。simulate 的 group=true 默认
+			// 代表已 @；真实 L3 必须真的发到 group chat 并构造 mention。
 			mentionedDefault := true
 			if step.Mentioned != nil {
 				mentionedDefault = *step.Mentioned
 			}
+			switch {
+			case !step.Group:
+				item.Transport = "P2P（不 @）"
+			case mentionedDefault:
+				item.Transport = "群聊（@ Test）"
+			default:
+				item.Transport = "群聊（不 @ Test）"
+			}
 			if !step.Group || mentionedDefault {
 				item.Assertions = append(item.Assertions, "audit: cardkit_create + cardkit_reply")
+			} else {
+				item.Assertions = append(item.Assertions, "audit: 无 cardkit_create/cardkit_reply（mention_required）")
 			}
 			// 从 simulate 层的 assert 提取用户可见的文案关键词作为 L3 回读断言。
 			for _, a := range step.Asserts {
 				if a.Type == "segment_contains" && a.Text != "" {
 					item.Assertions = append(item.Assertions, "visible: 卡片正文含 \""+a.Text+"\"")
+				}
+				if a.Type == "no_events" {
+					item.Assertions = append(item.Assertions, "visible: 无机器人卡片回复")
 				}
 			}
 			if len(item.Assertions) == 0 {
@@ -79,19 +95,20 @@ func BuildL3Checklist(cases []TestCase, sourceHint map[string]string) []L3Checkl
 func WriteL3Checklist(items []L3ChecklistItem, path string) error {
 	var b strings.Builder
 	b.WriteString("# Bridge L3 E2E Checklist\n\n")
-	b.WriteString("由 supervisor 用 `lark-im +send-message --as user` 逐条发送到 Test 群,\n")
+	b.WriteString("由 supervisor 用 `lark-im +send-message --as user` 按「通道」列逐条发送，\n")
 	b.WriteString("再用 `+message-mget` 或 audit.jsonl 回读断言。每条命中即 L3 通过。\n\n")
-	b.WriteString("> ⚠️ 消息必须 @ Test bot 的 open_id(动态核验,不能用 app_id)。\n")
+	b.WriteString("> ⚠️ `P2P` 条目必须发到 Test 的私聊，不能 @；`群聊（@ Test）` 条目必须发到 chat_mode=group 的测试群，并 @ 动态核验的 Test open_id。\n")
+	b.WriteString("> ⚠️ `群聊（不 @ Test）` 是负向验收：发到同一测试群但不能 @，并断言无卡片。目标 chat_mode 不匹配时停止，不得把结果记为通过。\n")
 	b.WriteString("> ⚠️ 换血 Test 用 rebuild-test.sh <worktree>,supervisor 全程不动。\n\n")
 	b.WriteString(fmt.Sprintf("共 %d 条待验条目。\n\n", len(items)))
-	b.WriteString("| # | 用例 | 消息 | L3 断言 |\n")
-	b.WriteString("| - | ---- | ---- | ------- |\n")
+	b.WriteString("| # | 用例 | 通道 | 消息 | L3 断言 |\n")
+	b.WriteString("| - | ---- | ---- | ---- | ------- |\n")
 	for i, it := range items {
 		asserts := strings.Join(it.Assertions, " · ")
 		// 转义 | 避免破坏表格
 		safeCmd := strings.ReplaceAll(it.Command, "|", "\\|")
 		safeAsserts := strings.ReplaceAll(asserts, "|", "\\|")
-		b.WriteString(fmt.Sprintf("| %d | %s | `%s` | %s |\n", i+1, it.CaseName, safeCmd, safeAsserts))
+		b.WriteString(fmt.Sprintf("| %d | %s | %s | `%s` | %s |\n", i+1, it.CaseName, it.Transport, safeCmd, safeAsserts))
 	}
 	return os.WriteFile(path, []byte(b.String()), 0o644)
 }

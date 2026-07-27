@@ -34,9 +34,19 @@ type Step struct {
 	OpenMessageID string            `yaml:"open_message_id,omitempty"`
 	FormValues    map[string]string `yaml:"form_values,omitempty"`
 	// PrimeIsGroup / PrimeChatID:让 prime_text 走群消息路径,以便触发写入 helpContext 等需要 IsGroup=true 的路径。
-	PrimeIsGroup bool     `yaml:"prime_is_group,omitempty"`
-	PrimeChatID  string   `yaml:"prime_chat_id,omitempty"`
-	Asserts      []Assert `yaml:"asserts"`
+	PrimeIsGroup bool   `yaml:"prime_is_group,omitempty"`
+	PrimeChatID  string `yaml:"prime_chat_id,omitempty"`
+	// L3 描述这条 L2 YAML 步骤能否映射到真实飞书验收。
+	// 空值表示可验；Skip 表示此步骤刻意覆盖 simulate 注入的依赖缺失，
+	// 真实 Test 已装配该依赖，不能把两者的文案差异误报为 L3 回归。
+	L3      *L3Options `yaml:"l3,omitempty"`
+	Asserts []Assert   `yaml:"asserts"`
+}
+
+// L3Options 保存 L3 专属的可执行性元数据，不污染 L2 simulate 的行为契约。
+type L3Options struct {
+	Skip       bool   `yaml:"skip,omitempty"`
+	SkipReason string `yaml:"skip_reason,omitempty"`
 }
 
 // Assert 代表一个断言
