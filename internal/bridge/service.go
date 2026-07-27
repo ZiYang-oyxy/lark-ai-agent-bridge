@@ -117,6 +117,12 @@ type Service struct {
 	waitingReactions     map[string]*reactionLifecycle
 	helpContexts         map[string]helpContext
 	resumeContexts       map[string]resumeContext
+	// actionReplyHints:handleActionCommand 消息路径专用,在调 HandleActionResult 之前
+	// 登记 sessionID → 触发消息 msg.ID 的映射;renderActionEvent 内部 Render 时若 event
+	// 没带 ReplyToMessageID(渲染上下文里没 msg 引用)就从这里取回,让 CardKit 首次遇到
+	// 新 sessionID 也能建立 renderer。用完立刻删,不需要 TTL——handleActionCommand 单次
+	// 生命周期。
+	actionReplyHints map[string]string
 	pendingMergeForwards map[string]pendingMergeForward
 	reactionDelay        time.Duration
 	startedAt            time.Time
@@ -376,6 +382,7 @@ func NewServiceWithSessions(cfg config.Config, renderer card.Renderer, runner Ag
 		waitingReactions:     map[string]*reactionLifecycle{},
 		helpContexts:         map[string]helpContext{},
 		resumeContexts:       map[string]resumeContext{},
+		actionReplyHints:     map[string]string{},
 		pendingMergeForwards: map[string]pendingMergeForward{},
 		reactionDelay:        defaultWaitingReactionDelay,
 		startedAt:            time.Now(),
@@ -2330,10 +2337,52 @@ func actionResultFromEvent(event card.Event) ActionResult {
 }
 
 func (s *Service) renderActionEvent(event card.Event) (ActionResult, error) {
+	// 消息路径 /action 触发的动作,进入 CardKit 时 sessionID 是新造的 action:message:XXX,
+	// renderers 缓存 miss,首次 Render 必须带 event.ReplyToMessageID 才能建 renderer。
+	// handleActionCommand 已经在 primeActionReply(sessionID, msg.ID) 里预登记了映射;
+	// 这里补齐,不影响卡片点击路径(其 sessionID 命中缓存,不会走到 miss 分支)。
+	if event.ReplyToMessageID == "" {
+		if replyTo, ok := s.consumeActionReply(event.SessionID); ok {
+			event.ReplyToMessageID = replyTo
+		}
+	}
 	if err := s.Cards.Render(event); err != nil {
 		return ActionResult{}, err
 	}
 	return actionResultFromEvent(event), nil
+}
+
+// primeActionReply 在 handleActionCommand 进入 HandleActionResult 前登记 sessionID
+// → msg.ID 的映射;renderActionEvent 首次 Render 时按需消费。用完即弃。
+func (s *Service) primeActionReply(sessionID, replyTo string) {
+	if sessionID == "" || replyTo == "" {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.actionReplyHints[sessionID] = replyTo
+}
+
+// consumeActionReply 取出并删除 primeActionReply 登记的映射。renderer 首次建成后
+// 缓存已存在,后续 Render 命中缓存不再需要 hint,故立刻删除避免残留。
+func (s *Service) consumeActionReply(sessionID string) (string, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	v, ok := s.actionReplyHints[sessionID]
+	if ok {
+		delete(s.actionReplyHints, sessionID)
+	}
+	return v, ok
+}
+
+// clearActionReply 清理 handleActionCommand 收尾时未被消费的 hint(err 早退等异常路径)。
+func (s *Service) clearActionReply(sessionID string) {
+	if sessionID == "" {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.actionReplyHints, sessionID)
 }
 
 func stoppedActionEvent(sessionID string) card.Event {
@@ -4230,14 +4279,19 @@ func messageTriggerableAction(actionID string) bool {
 		"schedule.confirm", "schedule.cancel", // 依赖 req.Value(draft id) + 持久化 Schedules
 		"update.install",                // 依赖 req.Value(version) + admin gate + deferred
 		"update.details", "update.help", // 只读,不依赖渲染上下文
-		"help.refresh",                    // 只读重建 /help,不依赖 helpContext
-		"help.open_config",                // 只读渲染 /config 表单,不读任何内存态
-		"local_config.edit":               // 只读渲染 local_config 编辑表单,只依赖 req.Value(chatID)
+		"help.refresh",      // 只读重建 /help,不依赖 helpContext
+		"help.open_config",  // 只读渲染 /config 表单,不读任何内存态
+		"local_config.edit": // 只读渲染 local_config 编辑表单,只依赖 req.Value(chatID)
 		return true
 	default:
 		return false
 	}
 }
+// 消息路径的 sessionID 首次遇到 CardKit renderer 时会缓存 miss,需要 event.ReplyToMessageID
+// 才能建 renderer。handleActionCommand 通过 primeActionReply(sessionID, msg.ID) 预登记映射,
+// renderActionEvent 在 event 未带 ReplyToMessageID 时自动从 hint 补齐。因此上表里除
+// stop/update.install/schedule.* 等复用 activeRun BaseSessionID 的动作外,help.open_config /
+// local_config.edit 这类"新建 action:message:XXX sessionID"的动作也能在真实链路正确工作。
 
 // messageTriggerRejectReason 给出某 action 不支持消息触发的用户可读原因。
 func messageTriggerRejectReason(actionID string) string {
@@ -4281,6 +4335,14 @@ func (s *Service) handleActionCommand(ctx context.Context, msg Message, cmd Comm
 	if run, ok := s.activeRun(key.ID()); ok {
 		sessionID = run.BaseSessionID
 	}
+
+	// 消息路径的 sessionID 大概率是首次遇到(新建 action:message:XXX),CardKit renderer
+	// 缓存 miss;先登记 msg.ID 作为 reply target,renderActionEvent 会在 event 空
+	// ReplyToMessageID 时从这里取回,避免真实链路首次 Render 报 "missing reply message id"。
+	// 复用 activeRun BaseSessionID 的场景(有 running task 的 /stop 等)缓存已存在,hint 会
+	// 被无副作用地丢弃。
+	s.primeActionReply(sessionID, msg.ID)
+	defer s.clearActionReply(sessionID)
 
 	req := ActionRequest{
 		SessionID:     sessionID,

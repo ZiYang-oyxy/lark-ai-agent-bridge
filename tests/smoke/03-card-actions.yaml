@@ -40,6 +40,8 @@ steps:
         text: "不支持通过消息触发"
 
   # 白名单新增:help.open_config 只读渲染 /config 表单,无内存依赖。
+  # handleActionCommand 通过 primeActionReply hint 让 CardKit 首次 Render 拿到 msg.ID,
+  # 避免真实链路"missing reply message id"报错(2026-07-27 L3 复现并修复)。
   - input: "/action help.open_config"
     asserts:
       - type: event_type
