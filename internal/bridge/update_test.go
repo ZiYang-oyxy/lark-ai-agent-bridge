@@ -463,6 +463,32 @@ func setUpdateTestVersion(t *testing.T) {
 	buildinfo.Version = "1.0.0"
 }
 
+func TestStatusbarUpdateAvailableUsesSemverPrecedence(t *testing.T) {
+	tests := []struct {
+		name            string
+		latest, current string
+		want            bool
+	}{
+		{name: "older stable than current rc", latest: "0.1.12", current: "0.1.13-rc.6"},
+		{name: "older rc", latest: "0.1.13-rc.5", current: "0.1.13-rc.6"},
+		{name: "same rc", latest: "0.1.13-rc.6", current: "0.1.13-rc.6"},
+		{name: "newer rc", latest: "0.1.13-rc.7", current: "0.1.13-rc.6", want: true},
+		{name: "matching stable release", latest: "0.1.13", current: "0.1.13-rc.6", want: true},
+		{name: "newer stable core", latest: "0.1.14", current: "0.1.13-rc.6", want: true},
+		{name: "rc below matching stable", latest: "0.1.13-rc.7", current: "0.1.13"},
+		{name: "invalid manifest version", latest: "latest", current: "0.1.13-rc.6"},
+		{name: "invalid current version", latest: "0.1.14", current: "dev"},
+		{name: "trim whitespace", latest: " 0.1.13-rc.7 ", current: " 0.1.13-rc.6 ", want: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := statusbarUpdateAvailable(tt.latest, tt.current); got != tt.want {
+				t.Fatalf("statusbarUpdateAvailable(%q, %q) = %t, want %t", tt.latest, tt.current, got, tt.want)
+			}
+		})
+	}
+}
+
 func updateTestConfig(t *testing.T) config.Config {
 	t.Helper()
 	cfg := testConfig(t)

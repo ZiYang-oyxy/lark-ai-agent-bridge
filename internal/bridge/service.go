@@ -3311,7 +3311,7 @@ func (s *Service) metaFromSessionWithDirAfter(sess session.Session, dir string, 
 			if manifest, ok := s.Updates.LatestManifest(); ok {
 				latest := strings.TrimSpace(manifest.Version)
 				current := strings.TrimSpace(buildinfo.Version)
-				if latest != "" && latest != current {
+				if statusbarUpdateAvailable(latest, current) {
 					meta.LatestVersion = "v" + latest
 				}
 			}

@@ -18,6 +18,17 @@ import (
 
 type PreparedUpdate = bridgeupdate.PreparedUpdate
 
+// statusbarUpdateAvailable keeps the non-blocking statusbar cache path aligned
+// with the update check's SemVer precedence. A malformed or older cached
+// manifest must never be presented as the latest version.
+func statusbarUpdateAvailable(latest, current string) bool {
+	comparison, err := bridgeupdate.CompareAllowingPrerelease(
+		strings.TrimSpace(latest),
+		strings.TrimSpace(current),
+	)
+	return err == nil && comparison > 0
+}
+
 type UpdateManager interface {
 	Check(context.Context, string) (bridgeupdate.CheckResult, error)
 	Refresh(context.Context, string) (bridgeupdate.CheckResult, error)
