@@ -329,11 +329,13 @@ func renderCardText(value any) string {
 			return "\n"
 		case "hr":
 			return "\n---\n"
-		case "button", "standard_icon":
+		case "standard_icon":
 			return ""
+		case "button":
+			return renderCardButton(node)
 		case "img", "image":
-			return "[图片]"
-		case "plain_text", "code_span", "link", "markdown", "md", "text":
+			return renderCardImage(node)
+		case "plain_text", "code_span", "markdown", "md", "text":
 			if content := cardContent(node); content != "" {
 				return content
 			}
@@ -344,6 +346,8 @@ func renderCardText(value any) string {
 				return renderCardText(text)
 			}
 			return ""
+		case "link":
+			return renderCardLink(node)
 		case "list":
 			return renderCardList(node, cardChildren(node, "items"))
 		case "code_block":
@@ -380,6 +384,127 @@ func renderCardText(value any) string {
 		return strings.TrimSpace(strings.Join(parts, "\n"))
 	}
 	return ""
+}
+
+// renderCardButton preserves button label + URL so agents can follow the
+// link the user clearly intended to share. Feishu carries the URL under
+// several keys depending on card generation ("url", "multi_url", or nested
+// under "value"/"behaviors[].value.default_url").
+func renderCardButton(node map[string]any) string {
+	label := ""
+	if text, ok := cardValue(node, "text"); ok {
+		label = strings.TrimSpace(renderCardText(text))
+	}
+	if label == "" {
+		label = cardString(node, "content")
+	}
+	url := cardExtractURL(node)
+	switch {
+	case label != "" && url != "":
+		return fmt.Sprintf("[按钮:%s](%s)", label, url)
+	case url != "":
+		return fmt.Sprintf("[按钮](%s)", url)
+	case label != "":
+		return fmt.Sprintf("[按钮:%s]", label)
+	}
+	return ""
+}
+
+func renderCardLink(node map[string]any) string {
+	label := ""
+	if content := cardContent(node); content != "" {
+		label = content
+	} else if rendered := joinCardParts(cardChildren(node, "elements"), ""); rendered != "" {
+		label = rendered
+	} else if text, ok := cardValue(node, "text"); ok {
+		label = strings.TrimSpace(renderCardText(text))
+	}
+	url := cardExtractURL(node)
+	switch {
+	case label != "" && url != "" && label != url:
+		return fmt.Sprintf("[%s](%s)", label, url)
+	case url != "":
+		return url
+	case label != "":
+		return label
+	}
+	return ""
+}
+
+func renderCardImage(node map[string]any) string {
+	key := cardString(node, "image_key")
+	if key == "" {
+		if property, ok := node["property"].(map[string]any); ok {
+			key = cardString(property, "image_key")
+		}
+	}
+	if key == "" {
+		key = cardString(node, "img_key")
+	}
+	if key == "" {
+		return "[图片]"
+	}
+	return "[图片 image_key=" + key + "]"
+}
+
+// cardExtractURL walks the documented URL-bearing fields on a button/link
+// node. Order matters: multi_url wins because it carries platform-specific
+// overrides (pc_url/ios_url/android_url) that are usually the true target.
+func cardExtractURL(node map[string]any) string {
+	if url := cardString(node, "url"); url != "" {
+		return url
+	}
+	if url := cardStringFromMap(node, "multi_url", "url"); url != "" {
+		return url
+	}
+	if url := cardStringFromMap(node, "multi_url", "pc_url"); url != "" {
+		return url
+	}
+	if property, ok := node["property"].(map[string]any); ok {
+		if url := cardString(property, "url"); url != "" {
+			return url
+		}
+		if url := cardStringFromMap(property, "multi_url", "url"); url != "" {
+			return url
+		}
+		if url := cardStringFromMap(property, "multi_url", "pc_url"); url != "" {
+			return url
+		}
+	}
+	if value, ok := node["value"].(map[string]any); ok {
+		if url := cardString(value, "url"); url != "" {
+			return url
+		}
+		if url := cardString(value, "default_url"); url != "" {
+			return url
+		}
+	}
+	for _, behavior := range cardChildren(node, "behaviors") {
+		bnode, ok := behavior.(map[string]any)
+		if !ok {
+			continue
+		}
+		if url := cardString(bnode, "default_url"); url != "" {
+			return url
+		}
+		if value, ok := bnode["value"].(map[string]any); ok {
+			if url := cardString(value, "default_url"); url != "" {
+				return url
+			}
+			if url := cardString(value, "url"); url != "" {
+				return url
+			}
+		}
+	}
+	return ""
+}
+
+func cardStringFromMap(node map[string]any, key, inner string) string {
+	child, ok := node[key].(map[string]any)
+	if !ok {
+		return ""
+	}
+	return cardString(child, inner)
 }
 
 func cardNodeID(node map[string]any) string {

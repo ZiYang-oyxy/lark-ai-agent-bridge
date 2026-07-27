@@ -240,10 +240,63 @@ func TestParseInteractiveMessageTextSupportsFlatCard(t *testing.T) {
 func TestParseInteractiveMessageTextSupportsLegacyCard(t *testing.T) {
 	raw := `{"title":"旧卡片","elements":[[{"tag":"img","image_key":"img_x"},{"tag":"text","text":"请升级至最新版本客户端，以查看内容"}]]}`
 	got := parseInteractiveMessageText(raw)
-	for _, want := range []string{"旧卡片", "[图片]", "请升级至最新版本客户端，以查看内容"} {
+	for _, want := range []string{"旧卡片", "[图片 image_key=img_x]", "请升级至最新版本客户端，以查看内容"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("legacy card text missing %q: %q", want, got)
 		}
+	}
+}
+
+func TestParseInteractiveMessageTextPreservesButtonURL(t *testing.T) {
+	// Legacy card carrying a primary button with an explicit URL, as Feishu
+	// delivers when the quoted card was sent via the incoming webhook API.
+	raw := `{"title":"测试失败!!!","elements":[[{"tag":"text","text":"报告链接"}],[{"tag":"button","text":{"tag":"plain_text","content":"测试报告"},"type":"primary","url":"https://reports.example.com/rnic/2026-07-27","value":{"url":"https://reports.example.com/rnic/2026-07-27"}}]]}`
+	got := parseInteractiveMessageText(raw)
+	if !strings.Contains(got, "测试报告") {
+		t.Fatalf("button label missing: %q", got)
+	}
+	if !strings.Contains(got, "https://reports.example.com/rnic/2026-07-27") {
+		t.Fatalf("button url missing: %q", got)
+	}
+}
+
+func TestParseInteractiveMessageTextPreservesButtonMultiURL(t *testing.T) {
+	// CardKit v2 button using multi_url (pc/ios/android variants).
+	raw := `{"json_card":"{\"body\":{\"elements\":[{\"tag\":\"button\",\"text\":{\"tag\":\"plain_text\",\"content\":\"打开报告\"},\"multi_url\":{\"url\":\"https://reports.example.com/x\",\"pc_url\":\"https://reports.example.com/x?pc=1\"}}]}}"}`
+	got := parseInteractiveMessageText(raw)
+	if !strings.Contains(got, "打开报告") {
+		t.Fatalf("button label missing: %q", got)
+	}
+	if !strings.Contains(got, "https://reports.example.com/x") {
+		t.Fatalf("button url missing: %q", got)
+	}
+}
+
+func TestSDKSenderFetchMessageInteractiveKeepsButtonURL(t *testing.T) {
+	// End-to-end: SDKSender.FetchMessage on a fetched interactive card must
+	// surface the button URL so it reaches the agent prompt.
+	content := `{"title":"测试失败!!!","elements":[[{"tag":"text","text":"报告链接"}],[{"tag":"button","text":{"tag":"plain_text","content":"测试报告"},"type":"primary","url":"https://reports.example.com/rnic"}]]}`
+	api := &captureGetMessageAPI{resp: getMessageResp("interactive", content, "ou_reporter")}
+	got, err := (&SDKSender{getAPI: api}).FetchMessage(t.Context(), "om_card")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(got.Text, "测试报告") {
+		t.Fatalf("card button label missing: %q", got.Text)
+	}
+	if !strings.Contains(got.Text, "https://reports.example.com/rnic") {
+		t.Fatalf("card button url missing: %q", got.Text)
+	}
+}
+
+func TestParseInteractiveMessageTextPreservesLinkURL(t *testing.T) {
+	raw := `{"json_card":"{\"body\":{\"elements\":[{\"tag\":\"link\",\"url\":\"https://reports.example.com/detail\",\"content\":\"查看详情\"}]}}"}`
+	got := parseInteractiveMessageText(raw)
+	if !strings.Contains(got, "查看详情") {
+		t.Fatalf("link label missing: %q", got)
+	}
+	if !strings.Contains(got, "https://reports.example.com/detail") {
+		t.Fatalf("link url missing: %q", got)
 	}
 }
 
