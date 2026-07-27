@@ -10,11 +10,21 @@ type TestCase struct {
 	Steps       []Step   `yaml:"steps"`
 }
 
-// Step 代表测试用例中的一个步骤
+// Step 代表测试用例中的一个步骤。
+//
+// 两种互斥的触发方式:
+//   - input: 发送一条消息文本(走 simulate),模拟用户发消息。
+//   - action: 触发一个卡片动作 id(走 simulate-action),等价于点击卡片按钮;
+//     value 为动作参数,primeText 可选,用于在触发前先发一条消息建立会话。
+//
+// 二者只应填其一;同时填时以 action 优先。
 type Step struct {
-	Input   string   `yaml:"input"`
-	Group   bool     `yaml:"group,omitempty"` // 是否模拟群聊场景
-	Asserts []Assert `yaml:"asserts"`
+	Input     string   `yaml:"input,omitempty"`
+	Action    string   `yaml:"action,omitempty"`     // 卡片动作 id,如 stop / update.details
+	Value     string   `yaml:"value,omitempty"`      // 动作参数(action 模式)
+	PrimeText string   `yaml:"prime_text,omitempty"` // action 模式:触发前先发的建会话消息
+	Group     bool     `yaml:"group,omitempty"`      // 是否模拟群聊场景(仅 input 模式)
+	Asserts   []Assert `yaml:"asserts"`
 }
 
 // Assert 代表一个断言
@@ -142,8 +152,9 @@ type LocalConfigItem struct {
 }
 
 // Audit 镜像 audit.Event(internal/audit/audit.go)。
-// 注意:真实结构没有 Level 字段;错误通过 Action 名的后缀约定表达
-// (_failed / _denied / _rejected / _ignored / _error / _unavailable)。
+// 注意:真实结构没有 Level 字段;错误通过 Action 名的后缀约定表达。
+// 具体哪些后缀算错误见 assert.go 的 errorActionSuffixes(刻意只含
+// _failed / _denied / _rejected,排除 _ignored / _unavailable 等正常语义)。
 type Audit struct {
 	Time      string `json:"Time"`
 	Actor     string `json:"Actor"`

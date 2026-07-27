@@ -84,9 +84,9 @@ func matchTags(caseTags, requiredTags []string) bool {
 	return true
 }
 
-// RunStep 执行单个测试步骤（发送文本消息到simulate）
-func (r *Runner) RunStep(input string, workDir string, isGroup bool) (*SimulateOutput, error) {
-	// 转换工作目录为绝对路径
+// RunStep 执行单个测试步骤。
+// input 模式走 simulate(发消息);action 模式走 simulate-action(触发卡片动作)。
+func (r *Runner) RunStep(step Step, workDir string) (*SimulateOutput, error) {
 	absWorkDir, err := filepath.Abs(workDir)
 	if err != nil {
 		return nil, fmt.Errorf("获取工作目录绝对路径失败: %w", err)
@@ -95,14 +95,32 @@ func (r *Runner) RunStep(input string, workDir string, isGroup bool) (*SimulateO
 		return nil, fmt.Errorf("创建工作目录失败: %w", err)
 	}
 
-	args := []string{
-		"run", "./cmd/lark-agent-bridge",
-		"simulate",
-		"--text", input,
-		"--default-workdir", absWorkDir,
-	}
-	if isGroup {
-		args = append(args, "--group")
+	var args []string
+	if step.Action != "" {
+		// simulate-action:等价于点击卡片按钮,内部走 HandleAction(含 StartDeferred)。
+		args = []string{
+			"run", "./cmd/lark-agent-bridge",
+			"simulate-action",
+			"--action", step.Action,
+			"--value", step.Value,
+			"--default-workdir", absWorkDir,
+		}
+		if step.PrimeText != "" {
+			args = append(args, "--prime-text", step.PrimeText)
+		} else {
+			// 默认不建会话,避免污染;显式传空关闭 prime。
+			args = append(args, "--prime-text", "")
+		}
+	} else {
+		args = []string{
+			"run", "./cmd/lark-agent-bridge",
+			"simulate",
+			"--text", step.Input,
+			"--default-workdir", absWorkDir,
+		}
+		if step.Group {
+			args = append(args, "--group")
+		}
 	}
 	cmd := exec.Command(r.GoBin, args...)
 	cmd.Dir = r.SourceDir
@@ -149,9 +167,10 @@ func (r *Runner) RunTestCase(tc TestCase) TestResult {
 	defer os.RemoveAll(workDir)
 
 	for i, step := range tc.Steps {
-		output, err := r.RunStep(step.Input, workDir, step.Group)
+		label := stepLabel(step)
+		output, err := r.RunStep(step, workDir)
 		if err != nil {
-			result.Error = fmt.Errorf("步骤 %d (%s) 执行失败: %w", i+1, step.Input, err)
+			result.Error = fmt.Errorf("步骤 %d (%s) 执行失败: %w", i+1, label, err)
 			result.Passed = false
 			return result
 		}
@@ -163,7 +182,7 @@ func (r *Runner) RunTestCase(tc TestCase) TestResult {
 				result.Passed = false
 				result.Failed = append(result.Failed, FailedAssert{
 					Step:      i + 1,
-					StepInput: step.Input,
+					StepInput: label,
 					Assert:    assert,
 					Message:   msg,
 				})
@@ -172,6 +191,18 @@ func (r *Runner) RunTestCase(tc TestCase) TestResult {
 	}
 
 	return result
+}
+
+// stepLabel 给出一个步骤在报告里的可读标签:input 模式显示消息文本,
+// action 模式显示「@动作 id [value]」。
+func stepLabel(step Step) string {
+	if step.Action != "" {
+		if step.Value != "" {
+			return "@" + step.Action + " " + step.Value
+		}
+		return "@" + step.Action
+	}
+	return step.Input
 }
 
 // RunAll 执行所有测试用例

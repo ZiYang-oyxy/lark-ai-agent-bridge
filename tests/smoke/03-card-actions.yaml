@@ -1,0 +1,40 @@
+name: 卡片动作对等命令冒烟测试
+description: 验证 /action 消息触发路径(simulate-action)——可触发动作正常、依赖上下文的动作被诚实拒绝
+tags: [smoke, action]
+steps:
+  # 白名单内:stop 空闲时给出「无需停止」提示(notice 语义),不报错。
+  - input: "/action stop"
+    asserts:
+      - type: event_type
+        expected: "notice"
+      - type: segment_contains
+        text: "没有正在运行的任务"
+      - type: no_error
+
+  # 白名单内:update.details 能被触发并产出 update 卡片。
+  # 注:测试环境未启用自升级,提示文案由 bridge 用 error 片段渲染(红色强调,
+  # 非真错误),故这里断言事件类型而非 no_error。
+  - input: "/action update.details"
+    asserts:
+      - type: event_type
+        expected: "update_message"
+
+  # action 型 step:直接走 simulate-action(等价点击按钮,内部含 StartDeferred),
+  # 验证 runner 的 action 触发路径本身可用。stop 空闲时给出 notice。
+  - action: "stop"
+    asserts:
+      - type: event_type
+        expected: "notice"
+      - type: no_error
+
+  # 白名单外:依赖表单值的动作必须被诚实拒绝,而非静默存空。
+  - input: "/action config.save"
+    asserts:
+      - type: segment_contains
+        text: "需要卡片表单里的字段值"
+
+  # 白名单外:未知动作默认拒绝(白名单而非黑名单)。
+  - input: "/action bogus.unknown"
+    asserts:
+      - type: segment_contains
+        text: "不支持通过消息触发"

@@ -4211,9 +4211,63 @@ func intFromJSONNumber(value any) int {
 	}
 }
 
+// messageTriggerableAction 判断某个卡片 action 是否支持通过 /action 消息触发。
+//
+// 只有「不依赖卡片渲染期上下文、也不需要表单值」的 action 才能安全地由消息触发。
+// 依赖 popPendingRun / resumeContext / helpContext / statusContext 等渲染期内存态,
+// 或唯一数据源是 req.FormValues 的 action(见下方 messageTriggerRejectReason),消息路径
+// 无法提供必要输入,若放行只会静默执行残缺语义 —— 那比明确拒绝更糟。因此这里用**白名单**
+// 而非黑名单:未知/新增 action 默认不可消息触发,直到经实测确认其对消息触发安全。
+//
+// 白名单成员均已用 simulate 实测:无渲染上下文时行为正确(要么产出正确卡片,要么给出
+// 明确的"未启用/未配置"提示,不会静默做错事)。特别地,help.open_config / help.status /
+// help.open_local_config / status.refresh / local_config.reset 都依赖 /help 或 /status
+// 卡片渲染时预存的 helpContext/statusContext(chatID 等),消息触发会"上下文已过期"或
+// "偏好保存失败",故不在白名单里。
+func messageTriggerableAction(actionID string) bool {
+	switch actionID {
+	case "stop", // 仅依赖运行时活动 run 状态
+		"schedule.confirm", "schedule.cancel", // 依赖 req.Value(draft id) + 持久化 Schedules
+		"update.install",                // 依赖 req.Value(version) + admin gate + deferred
+		"update.details", "update.help", // 只读,不依赖渲染上下文
+		"help.refresh": // 只读重建 /help,不依赖 helpContext
+		return true
+	default:
+		return false
+	}
+}
+
+// messageTriggerRejectReason 给出某 action 不支持消息触发的用户可读原因。
+func messageTriggerRejectReason(actionID string) string {
+	switch actionID {
+	case "config.save", "local_config.save", "agent_mode.save":
+		return "该动作需要卡片表单里的字段值,无法通过消息触发。请直接在对应配置卡片上操作。"
+	case "config.close":
+		return "该动作需要定位要关闭的卡片消息,无法通过消息触发。请点击卡片上的关闭按钮。"
+	case "create_workdir", "cancel_workdir":
+		return "该动作依赖创建工作目录时的待执行上下文,无法通过消息触发。请点击卡片上的按钮。"
+	case "resume.select":
+		return "该动作依赖 /resume 卡片的会话上下文,无法通过消息触发。请先用 /resume 再点击卡片选项。"
+	case "help.open_config", "help.open_local_config", "help.status", "status.refresh", "local_config.reset":
+		return "该动作依赖 /help 或 /status 卡片的上下文,无法通过消息触发。请直接发送 /config、/local-config、/status 等命令。"
+	default:
+		return "该动作不支持通过消息触发。"
+	}
+}
+
 // handleActionCommand handles the /action <action-id> [value] command, which triggers
 // a card action directly via message, equivalent to clicking the corresponding card button.
+//
+// 它对齐卡片点击入口 HandleAction 的语义:补 ChatID、为 protected 动作即时签发并消费
+// grant(复用与卡片渲染同一条 issueActionGrant 路径,不自造放行分支)、结尾补
+// StartDeferred(否则 update.install 等 deferred 动作永不执行)。依赖渲染期上下文或
+// 表单值的动作在这里显式拒绝,而不是放进 HandleActionResult 静默残缺执行。
 func (s *Service) handleActionCommand(ctx context.Context, msg Message, cmd Command, preference config.RuntimePreference) error {
+	if !messageTriggerableAction(cmd.ActionID) {
+		s.Audit.Record(msg.Sender, "action_command_rejected", cmd.ActionID, messageTriggerRejectReason(cmd.ActionID))
+		return s.renderTextWithMode("action", msg.ID, card.SegmentError, messageTriggerRejectReason(cmd.ActionID), preference.ConversationMode)
+	}
+
 	agentKind, ok := agent.ParseKind(preference.Agent)
 	if !ok || agentKind == "" {
 		agentKind = agent.Claude
@@ -4225,10 +4279,25 @@ func (s *Service) handleActionCommand(ctx context.Context, msg Message, cmd Comm
 	}
 
 	req := ActionRequest{
-		SessionID: sessionID,
-		ActionID:  cmd.ActionID,
-		Value:     cmd.ActionValue,
-		Actor:     msg.Sender,
+		SessionID:     sessionID,
+		ActionID:      cmd.ActionID,
+		Value:         cmd.ActionValue,
+		Actor:         msg.Sender,
+		ChatID:        msg.ChatID,
+		OpenMessageID: msg.ID,
+	}
+
+	// protected 动作需要 grant:即时签发一个绑定当前 actor/chat/session/action/value 的
+	// 一次性 grant,再交给 HandleActionResult 当场消费。这与卡片渲染时 attachActionGrants
+	// 的签发完全同源,安全语义等价;ActionGrants 未配置时返回空串,authorizeAction 走
+	// nil 放行分支,行为一致。
+	if protectedAction(cmd.ActionID) {
+		grantID, err := s.issueActionGrant(msg.Sender, msg.ChatID, sessionID, cmd.ActionID, cmd.ActionValue, time.Time{})
+		if err != nil {
+			s.Audit.Record(msg.Sender, "action_command_failed", sessionID, "issue grant: "+err.Error())
+			return s.renderTextWithMode("action", msg.ID, card.SegmentError, fmt.Sprintf("执行动作失败: %v", err), preference.ConversationMode)
+		}
+		req.GrantID = grantID
 	}
 
 	result, err := s.HandleActionResult(ctx, req)
@@ -4244,6 +4313,10 @@ func (s *Service) handleActionCommand(ctx context.Context, msg Message, cmd Comm
 			return err
 		}
 	}
+
+	// 对齐卡片点击路径:HandleActionResult 成功后必须启动 deferred(如 update.install
+	// 的后台安装),否则动作只 ACK 不执行。非 deferred 动作此调用是 no-op。
+	result.StartDeferred()
 
 	return nil
 }
