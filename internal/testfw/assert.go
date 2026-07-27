@@ -1,6 +1,7 @@
 package testfw
 
 import (
+	"strconv"
 	"strings"
 )
 
@@ -85,6 +86,15 @@ func extractVisibleText(event Event) string {
 
 // RunAssert 执行单个断言,返回是否通过和失败信息。
 func RunAssert(assert Assert, output *SimulateOutput) (bool, string) {
+	// no_events 用于验证「消息被正确过滤、无任何卡片输出」的场景
+	// (如群里未 @ bot),它必须在空 events 检查之前处理。
+	if assert.Type == "no_events" {
+		if len(output.Events) == 0 {
+			return true, ""
+		}
+		return false, "期望无 event(消息被过滤),实际有 " + strconv.Itoa(len(output.Events)) + " 个"
+	}
+
 	if len(output.Events) == 0 {
 		return false, "没有返回任何 event"
 	}

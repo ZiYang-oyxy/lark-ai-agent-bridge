@@ -112,9 +112,38 @@ func TestEventType_StopIdleNoticeSpecialCase(t *testing.T) {
 	}
 }
 
-func TestRunAssert_NoEvents(t *testing.T) {
+func TestRunAssert_NoEventsFailsOtherAsserts(t *testing.T) {
 	out := &SimulateOutput{Events: nil}
 	if ok, _ := RunAssert(Assert{Type: "event_type", Expected: "help"}, out); ok {
-		t.Error("无 event 时任何断言都应失败")
+		t.Error("无 event 时 event_type 等断言都应失败")
+	}
+}
+
+func TestNoEventsAssert(t *testing.T) {
+	// no_events:验证消息被过滤(群里未@),无 event 时通过。
+	if ok, _ := RunAssert(Assert{Type: "no_events"}, &SimulateOutput{Events: nil}); !ok {
+		t.Error("无 event 时 no_events 应通过")
+	}
+	// 有 event 时 no_events 应失败。
+	if ok, _ := RunAssert(Assert{Type: "no_events"}, &SimulateOutput{Events: []Event{{Type: "help"}}}); ok {
+		t.Error("有 event 时 no_events 应失败")
+	}
+}
+
+func TestMatchTags_OrSemantics(t *testing.T) {
+	// 命中任一即入选。
+	if !matchTags([]string{"regression", "edge"}, []string{"smoke", "regression"}) {
+		t.Error("含 regression 的用例应被 smoke,regression 筛选命中(OR)")
+	}
+	if !matchTags([]string{"smoke", "command"}, []string{"smoke", "regression"}) {
+		t.Error("含 smoke 的用例应被命中")
+	}
+	// 一个都不含 → 不入选。
+	if matchTags([]string{"perf"}, []string{"smoke", "regression"}) {
+		t.Error("不含任何所需 tag 的用例不应入选")
+	}
+	// 空 requiredTags → 全选。
+	if !matchTags([]string{"anything"}, nil) {
+		t.Error("无筛选标签时应全选")
 	}
 }

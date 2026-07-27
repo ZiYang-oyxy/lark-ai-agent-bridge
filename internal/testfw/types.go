@@ -19,11 +19,14 @@ type TestCase struct {
 //
 // 二者只应填其一;同时填时以 action 优先。
 type Step struct {
-	Input     string   `yaml:"input,omitempty"`
-	Action    string   `yaml:"action,omitempty"`     // 卡片动作 id,如 stop / update.details
-	Value     string   `yaml:"value,omitempty"`      // 动作参数(action 模式)
-	PrimeText string   `yaml:"prime_text,omitempty"` // action 模式:触发前先发的建会话消息
-	Group     bool     `yaml:"group,omitempty"`      // 是否模拟群聊场景(仅 input 模式)
+	Input     string `yaml:"input,omitempty"`
+	Action    string `yaml:"action,omitempty"`     // 卡片动作 id,如 stop / update.details
+	Value     string `yaml:"value,omitempty"`      // 动作参数(action 模式)
+	PrimeText string `yaml:"prime_text,omitempty"` // action 模式:触发前先发的建会话消息
+	Group     bool   `yaml:"group,omitempty"`      // 是否模拟群聊场景(仅 input 模式)
+	// Mentioned 仅在 group 模式下有意义:是否 @ 了 bot。
+	// 指针以区分「未设置」(默认 true,群里已@)与「显式 false」(群里未@,用于测过滤)。
+	Mentioned *bool    `yaml:"mentioned,omitempty"`
 	Asserts   []Assert `yaml:"asserts"`
 }
 

@@ -70,18 +70,28 @@ func (r *Runner) LoadTestDir(dir string, tags []string) ([]TestCase, error) {
 	return tests, err
 }
 
-// matchTags 检查用例标签是否包含所有需要的标签
+// matchTags 判断用例是否命中筛选标签,采用 **OR 语义**:
+// 用例只要含 requiredTags 中的任意一个即入选。
+//
+// 这样 --tags smoke,config 跑「smoke 或 config」的用例,--regression
+// (smoke+regression)跑「smoke 或 regression」的全部用例 —— 符合"全量回归=
+// smoke ∪ regression"的直觉。若用 AND,--regression 会要求用例同时带 smoke 和
+// regression 两个 tag,纯 regression 用例反被漏掉。
+// requiredTags 为空表示不筛选(全选)。
 func matchTags(caseTags, requiredTags []string) bool {
+	if len(requiredTags) == 0 {
+		return true
+	}
 	tagSet := make(map[string]bool)
 	for _, t := range caseTags {
 		tagSet[strings.ToLower(t)] = true
 	}
 	for _, rt := range requiredTags {
-		if !tagSet[strings.ToLower(rt)] {
-			return false
+		if tagSet[strings.ToLower(strings.TrimSpace(rt))] {
+			return true
 		}
 	}
-	return true
+	return false
 }
 
 // RunStep 执行单个测试步骤。
@@ -120,6 +130,11 @@ func (r *Runner) RunStep(step Step, workDir string) (*SimulateOutput, error) {
 		}
 		if step.Group {
 			args = append(args, "--group")
+			// simulate 的 --mentioned 默认 true。仅当用例显式设 mentioned:false
+			// (模拟群里未 @ bot,用于测过滤)时才传 --mentioned=false。
+			if step.Mentioned != nil && !*step.Mentioned {
+				args = append(args, "--mentioned=false")
+			}
 		}
 	}
 	cmd := exec.Command(r.GoBin, args...)

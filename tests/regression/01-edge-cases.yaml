@@ -1,0 +1,18 @@
+name: 边界场景回归
+description: 未知命令提示、群未@过滤等边界行为
+tags: [regression, edge]
+steps:
+  # 未知命令:给出 unknown command 提示,不 panic、不误当普通消息。
+  - input: "/definitely-not-a-command"
+    asserts:
+      - type: event_type
+        expected: "message"
+      - type: segment_contains
+        text: "unknown command"
+
+  # 群里未 @ bot:消息被过滤,无任何卡片输出。
+  - input: "hello without mention"
+    group: true
+    mentioned: false
+    asserts:
+      - type: no_events

@@ -1,0 +1,24 @@
+name: 会话与状态显示冒烟测试
+description: 验证工作目录查询与 /status 卡片核心字段显示
+tags: [smoke, session]
+steps:
+  # /cd 无参:显示当前工作目录,普通消息卡。
+  - input: "/cd"
+    asserts:
+      - type: event_type
+        expected: "message"
+      - type: segment_contains
+        text: "当前工作目录"
+      - type: no_error
+
+  # /status 空闲:StatusCard 含「会话概览」「运行偏好」两个分区,停止按钮不可用。
+  - input: "/status"
+    asserts:
+      - type: event_type
+        expected: "status"
+      - type: segment_contains
+        text: "会话概览"
+      - type: segment_contains
+        text: "运行偏好"
+      - type: stop_button_disabled
+      - type: no_error
