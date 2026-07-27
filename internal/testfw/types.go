@@ -26,8 +26,17 @@ type Step struct {
 	Group     bool   `yaml:"group,omitempty"`      // 是否模拟群聊场景(仅 input 模式)
 	// Mentioned 仅在 group 模式下有意义:是否 @ 了 bot。
 	// 指针以区分「未设置」(默认 true,群里已@)与「显式 false」(群里未@,用于测过滤)。
-	Mentioned *bool    `yaml:"mentioned,omitempty"`
-	Asserts   []Assert `yaml:"asserts"`
+	Mentioned *bool `yaml:"mentioned,omitempty"`
+	// action 模式的额外注入:测试自动化专属,直接进 ActionRequest 各字段,
+	// 用于覆盖卡片本身依赖上下文的分支(如 config.save 需 FormValues、config.close 需 OpenMessageID)。
+	// 消息路径 /action 命令不接受这些参数;这是 simulate-action 层的能力。
+	ChatID        string            `yaml:"chat_id,omitempty"`
+	OpenMessageID string            `yaml:"open_message_id,omitempty"`
+	FormValues    map[string]string `yaml:"form_values,omitempty"`
+	// PrimeIsGroup / PrimeChatID:让 prime_text 走群消息路径,以便触发写入 helpContext 等需要 IsGroup=true 的路径。
+	PrimeIsGroup bool     `yaml:"prime_is_group,omitempty"`
+	PrimeChatID  string   `yaml:"prime_chat_id,omitempty"`
+	Asserts      []Assert `yaml:"asserts"`
 }
 
 // Assert 代表一个断言

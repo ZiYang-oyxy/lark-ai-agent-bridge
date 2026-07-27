@@ -117,9 +117,28 @@ func (r *Runner) RunStep(step Step, workDir string) (*SimulateOutput, error) {
 		}
 		if step.PrimeText != "" {
 			args = append(args, "--prime-text", step.PrimeText)
+			if step.PrimeIsGroup {
+				args = append(args, "--prime-is-group")
+			}
+			if step.PrimeChatID != "" {
+				args = append(args, "--prime-chat-id", step.PrimeChatID)
+			}
 		} else {
 			// 默认不建会话,避免污染;显式传空关闭 prime。
 			args = append(args, "--prime-text", "")
+		}
+		if step.ChatID != "" {
+			args = append(args, "--chat-id", step.ChatID)
+		}
+		if step.OpenMessageID != "" {
+			args = append(args, "--open-message-id", step.OpenMessageID)
+		}
+		if len(step.FormValues) > 0 {
+			buf, err := json.Marshal(step.FormValues)
+			if err != nil {
+				return nil, fmt.Errorf("序列化 form_values 失败: %w", err)
+			}
+			args = append(args, "--form-values", string(buf))
 		}
 	} else {
 		args = []string{

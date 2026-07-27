@@ -150,23 +150,45 @@ func runSimulateAction(args []string) error {
 	sessionID := fs.String("session", "claude:chat-demo:message:local-id", "session id")
 	actor := fs.String("actor", "user-demo", "actor id")
 	primeText := fs.String("prime-text", "/new hello", "message to create a session before action; empty disables")
+	primeIsGroup := fs.Bool("prime-is-group", false, "prime message is a group message (needed for helpContext write path)")
+	primeChatID := fs.String("prime-chat-id", "chat-demo", "chat id used for the prime message")
 	defaultWorkDir := fs.String("default-workdir", cfg.DefaultWorkDir, "default workdir for messages without --workdir")
+	chatID := fs.String("chat-id", "", "ActionRequest.ChatID (target chat for the action)")
+	openMessageID := fs.String("open-message-id", "", "ActionRequest.OpenMessageID (card message id to close/edit)")
+	formValues := fs.String("form-values", "", "ActionRequest.FormValues as JSON object of string->string (e.g. {\"agent\":\"claude\"})")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 	if err := applyDefaultWorkDir(&cfg, *defaultWorkDir); err != nil {
 		return err
 	}
+	var parsedFormValues map[string]string
+	if *formValues != "" {
+		if err := json.Unmarshal([]byte(*formValues), &parsedFormValues); err != nil {
+			return fmt.Errorf("--form-values: %w", err)
+		}
+	}
 	renderer := card.NewFakeRenderer()
 	recorder := audit.NewRecorder()
 	svc := bridge.NewService(cfg, renderer, simulateRunner{}, recorder)
 	loadAgentsInto(svc, cfg, recorder)
+	// 装配 PreferenceStore:config.save / local_config.save / agent_mode.save 等分支
+	// 需要它写偏好。store 路径由 cfg.PreferenceStorePath 决定(通过 E2E_PREFERENCE_STORE env),
+	// runner 会为每个测试步骤分配独立 workdir,天然隔离。
+	if cfg.PreferenceStorePath != "" {
+		preferences, err := config.OpenPreferenceStore(cfg.PreferenceStorePath, runtimePreferenceDefaults(cfg), cfg.AllowedModels, svc.Agents.Agents...)
+		if err != nil {
+			return fmt.Errorf("open preference store: %w", err)
+		}
+		svc.Preferences = preferences
+	}
 	if *primeText != "" {
 		msg := bridge.Message{
 			ID:                 "local-id",
-			ChatID:             "chat-demo",
+			ChatID:             *primeChatID,
 			Sender:             *actor,
 			Text:               *primeText,
+			IsGroup:            *primeIsGroup,
 			Mentioned:          true,
 			ExplicitBotMention: true,
 			Time:               time.Now(),
@@ -179,10 +201,13 @@ func runSimulateAction(args []string) error {
 		}
 	}
 	if err := svc.HandleAction(context.Background(), bridge.ActionRequest{
-		SessionID: *sessionID,
-		ActionID:  *actionID,
-		Value:     *value,
-		Actor:     *actor,
+		SessionID:     *sessionID,
+		ActionID:      *actionID,
+		Value:         *value,
+		Actor:         *actor,
+		ChatID:        *chatID,
+		OpenMessageID: *openMessageID,
+		FormValues:    parsedFormValues,
 	}); err != nil {
 		return err
 	}
@@ -283,6 +308,16 @@ func runSimulate(args []string) error {
 		svc.TopicAliases = bridge.NewTopicAliasStore()
 	}
 	loadAgentsInto(svc, cfg, recorder)
+	// 装配 PreferenceStore:任何走 handleActionCommand 的白名单动作(如 help.open_config /
+	// local_config.edit)以及 /config /local-config /agent-mode 命令自身都依赖它。
+	// runner 会为每个测试步骤分配独立 workdir 隔离 store 文件。
+	if cfg.PreferenceStorePath != "" {
+		preferences, err := config.OpenPreferenceStore(cfg.PreferenceStorePath, runtimePreferenceDefaults(cfg), cfg.AllowedModels, svc.Agents.Agents...)
+		if err != nil {
+			return fmt.Errorf("open preference store: %w", err)
+		}
+		svc.Preferences = preferences
+	}
 	msg := bridge.Message{
 		ID:                 fmt.Sprintf("local-%d", time.Now().UnixNano()),
 		ChatID:             *chat,

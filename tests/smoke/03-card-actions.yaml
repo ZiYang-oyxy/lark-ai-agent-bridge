@@ -38,3 +38,37 @@ steps:
     asserts:
       - type: segment_contains
         text: "不支持通过消息触发"
+
+  # 白名单新增:help.open_config 只读渲染 /config 表单,无内存依赖。
+  - input: "/action help.open_config"
+    asserts:
+      - type: event_type
+        expected: "config"
+      - type: no_error
+
+  # 白名单新增:local_config.edit 只读渲染本群 override 编辑表单,依赖 value=chatID。
+  - input: "/action local_config.edit chat-demo"
+    asserts:
+      - type: event_type
+        expected: "local_config"
+      - type: no_error
+
+  # action 型 step 专属:测试自动化通过 FormValues 注入,绕过消息路径的白名单,
+  # 直接覆盖 config.save 分支。这条能力仅存在于 simulate-action / 测试框架,不给 /action 消息使用。
+  - action: "config.save"
+    form_values:
+      agent: "claude"
+      reply_mode: "append"
+      conversation_mode: "chat"
+      topic_seed_mode: "quote"
+    asserts:
+      - type: event_type
+        expected: "config_saved"
+      - type: no_error
+
+  # action 型 step 专属:agent_mode.save 走 FormValues["agent"] 注入。
+  - action: "agent_mode.save"
+    form_values:
+      agent: "claude"
+    asserts:
+      - type: no_error

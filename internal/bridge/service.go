@@ -4230,7 +4230,9 @@ func messageTriggerableAction(actionID string) bool {
 		"schedule.confirm", "schedule.cancel", // 依赖 req.Value(draft id) + 持久化 Schedules
 		"update.install",                // 依赖 req.Value(version) + admin gate + deferred
 		"update.details", "update.help", // 只读,不依赖渲染上下文
-		"help.refresh": // 只读重建 /help,不依赖 helpContext
+		"help.refresh",                    // 只读重建 /help,不依赖 helpContext
+		"help.open_config",                // 只读渲染 /config 表单,不读任何内存态
+		"local_config.edit":               // 只读渲染 local_config 编辑表单,只依赖 req.Value(chatID)
 		return true
 	default:
 		return false
@@ -4248,8 +4250,10 @@ func messageTriggerRejectReason(actionID string) string {
 		return "该动作依赖创建工作目录时的待执行上下文,无法通过消息触发。请点击卡片上的按钮。"
 	case "resume.select":
 		return "该动作依赖 /resume 卡片的会话上下文,无法通过消息触发。请先用 /resume 再点击卡片选项。"
-	case "help.open_config", "help.open_local_config", "help.status", "status.refresh", "local_config.reset":
-		return "该动作依赖 /help 或 /status 卡片的上下文,无法通过消息触发。请直接发送 /config、/local-config、/status 等命令。"
+	case "help.open_local_config", "help.status", "status.refresh":
+		return "该动作依赖 /help 或 /status 卡片的上下文,无法通过消息触发。请直接发送 /local-config、/status 等命令。"
+	case "local_config.reset":
+		return "该动作会写入偏好,需要显式指定目标群。请直接发送 /local-config reset。"
 	default:
 		return "该动作不支持通过消息触发。"
 	}

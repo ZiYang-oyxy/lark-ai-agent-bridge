@@ -49,9 +49,12 @@ func TestActionCommandHiddenFromHelp(t *testing.T) {
 
 func TestMessageTriggerableActionWhitelist(t *testing.T) {
 	// 白名单:经实测确认无渲染上下文时也能正确工作的动作。
+	// help.open_config / local_config.edit 属于「只读渲染表单、不读任何内存态」的分支,
+	// 消息触发行为等价于卡片点击,故一并放行。
 	triggerable := []string{
 		"stop", "schedule.confirm", "schedule.cancel",
-		"update.install", "update.details", "update.help", "help.refresh",
+		"update.install", "update.details", "update.help",
+		"help.refresh", "help.open_config", "local_config.edit",
 	}
 	for _, a := range triggerable {
 		if !messageTriggerableAction(a) {
@@ -59,15 +62,15 @@ func TestMessageTriggerableActionWhitelist(t *testing.T) {
 		}
 	}
 
-	// 黑名单:依赖表单值 / 卡片渲染期上下文,消息触发本无法提供,必须被拒。
+	// 黑名单:依赖表单值 / 卡片渲染期上下文 / 未指明目标群,消息触发本无法提供,必须被拒。
 	rejected := []string{
 		"config.save", "local_config.save", "agent_mode.save", // 依赖 FormValues
 		"config.close",                     // 依赖 OpenMessageID
 		"create_workdir", "cancel_workdir", // 依赖 pendingRun
-		"resume.select",                                             // 依赖 resumeContext
-		"help.open_config", "help.open_local_config", "help.status", // 依赖 helpContext
-		"status.refresh", "local_config.reset", // 依赖 statusContext/helpContext
-		"bogus.unknown", "", // 未知/空 → 白名单默认拒绝
+		"resume.select",                          // 依赖 resumeContext
+		"help.open_local_config", "help.status",  // 依赖 helpContext
+		"status.refresh", "local_config.reset",   // 需目标群/上下文
+		"bogus.unknown", "",                      // 未知/空 → 白名单默认拒绝
 	}
 	for _, a := range rejected {
 		if messageTriggerableAction(a) {
