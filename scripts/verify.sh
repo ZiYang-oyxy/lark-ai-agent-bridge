@@ -99,6 +99,10 @@ group_output="$(go run ./cmd/lark-agent-bridge simulate -group=true -mentioned=f
 require_contains "$group_output" '"events": []' "group mention filter simulation"
 echo "group mention filter ok"
 
+echo "== 冒烟测试套件 =="
+go run ./cmd/lark-bridge-test --source . --smoke
+echo "冒烟测试通过"
+
 echo "== group intake mode simulation =="
 all_group_output="$(E2E_GROUP_MESSAGE_MODE=all_group_messages go run ./cmd/lark-agent-bridge simulate -group=true -mentioned=false -text "hello all")"
 require_contains "$all_group_output" "simulated answer: hello all" "all group messages simulation"

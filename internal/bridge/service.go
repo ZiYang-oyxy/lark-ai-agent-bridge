@@ -671,6 +671,8 @@ func (s *Service) HandleMessage(ctx context.Context, msg Message) error {
 		return s.handleDevel(ctx, msg, cmd, preference)
 	case CommandTodo:
 		return s.handleTodoCommand(ctx, msg, cmd, preference)
+	case CommandAction:
+		return s.handleActionCommand(ctx, msg, cmd, preference)
 	case CommandRun:
 		return s.runWithPreference(ctx, cmd, msg, "", preference)
 	default:
@@ -4207,4 +4209,41 @@ func intFromJSONNumber(value any) int {
 	default:
 		return 0
 	}
+}
+
+// handleActionCommand handles the /action <action-id> [value] command, which triggers
+// a card action directly via message, equivalent to clicking the corresponding card button.
+func (s *Service) handleActionCommand(ctx context.Context, msg Message, cmd Command, preference config.RuntimePreference) error {
+	agentKind, ok := agent.ParseKind(preference.Agent)
+	if !ok || agentKind == "" {
+		agentKind = agent.Claude
+	}
+	key := s.keyForMessage(agentKind, msg, preference.ConversationMode)
+	sessionID := runID("action", msg.ID)
+	if run, ok := s.activeRun(key.ID()); ok {
+		sessionID = run.BaseSessionID
+	}
+
+	req := ActionRequest{
+		SessionID: sessionID,
+		ActionID:  cmd.ActionID,
+		Value:     cmd.ActionValue,
+		Actor:     msg.Sender,
+	}
+
+	result, err := s.HandleActionResult(ctx, req)
+	if err != nil {
+		s.Audit.Record(msg.Sender, "action_command_failed", sessionID, err.Error())
+		return s.renderTextWithMode("action", msg.ID, card.SegmentError, fmt.Sprintf("执行动作失败: %v", err), preference.ConversationMode)
+	}
+
+	if result.Event != nil {
+		result.Event.ReplyToMessageID = msg.ID
+		result.Event.ReplyInThread = preference.ConversationMode == config.ConversationModeTopic
+		if err := s.Cards.Render(*result.Event); err != nil {
+			return err
+		}
+	}
+
+	return nil
 }

@@ -1,0 +1,20 @@
+name: 配置操作冒烟测试
+description: 验证配置相关命令可用
+tags: [smoke, config]
+steps:
+  - input: "/local-config"
+    group: true
+    asserts:
+      - type: event_type
+        expected: "local_config_overview"
+      - type: no_error
+
+  # /agent-mode 返回 AgentModeForm 表单卡片。「当前模式」文案由渲染期生成,
+  # 不在数据模型里;只断言事件类型为 agent_mode、无错误。
+  - input: "/agent-mode"
+    asserts:
+      - type: event_type
+        expected: "agent_mode"
+      - type: no_error
+
+  # /ws list 依赖持久化工作区，simulate环境暂时不验证该场景

@@ -29,6 +29,7 @@ const (
 	CommandWs          CommandType = "ws"
 	CommandDevel       CommandType = "devel"
 	CommandTodo        CommandType = "todo"
+	CommandAction      CommandType = "action"
 	CommandUnknown     CommandType = "unknown"
 	CommandIgnored     CommandType = "ignored"
 )
@@ -44,6 +45,8 @@ type Command struct {
 	ScheduleKind string
 	WsSub        string
 	WsName       string
+	ActionID     string
+	ActionValue  string
 }
 
 func ParseCommand(msg Message, defaultAgent agent.Kind) Command {
@@ -113,6 +116,17 @@ func ParseCommand(msg Message, defaultAgent agent.Kind) Command {
 			return Command{Type: CommandUnknown, Raw: raw, Text: "用法：/resume 或 /resume <session-id>"}
 		}
 		return Command{Type: CommandResume, Agent: defaultAgent, Raw: raw, Text: target}
+	case "action":
+		// Hidden action trigger command (not listed in /help): triggers a card action
+		// directly via message, equivalent to clicking the corresponding card button.
+		// Usage: /action <action-id> [value]
+		fields := strings.Fields(rest)
+		if len(fields) == 0 {
+			return Command{Type: CommandUnknown, Raw: raw, Text: "用法：/action <action-id> [value]"}
+		}
+		actionID := fields[0]
+		actionValue := strings.TrimSpace(strings.TrimPrefix(rest, fields[0]))
+		return Command{Type: CommandAction, ActionID: actionID, ActionValue: actionValue, Raw: raw}
 	default:
 		return Command{Type: CommandUnknown, Raw: raw, Text: fmt.Sprintf("unknown command /%s", name)}
 	}

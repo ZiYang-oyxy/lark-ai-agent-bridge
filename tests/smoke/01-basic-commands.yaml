@@ -1,0 +1,39 @@
+name: 基础命令冒烟测试
+description: 验证核心基础命令可用
+tags: [smoke, command]
+steps:
+  - input: "/help"
+    asserts:
+      - type: event_type
+        expected: "help"
+      - type: segment_contains
+        text: "会话"
+      - type: segment_contains
+        text: "配置"
+      - type: no_error
+
+  - input: "/status"
+    asserts:
+      - type: event_type
+        expected: "status"
+      - type: segment_contains
+        text: "会话概览"
+      - type: stop_button_disabled
+      - type: no_error
+
+  - input: "/stop"
+    asserts:
+      - type: event_type
+        expected: "notice"
+      - type: segment_contains
+        text: "当前会话没有正在运行的任务"
+      - type: no_error
+
+  # /config 返回 ConfigForm 表单卡片。表单标题「全局配置」和「保存」按钮都是
+  # 渲染期生成的,不在 card.Event 数据模型里,simulate 层无法断言其可见文本/按钮。
+  # 因此这里只断言数据模型层能确认的真实信号:事件类型为 config、无错误。
+  - input: "/config"
+    asserts:
+      - type: event_type
+        expected: "config"
+      - type: no_error
