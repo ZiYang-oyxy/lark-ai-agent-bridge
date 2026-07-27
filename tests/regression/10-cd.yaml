@@ -1,13 +1,31 @@
 name: /cd 边界
-description: 查看/切换工作目录。simulate 环境 Workspaces=nil,只覆盖查询与错误分支;切换成功路径超范围。
+description: 查看/切换工作目录。simulate 环境已装配 Workspaces store,覆盖查询、
+  不存在目录的确认卡片、切换成功等分支。
 tags: [regression, cd]
 steps:
+  # 只读:bare /cd 显示当前工作目录,非 admin 也允许。
   - input: "/cd"
     asserts:
       - {type: event_type, expected: "message"}
       - {type: segment_contains, text: "当前工作目录"}
       - {type: no_error}
+
+  # 目标目录不存在:bridge 走 ensureWorkDirOrAsk,产出 workdir_confirm 卡片让用户确认创建。
+  # 这不是 error,而是交互引导。
   - input: "/cd /tmp/definitely-nonexistent-bridge-test-dir-xyz"
     asserts:
+      - {type: event_type, expected: "workdir_confirm"}
+
+  # policy 分支:workspace.classifyHighRisk 拒绝临时目录根 / 系统目录 / home 根等
+  # "范围过大或危险"的目录。装配 Workspaces 后能真实走到 policy 校验(之前是"存储不可用"
+  # 直接早退),这是把校验拉出来锁死的意义。
+  # 真实存在且在 policy 白名单里的成功路径需要 tmpdir 子目录,yaml 用例不便造,超本层范围。
+  - input: "/cd /tmp"
+    asserts:
       - {type: event_type, expected: "message"}
-      - {type: segment_contains, text: "工作区存储不可用"}
+      - {type: segment_contains, text: "拒绝"}
+      - {type: segment_contains, text: "临时目录"}
+  - input: "/cd /usr"
+    asserts:
+      - {type: segment_contains, text: "拒绝"}
+      - {type: segment_contains, text: "系统目录"}

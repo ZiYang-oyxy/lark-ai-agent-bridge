@@ -182,6 +182,22 @@ func runSimulateAction(args []string) error {
 		}
 		svc.Preferences = preferences
 	}
+	// 装配 DevMode / Workspace store:/.devel、/cd、/ws 的成功路径需要这两个 store。
+	// runner 已把两个路径重定向到 tmp workdir(见 applyDefaultWorkDir),不污染实机。
+	if cfg.DevModeStorePath != "" {
+		devModeStore, err := devmode.OpenStore(cfg.DevModeStorePath)
+		if err != nil {
+			return fmt.Errorf("open dev-mode store: %w", err)
+		}
+		svc.DevMode = devModeStore
+	}
+	if cfg.WorkspaceStorePath != "" {
+		workspaces, err := workspace.OpenWorkspaceStore(cfg.WorkspaceStorePath)
+		if err != nil {
+			return fmt.Errorf("open workspace store: %w", err)
+		}
+		svc.Workspaces = workspaces
+	}
 	if *primeText != "" {
 		msg := bridge.Message{
 			ID:                 "local-id",
@@ -317,6 +333,22 @@ func runSimulate(args []string) error {
 			return fmt.Errorf("open preference store: %w", err)
 		}
 		svc.Preferences = preferences
+	}
+	// 装配 DevMode / Workspace store:/.devel、/cd、/ws 的成功路径需要这两个 store。
+	// runner 已把两个路径重定向到 tmp workdir(见 applyDefaultWorkDir),不污染实机。
+	if cfg.DevModeStorePath != "" {
+		devModeStore, err := devmode.OpenStore(cfg.DevModeStorePath)
+		if err != nil {
+			return fmt.Errorf("open dev-mode store: %w", err)
+		}
+		svc.DevMode = devModeStore
+	}
+	if cfg.WorkspaceStorePath != "" {
+		workspaces, err := workspace.OpenWorkspaceStore(cfg.WorkspaceStorePath)
+		if err != nil {
+			return fmt.Errorf("open workspace store: %w", err)
+		}
+		svc.Workspaces = workspaces
 	}
 	msg := bridge.Message{
 		ID:                 fmt.Sprintf("local-%d", time.Now().UnixNano()),
@@ -776,6 +808,16 @@ func applyDefaultWorkDir(cfg *config.Config, workDir string) error {
 			return fmt.Errorf("resolve default workdir for media cache: %w", err)
 		}
 		cfg.MediaCacheDir = filepath.Join(filepath.Clean(absoluteWorkDir), ".lark-agent-bridge", "media")
+	}
+	// DevMode/Workspace 也走 workdir 命名空间(对齐 preference/reply 惯例),
+	// 让 simulate 层 --default-workdir=tmpdir 时这两个 store 互不污染。
+	// 生产 serve 里由 config.LoadFromEnv 的 E2E_DEFAULT_WORKDIR 路径已经覆盖过,
+	// 这里补齐 --default-workdir CLI 参数的分支。
+	if os.Getenv("E2E_DEV_MODE_STORE") == "" {
+		cfg.DevModeStorePath = filepath.Join(workDir, ".lark-agent-bridge", "dev-mode.json")
+	}
+	if os.Getenv("E2E_WORKSPACE_STORE") == "" {
+		cfg.WorkspaceStorePath = filepath.Join(workDir, ".lark-agent-bridge", "workspaces.json")
 	}
 	return nil
 }

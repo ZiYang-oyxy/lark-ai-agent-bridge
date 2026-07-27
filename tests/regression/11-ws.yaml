@@ -1,14 +1,35 @@
 name: /ws 边界
-description: 工作空间管理。simulate 环境 Workspaces=nil,统一命中早退分支;正常路径超范围。
+description: 工作空间管理。simulate 环境已装配 Workspaces store,覆盖 list/save/use/del
+  成功路径 + 参数缺失 + 未命名工作区错误分支。
 tags: [regression, ws]
 steps:
+  # 空态:bare /ws 等价 list,显示当前 cwd + "暂无命名工作区" 提示。
   - input: "/ws"
     asserts:
       - {type: event_type, expected: "message"}
-      - {type: segment_contains, text: "工作区存储不可用"}
+      - {type: segment_contains, text: "当前工作目录"}
+      - {type: segment_contains, text: "暂无命名工作区"}
+      - {type: no_error}
+
   - input: "/ws list"
     asserts:
-      - {type: segment_contains, text: "工作区存储不可用"}
+      - {type: segment_contains, text: "暂无命名工作区"}
+      - {type: no_error}
+
+  # 保存别名:成功路径,输出确认文本。
   - input: "/ws save my-alias"
     asserts:
-      - {type: segment_contains, text: "工作区存储不可用"}
+      - {type: event_type, expected: "message"}
+      - {type: segment_contains, text: "已保存"}
+      - {type: segment_contains, text: "my-alias"}
+      - {type: no_error}
+
+  # 参数缺失:错误分支。
+  - input: "/ws save"
+    asserts:
+      - {type: segment_contains, text: "用法：/ws save <name>"}
+
+  # 未命名的工作区切换:显式错误,不 panic。
+  - input: "/ws use nonexistent"
+    asserts:
+      - {type: segment_contains, text: "未找到命名工作区"}
