@@ -61,6 +61,9 @@ type Assert struct {
 	Expected string `yaml:"expected,omitempty"`
 	Text     string `yaml:"text,omitempty"`
 	Button   string `yaml:"button,omitempty"`
+	// Texts 是 segments_order 断言的顺序序列:要求各元素在遍历全部 event 拼成的
+	// 可见文本里按给定顺序都出现(允许中间穿插其它内容,但不允许倒序)。
+	Texts []string `yaml:"texts,omitempty"`
 }
 
 // 以下结构镜像 bridge 真实输出。card.Event / audit.Event 均无 json tag,

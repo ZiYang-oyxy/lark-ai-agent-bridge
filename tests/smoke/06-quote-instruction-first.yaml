@@ -1,0 +1,16 @@
+name: 引用场景 prompt 用户主指令前置(冒烟)
+description: 冒烟层最小校验:用户 quote + @ + 指令时,主指令必须在引用块 header
+  与引文之前;完整三分支覆盖在 tests/regression/25-quote-instruction-first.yaml。
+tags: [smoke, quote-order]
+steps:
+  - input: "@Test 帮我分析失败用例，你要深入探索"
+    quote_text: "测试失败!!!\n成功率 96.43%"
+    quote_sender: "ou_alerter"
+    quote_sender_type: "user"
+    asserts:
+      - type: segments_order
+        texts:
+          - "@Test 帮我分析失败用例"
+          - "[用户引用了 ou_alerter 的消息]"
+          - "> 测试失败!!!"
+      - {type: no_error}

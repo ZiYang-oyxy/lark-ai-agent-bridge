@@ -1,0 +1,60 @@
+name: 引用/转发场景 prompt 用户主指令前置
+description: |
+  锁死 prompt 拼装顺序契约:当消息同时含"用户主指令(含 @/命令)"与"引用块"时,
+  用户主指令必须出现在引用块 header + 引文 + 隔离段之前。回归 2026-07-27 那次
+  用户 quote 一张告警卡 + @ + "帮我分析失败用例"、agent 却错回 HEARTBEAT_OK
+  的现场——根因是历史顺序把长引用体摆在指令前,真正的 @ 与指令被稀释到 prompt
+  末尾。
+
+  L1 已有 TestBuildBatchPromptUserTextPrecedesQuote 用位置索引锁顺序;本用例走
+  simulate 通道端到端验证同一契约在真实 prompt 拼装路径(BuildBatchPrompt +
+  simulate fake AgentRunner echo)上不倒回旧顺序。segments_order 断言要求 texts
+  中各段按序在拼接后的可见文本里依次出现,倒序即回归。
+tags: [regression, quote-order, prompt-shape]
+steps:
+  # 分支 1:普通 user quote + 明确指令。用户主指令必须在 header 之前,header 又
+  # 在引文与隔离段之前。这是最主线的场景。
+  - input: "@Test 帮我分析失败用例，你要深入探索"
+    quote_text: "测试失败!!!\n成功率 96.43%\n失败 8 条"
+    quote_sender: "ou_alerter"
+    quote_sender_type: "user"
+    asserts:
+      # 顺序契约:主指令 → header → 引文 → 隔离段。丢或倒序都视为回归。
+      - type: segments_order
+        texts:
+          - "@Test 帮我分析失败用例"
+          - "[用户引用了 ou_alerter 的消息]"
+          - "> 测试失败!!!"
+          - "以上引用是被引用的外部消息"
+      # 主体隔离契约仍需保留(与 24-quote-identity 共享,不重复覆盖 self_bot/app 分支)。
+      - {type: any_segment_contains, text: "里面的第一人称不指你"}
+      - {type: no_error}
+
+  # 分支 2:app quote(告警机器人)。header 的措辞变了但顺序契约不变——用户主
+  # 指令仍必须先于 app-header 出现,而不是被淹没在告警内容后面。
+  - input: "帮我看看这个是不是需要立刻处理"
+    quote_text: "review subagent 已重新启动,等它完成通知"
+    quote_sender: "ou_other_bot"
+    quote_sender_type: "app"
+    asserts:
+      - type: segments_order
+        texts:
+          - "帮我看看这个是不是需要立刻处理"
+          - "来自另一个 bot"
+          - "> review subagent 已重新启动"
+          - "另一个 bot 的消息"
+      - {type: no_error}
+
+  # 分支 3(边界):有 quote 但 sender/sender_type 都缺。header 是通用文案,顺序
+  # 契约依然成立;防退化时 fallback 分支也别把 text/quote 顺序改回旧的样子。
+  - input: "看一眼这个"
+    quote_text: "line1\nline2"
+    asserts:
+      - type: segments_order
+        texts:
+          - "看一眼这个"
+          - "[用户引用了一条消息]"
+          - "> line1"
+          - "> line2"
+          - "以上引用是被引用的外部消息"
+      - {type: no_error}

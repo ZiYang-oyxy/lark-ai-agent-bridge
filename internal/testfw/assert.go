@@ -1,6 +1,7 @@
 package testfw
 
 import (
+	"fmt"
 	"strconv"
 	"strings"
 )
@@ -136,6 +137,34 @@ func RunAssert(assert Assert, output *SimulateOutput) (bool, string) {
 			collected = append(collected, v)
 		}
 		return false, "期望任一 event 可见文本包含 '" + assert.Text + "',实际:\n" + strings.Join(collected, "\n---\n")
+
+	case "segments_order":
+		// 顺序断言:把全部 event 的 extractVisibleText 按序拼成一段,要求 Texts
+		// 里的每个子串都出现,且相对位置严格递增(允许中间穿插其它内容)。用于锁
+		// 死 prompt 拼装顺序契约,例如"用户主指令必须在引用块之前"。丢任一元素
+		// 或倒序都视为回归。
+		if len(assert.Texts) == 0 {
+			return false, "segments_order 需要非空 texts 数组"
+		}
+		var b strings.Builder
+		for _, ev := range output.Events {
+			v := extractVisibleText(ev)
+			if v == "" {
+				continue
+			}
+			b.WriteString(v)
+			b.WriteByte('\n')
+		}
+		joined := b.String()
+		cursor := 0
+		for i, needle := range assert.Texts {
+			idx := strings.Index(joined[cursor:], needle)
+			if idx < 0 {
+				return false, fmt.Sprintf("segments_order 第 %d 段 %q 未在 cursor=%d 之后出现;完整文本:\n%s", i+1, needle, cursor, joined)
+			}
+			cursor += idx + len(needle)
+		}
+		return true, ""
 
 	case "has_button":
 		// 只认数据模型里真实存在的按钮:Actions[].Label 与 StopButton。
