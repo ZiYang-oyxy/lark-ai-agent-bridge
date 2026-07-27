@@ -3258,7 +3258,9 @@ func (s *Service) attachPendingMergeForward(ctx context.Context, msg Message, cm
 		forwarded = "[转发内容不可用]"
 	}
 	// 措辞对 merge_forward 与其它转发/分享素材通用;msg_type 由 audit 详情记录。
-	cmd.Text = "以下是用户刚刚转发/分享的内容：\n" + forwarded + "\n\n用户的请求：\n" + cmd.Text
+	// 顺序：用户主请求在前，转发/分享素材在后。转发体常常是长告警卡/大段 JSON，
+	// 若放在前面会把用户当轮的指令挤到 prompt 末尾稀释掉。
+	cmd.Text = "用户的请求：\n" + cmd.Text + "\n\n以下是用户刚刚转发/分享的内容：\n" + forwarded
 	msg.Attachments = append(msg.Attachments, fetched.Attachments...)
 	s.Audit.Record(msg.Sender, "merge_forward_context_attached", msg.ChatID, "source="+pending.MessageID+" type="+fetched.MessageType+" request="+msg.ID)
 	return msg, cmd

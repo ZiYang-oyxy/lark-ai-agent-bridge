@@ -29,11 +29,18 @@ func BuildBatchPrompt(batch session.Batch) string {
 		if len(batch.Inputs) > 1 || len(input.Attachments) > 0 {
 			fmt.Fprintf(&b, "[消息 %d | %s | %s]\n", i+1, input.Time.Format("2006-01-02 15:04:05"), input.Sender)
 		}
-		writeQuotedBlock(&b, input)
+		// 顺序：用户主指令 → 引用块 → 附件。以往把引用块摆在指令前，导致长引用体
+		// （告警卡 JSON 等）把真正的指令挤到 prompt 末尾，@ 与命令被稀释后 agent
+		// 容易忽视。把用户当轮直接说的话放最前面，是"读到的第一件事就是你被要求
+		// 做什么"，引用/转发只是补充上下文。
 		if text := strings.TrimSpace(input.Text); text != "" {
 			b.WriteString(text)
 			b.WriteByte('\n')
+			if input.QuotedText != "" {
+				b.WriteByte('\n')
+			}
 		}
+		writeQuotedBlock(&b, input)
 		for _, attachment := range input.Attachments {
 			fmt.Fprintf(&b, "[%s] %s\n", attachmentPromptKind(attachment), attachment.Path)
 		}

@@ -135,6 +135,32 @@ func TestBuildBatchPromptQuoteFromSelfBotMarksSelfHistory(t *testing.T) {
 	}
 }
 
+// TestBuildBatchPromptUserTextPrecedesQuote 锁死顺序契约：用户当轮消息的正文
+// 必须出现在引用块（header/> 引文/隔离段）之前。历史顺序（quote 在前、text 在
+// 后）曾导致告警卡等长引用体把真正的 @ 与指令挤到 prompt 末尾，agent 误走群聊
+// 静默分支。凡是回退到旧顺序都视为回归。
+func TestBuildBatchPromptUserTextPrecedesQuote(t *testing.T) {
+	batch := session.Batch{Inputs: []session.Input{{
+		Text:             "@_user_1 帮我分析失败用例，你要深入探索",
+		QuotedText:       "测试失败!!!\n成功率 96.43%",
+		QuotedSender:     "ou_alerter",
+		QuotedSenderType: "app",
+	}}}
+	got := BuildBatchPrompt(batch)
+	textIdx := strings.Index(got, "@_user_1 帮我分析失败用例")
+	quoteIdx := strings.Index(got, "[用户引用了 ou_alerter")
+	quoteBodyIdx := strings.Index(got, "> 测试失败!!!")
+	if textIdx < 0 || quoteIdx < 0 || quoteBodyIdx < 0 {
+		t.Fatalf("prompt missing expected pieces: %q", got)
+	}
+	if textIdx >= quoteIdx {
+		t.Fatalf("user text must precede quote header; got text@%d quote@%d prompt=%q", textIdx, quoteIdx, got)
+	}
+	if textIdx >= quoteBodyIdx {
+		t.Fatalf("user text must precede quote body; got text@%d body@%d prompt=%q", textIdx, quoteBodyIdx, got)
+	}
+}
+
 func TestBuildBatchPromptSinglePlainStaysLegacyWhenNoQuote(t *testing.T) {
 	// Regression guard: a plain single message with no quote/attachment must
 	// keep the bare fast-path form (no header, no quote block).
