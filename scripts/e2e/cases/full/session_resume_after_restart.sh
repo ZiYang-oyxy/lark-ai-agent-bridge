@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# full: latest_restart_fallback
+# full: session_resume_after_restart
 
-case_latest_restart_fallback() {
+case_session_resume_after_restart() {
   require_fake_claude
   local config_msg session_id active queued follow stale_follow file mark active_card follow_card interrupted_sequence follow_sequence
   local active_message_file active_reply_to dm_chat_id
@@ -9,9 +9,9 @@ case_latest_restart_fallback() {
   local queued_marker="E2E_${RUN_ID}_LATEST_RESTART_QUEUED"
   local follow_marker="E2E_${RUN_ID}_LATEST_RESTART_FOLLOW"
   local active_before queued_before invalid_card="e2e-invalid-card-id"
-  config_msg="$(open_config latest_restart_fallback)"
+  config_msg="$(open_config session_resume_after_restart)"
   session_id="config:message:${config_msg}"
-  submit_config latest_restart_fallback "$session_id" default low latest-card
+  submit_config session_resume_after_restart "$session_id" default low latest-card
   assert_persisted_config default low latest-card
 
   mark="$(audit_mark)"
@@ -68,10 +68,10 @@ case_latest_restart_fallback() {
     echo "stale latest mapping was not replaced" >&2
     return 1
   fi
-  record_message latest_restart_fallback interrupted "$active" "$file"
-  record_message latest_restart_fallback queued_cancelled "$queued"
-  record_message latest_restart_fallback resumed "$follow"
-  record_message latest_restart_fallback stale_replaced "$stale_follow"
+  record_message session_resume_after_restart interrupted "$active" "$file"
+  record_message session_resume_after_restart queued_cancelled "$queued"
+  record_message session_resume_after_restart resumed "$follow"
+  record_message session_resume_after_restart stale_replaced "$stale_follow"
   summary "- recovered_card: $active_card sequence $interrupted_sequence -> $follow_sequence"
   summary "- stale_replacement_card: $follow_card"
 }

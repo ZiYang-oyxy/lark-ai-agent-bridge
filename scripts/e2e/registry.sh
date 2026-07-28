@@ -32,6 +32,13 @@
 #                     - controlled: 沿用原临时 bridge 模式(e2e-real 起自己的 serve),
 #                       用于需要 restart_server / mutate config / fake claude 定制回复的用例。
 #                     决策依据见 docs/plans/2026-07-28-P-OBSERVE-case-classification.md。
+#   capability      main_link | commands | config | lifecycle | queue | group |
+#                   media | recovery | render | reply_mode | internal
+#                     10 product capabilities from
+#                     docs/plans/2026-07-28-test-framework-overhaul-P-CASES.md §3.
+#                     Enables --capability <name> filtering. Case-to-capability
+#                     mapping lives here so `--list-cases --capability <name>`
+#                     is a single source of truth.
 #
 # The tier ORDER within smoke/full below reproduces the original arrays exactly
 # (list order is load-bearing: --list-cases output and the media adjacency
@@ -44,29 +51,48 @@ declare -A E2E_CASE_PREREQ_BASE=()
 declare -A E2E_CASE_PREREQ_OPTIONAL=()
 declare -A E2E_CASE_REAL_AGENT_ONLY=()
 declare -A E2E_CASE_EXECUTION_MODE=()
+declare -A E2E_CASE_CAPABILITY=()
 # Ordered case names, preserving registration order per tier.
 E2E_SMOKE_ORDER=()
 E2E_FULL_ORDER=()
 E2E_FEATURE_ORDER=()
 
+# Known capability names. Mirrors P-CASES plan §3; keep in sync when adding
+# new groups. Cases must declare a capability from this list.
+_E2E_KNOWN_CAPABILITIES=(main_link commands config lifecycle queue group media recovery render reply_mode internal)
+
 register_case() {
   # register_case <name> <tier> <needs_callback> <prereq_base> \
-  #               [prereq_optional] [real_agent_only] [execution_mode]
+  #               [prereq_optional] [real_agent_only] [execution_mode] [capability]
   # real_agent_only=1: case 断言真 agent 行为(如 bridge 指令注入是否改变 AI 输出),
   #   fake claude 无法产生有意义结果,USE_FAKE_CLAUDE=1 时应 SKIP 而非 FAIL。
   # execution_mode:observe(默认) 走外部常驻 Test bot,controlled 起临时 bridge。
+  # capability:P-CASES §3 十组能力之一(main_link/commands/.../internal),
+  #   支持 --capability 过滤;不允许空值,防止归类空洞。
   local name="$1" tier="$2" needs_callback="$3" prereq_base="$4"
   local prereq_optional="${5:-}" real_agent_only="${6:-0}" execution_mode="${7:-observe}"
+  local capability="${8:-}"
   case "$execution_mode" in
     observe|controlled) ;;
     *) echo "register_case: unknown execution_mode '$execution_mode' for '$name'" >&2; exit 2 ;;
   esac
+  if [[ -z "$capability" ]]; then
+    echo "register_case: capability is required for '$name'" >&2; exit 2
+  fi
+  local cap_valid=0
+  for known in "${_E2E_KNOWN_CAPABILITIES[@]}"; do
+    if [[ "$capability" == "$known" ]]; then cap_valid=1; break; fi
+  done
+  if (( cap_valid == 0 )); then
+    echo "register_case: unknown capability '$capability' for '$name' (allowed: ${_E2E_KNOWN_CAPABILITIES[*]})" >&2; exit 2
+  fi
   E2E_CASE_TIER["$name"]="$tier"
   E2E_CASE_NEEDS_CALLBACK["$name"]="$needs_callback"
   E2E_CASE_PREREQ_BASE["$name"]="$prereq_base"
   E2E_CASE_PREREQ_OPTIONAL["$name"]="$prereq_optional"
   E2E_CASE_REAL_AGENT_ONLY["$name"]="$real_agent_only"
   E2E_CASE_EXECUTION_MODE["$name"]="$execution_mode"
+  E2E_CASE_CAPABILITY["$name"]="$capability"
   case "$tier" in
     smoke) E2E_SMOKE_ORDER+=("$name") ;;
     full) E2E_FULL_ORDER+=("$name") ;;
@@ -80,53 +106,52 @@ register_case() {
 _E2E_DEFAULT_PREREQ="credentials lark_cli_auth bot_identity test_group wrapper exclusive_runtime"
 
 # --- Case declarations ------------------------------------------------------
-# 每条最后一列 execution_mode:observe(纯观察常驻 Test bot)或 controlled(临时 bridge)。
-# 归类判据 + 逐 case 依据见 docs/plans/2026-07-28-P-OBSERVE-case-classification.md。
+# 每条尾部为 execution_mode + capability。
+# execution_mode 归类判据见 docs/plans/2026-07-28-P-OBSERVE-case-classification.md。
+# capability 归类判据见 docs/plans/2026-07-28-test-framework-overhaul-P-CASES.md §3-§4。
 #
-# SMOKE tier (order matches original SMOKE_CASES).
-register_case new_basic                        smoke   0 "$_E2E_DEFAULT_PREREQ" "" 0 observe
-register_case streaming_card                   smoke   0 "$_E2E_DEFAULT_PREREQ" "" 0 observe
-register_case help                             smoke   0 "$_E2E_DEFAULT_PREREQ" "" 0 observe
-register_case status                           smoke   0 "$_E2E_DEFAULT_PREREQ" "" 0 observe
-register_case workdir_existing                 smoke   0 "$_E2E_DEFAULT_PREREQ" "" 0 observe
-# topic_reply_*:用 set_conversation_mode 改 preference,observe 模式下与其他并发
-# observe case 会争 preference store(常驻 Test 全局)。策略:声明 observe,但
-# run.sh 在观察者调度层保证与其他 observe case 串行。见分类清单疑点 #2。
-register_case topic_reply_at                   smoke   0 "$_E2E_DEFAULT_PREREQ" "" 0 observe
-register_case topic_reply_without_at_negative  smoke   0 "$_E2E_DEFAULT_PREREQ" "" 0 observe
+# SMOKE tier (order matches original SMOKE_CASES; 4 case removed and 2 renamed
+# in P-CASES Phase 2, see plan §4.2-§4.3 for the mapping table).
+register_case new_basic                        smoke   0 "$_E2E_DEFAULT_PREREQ" "" 0 observe    main_link
+register_case streaming_card                   smoke   0 "$_E2E_DEFAULT_PREREQ" "" 0 observe    render
+register_case help                             smoke   0 "$_E2E_DEFAULT_PREREQ" "" 0 observe    commands
+register_case status                           smoke   0 "$_E2E_DEFAULT_PREREQ" "" 0 observe    commands
+register_case workdir_existing                 smoke   0 "$_E2E_DEFAULT_PREREQ" "" 0 observe    lifecycle
+# topic_mode_*:用 set_conversation_mode 改 preference → open_config → submit_config
+# 需要 callback (P-OBSERVE 分类冲突,Phase 2 修正为 controlled)。见 P-CASES §4.5。
+register_case topic_mode_mention_required      smoke   1 "credentials lark_cli_auth bot_identity test_group card_action wrapper exclusive_runtime" "" 0 controlled group
+register_case topic_mode_non_mention_ignored   smoke   1 "credentials lark_cli_auth bot_identity test_group card_action wrapper exclusive_runtime" "" 0 controlled group
 
 # FULL tier (order matches original FULL_EXTRA_CASES).
 # controlled:require_fake_claude + restart_server + assert_fake_batch_contains
-register_case session_restart_context          full    0 "$_E2E_DEFAULT_PREREQ" "" 0 controlled
-register_case restart_queued_cancel            full    0 "$_E2E_DEFAULT_PREREQ" "" 0 controlled
-register_case restart_running_interrupted      full    0 "$_E2E_DEFAULT_PREREQ" "" 0 controlled
+register_case session_restart_context          full    0 "$_E2E_DEFAULT_PREREQ" "" 0 controlled recovery
+register_case revoke_queued_on_restart         full    0 "$_E2E_DEFAULT_PREREQ" "" 0 controlled recovery
+register_case interrupt_running_on_restart     full    0 "$_E2E_DEFAULT_PREREQ" "" 0 controlled recovery
 # debounce_dm: DM-only canary; no test_group, no optional downgrade.
-# debounce_*:当前用 assert_fake_batch_contains 读 fake_claude_log,归 controlled。
-# 迁到 observe 须先改造断言(只留 audit 端 debounce 时序观测)。分类清单疑点 #3。
-register_case debounce_dm                      full    0 "credentials lark_cli_auth bot_identity wrapper exclusive_runtime" "" 0 controlled
-register_case debounce_group                   full    0 "$_E2E_DEFAULT_PREREQ" "" 0 controlled
-register_case busy_merge                       full    0 "$_E2E_DEFAULT_PREREQ" "" 0 controlled
-register_case queue_full                       full    0 "$_E2E_DEFAULT_PREREQ" "" 0 controlled
-register_case scope_parallel                   full    0 "$_E2E_DEFAULT_PREREQ" "" 0 controlled
-# stop_preserves_queue / config_* / requested_actual_model: real card-action cases.
-register_case stop_preserves_queue             full    1 "credentials lark_cli_auth bot_identity test_group card_action wrapper exclusive_runtime" "" 0 controlled
+register_case debounce_dm                      full    0 "credentials lark_cli_auth bot_identity wrapper exclusive_runtime" "" 0 controlled queue
+register_case debounce_group                   full    0 "$_E2E_DEFAULT_PREREQ" "" 0 controlled queue
+register_case busy_merge                       full    0 "$_E2E_DEFAULT_PREREQ" "" 0 controlled queue
+register_case queue_full                       full    0 "$_E2E_DEFAULT_PREREQ" "" 0 controlled queue
+register_case scope_parallel                   full    0 "$_E2E_DEFAULT_PREREQ" "" 0 controlled queue
+# stop_preserves_queue / config_*: real card-action cases.
+register_case stop_preserves_queue             full    1 "credentials lark_cli_auth bot_identity test_group card_action wrapper exclusive_runtime" "" 0 controlled queue
 # recall family: optional recall_event_delivery downgrade.
-register_case recall_state                     full    0 "credentials lark_cli_auth bot_identity test_group wrapper exclusive_runtime" recall_event_delivery 0 controlled
-register_case message_revoke                   full    0 "credentials lark_cli_auth bot_identity test_group wrapper exclusive_runtime" recall_event_delivery 0 controlled
-register_case message_revoke_pending_workdir   full    0 "credentials lark_cli_auth bot_identity test_group wrapper exclusive_runtime" recall_event_delivery 0 controlled
-register_case message_revoke_queued_input      full    0 "credentials lark_cli_auth bot_identity test_group wrapper exclusive_runtime" recall_event_delivery 0 controlled
+register_case recall_state                     full    0 "credentials lark_cli_auth bot_identity test_group wrapper exclusive_runtime" recall_event_delivery 0 controlled recovery
+register_case message_revoke                   full    0 "credentials lark_cli_auth bot_identity test_group wrapper exclusive_runtime" recall_event_delivery 0 controlled recovery
+register_case revoke_during_workdir_prompt     full    0 "credentials lark_cli_auth bot_identity test_group wrapper exclusive_runtime" recall_event_delivery 0 controlled recovery
+register_case revoke_during_queue              full    0 "credentials lark_cli_auth bot_identity test_group wrapper exclusive_runtime" recall_event_delivery 0 controlled recovery
 # media image family: base ends with test_group + wrapper + exclusive_runtime, optional media_image inserted before wrapper.
-register_case media_attachment_only            full    0 "credentials lark_cli_auth bot_identity test_group wrapper exclusive_runtime" media_image 0 controlled
-register_case media_images                     full    0 "credentials lark_cli_auth bot_identity test_group wrapper exclusive_runtime" media_image 0 controlled
+# media_attachment_only removed in P-CASES Phase 2 (media_images/text_files 已覆盖此边界).
+register_case media_images                     full    0 "credentials lark_cli_auth bot_identity test_group wrapper exclusive_runtime" media_image 0 controlled media
 # media file family: p2p_chat based, optional media_file.
-register_case media_text_files                 full    0 "credentials lark_cli_auth bot_identity p2p_chat wrapper exclusive_runtime" media_file 0 controlled
-register_case media_partial                    full    0 "credentials lark_cli_auth bot_identity p2p_chat wrapper exclusive_runtime" media_file 0 controlled
-register_case media_rejected                   full    0 "credentials lark_cli_auth bot_identity p2p_chat wrapper exclusive_runtime" media_file 0 controlled
-register_case config_roundtrip                 full    1 "credentials lark_cli_auth bot_identity test_group card_action wrapper exclusive_runtime" "" 0 controlled
-register_case config_reset                     full    1 "credentials lark_cli_auth bot_identity test_group card_action wrapper exclusive_runtime" "" 0 controlled
-register_case config_frozen_queue              full    1 "credentials lark_cli_auth bot_identity test_group card_action wrapper exclusive_runtime" "" 0 controlled
-register_case requested_actual_model           full    1 "credentials lark_cli_auth bot_identity test_group card_action wrapper exclusive_runtime" "" 0 controlled
-# reply_append/reply_clean/reply_latest/preview_thresholds/latest_restart_fallback:
+register_case media_text_files                 full    0 "credentials lark_cli_auth bot_identity p2p_chat wrapper exclusive_runtime" media_file 0 controlled media
+register_case media_partial                    full    0 "credentials lark_cli_auth bot_identity p2p_chat wrapper exclusive_runtime" media_file 0 controlled media
+register_case media_rejected                   full    0 "credentials lark_cli_auth bot_identity p2p_chat wrapper exclusive_runtime" media_file 0 controlled media
+# config_frozen_queue removed in P-CASES Phase 2 (队列语义,由 busy_merge/queue_full 覆盖).
+# requested_actual_model removed in P-CASES Phase 2 (status card 顶栏已由 status case 覆盖).
+register_case config_roundtrip                 full    1 "credentials lark_cli_auth bot_identity test_group card_action wrapper exclusive_runtime" "" 0 controlled config
+register_case config_reset                     full    1 "credentials lark_cli_auth bot_identity test_group card_action wrapper exclusive_runtime" "" 0 controlled config
+# reply_append/reply_clean/reply_latest/preview_thresholds/session_resume_after_restart:
 # DM-delivery cases. In the original case_prerequisites these matched the
 # dm_delivery branch FIRST (line 2816), which short-circuited before the later
 # card_action branch (line 2844) could ever apply to them -- so their reachable
@@ -135,39 +160,37 @@ register_case requested_actual_model           full    1 "credentials lark_cli_a
 # via send_dm / reply_in_topic and never click an interactive card (no
 # stop_card), so dm_delivery is the correct and only prerequisite. They still
 # need the injected callback (open_config/submit_config), hence needs_callback=1.
-register_case reply_append                     full    1 "credentials lark_cli_auth bot_identity test_group wrapper exclusive_runtime" dm_delivery 0 controlled
-register_case reply_clean                      full    1 "credentials lark_cli_auth bot_identity test_group wrapper exclusive_runtime" dm_delivery 0 controlled
-register_case reply_latest                     full    1 "credentials lark_cli_auth bot_identity test_group wrapper exclusive_runtime" dm_delivery 0 controlled
-register_case preview_thresholds               full    1 "credentials lark_cli_auth bot_identity test_group wrapper exclusive_runtime" dm_delivery 0 controlled
+register_case reply_append                     full    1 "credentials lark_cli_auth bot_identity test_group wrapper exclusive_runtime" dm_delivery 0 controlled reply_mode
+register_case reply_clean                      full    1 "credentials lark_cli_auth bot_identity test_group wrapper exclusive_runtime" dm_delivery 0 controlled reply_mode
+register_case reply_latest                     full    1 "credentials lark_cli_auth bot_identity test_group wrapper exclusive_runtime" dm_delivery 0 controlled reply_mode
+register_case preview_thresholds               full    1 "credentials lark_cli_auth bot_identity test_group wrapper exclusive_runtime" dm_delivery 0 controlled render
 # native_text_stream: needs the injected callback but its prerequisites fell to
 # the default branch in the original (never listed in the card_action prereq
 # group), so it keeps the plain default bundle -- asymmetric on purpose.
-register_case native_text_stream               full    1 "$_E2E_DEFAULT_PREREQ" "" 0 controlled
-register_case reaction_lifecycle               full    0 "$_E2E_DEFAULT_PREREQ" "" 0 controlled
-register_case latest_restart_fallback          full    1 "credentials lark_cli_auth bot_identity test_group wrapper exclusive_runtime" dm_delivery 0 controlled
-# wrapper_preflight:测 wrapper 层 doctor --strict,起独立 doctor 子进程,不发飞书消息、
-# 不起 bridge server,更像"独立工具校验"。归 controlled 只是最接近的桶。
-register_case wrapper_preflight                full    0 "$_E2E_DEFAULT_PREREQ" "" 0 controlled
-register_case quote_readback                   full    0 "$_E2E_DEFAULT_PREREQ" "" 0 observe
+register_case native_text_stream               full    1 "$_E2E_DEFAULT_PREREQ" "" 0 controlled render
+register_case reaction_lifecycle               full    0 "$_E2E_DEFAULT_PREREQ" "" 0 controlled render
+register_case session_resume_after_restart     full    1 "credentials lark_cli_auth bot_identity test_group wrapper exclusive_runtime" dm_delivery 0 controlled recovery
+# wrapper_preflight removed in P-CASES Phase 2 (capability check 已在 doctor 阶段覆盖).
+register_case quote_readback                   full    0 "$_E2E_DEFAULT_PREREQ" "" 0 observe    group
 
 # P3 · Bridge instructions injection behavior verification (real agent only).
 # 验证 bridge 注入的 feishu-runtime-v3 指令对真 Claude 行为的实际影响。
 # 图片 B 主题(B1/B2/B4/B8)+ 定时 C 主题(C1/C2/C3/C5)。fake claude 模式下 SKIP。
 # inject_image_*:纯观察 output_images_completed audit,不污染 supervisor → observe。
 # inject_schedule_*:会创建 draft 到 supervisor 生产 schedule store,污染 → controlled(P-OBSERVE §5 已知坑决策)。
-register_case inject_image_intent              full    0 "$_E2E_DEFAULT_PREREQ" "" 1 observe
-register_case inject_image_no_intent           full    0 "$_E2E_DEFAULT_PREREQ" "" 1 observe
-register_case inject_schedule_propose          full    0 "$_E2E_DEFAULT_PREREQ" "" 1 controlled
-register_case inject_schedule_timer            full    0 "$_E2E_DEFAULT_PREREQ" "" 1 controlled
+register_case inject_image_intent              full    0 "$_E2E_DEFAULT_PREREQ" "" 1 observe    main_link
+register_case inject_image_no_intent           full    0 "$_E2E_DEFAULT_PREREQ" "" 1 observe    main_link
+register_case inject_schedule_propose          full    0 "$_E2E_DEFAULT_PREREQ" "" 1 controlled main_link
+register_case inject_schedule_timer            full    0 "$_E2E_DEFAULT_PREREQ" "" 1 controlled main_link
 
 # FEATURE tier (explicit-only).
 # group_message_intake 改 SERVER_GROUP_MESSAGE_MODE + rm PREFERENCE_STORE → controlled。
-register_case group_message_intake             feature 0 "$_E2E_DEFAULT_PREREQ" "" 0 controlled
+register_case group_message_intake             feature 0 "$_E2E_DEFAULT_PREREQ" "" 0 controlled group
 
 # INTERNAL cases: never selected by a mode, but carry prerequisites used by the
 # active capability preflight and its canaries. preflight has no wrapper prereq.
 # preflight 是环境预检 utility,不属常规二分,标 controlled 表示由临时 bridge 承载。
-register_case preflight                        internal 0 "credentials lark_cli_auth bot_identity test_group exclusive_runtime" "" 0 controlled
+register_case preflight                        internal 0 "credentials lark_cli_auth bot_identity test_group exclusive_runtime" "" 0 controlled internal
 
 # --- Derivations ------------------------------------------------------------
 # all_cases: every case selectable via --case (smoke + full + feature), in the
@@ -197,60 +220,21 @@ case_execution_mode() {
   printf '%s\n' "${E2E_CASE_EXECUTION_MODE[$name]:-observe}"
 }
 
-# any_selected_case_is_controlled: 0 if any case in RUN_CASES has execution_mode=controlled.
-# Used by run.sh to decide whether the temporary bridge lifecycle is needed at all.
-any_selected_case_is_controlled() {
-  local case_name
-  for case_name in "${RUN_CASES[@]}"; do
-    [[ -n "$case_name" ]] || continue
-    if [[ "$(case_execution_mode "$case_name")" == "controlled" ]]; then
-      return 0
-    fi
-  done
-  return 1
-}
-
-# configure_callback_for_cases: enable the injected callback transport when any
-# selected case is registered needs_callback=1.
-# Only controlled-mode cases need the temporary bridge's callback gateway; observe
-# cases rely on the resident Test bot's own callback wiring.
-configure_callback_for_cases() {
-  local case_name
-  CALLBACK_ADDR=""
-  for case_name in "${RUN_CASES[@]}"; do
-    # observe 模式的 case 由常驻 Test bot 的现成 callback 承接,e2e 无需自起 gateway。
-    if [[ "$(case_execution_mode "$case_name")" == "observe" ]]; then
-      continue
-    fi
-    if [[ "${E2E_CASE_NEEDS_CALLBACK[$case_name]:-0}" == "1" ]]; then
-      enable_callback
-      return
-    fi
-  done
-}
-
-# case_prerequisites: print the required capabilities for a case, one per line.
-# Base capabilities come straight from the registry. When the case declares an
-# optional capability AND `e2e_cap_index` reports it available at runtime, the
-# optional capability is inserted immediately before `wrapper` (matching the
-# original ordering, e.g. "... test_group dm_delivery wrapper exclusive_runtime"
-# and "... p2p_chat media_file wrapper exclusive_runtime"). Cases whose base has
-# no wrapper token (debounce_dm) never carry an optional capability, so the
-# insertion point is always well defined.
-case_prerequisites() {
+# case_capability: print the case's capability group (or empty when unknown).
+case_capability() {
   local name="$1"
-  local base="${E2E_CASE_PREREQ_BASE[$name]:-$_E2E_DEFAULT_PREREQ}"
-  local optional="${E2E_CASE_PREREQ_OPTIONAL[$name]:-}"
-  if [[ -n "$optional" ]] && e2e_cap_index "$optional" >/dev/null 2>&1; then
-    local token out=()
-    for token in $base; do
-      if [[ "$token" == "wrapper" ]]; then
-        out+=("$optional")
-      fi
-      out+=("$token")
-    done
-    printf '%s\n' "${out[@]}"
-  else
-    printf '%s\n' $base
-  fi
+  printf '%s\n' "${E2E_CASE_CAPABILITY[$name]:-}"
+}
+
+# cases_for_capability: print all cases (smoke+full+feature order) matching
+# the given capability. Empty argument prints nothing (never a wildcard).
+cases_for_capability() {
+  local want="$1"
+  [[ -z "$want" ]] && return
+  local name
+  while IFS= read -r name; do
+    if [[ "${E2E_CASE_CAPABILITY[$name]:-}" == "$want" ]]; then
+      printf '%s\n' "$name"
+    fi
+  done < <(all_cases)
 }

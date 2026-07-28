@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# full: message_revoke_pending_workdir
+# full: revoke_during_workdir_prompt
 
-case_message_revoke_pending_workdir() {
+case_revoke_during_workdir_prompt() {
   local dir="$RUN_DIR/revoke-pending-workdir"
   local marker="E2E_${RUN_ID}_REVOKE_PENDING"
   local msg file
@@ -15,7 +15,7 @@ case_message_revoke_pending_workdir() {
     echo "revoked pending workdir unexpectedly started Claude run" >&2
     return 1
   fi
-  file="$(mget message_revoke_pending_workdir "$msg")"
+  file="$(mget revoke_during_workdir_prompt "$msg")"
   assert_file_contains "$file" "[Cancel ✗]"
-  record_message message_revoke_pending_workdir revoked "$msg" "$file"
+  record_message revoke_during_workdir_prompt revoked "$msg" "$file"
 }

@@ -23,6 +23,7 @@ cd "$ROOT"
 MODE="smoke"
 KEEP_SERVER_ON_FAIL=0
 LIST_CASES=0
+CAPABILITY_FILTER=""
 PROFILE_ARG=""
 PROFILE_NAME=""
 PROFILE_ENV=""
@@ -66,7 +67,8 @@ usage() {
   cat <<'USAGE'
 Usage:
   scripts/e2e-real.sh [--profile name] [--doctor|--preflight-only]
-                      [--mode smoke|full] [--case name ...] [--list-cases]
+                      [--mode smoke|full] [--case name ...] [--capability name]
+                      [--list-cases]
 
 Options:
   --profile name              use one developer-local E2E profile.
@@ -79,6 +81,11 @@ Options:
   --strict-capabilities       return 3 when a required capability is blocked.
   --mode smoke|full           smoke runs core cases; full adds revoke cases.
   --case name                 run one case; repeat to run multiple cases.
+  --capability name           filter cases to a single product capability group
+                              (main_link|commands|config|lifecycle|queue|group|
+                              media|recovery|render|reply_mode). Combines with
+                              --list-cases to inspect the group. Mutually
+                              exclusive with --case.
   --list-cases                print supported cases and exit.
   --default-workdir path      default workdir passed to bridge serve (controlled cases).
   --run-dir path              evidence directory. Defaults to .cache/e2e/real-<timestamp>.
@@ -123,6 +130,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --case)
       SELECTED_CASES+=("${2:-}")
+      shift 2
+      ;;
+    --capability)
+      CAPABILITY_FILTER="${2:-}"
       shift 2
       ;;
     --list-cases)
@@ -764,17 +775,43 @@ run_active_capability_preflight() {
     e2e_cap_record recall_event_delivery SKIPPED recall_prerequisite_blocked "recall event was not tested" "resolve group delivery first"
   fi
   if capability_prerequisites_ready media_image group_delivery; then
-    run_capability_case media_image media_attachment_only || true
+    run_capability_case media_image media_images || true
   fi
   if capability_prerequisites_ready media_file dm_delivery p2p_chat; then
     run_capability_case media_file media_text_files || true
   fi
 }
 
+# --capability 与 --case 互斥:capability 是"按能力组批量选",case 是"逐个选",
+# 混用会让预期不明。检测早于 --list-cases 分支,便于 --list-cases --capability
+# 直接列该组下的案例。
+if [[ -n "$CAPABILITY_FILTER" && "${#SELECTED_CASES[@]}" -gt 0 ]]; then
+  echo "错误: --capability 与 --case 互斥,只能使用其中一个" >&2
+  exit 2
+fi
+
+# --capability filter: expand to the case names matching that capability, then
+# feed them into SELECTED_CASES so the rest of the pipeline (list-cases, mode
+# selection, prerequisite dispatch) reuses the existing --case path.
+if [[ -n "$CAPABILITY_FILTER" ]]; then
+  while IFS= read -r _cap_case; do
+    SELECTED_CASES+=("$_cap_case")
+  done < <(cases_for_capability "$CAPABILITY_FILTER")
+  if (( ${#SELECTED_CASES[@]} == 0 )); then
+    echo "错误: --capability '$CAPABILITY_FILTER' 未匹配任何 case (核对拼写: main_link|commands|config|lifecycle|queue|group|media|recovery|render|reply_mode|internal)" >&2
+    exit 2
+  fi
+fi
+
 # --list-cases prints the case union and exits (kept here, next to the array
 # helpers it depends on; matches the original placement before profile setup).
+# When --capability 也在,SELECTED_CASES 已被填充,这里直接列过滤后的集合。
 if [[ "$LIST_CASES" -eq 1 ]]; then
-  all_cases
+  if (( ${#SELECTED_CASES[@]} > 0 )); then
+    printf '%s\n' "${SELECTED_CASES[@]}"
+  else
+    all_cases
+  fi
   exit 0
 fi
 

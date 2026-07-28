@@ -222,7 +222,7 @@ soft_recover_after_failure() {
   fi
   mark="$(audit_mark)"
   case "$case_name" in
-    media_text_files|latest_restart_fallback)
+    media_text_files|session_resume_after_restart)
       reset_message="$(send_dm "/new")"
       ;;
     *)

@@ -33,6 +33,31 @@ flowchart TD
 
 `internal/feishu` 已提供完整 interface 抽象(`CardKitClientAPI`、`LongConnClient`、`Sender`、`ReplyAPI`、`HTTPDoer` 等),L1 补测直接复用现有 mock 模式,无需新建测试脚手架。
 
+## P-CASES 治理后的 L3 目录（2026-07-28）
+
+P-CASES 子 plan 把 L3 case 按**产品能力**分成 10 组，registry.sh 加 `capability` 字段做过滤入口。P-CASES 见 [P-CASES plan](../plans/2026-07-28-test-framework-overhaul-P-CASES.md)。当前分布（Phase 2 落地后 39 case）：
+
+| capability | 数量 | 主要 case |
+|---|---:|---|
+| `main_link` | 5 | new_basic、inject_image_intent/no_intent、inject_schedule_propose/timer |
+| `commands` | 2 | help、status |
+| `config` | 2 | config_roundtrip、config_reset |
+| `lifecycle` | 1 | workdir_existing |
+| `queue` | 6 | debounce_dm/group、busy_merge、queue_full、scope_parallel、stop_preserves_queue |
+| `group` | 4 | topic_mode_mention_required、topic_mode_non_mention_ignored、quote_readback、group_message_intake |
+| `media` | 4 | media_images、media_text_files、media_partial、media_rejected |
+| `recovery` | 8 | session_restart_context、revoke_queued_on_restart、interrupt_running_on_restart、recall_state、message_revoke、revoke_during_workdir_prompt、revoke_during_queue、session_resume_after_restart |
+| `render` | 4 | streaming_card、preview_thresholds、native_text_stream、reaction_lifecycle |
+| `reply_mode` | 3 | reply_append、reply_clean、reply_latest |
+
+**使用方式**：
+```bash
+bash scripts/e2e/run.sh --list-cases --capability commands    # 只列命令面 case
+bash scripts/e2e/run.sh --capability recovery                 # 只跑恢复类 case
+```
+
+**分层原则**：新 case 落哪一层由 P-CASES §4.6 的**两条 PR 门禁**决定：① 先证明没有等价的已存在测试（`grep -rn` 已有 test 文件）；② 证明为什么不能在 L0/L1 覆盖。两条都过才准落 L3。
+
 ## 覆盖矩阵
 
 图例:✅ 已覆盖 · ⚠️ 部分 · ❌ 真缺口 · 层级指该能力**主要**在哪层验证。
@@ -101,7 +126,7 @@ flowchart TD
 | 用例 | 层 | 状态 | 证据 |
 |---|:---:|:---:|---|
 | append / clean / latest 三模式 | L0+L2 | ✅ | reply `policy_test.go` + e2e `reply_*` |
-| latest 重启回退 stale card | L0+L2 | ✅ | `latest_restart_fallback` |
+| latest 重启回退 stale card | L0+L2 | ✅ | `session_resume_after_restart` |
 
 ### 域 6 · Media
 | 用例 | 层 | 状态 | 证据 |
@@ -121,7 +146,7 @@ flowchart TD
 |---|:---:|:---:|---|
 | config 往返/reset/frozen queue | L0+L2 | ✅ | `TestServiceConfig*` + e2e `config_*` |
 | 非法 model/effort/mode 拒绝 | L0 | ✅ | `config_test.go` 一组 `RejectsInvalid*` |
-| requested vs actual model | L0+L2 | ✅ | `TestServiceSeparatesRequestedAndActualModel` + `requested_actual_model` |
+| requested vs actual model | L0 + status card | ✅ | `TestServiceSeparatesRequestedAndActualModel`;L2 单独 case `requested_actual_model` 已在 P-CASES Phase 2 删除，status card 顶栏由 `status` case 覆盖模型显示 |
 
 ### 域 9 · 持久化与恢复(覆盖最完整,非缺口)
 | 用例 | 层 | 状态 | 证据 |
@@ -164,17 +189,17 @@ flowchart TD
 3. **隔离性 case 分组并发(已完成)**:共享 group session、preference 或 restart 的 case 保持串行;仅并发 group `media_images` 与独立 P2P `media_text_files`。最终 9-case strict gate 全部通过,wall-clock 约 118s → 103s。
 
 ### 最大杠杆(阶段 3)
-真实列表已从 38 个收敛到 9 个。保留集合为 `new_basic`、`streaming_card`、`session_restart_context`、`recall_state`、`media_attachment_only`、`media_images`、`media_text_files`、`latest_restart_fallback`、`native_text_stream`。
+真实列表已从 38 个收敛到 9 个。保留集合为 `new_basic`、`streaming_card`、`session_restart_context`、`recall_state`、`media_images`、`media_images`、`media_text_files`、`session_resume_after_restart`、`native_text_stream`。
 
 迁到 L0 门禁的 29 个原 case 按能力分组如下:
 
-- 本地环境:`preflight`、`wrapper_preflight` → `e2e-preflight.sh`、doctor tests。
-- 命令与 scope:`help`、`status`、`workdir_existing`、`topic_reply_at`、`topic_reply_without_at_negative` → parser/service tests。
-- recall 业务语义:`message_revoke`、`message_revoke_pending_workdir`、`message_revoke_queued_input` → `TestMessageRecall*`;L2 只保留事件投递 `recall_state`。
-- restart 状态语义:`restart_queued_cancel`、`restart_running_interrupted` → store restore/service recovery tests;L2 只保留两个跨进程代表场景。
+- 本地环境:`preflight`(保留为 internal case)、`wrapper_preflight`(已在 P-CASES Phase 2 删除，capability check 阶段已覆盖) → `e2e-preflight.sh`、doctor tests。
+- 命令与 scope:`help`、`status`、`workdir_existing`、`topic_mode_mention_required`、`topic_mode_non_mention_ignored` → parser/service tests。
+- recall 业务语义:`message_revoke`、`revoke_during_workdir_prompt`、`revoke_during_queue` → `TestMessageRecall*`;L2 只保留事件投递 `recall_state`。
+- restart 状态语义:`revoke_queued_on_restart`、`interrupt_running_on_restart` → store restore/service recovery tests;L2 只保留两个跨进程代表场景。
 - 并发与 queue:`debounce_dm`、`debounce_group`、`busy_merge`、`queue_full`、`scope_parallel`、`stop_preserves_queue` → session/service tests。
 - media 业务校验:`media_partial`、`media_rejected` → media/service tests;L2 只保留三类真实上传与下载。
-- config/model:`config_roundtrip`、`config_reset`、`config_frozen_queue`、`requested_actual_model` → config/service tests。
+- config/model:`config_roundtrip`、`config_reset` → config/service tests。(`config_frozen_queue` 已在 P-CASES Phase 2 删除，队列语义由 `busy_merge`/`queue_full` 覆盖；`requested_actual_model` 已删除，模型显示由 `status` 覆盖。)
 - reply:`reply_append`、`reply_clean`、`reply_latest` → reply policy tests。
 - preview/reaction:`preview_thresholds`、`reaction_lifecycle` → stream preview/reaction tests。
 

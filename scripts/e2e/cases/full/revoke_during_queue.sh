@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# full: message_revoke_queued_input
+# full: revoke_during_queue
 
-case_message_revoke_queued_input() {
+case_revoke_during_queue() {
   local first_marker="E2E_${RUN_ID}_QUEUE_FIRST"
   local second_marker="E2E_${RUN_ID}_QUEUE_SECOND"
   local follow_marker="E2E_${RUN_ID}_QUEUE_FOLLOW"
@@ -22,7 +22,7 @@ case_message_revoke_queued_input() {
     echo "revoked queued input unexpectedly produced a result card" >&2
     return 1
   fi
-  record_message message_revoke_queued_input active "$first"
-  record_message message_revoke_queued_input queued_revoked "$second"
-  record_message message_revoke_queued_input followup "$follow"
+  record_message revoke_during_queue active "$first"
+  record_message revoke_during_queue queued_revoked "$second"
+  record_message revoke_during_queue followup "$follow"
 }

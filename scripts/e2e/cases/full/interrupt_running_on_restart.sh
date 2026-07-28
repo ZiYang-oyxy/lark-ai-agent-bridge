@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# full: restart_running_interrupted
+# full: interrupt_running_on_restart
 
-case_restart_running_interrupted() {
+case_interrupt_running_on_restart() {
   require_fake_claude
   local running_marker="E2E_${RUN_ID}_RESTART_RUNNING_E2E_BLOCK"
   local follow_marker="E2E_${RUN_ID}_RESTART_RUNNING_FOLLOW"
@@ -17,8 +17,8 @@ case_restart_running_interrupted() {
   assert_fake_marker_not_started_after "$running_marker" "$before"
   follow="$(send_at "/new ${follow_marker}")"
   wait_audit "$follow.*event=result" 60
-  file="$(mget restart_running_interrupted "$follow")"
+  file="$(mget interrupt_running_on_restart "$follow")"
   assert_file_contains "$file" "FAKE_E2E_STARTED"
-  record_message restart_running_interrupted interrupted "$running"
-  record_message restart_running_interrupted followup "$follow" "$file"
+  record_message interrupt_running_on_restart interrupted "$running"
+  record_message interrupt_running_on_restart followup "$follow" "$file"
 }
