@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"lark-agent-bridge/internal/agent"
+	"lark-agent-bridge/internal/agentrequestlog"
 	"lark-agent-bridge/internal/audit"
 	"lark-agent-bridge/internal/bridge"
 	"lark-agent-bridge/internal/buildinfo"
@@ -426,6 +427,33 @@ func TestNewServeAuditRecorderWritesFile(t *testing.T) {
 	}
 }
 
+func TestNewServeAgentRequestRecorderWritesRestrictedFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state", "agent-requests.jsonl")
+	recorder, closeFn, err := newServeAgentRequestRecorder(config.Config{AgentRequestLogPath: path})
+	if err != nil {
+		t.Fatalf("new agent request recorder error: %v", err)
+	}
+	prompt := "exact user prompt: token=visible-as-user-content"
+	if err := recorder.Record(agentrequestlog.Entry{RunID: "run-1", Prompt: prompt}); err != nil {
+		t.Fatal(err)
+	}
+	closeFn()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), prompt) {
+		t.Fatalf("agent request log = %s, want exact prompt", data)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := info.Mode().Perm(); got != 0o600 {
+		t.Fatalf("agent request log mode = %v, want 0600", got)
+	}
+}
+
 func TestActionRequestFromFeishuClonesFormValues(t *testing.T) {
 	action := feishu.CardAction{
 		SessionID:     "claude:chat",
@@ -454,6 +482,17 @@ func TestApplyDefaultWorkDirPreservesExplicitAuditLog(t *testing.T) {
 	}
 	if cfg.AuditLogPath != "/tmp/custom-audit.jsonl" {
 		t.Fatalf("audit path = %q, want explicit path preserved", cfg.AuditLogPath)
+	}
+}
+
+func TestApplyDefaultWorkDirPreservesExplicitAgentRequestLog(t *testing.T) {
+	t.Setenv("E2E_AGENT_REQUEST_LOG", "/tmp/custom-agent-requests.jsonl")
+	cfg := config.Config{AgentRequestLogPath: "/tmp/custom-agent-requests.jsonl"}
+	if err := applyDefaultWorkDir(&cfg, "/tmp/work"); err != nil {
+		t.Fatal(err)
+	}
+	if cfg.AgentRequestLogPath != "/tmp/custom-agent-requests.jsonl" {
+		t.Fatalf("agent request log path = %q, want explicit path preserved", cfg.AgentRequestLogPath)
 	}
 }
 

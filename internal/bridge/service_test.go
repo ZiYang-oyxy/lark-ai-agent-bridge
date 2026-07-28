@@ -18,6 +18,7 @@ import (
 	"lark-agent-bridge/internal/access"
 	"lark-agent-bridge/internal/actiongrant"
 	"lark-agent-bridge/internal/agent"
+	"lark-agent-bridge/internal/agentrequestlog"
 	"lark-agent-bridge/internal/audit"
 	"lark-agent-bridge/internal/bridgeinstructions"
 	"lark-agent-bridge/internal/card"
@@ -557,6 +558,67 @@ func TestServicePassesFrozenModelAndEffortToRunner(t *testing.T) {
 	if call.Model != "opus" || call.Effort != "high" {
 		t.Fatalf("runner preferences = model %q effort %q, want opus/high", call.Model, call.Effort)
 	}
+}
+
+func TestServiceLogsExactRequestBeforeAgentRun(t *testing.T) {
+	now := time.Now()
+	runner := newFakeRunner()
+	var log bytes.Buffer
+	svc := NewService(testConfig(t), card.NewFakeRenderer(), runner, audit.NewRecorder())
+	svc.AgentRequests = agentrequestlog.NewRecorder(&log)
+	key := session.Key{Agent: agent.Claude, ChatID: "request-log"}
+	_, _, err := svc.Sessions.EnqueueDurable(key, session.Input{
+		ID: "raw-input", Text: "原始表格\n| 失败 | 20 |", WorkDir: svc.Config.DefaultWorkDir,
+		RequestedModel: "opus", RequestedEffort: "high",
+		Time: now, DebounceUntil: now, State: session.InputQueued,
+	}, svc.Config.DefaultWorkDir, session.BatchLimits{MaxPending: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.DrainReady(now.Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	waitForCalls(t, runner, 1)
+	waitForSessionNoActiveBatch(t, svc, key)
+
+	var entry agentrequestlog.Entry
+	if err := json.Unmarshal(bytes.TrimSpace(log.Bytes()), &entry); err != nil {
+		t.Fatalf("decode request log: %v; log=%s", err, log.String())
+	}
+	call := runner.Calls()[0]
+	if entry.Prompt != call.Prompt || entry.Prompt != "原始表格\n| 失败 | 20 |" {
+		t.Fatalf("logged prompt = %q, runner prompt = %q", entry.Prompt, call.Prompt)
+	}
+	if entry.SessionID != key.ID() || entry.BatchID == "" || entry.RunID == "" || entry.Agent != "claude" || entry.Model != "opus" || entry.Effort != "high" {
+		t.Fatalf("logged request metadata = %#v", entry)
+	}
+}
+
+func TestServiceContinuesAgentRunWhenRequestLogFails(t *testing.T) {
+	now := time.Now()
+	runner := newFakeRunner()
+	auditor := audit.NewRecorder()
+	svc := NewService(testConfig(t), card.NewFakeRenderer(), runner, auditor)
+	svc.AgentRequests = agentrequestlog.NewRecorder(failingAuditWriter{})
+	key := session.Key{Agent: agent.Claude, ChatID: "request-log-failure"}
+	_, _, err := svc.Sessions.EnqueueDurable(key, session.Input{
+		ID: "input", Text: "still run", WorkDir: svc.Config.DefaultWorkDir,
+		Time: now, DebounceUntil: now, State: session.InputQueued,
+	}, svc.Config.DefaultWorkDir, session.BatchLimits{MaxPending: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.DrainReady(now.Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	waitForCalls(t, runner, 1)
+	waitForSessionNoActiveBatch(t, svc, key)
+	for _, event := range auditor.Events() {
+		if event.Action == "agent_request_log_failed" && event.SessionID == key.ID() {
+			return
+		}
+	}
+	t.Fatalf("agent_request_log_failed audit not found: %#v", auditor.Events())
 }
 
 func TestServiceAuditsOnlyFailedAgentRunTail(t *testing.T) {

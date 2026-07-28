@@ -138,6 +138,20 @@ func TestLoadFromEnvDefaultsAuditLogUnderWorkdir(t *testing.T) {
 	}
 }
 
+func TestLoadFromEnvAgentRequestLogFollowsWorkdirAndOverride(t *testing.T) {
+	t.Setenv("E2E_DEFAULT_WORKDIR", "/tmp/lab-work")
+	t.Setenv("E2E_AGENT_REQUEST_LOG", "")
+	want := filepath.Join("/tmp/lab-work", ".lark-agent-bridge", "agent-requests.jsonl")
+	if got := LoadFromEnv().AgentRequestLogPath; got != want {
+		t.Fatalf("agent request log path = %q, want %q", got, want)
+	}
+
+	t.Setenv("E2E_AGENT_REQUEST_LOG", "/tmp/custom-agent-requests.jsonl")
+	if got := LoadFromEnv().AgentRequestLogPath; got != "/tmp/custom-agent-requests.jsonl" {
+		t.Fatalf("agent request log override = %q", got)
+	}
+}
+
 func TestLoadFromEnvActionGrantStoreFollowsWorkdirAndOverride(t *testing.T) {
 	workDir := filepath.Join(t.TempDir(), "work")
 	t.Setenv("E2E_DEFAULT_WORKDIR", workDir)

@@ -102,6 +102,8 @@ doctor 应检查：
 
 审计日志默认写入 `<workdir>/.lark-agent-bridge/audit.jsonl`，可通过 `E2E_AUDIT_LOG=/path/to/audit.jsonl` 覆盖。日志为 JSONL 格式，`detail` 字段会先脱敏。
 
+最终送给 AI Agent 的请求另写入 `<workdir>/.lark-agent-bridge/agent-requests.jsonl`，可通过 `E2E_AGENT_REQUEST_LOG` 覆盖。每行包含精确 `prompt`、图片路径及 Agent 运行元数据；调度 token、socket 和事件回调不会落盘。该文件含用户原文，权限固定为 `0600`，只应用于受控排障环境。
+
 ## 本地模拟消息
 
 不连接飞书，仅模拟一条飞书消息：

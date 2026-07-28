@@ -22,6 +22,7 @@ import (
 	"lark-agent-bridge/internal/actiongrant"
 	"lark-agent-bridge/internal/agent"
 	"lark-agent-bridge/internal/agent/contextusage"
+	"lark-agent-bridge/internal/agentrequestlog"
 	"lark-agent-bridge/internal/audit"
 	"lark-agent-bridge/internal/bridgeinstructions"
 	"lark-agent-bridge/internal/buildinfo"
@@ -73,6 +74,7 @@ type Service struct {
 	Cards                 card.Renderer
 	Runner                AgentRunner
 	Audit                 *audit.Recorder
+	AgentRequests         *agentrequestlog.Recorder
 	MediaCache            mediaResolver
 	MediaDownloader       media.Downloader
 	MediaGC               mediaSweeper
@@ -110,19 +112,19 @@ type Service struct {
 	accessMu           sync.RWMutex
 	knownChats         []feishu.KnownChat
 
-	mu                   sync.Mutex
-	pendingRuns          map[string]pendingRun
-	activeRuns           map[string]activeRun
-	pendingCompletions   map[string]pendingCompletion
-	waitingReactions     map[string]*reactionLifecycle
-	helpContexts         map[string]helpContext
-	resumeContexts       map[string]resumeContext
+	mu                 sync.Mutex
+	pendingRuns        map[string]pendingRun
+	activeRuns         map[string]activeRun
+	pendingCompletions map[string]pendingCompletion
+	waitingReactions   map[string]*reactionLifecycle
+	helpContexts       map[string]helpContext
+	resumeContexts     map[string]resumeContext
 	// actionReplyHints:handleActionCommand 消息路径专用,在调 HandleActionResult 之前
 	// 登记 sessionID → 触发消息 msg.ID 的映射;renderActionEvent 内部 Render 时若 event
 	// 没带 ReplyToMessageID(渲染上下文里没 msg 引用)就从这里取回,让 CardKit 首次遇到
 	// 新 sessionID 也能建立 renderer。用完立刻删,不需要 TTL——handleActionCommand 单次
 	// 生命周期。
-	actionReplyHints map[string]string
+	actionReplyHints     map[string]string
 	pendingMergeForwards map[string]pendingMergeForward
 	reactionDelay        time.Duration
 	startedAt            time.Time
@@ -382,6 +384,7 @@ func NewServiceWithSessions(cfg config.Config, renderer card.Renderer, runner Ag
 		Cards:                renderer,
 		Runner:               runner,
 		Audit:                recorder,
+		AgentRequests:        agentrequestlog.NewRecorder(nil),
 		Agents:               config.DefaultAgentsConfig(),
 		pendingRuns:          map[string]pendingRun{},
 		activeRuns:           map[string]activeRun{},
@@ -1571,7 +1574,7 @@ func (s *Service) executeBatch(ctx context.Context, sess session.Session, batch 
 	if sess.AgentSessionID == "" {
 		forkFrom = strings.TrimSpace(batch.Inputs[0].ForkFromAgentSessionID)
 	}
-	result, err := s.Runner.Run(ctx, AgentRunRequest{Kind: sess.Key.Agent, Bin: bin, Home: home, ContextUsageDir: contextUsageDir, Prompt: prompt, WorkDir: sess.WorkDir, Images: codexImagePaths(batch), AgentSessionID: sess.AgentSessionID, ForkFromAgentSessionID: forkFrom, Model: batch.Inputs[0].RequestedModel, Effort: batch.Inputs[0].RequestedEffort, BridgeInstructionsVersion: sess.BridgeInstructionsVersion, ScheduleSocket: scheduleSocket, ScheduleToken: scheduleToken, OnEvent: func(update AgentStreamUpdate) {
+	req := AgentRunRequest{Kind: sess.Key.Agent, Bin: bin, Home: home, ContextUsageDir: contextUsageDir, Prompt: prompt, WorkDir: sess.WorkDir, Images: codexImagePaths(batch), AgentSessionID: sess.AgentSessionID, ForkFromAgentSessionID: forkFrom, Model: batch.Inputs[0].RequestedModel, Effort: batch.Inputs[0].RequestedEffort, BridgeInstructionsVersion: sess.BridgeInstructionsVersion, ScheduleSocket: scheduleSocket, ScheduleToken: scheduleToken, OnEvent: func(update AgentStreamUpdate) {
 		if model := strings.TrimSpace(update.Model); model != "" {
 			actualModelMu.Lock()
 			streamedActualModel = model
@@ -1580,7 +1583,18 @@ func (s *Service) executeBatch(ctx context.Context, sess session.Session, batch 
 		if run, ok := s.activeRun(id); ok && run.BatchID == batch.ID && run.Stream != nil {
 			run.Stream.Handle(update)
 		}
-	}})
+	}}
+	if err := s.AgentRequests.Record(agentrequestlog.Entry{
+		RunID: id, SessionID: sess.ID, BatchID: batch.ID,
+		Agent: string(req.Kind), Bin: req.Bin, Home: req.Home, WorkDir: req.WorkDir,
+		Prompt: req.Prompt, Images: append([]string(nil), req.Images...),
+		AgentSessionID: req.AgentSessionID, ForkFromAgentSessionID: req.ForkFromAgentSessionID,
+		Model: req.Model, Effort: req.Effort, BridgeInstructionsVersion: req.BridgeInstructionsVersion,
+		ContextUsageDir: req.ContextUsageDir, ScheduleProposalEnabled: req.ScheduleSocket != "" && req.ScheduleToken != "",
+	}); err != nil {
+		s.Audit.Record("system", "agent_request_log_failed", sess.ID, err.Error())
+	}
+	result, err := s.Runner.Run(ctx, req)
 	if strings.TrimSpace(result.Model) == "" {
 		actualModelMu.Lock()
 		result.Model = streamedActualModel

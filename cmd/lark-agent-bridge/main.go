@@ -19,6 +19,7 @@ import (
 	"lark-agent-bridge/internal/access"
 	"lark-agent-bridge/internal/actiongrant"
 	"lark-agent-bridge/internal/agent"
+	"lark-agent-bridge/internal/agentrequestlog"
 	"lark-agent-bridge/internal/audit"
 	"lark-agent-bridge/internal/bridge"
 	"lark-agent-bridge/internal/bridgeinstructions"
@@ -471,6 +472,11 @@ func runServe(args []string) error {
 		return err
 	}
 	defer closeAudit()
+	agentRequests, closeAgentRequests, err := newServeAgentRequestRecorder(cfg)
+	if err != nil {
+		return err
+	}
+	defer closeAgentRequests()
 	instructions, err := bridgeinstructions.NewRuntime()
 	if err != nil {
 		return fmt.Errorf("initialize bridge instructions: %w", err)
@@ -526,6 +532,7 @@ func runServe(args []string) error {
 	renderer := feishu.NewReactionCardRenderer(sender, cardRouter)
 	runner := &bridge.CLIExecRunner{Instructions: instructions}
 	svc := bridge.NewServiceWithSessions(cfg, renderer, runner, recorder, sessions, notices)
+	svc.AgentRequests = agentRequests
 	svc.Updates = newRuntimeUpdateManager(cfg, devModeStore)
 	svc.Agents = agents
 	svc.Preferences = preferences
@@ -791,6 +798,7 @@ Environment:
   E2E_SCHEDULE_RETENTION_DAYS defaults to 30
   E2E_INTERACTION_TIMEOUT_SEC defaults to 120
   E2E_AUDIT_LOG          defaults to <workdir>/.lark-agent-bridge/audit.jsonl
+  E2E_AGENT_REQUEST_LOG  defaults to <workdir>/.lark-agent-bridge/agent-requests.jsonl
   E2E_CALLBACK_ADDR      optional legacy HTTP callback listen address, e.g. :8080
   LARK_APP_ID            required for serve
   LARK_APP_SECRET        required for serve
@@ -804,6 +812,9 @@ func applyDefaultWorkDir(cfg *config.Config, workDir string) error {
 	cfg.DefaultWorkDir = workDir
 	if os.Getenv("E2E_AUDIT_LOG") == "" {
 		cfg.AuditLogPath = filepath.Join(workDir, ".lark-agent-bridge", "audit.jsonl")
+	}
+	if os.Getenv("E2E_AGENT_REQUEST_LOG") == "" {
+		cfg.AgentRequestLogPath = filepath.Join(workDir, ".lark-agent-bridge", "agent-requests.jsonl")
 	}
 	if os.Getenv("E2E_SESSION_STORE") == "" {
 		cfg.SessionStorePath = filepath.Join(workDir, ".lark-agent-bridge", "sessions.json")
@@ -879,6 +890,24 @@ func newServeAuditRecorder(cfg config.Config) (*audit.Recorder, func(), error) {
 		return nil, nil, err
 	}
 	return audit.NewRecorderWithWriter(file), func() { _ = file.Close() }, nil
+}
+
+func newServeAgentRequestRecorder(cfg config.Config) (*agentrequestlog.Recorder, func(), error) {
+	if cfg.AgentRequestLogPath == "" {
+		return agentrequestlog.NewRecorder(nil), func() {}, nil
+	}
+	if err := os.MkdirAll(filepath.Dir(cfg.AgentRequestLogPath), 0o700); err != nil {
+		return nil, nil, err
+	}
+	file, err := os.OpenFile(cfg.AgentRequestLogPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
+	if err != nil {
+		return nil, nil, err
+	}
+	if err := file.Chmod(0o600); err != nil {
+		_ = file.Close()
+		return nil, nil, err
+	}
+	return agentrequestlog.NewRecorder(file), func() { _ = file.Close() }, nil
 }
 
 type stringList []string
