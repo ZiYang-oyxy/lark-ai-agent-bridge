@@ -79,6 +79,8 @@ env -u E2E_PREFERENCE_STORE -u E2E_REPLY_STORE \
 
 框架代码在 `internal/testfw`，可执行入口是 `cmd/lark-bridge-test`。runner 调用 `cmd/lark-agent-bridge simulate` / `simulate-action`，捕获其 JSON 输出的 `events` 与 `audit`，用 YAML 里的 assert 条目断言。**不连接飞书、不启动真 Agent**——fake AgentRunner 会把 `BuildBatchPrompt` 输出 echo 到 `result` event 的 text segment 里（前缀 `simulated answer: `），所以断言本质上是在验证 bridge 的**数据模型 + prompt 拼装**。
 
+**fake claude fixture 引擎地基**（P-OBSERVE §3.6 Step 6a，未切换现有 simulateRunner / L2 shell shim）：`internal/fakeclaude` 提供 fixture 加载 + 匹配 + emit 语义；`cmd/lark-agent-fake-claude` 是独立二进制，`LAB_FAKE_FIXTURE_DIR` 指定 fixture 目录（fail-closed，不自动猜路径）；示例 fixture 在 `scripts/e2e/fixtures/*.json`。一份 fixture 声明 `{match: {marker_pattern|prompt_contains}, emit: [{line, delay_sec}]}`——L1 用同一份 fixture 由 `simulateRunner` 解释，L2 用 shell shim 调二进制解释同一份 fixture。当前只落地基（引擎 + 单测 + 4 个示例 fixture），切换现有实现留 P-OBSERVE §3.6 Step 6b。
+
 用例位于 `tests/smoke/`（6 个）和 `tests/regression/`（17 个）。标签以 OR 语义筛选：`--tags smoke,config` = 带 `smoke` 或 `config` 的用例；`--regression` = `--tags smoke,regression`，跑两类并集。
 
 ### 运行入口
@@ -149,6 +151,34 @@ steps:
 ## L2 — 确定性 e2e（真飞书 + fake agent）
 
 真飞书 + CardKit + audit + 远端进程 + 重启，用 fake agent 保回复确定性，分钟级。含两种运行形态：**self-loop 手工快查**（`rebuild-test.sh` 换血后手工发消息）和 **e2e-real 自动化**（`scripts/e2e-real.sh --mode full` 批量跑用例矩阵）。
+
+**L2 自动化用例内部分两种 execution_mode**（P-OBSERVE §5.3 观察者模式改造引入）：
+
+- **observe**（10 case）：**对常驻 Test bot 发消息 + 读 Test 的 audit**，不起临时 bridge。消除 wss gateway 反复切换的冷却延迟、临时进程 trap 遗漏成僵尸的类别、`E2E_*` 巨块注入。适合纯观察类：`new_basic` / `streaming_card` / `help` / `status` / `workdir_existing` / `topic_reply_at` / `topic_reply_without_at_negative` / `quote_readback` / `inject_image_intent` / `inject_image_no_intent`。
+- **controlled**（33 case，含 preflight utility）：**e2e-real 起自己的临时 bridge**，用于需要 `restart_server` / mutate config / fake claude 定制回复的用例（如 `queue_full`、`session_restart_context`、所有 `media_*` / `config_*` / `reply_*` / `debounce_*`、`inject_schedule_*` 等）。这不是遗留、是架构分工——这些用例本来就想控制被测 bridge 的内部状态。
+
+`register_case` 的第 7 位字段 `execution_mode` 显式声明分类；`run_case` 按此分派。observe 类需 `--environment <name>` 提供常驻 Test 的 audit 路径，未声明时 SKIP 而非 FAIL。完整分类清单见 [../plans/2026-07-28-P-OBSERVE-case-classification.md](../plans/2026-07-28-P-OBSERVE-case-classification.md)。
+
+```mermaid
+flowchart TD
+    RUN([e2e-real.sh --mode full]):::primary
+    RUN ==> DISP{execution_mode}:::warning
+    DISP -->|observe| OBS[send_at / wait_audit / mget_reply_card<br/>常驻 Test bot]:::success
+    DISP -->|controlled| CTL[go build → start_server_if_needed<br/>临时 bridge server]:::warning
+    OBS -->|读| AUDOBS[(Test 的 audit.jsonl<br/>TEST_BOT_AUDIT)]:::success
+    CTL -->|写读| AUDCTL[(RUN_DIR/audit.jsonl<br/>临时 bridge 生成)]:::warning
+    OBS -.wss 只建 1 次<br/>rebuild-test 时.-> WSS[飞书 gateway]:::grey
+    CTL -.wss 反复切换<br/>gateway 冷却.-> WSS
+
+    classDef primary fill:#6C9BD2,stroke:#5B8AC1,color:#fff
+    classDef success fill:#7EC699,stroke:#6DB588,color:#fff
+    classDef warning fill:#F0C27A,stroke:#DFB169,color:#fff
+    classDef grey    fill:#B0B5BD,stroke:#9FA4AC,color:#fff
+```
+
+**environment 声明**（P-OBSERVE §3.4）：`docs/environments/<name>.env` 描述"这台机器上谁扮演什么角色、audit 在哪、L3 sender 是哪个 App"——**结构声明**进 git、不写死 secret。sender App 归属 Linux / Mac **不对称**（Linux sender=Test App，Mac sender=Mike App），是各自 App 权限申请历史造成的；写死进 environment 避免每次现场推理。敏感值仍在 profile（`~/.lark-agent-bridge/e2e/profiles/*.env`，不进 git）。
+
+`make test-l2 ENV=linux-steve` / `make test-l3 ENV=linux-steve` 走 environment；`make deploy-test ENV=linux-steve` 显式换血被测 bot（调 `~/bridge/bridge-self-loop/rebuild-test.sh`）——**故意不在 test-l2 里自动跑**，避免与 self-loop 手工 L3 语义混淆。
 
 ### 手工快查形态（self-loop）
 
@@ -286,6 +316,20 @@ L3 默认 **warn-only**——真 agent 输出天然有波动，断言只锁指�
 - `internal/testfw/assert.go`：10 种断言的语义与可见文本抽取（`extractVisibleText`）。
 - `internal/testfw/smoke_suite_test.go`：smoke 挂进 `go test` 的连接点。
 - `internal/testfw/report.go` / `checklist.go`：发布 sidecar 与 L2 手工清单投影。
+
+**fake claude fixture 引擎**（P-OBSERVE §3.6 Step 6a）：
+
+- `internal/fakeclaude/fixture.go`：Fixture / Match / Emit 类型、LoadDir、NewInvocation、Resolve、Default、ValidateInstruction。
+- `internal/fakeclaude/fixture_test.go`：12 个单测锁 parser + matcher + loader + Default fallback + ValidateInstruction 语义。
+- `cmd/lark-agent-fake-claude/main.go`：独立二进制入口，`LAB_FAKE_FIXTURE_DIR` 强制显式，兼容 `FAKE_CLAUDE_LOG` + 指令泄漏 exit 92 语义。
+- `scripts/e2e/fixtures/*.json`：4 个示例 fixture + README（含 Step 6b 待迁清单）。
+
+**e2e-real observer mode**（P-OBSERVE §3.2-§3.5）：
+
+- `scripts/e2e/registry.sh`：`E2E_CASE_EXECUTION_MODE` 关联数组 + `case_execution_mode` / `any_selected_case_is_controlled` helper。
+- `scripts/e2e/run.sh`：`--environment <name>` flag、`OBSERVE_AUDIT` 全局、`run_case` 按 execution_mode 分派、主序列条件门禁跳过 `go build`。
+- `docs/environments/{linux-steve,macos-mike}.env`：environment 声明，进 git、不含 secret。
+- `docs/plans/2026-07-28-P-OBSERVE-case-classification.md`：44 case 分类清单（10 observe / 33 controlled + preflight）+ 疑点。
 
 **发布门禁**：
 
