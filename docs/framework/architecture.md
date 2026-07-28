@@ -36,7 +36,7 @@ bridge 不托管交互式终端，也不通过 tmux/PTY 捕获输出。每个已
 - `internal/security`：敏感信息脱敏
 - `internal/doctor`：就绪检查
 
-`serve` 默认把审计事件写入 `<workdir>/.lark-agent-bridge/audit.jsonl`，也可以通过 `E2E_AUDIT_LOG` 覆盖路径。审计写入前会调用脱敏逻辑，避免 token、secret、password 等敏感值落盘。实际调用 AI Agent 前还会把最终可序列化请求写入 `<workdir>/.lark-agent-bridge/agent-requests.jsonl`（`E2E_AGENT_REQUEST_LOG` 可覆盖）；该受限日志保留精确 prompt，但排除调度凭据和回调。
+`serve` 默认把审计事件写入 `<workdir>/.lark-agent-bridge/audit.jsonl`，也可以通过 `E2E_AUDIT_LOG` 覆盖路径。审计写入前会调用脱敏逻辑，避免 token、secret、password 等敏感值落盘。实际调用 AI Agent 前还会把最终可序列化请求写入 `<workdir>/.lark-agent-bridge/agent-requests.jsonl`（`E2E_AGENT_REQUEST_LOG` 可覆盖）；该受限日志保留精确 prompt，但排除调度凭据和回调。飞书长连接及 HTTP callback 的 SDK 解析前 payload 则写入 `<workdir>/.lark-agent-bridge/feishu-events.jsonl`（`E2E_FEISHU_EVENT_LOG` 可覆盖）。
 
 `doctor --strict` 的 wrapper preflight 只读全局 effective preference，并通过 `agents.json` 解析实际 bin/home：Claude 使用有界 print-mode 探针，Codex 使用与生产一致的 `exec --json` + stdin 探针。未选中的 backend 不参与该项门禁，避免其独立凭据或 TLS 配置阻塞当前有效 agent 的部署验证。
 

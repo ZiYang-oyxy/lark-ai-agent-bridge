@@ -23,6 +23,7 @@ import (
 	"lark-agent-bridge/internal/card"
 	"lark-agent-bridge/internal/config"
 	"lark-agent-bridge/internal/feishu"
+	"lark-agent-bridge/internal/feishueventlog"
 	"lark-agent-bridge/internal/schedule"
 	"lark-agent-bridge/internal/session"
 )
@@ -454,6 +455,33 @@ func TestNewServeAgentRequestRecorderWritesRestrictedFile(t *testing.T) {
 	}
 }
 
+func TestNewServeFeishuEventRecorderWritesRestrictedFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state", "feishu-events.jsonl")
+	recorder, closeFn, err := newServeFeishuEventRecorder(config.Config{FeishuEventLogPath: path})
+	if err != nil {
+		t.Fatalf("new Feishu event recorder error: %v", err)
+	}
+	payload := json.RawMessage(`{"event":{"token":"temporary-token"}}`)
+	if err := recorder.Record(feishueventlog.Event{Transport: "long_connection", EventType: "card.action.trigger", Payload: payload}); err != nil {
+		t.Fatal(err)
+	}
+	closeFn()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(data, []byte("temporary-token")) {
+		t.Fatalf("Feishu event log = %s, want raw payload", data)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := info.Mode().Perm(); got != 0o600 {
+		t.Fatalf("Feishu event log mode = %v, want 0600", got)
+	}
+}
+
 func TestActionRequestFromFeishuClonesFormValues(t *testing.T) {
 	action := feishu.CardAction{
 		SessionID:     "claude:chat",
@@ -493,6 +521,17 @@ func TestApplyDefaultWorkDirPreservesExplicitAgentRequestLog(t *testing.T) {
 	}
 	if cfg.AgentRequestLogPath != "/tmp/custom-agent-requests.jsonl" {
 		t.Fatalf("agent request log path = %q, want explicit path preserved", cfg.AgentRequestLogPath)
+	}
+}
+
+func TestApplyDefaultWorkDirPreservesExplicitFeishuEventLog(t *testing.T) {
+	t.Setenv("E2E_FEISHU_EVENT_LOG", "/tmp/custom-feishu-events.jsonl")
+	cfg := config.Config{FeishuEventLogPath: "/tmp/custom-feishu-events.jsonl"}
+	if err := applyDefaultWorkDir(&cfg, "/tmp/work"); err != nil {
+		t.Fatal(err)
+	}
+	if cfg.FeishuEventLogPath != "/tmp/custom-feishu-events.jsonl" {
+		t.Fatalf("Feishu event log path = %q, want explicit path preserved", cfg.FeishuEventLogPath)
 	}
 }
 

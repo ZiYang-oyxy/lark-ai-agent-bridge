@@ -1,6 +1,10 @@
 package feishu
 
-import "context"
+import (
+	"context"
+
+	"lark-agent-bridge/internal/feishueventlog"
+)
 
 type LongConnConfig struct {
 	AppID                  string
@@ -8,6 +12,7 @@ type LongConnConfig struct {
 	BotOpenID              string
 	ActionHandler          func(context.Context, CardAction) (*CardActionResponse, error)
 	MessageRecalledHandler func(context.Context, RecalledMessage) error
+	RawEventHandler        func(context.Context, feishueventlog.Event)
 }
 
 type CardActionResponse struct {

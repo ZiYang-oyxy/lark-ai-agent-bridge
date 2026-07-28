@@ -1,12 +1,31 @@
 package feishu
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"testing"
 
 	"github.com/larksuite/oapi-sdk-go/v3/event/dispatcher/callback"
+
+	"lark-agent-bridge/internal/feishueventlog"
 )
+
+func TestSDKLongConnRecordsRawMessageBeforeParsing(t *testing.T) {
+	var got feishueventlog.Event
+	client := NewLongConnClient(LongConnConfig{
+		AppID: "cli_test", AppSecret: "secret", BotOpenID: "ou_bot",
+		RawEventHandler: func(_ context.Context, event feishueventlog.Event) { got = event },
+	})
+	sdk := client.(*SDKLongConnClient)
+	payload := []byte(`{"schema":"2.0","header":{"event_type":"im.message.receive_v1"},"event":{"sender":{"sender_id":{"open_id":"ou_user"}},"message":{"message_id":"om_raw","chat_id":"oc_chat","message_type":"text","content":"{\"text\":\"raw marker\"}"}}}`)
+	if _, err := sdk.dispatcher.Do(t.Context(), payload); err != nil {
+		t.Fatal(err)
+	}
+	if got.Transport != "long_connection" || got.EventType != "im.message.receive_v1" || !bytes.Equal(got.Payload, payload) {
+		t.Fatalf("raw event = %#v", got)
+	}
+}
 
 func TestSDKLongConnDispatchesCardActionTrigger(t *testing.T) {
 	var got CardAction

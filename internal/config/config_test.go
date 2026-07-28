@@ -152,6 +152,20 @@ func TestLoadFromEnvAgentRequestLogFollowsWorkdirAndOverride(t *testing.T) {
 	}
 }
 
+func TestLoadFromEnvFeishuEventLogFollowsWorkdirAndOverride(t *testing.T) {
+	t.Setenv("E2E_DEFAULT_WORKDIR", "/tmp/lab-work")
+	t.Setenv("E2E_FEISHU_EVENT_LOG", "")
+	want := filepath.Join("/tmp/lab-work", ".lark-agent-bridge", "feishu-events.jsonl")
+	if got := LoadFromEnv().FeishuEventLogPath; got != want {
+		t.Fatalf("Feishu event log path = %q, want %q", got, want)
+	}
+
+	t.Setenv("E2E_FEISHU_EVENT_LOG", "/tmp/custom-feishu-events.jsonl")
+	if got := LoadFromEnv().FeishuEventLogPath; got != "/tmp/custom-feishu-events.jsonl" {
+		t.Fatalf("Feishu event log override = %q", got)
+	}
+}
+
 func TestLoadFromEnvActionGrantStoreFollowsWorkdirAndOverride(t *testing.T) {
 	workDir := filepath.Join(t.TempDir(), "work")
 	t.Setenv("E2E_DEFAULT_WORKDIR", workDir)

@@ -1,6 +1,8 @@
 package bridge
 
 import (
+	"bytes"
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -11,7 +13,22 @@ import (
 	"lark-agent-bridge/internal/audit"
 	"lark-agent-bridge/internal/card"
 	"lark-agent-bridge/internal/config"
+	"lark-agent-bridge/internal/feishueventlog"
 )
+
+func TestCallbackHTTPHandlerRecordsRawBodyBeforeParsing(t *testing.T) {
+	service := NewService(config.Config{CardMaxChars: 1000}, card.NewFakeRenderer(), newFakeRunner(), audit.NewRecorder())
+	body := []byte(`{"schema":"2.0","header":{"event_type":"card.action.trigger"},"event":{"token":"temporary-token","operator":{"open_id":"user"},"action":{"value":{"session":"config","action_id":"config.close"}}}}`)
+	var got feishueventlog.Event
+	req := httptest.NewRequest(http.MethodPost, "/card/callback", bytes.NewReader(body))
+	rec := httptest.NewRecorder()
+	NewCallbackHTTPHandlerWithRawEvents(ActionGateway{Service: service}, func(_ context.Context, event feishueventlog.Event) {
+		got = event
+	}).ServeHTTP(rec, req)
+	if got.Transport != "http_callback" || got.EventType != "card.action.trigger" || !bytes.Equal(got.Payload, body) {
+		t.Fatalf("raw event = %#v", got)
+	}
+}
 
 func TestCallbackHTTPHandlerDispatchesAction(t *testing.T) {
 	cfg := config.Config{DefaultAgent: "claude", DefaultWorkDir: t.TempDir(), CardMaxChars: 1000, InteractionTimeout: 120}

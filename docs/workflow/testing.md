@@ -104,6 +104,8 @@ doctor 应检查：
 
 最终送给 AI Agent 的请求另写入 `<workdir>/.lark-agent-bridge/agent-requests.jsonl`，可通过 `E2E_AGENT_REQUEST_LOG` 覆盖。每行包含精确 `prompt`、图片路径及 Agent 运行元数据；调度 token、socket 和事件回调不会落盘。该文件含用户原文，权限固定为 `0600`，只应用于受控排障环境。
 
+飞书长连接和 HTTP card callback 的入站 JSON 在 SDK 解析前写入 `<workdir>/.lark-agent-bridge/feishu-events.jsonl`，可通过 `E2E_FEISHU_EVENT_LOG` 覆盖。每行包含 transport、event type 与原始 payload，文件权限固定为 `0600`。该日志不脱敏，可能包含用户内容和飞书 callback token。
+
 ## 本地模拟消息
 
 不连接飞书，仅模拟一条飞书消息：

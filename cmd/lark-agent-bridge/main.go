@@ -29,6 +29,7 @@ import (
 	"lark-agent-bridge/internal/devmode"
 	"lark-agent-bridge/internal/doctor"
 	"lark-agent-bridge/internal/feishu"
+	"lark-agent-bridge/internal/feishueventlog"
 	"lark-agent-bridge/internal/media"
 	"lark-agent-bridge/internal/participation"
 	"lark-agent-bridge/internal/reply"
@@ -477,6 +478,16 @@ func runServe(args []string) error {
 		return err
 	}
 	defer closeAgentRequests()
+	feishuEvents, closeFeishuEvents, err := newServeFeishuEventRecorder(cfg)
+	if err != nil {
+		return err
+	}
+	defer closeFeishuEvents()
+	recordRawFeishuEvent := func(_ context.Context, event feishueventlog.Event) {
+		if err := feishuEvents.Record(event); err != nil {
+			recorder.Record("system", "feishu_event_log_failed", "", err.Error())
+		}
+	}
 	instructions, err := bridgeinstructions.NewRuntime()
 	if err != nil {
 		return fmt.Errorf("initialize bridge instructions: %w", err)
@@ -562,7 +573,7 @@ func runServe(args []string) error {
 	svc.MessageFetcher = quotedMessageFetcher{sender: sender}
 	svc.Notifier = sender
 	actionGateway := bridge.ActionGateway{Service: svc, Fencer: cardRouter}
-	actionHandler, callbackHandler := newServeActionTransports(actionGateway, cfg.CardMaxChars)
+	actionHandler, callbackHandler := newServeActionTransportsWithRawEvents(actionGateway, cfg.CardMaxChars, recordRawFeishuEvent)
 	svc.ProcessRecoveryNotices(ctx)
 	// 若本次启动是一次成功自升级的结果(env 携带升级上下文),往原对话回一条升级成功消息。
 	go svc.NotifyUpgradeSuccessIfPending(ctx)
@@ -593,10 +604,11 @@ func runServe(args []string) error {
 	}
 	go svc.RunAccessRefresh(ctx)
 	client := feishu.NewLongConnClient(feishu.LongConnConfig{
-		AppID:         appID,
-		AppSecret:     appSecret,
-		BotOpenID:     botOpenID,
-		ActionHandler: actionHandler,
+		AppID:           appID,
+		AppSecret:       appSecret,
+		BotOpenID:       botOpenID,
+		ActionHandler:   actionHandler,
+		RawEventHandler: recordRawFeishuEvent,
 		MessageRecalledHandler: func(ctx context.Context, recall feishu.RecalledMessage) error {
 			return svc.HandleMessageRecalled(ctx, bridge.MessageRecall{
 				MessageID:  recall.MessageID,
@@ -700,6 +712,10 @@ func newServeCardRouter(client feishu.CardKitClientAPI, observer feishu.CardKitR
 }
 
 func newServeActionTransports(gateway bridge.ActionGateway, cardMaxChars int) (func(context.Context, feishu.CardAction) (*feishu.CardActionResponse, error), http.Handler) {
+	return newServeActionTransportsWithRawEvents(gateway, cardMaxChars, nil)
+}
+
+func newServeActionTransportsWithRawEvents(gateway bridge.ActionGateway, cardMaxChars int, observer func(context.Context, feishueventlog.Event)) (func(context.Context, feishu.CardAction) (*feishu.CardActionResponse, error), http.Handler) {
 	actionHandler := func(ctx context.Context, action feishu.CardAction) (*feishu.CardActionResponse, error) {
 		result, err := gateway.Handle(ctx, actionRequestFromFeishu(action))
 		if err != nil {
@@ -714,7 +730,7 @@ func newServeActionTransports(gateway bridge.ActionGateway, cardMaxChars int) (f
 		result.StartDeferred()
 		return response, nil
 	}
-	return actionHandler, bridge.NewCallbackHTTPHandler(gateway)
+	return actionHandler, bridge.NewCallbackHTTPHandlerWithRawEvents(gateway, observer)
 }
 
 func actionRequestFromFeishu(action feishu.CardAction) bridge.ActionRequest {
@@ -799,6 +815,7 @@ Environment:
   E2E_INTERACTION_TIMEOUT_SEC defaults to 120
   E2E_AUDIT_LOG          defaults to <workdir>/.lark-agent-bridge/audit.jsonl
   E2E_AGENT_REQUEST_LOG  defaults to <workdir>/.lark-agent-bridge/agent-requests.jsonl
+  E2E_FEISHU_EVENT_LOG   defaults to <workdir>/.lark-agent-bridge/feishu-events.jsonl
   E2E_CALLBACK_ADDR      optional legacy HTTP callback listen address, e.g. :8080
   LARK_APP_ID            required for serve
   LARK_APP_SECRET        required for serve
@@ -815,6 +832,9 @@ func applyDefaultWorkDir(cfg *config.Config, workDir string) error {
 	}
 	if os.Getenv("E2E_AGENT_REQUEST_LOG") == "" {
 		cfg.AgentRequestLogPath = filepath.Join(workDir, ".lark-agent-bridge", "agent-requests.jsonl")
+	}
+	if os.Getenv("E2E_FEISHU_EVENT_LOG") == "" {
+		cfg.FeishuEventLogPath = filepath.Join(workDir, ".lark-agent-bridge", "feishu-events.jsonl")
 	}
 	if os.Getenv("E2E_SESSION_STORE") == "" {
 		cfg.SessionStorePath = filepath.Join(workDir, ".lark-agent-bridge", "sessions.json")
@@ -908,6 +928,24 @@ func newServeAgentRequestRecorder(cfg config.Config) (*agentrequestlog.Recorder,
 		return nil, nil, err
 	}
 	return agentrequestlog.NewRecorder(file), func() { _ = file.Close() }, nil
+}
+
+func newServeFeishuEventRecorder(cfg config.Config) (*feishueventlog.Recorder, func(), error) {
+	if cfg.FeishuEventLogPath == "" {
+		return feishueventlog.NewRecorder(nil), func() {}, nil
+	}
+	if err := os.MkdirAll(filepath.Dir(cfg.FeishuEventLogPath), 0o700); err != nil {
+		return nil, nil, err
+	}
+	file, err := os.OpenFile(cfg.FeishuEventLogPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
+	if err != nil {
+		return nil, nil, err
+	}
+	if err := file.Chmod(0o600); err != nil {
+		_ = file.Close()
+		return nil, nil, err
+	}
+	return feishueventlog.NewRecorder(file), func() { _ = file.Close() }, nil
 }
 
 type stringList []string

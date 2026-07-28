@@ -1,12 +1,19 @@
 package bridge
 
 import (
+	"context"
 	"encoding/json"
 	"io"
 	"net/http"
+
+	"lark-agent-bridge/internal/feishueventlog"
 )
 
 func NewCallbackHTTPHandler(gateway ActionGateway) http.Handler {
+	return NewCallbackHTTPHandlerWithRawEvents(gateway, nil)
+}
+
+func NewCallbackHTTPHandlerWithRawEvents(gateway ActionGateway, observer func(context.Context, feishueventlog.Event)) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/card/callback", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
@@ -18,6 +25,13 @@ func NewCallbackHTTPHandler(gateway ActionGateway) http.Handler {
 		if err != nil {
 			http.Error(w, "read callback body", http.StatusBadRequest)
 			return
+		}
+		if observer != nil {
+			observer(r.Context(), feishueventlog.Event{
+				Transport: "http_callback",
+				EventType: callbackEventType(body),
+				Payload:   append([]byte(nil), body...),
+			})
 		}
 		if challenge, ok := callbackChallenge(body); ok {
 			w.Header().Set("Content-Type", "application/json")
@@ -56,6 +70,28 @@ func NewCallbackHTTPHandler(gateway ActionGateway) http.Handler {
 		result.StartDeferred()
 	})
 	return mux
+}
+
+func callbackEventType(body []byte) string {
+	var envelope struct {
+		Type   string `json:"type"`
+		Header struct {
+			EventType string `json:"event_type"`
+		} `json:"header"`
+		Challenge string `json:"challenge"`
+	}
+	if json.Unmarshal(body, &envelope) == nil {
+		if envelope.Header.EventType != "" {
+			return envelope.Header.EventType
+		}
+		if envelope.Type != "" {
+			return envelope.Type
+		}
+		if envelope.Challenge != "" {
+			return "url_verification"
+		}
+	}
+	return "card.callback"
 }
 
 func callbackChallenge(body []byte) (string, bool) {
