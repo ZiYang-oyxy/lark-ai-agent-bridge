@@ -8,6 +8,6 @@ case_new_basic() {
   wait_audit "$msg.*event=result"
   file="$(mget new_basic "$msg")"
   assert_file_contains "$file" "$marker"
-  assert_file_contains "$file" "[已完成 ✗]"
+  assert_file_contains "$file" "✅ 已完成"
   record_message new_basic root "$msg" "$file"
 }

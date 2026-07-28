@@ -623,9 +623,8 @@ open_config() {
   local case_name="$1"
   local msg file
   msg="$(send_at "/config")"
-  wait_audit "$msg.*event=config" 60
-  file="$(mget "${case_name}_open" "$msg")"
-  assert_file_contains "$file" "个人运行偏好"
+  wait_message_contains "${case_name}_open" "$msg" "全局运行偏好" 60
+  file="$WAIT_MESSAGE_FILE"
   record_message "$case_name" config "$msg" "$file"
   printf '%s\n' "$msg"
 }
