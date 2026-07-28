@@ -31,6 +31,15 @@ DOCTOR_MODE=0
 PREFLIGHT_ONLY=0
 STRICT_CAPABILITIES=0
 SELECTED_CASES=()
+# P-OBSERVE §3.4:environment 声明(角色/audit 路径/sender App),不含 secret。
+# 默认空,兼容 --profile 直连。当声明后,observe 模式 case 读 TEST_BOT_AUDIT
+# 而非临时 bridge 的 audit。
+ENVIRONMENT_NAME=""
+ENVIRONMENT_FILE=""
+# observe 模式下,常驻 Test bot 的 audit / workdir(由 environment 声明或 CLI 覆盖)。
+# 空表示未声明,run.sh 主序列 fail-closed:observe case 拒绝在缺失时启动。
+OBSERVE_AUDIT=""
+OBSERVE_WORKDIR=""
 RUN_ID="$(date +%Y%m%d-%H%M%S)"
 RUN_STARTED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 RUN_STARTED_EPOCH="$(date +%s)"
@@ -61,13 +70,17 @@ Usage:
 
 Options:
   --profile name              use one developer-local E2E profile.
+  --environment name          load docs/environments/<name>.env (declares role
+                              mapping / TEST_BOT_AUDIT / TEST_BOT_WORKDIR for
+                              observe-mode cases). E2E_PROFILE from the env
+                              becomes the default --profile if none is given.
   --doctor                    run static capability checks without sending messages.
   --preflight-only            run static checks and real active canaries, then exit.
   --strict-capabilities       return 3 when a required capability is blocked.
   --mode smoke|full           smoke runs core cases; full adds revoke cases.
   --case name                 run one case; repeat to run multiple cases.
   --list-cases                print supported cases and exit.
-  --default-workdir path      default workdir passed to bridge serve.
+  --default-workdir path      default workdir passed to bridge serve (controlled cases).
   --run-dir path              evidence directory. Defaults to .cache/e2e/real-<timestamp>.
   --keep-server-on-fail       leave bridge running after a failure for diagnosis.
   -h, --help                  show this help.
@@ -86,6 +99,10 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --profile)
       PROFILE_ARG="${2:-}"
+      shift 2
+      ;;
+    --environment)
+      ENVIRONMENT_NAME="${2:-}"
       shift 2
       ;;
     --doctor)
@@ -150,6 +167,28 @@ case "$MODE" in
     ;;
 esac
 
+# --- Environment declaration(P-OBSERVE §3.4)---------------------------------
+# environment 是"角色 + 路径"的结构声明,不含 secret。若声明,读入到本 shell,让
+# observe 模式 case 直接引用 TEST_BOT_AUDIT / TEST_BOT_WORKDIR。E2E_PROFILE 字段
+# 作为 --profile 的默认(仍可被显式 --profile 覆盖)。
+if [[ -n "$ENVIRONMENT_NAME" ]]; then
+  ENVIRONMENT_FILE="$ROOT/docs/environments/$ENVIRONMENT_NAME.env"
+  if [[ ! -f "$ENVIRONMENT_FILE" ]]; then
+    echo "unknown environment: $ENVIRONMENT_NAME (expected $ENVIRONMENT_FILE)" >&2
+    exit 2
+  fi
+  # shellcheck disable=SC1090
+  source "$ENVIRONMENT_FILE"
+  # environment 声明的 audit / workdir 是**结构性**信息,写死 environment 里,
+  # observe 模式 case 一律读它。
+  OBSERVE_AUDIT="${TEST_BOT_AUDIT:-}"
+  OBSERVE_WORKDIR="${TEST_BOT_WORKDIR:-}"
+  # environment 引用的默认 profile,仅在未显式 --profile 时生效。
+  if [[ -z "$PROFILE_ARG" && -n "${E2E_PROFILE:-}" ]]; then
+    PROFILE_ARG="$E2E_PROFILE"
+  fi
+fi
+
 # --- Source libraries, registry, and cases ----------------------------------
 # The original single-file script sourced only the profile/capability libs at
 # the top; every other helper was defined inline. After the split, those helpers
@@ -203,8 +242,14 @@ summary_init() {
     echo "- started_at: $RUN_STARTED_AT"
     echo "- repo: $ROOT"
     echo "- mode: $MODE"
+    echo "- environment: ${ENVIRONMENT_NAME:-<none>}"
     echo "- run_dir: $RUN_DIR"
-    echo "- audit: $AUDIT"
+    echo "- audit_controlled: $AUDIT"
+    if [[ -n "$OBSERVE_AUDIT" ]]; then
+      echo "- audit_observe: $OBSERVE_AUDIT"
+    else
+      echo "- audit_observe: <none>"
+    fi
     echo "- callback_addr: ${CALLBACK_ADDR:-disabled}"
     if [[ -n "$CALLBACK_ADDR" ]]; then
       echo "- action_transport: gateway_injected"
@@ -445,31 +490,64 @@ run_case() {
     summary "- status: skipped_real_agent_only"
     return 0
   fi
-  start_server_if_needed "$name"
-  log "case $name start"
-  summary "## $name"
-  summary
+  # P-OBSERVE §3.3:按 execution_mode 分派。
+  # observe:纯观察常驻 Test bot,不起临时 bridge;AUDIT 指向 Test 的 audit.jsonl。
+  # controlled:原路径,e2e 起自己的临时 bridge。
+  local exec_mode saved_audit="" saved_default_workdir=""
+  exec_mode="$(case_execution_mode "$name")"
+  if [[ "$exec_mode" == "observe" ]]; then
+    if [[ -z "$OBSERVE_AUDIT" ]]; then
+      log "case $name(observe)需要 environment 提供 TEST_BOT_AUDIT;--environment 未声明,SKIP"
+      summary "## $name"
+      summary "- status: skipped_observe_env_missing"
+      summary "- reason: environment 未声明 TEST_BOT_AUDIT(观察者模式无法读常驻 Test audit)"
+      summary "- fix: 加 --environment <name>,该 env 里写 TEST_BOT_AUDIT"
+      return 0
+    fi
+    # 切换 lark.sh 全套 helper 依赖的 $AUDIT 到常驻 Test。全局变量恢复由函数末尾处理。
+    saved_audit="$AUDIT"
+    AUDIT="$OBSERVE_AUDIT"
+    # observe 模式不起临时 bridge,也不改临时 workdir(case 只发消息、读 audit)。
+    log "case $name start (observe: audit=$AUDIT)"
+    summary "## $name"
+    summary
+    summary "- execution_mode: observe"
+    summary "- audit: $AUDIT"
+  else
+    start_server_if_needed "$name"
+    log "case $name start"
+    summary "## $name"
+    summary
+    summary "- execution_mode: controlled"
+  fi
   local start status
   start="$(date +%s)"
   set +e
   ( set -e; "case_$name" ) >"$RUN_DIR/$name.log" 2>&1
   status=$?
   set -e
+  # 无论成功失败,先恢复全局 AUDIT(observe 模式借用了 Test 的 audit,后续 case 可能是 controlled 要用回临时 bridge 的)。
+  if [[ "$exec_mode" == "observe" ]]; then
+    AUDIT="$saved_audit"
+  fi
   if [[ "$status" -eq 0 && "${E2E_E2E_FORCE_FAIL_CASE:-}" == "$name" ]]; then
     echo "case forced to fail after completion for soft-recovery verification" >>"$RUN_DIR/$name.log"
     status=97
   fi
-  sync_server_pid >/dev/null 2>&1 || true
-  if [[ "$name" != "preflight" && "$status" -ne 0 && "$KEEP_SERVER_ON_FAIL" -eq 0 ]]; then
-    set +e
-    # Recovery output intentionally joins the case-specific evidence log.
-    # shellcheck disable=SC2129
-    echo "case failed; soft-resetting its session without restarting the bridge" >>"$RUN_DIR/$name.log"
-    soft_recover_after_failure "$name" >>"$RUN_DIR/$name.log" 2>&1
-    local recovery_status=$?
-    set -e
-    if [[ "$recovery_status" -ne 0 ]]; then
-      echo "bridge soft recovery after failed case also failed" >>"$RUN_DIR/$name.log"
+  # observe 模式不管临时 bridge 生命周期;controlled 保留原有 sync + soft_recover。
+  if [[ "$exec_mode" == "controlled" ]]; then
+    sync_server_pid >/dev/null 2>&1 || true
+    if [[ "$name" != "preflight" && "$status" -ne 0 && "$KEEP_SERVER_ON_FAIL" -eq 0 ]]; then
+      set +e
+      # Recovery output intentionally joins the case-specific evidence log.
+      # shellcheck disable=SC2129
+      echo "case failed; soft-resetting its session without restarting the bridge" >>"$RUN_DIR/$name.log"
+      soft_recover_after_failure "$name" >>"$RUN_DIR/$name.log" 2>&1
+      local recovery_status=$?
+      set -e
+      if [[ "$recovery_status" -ne 0 ]]; then
+        echo "bridge soft recovery after failed case also failed" >>"$RUN_DIR/$name.log"
+      fi
     fi
   fi
   local elapsed=$(( $(date +%s) - start ))
@@ -824,15 +902,25 @@ fi
 e2e_cap_record exclusive_runtime PASS ready "active run acquired the local profile lock" ""
 e2e_cap_write_json "$CAPABILITIES_JSON"
 append_capability_summary
-require_cmd go
-require_cmd pgrep
-require_cmd ps
 require_env LARK_APP_ID
 require_env LARK_APP_SECRET
 require_env E2E_E2E_CHAT_ID
-go build -o "$SERVER_BIN" ./cmd/lark-agent-bridge
+# 只在存在 controlled 用例时才编译临时 bridge binary,并起 pgrep/ps 依赖。
+# observe-only 跑一律走常驻 Test,零构建、零本地 bridge 进程管理。
+if any_selected_case_is_controlled; then
+  require_cmd go
+  require_cmd pgrep
+  require_cmd ps
+  go build -o "$SERVER_BIN" ./cmd/lark-agent-bridge
+fi
 fetch_bot_open_id
 summary "- bot_open_id: ${BOT_OPEN_ID:0:6}...${BOT_OPEN_ID: -4}"
+summary
+if any_selected_case_is_controlled; then
+  summary "- controlled_bridge_binary: $SERVER_BIN"
+else
+  summary "- controlled_bridge_binary: not built (observe-only run)"
+fi
 summary
 
 case_index=0
