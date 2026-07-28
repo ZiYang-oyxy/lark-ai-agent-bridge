@@ -141,7 +141,7 @@ lark-cli im +messages-send --as user \
 
 For full reliability mode, set `E2E_REAL_E2E_FAKE_CLAUDE=1`. The restart, recall and media cases require deterministic child-process argv and lifecycle without spending model tokens. The fake Claude only affects the bridge process started by the E2E script; Feishu message delivery, long connection events, CardKit create/update, audit logging, and message revoke events are still real.
 
-The three retained media cases also require fake Claude. They assert exact accepted cache paths in the child prompt. Upload, long-connection delivery, tenant-token resource download, cache validation, CardKit replies, and `mget` verification remain real; partial and rejection business semantics are covered in L1.
+The three retained media cases also require fake Claude. They assert exact accepted cache paths in the child prompt. Upload, long-connection delivery, tenant-token resource download, cache validation, CardKit replies, and `mget` verification remain real; partial and rejection business semantics are covered in L0.
 
 ## Commands
 
@@ -272,7 +272,7 @@ Use a custom evidence directory or default workdir:
 - `latest_restart_fallback`:跨进程恢复旧 CardKit mapping,并验证 stale card fallback。
 - `native_text_stream`:真实 CardKit native answer streaming、sequence 与 stop callback compatibility。
 
-其余 29 个原 L2 case 已由 L1 fake SDK / fake Claude / store 单测承担,不再出现在 `--list-cases`。对应函数暂保留为实现参考,但不属于发布门禁,也不能通过 `--case` 选择。
+其余 29 个原 L2 case 已由 L0 fake SDK / fake Claude / store 单测承担,不再出现在 `--list-cases`。对应函数暂保留为实现参考,但不属于发布门禁,也不能通过 `--case` 选择。
 
 Full mode keeps cases that share a group session, global preference, or restart semantics serial. It runs only `media_images` (group scope) and `media_text_files` (independent P2P scope) in parallel. Each child writes a separate case log; the parent waits for both before updating summary and failure counters. The final real 9-case strict gate completed in about 103 seconds versus the prior 118-second baseline.
 
@@ -327,7 +327,7 @@ E2E_REAL_E2E_FAKE_CLAUDE=1 ./scripts/e2e-real.sh \
 
 Feishu file resources currently return `application/octet-stream` for ordinary files and `application/x-xls` for CSV. The bridge maps those transport declarations only after an allowlisted extension match, then still requires byte-level content sniffing. A failure card is polled through `mget` because the read API can lag the successful CardKit reply audit by a few seconds.
 
-Config、reply policy、debounce、queue、scope isolation、workdir、reaction、preview threshold 和 media rejection 等业务语义均在 L1 确定性测试中验证。L2 不再重复这些断言。重启语义在 L1 证明完整状态机,L2 只保留 `session_restart_context` 与 `latest_restart_fallback` 两个跨进程代表场景。
+Config、reply policy、debounce、queue、scope isolation、workdir、reaction、preview threshold 和 media rejection 等业务语义均在 L0 确定性测试中验证。L2 不再重复这些断言。重启语义在 L0 证明完整状态机,L2 只保留 `session_restart_context` 与 `latest_restart_fallback` 两个跨进程代表场景。
 
 ## Evidence
 

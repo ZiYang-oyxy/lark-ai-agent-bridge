@@ -2,31 +2,33 @@
 
 本文说明当前 bridge 的测试体系如何组织、每一层的边界与运行方式，以及它与发布门禁的关系。
 
+本文分层编号与 [e2e-coverage-matrix.md](e2e-coverage-matrix.md)、[../plans/2026-07-28-test-framework-overhaul.md](../plans/2026-07-28-test-framework-overhaul.md) 统一为 **L0–L3**。
+
 真实飞书 E2E 的环境准备与操作细节仍以 [testing.md](testing.md) 为准；`scripts/e2e-real.sh` 的用例矩阵见 [e2e-coverage-matrix.md](e2e-coverage-matrix.md)；发布回归 wrapper 见 [regression.md](regression.md)；测试框架的建设方案保留在 [../plans/2026-07-27-comprehensive-test-framework.md](../plans/2026-07-27-comprehensive-test-framework.md)。
 
 ## 结论
 
 当前体系分四层，越往下越贵、越接近真实链路。任一改动都从最低层开始向上验证，直到覆盖到风险边界为止：
 
-- **L1 · Go 单元测试**：`go test ./...` 全仓包内纯逻辑、状态机、渲染契约。
-- **L2 · YAML simulate 回归**：`internal/testfw` 里的 runner + `cmd/lark-agent-bridge simulate`/`simulate-action`，本地 fake AgentRunner 秒级完成，覆盖跨命令行为与 prompt 拼装。
-- **L3a · self-loop 手工 L3**：`rebuild-test.sh` 换血 Test bot 到本需求 worktree，然后用 `lark-cli` 从 supervisor 用户身份手工发消息、观察 audit + 回读卡片。适合逐个 bug 快速定验证。
-- **L3b · e2e-real 自动化 canary**：`scripts/e2e-real.sh` 起独立 bridge server（真 App + 真 wss）+ 真 Claude/Codex wrapper，按用例矩阵批量跑，产出 capabilities & summary。是发布回归的顶层。
+- **L0 · 单元测试**：`go test ./...` 全仓包内纯逻辑、状态机、渲染契约、协议解析。秒级，合入 + publish 强制门禁。
+- **L1 · 组件测试（simulate + fake agent）**：真实 Bridge + fake 依赖。`internal/testfw` 里的 runner + `cmd/lark-agent-bridge simulate`/`simulate-action`，本地 fake AgentRunner 秒级完成，覆盖跨命令行为、prompt 拼装与卡片数据模型，无网络。合入 + publish 强制门禁。
+- **L2 · 确定性 e2e（真飞书 + fake agent）**：真飞书 + CardKit + audit + 远端进程 + 重启，用 fake agent 保回复确定性，分钟级。含两种运行形态：`scripts/e2e-real.sh` 自动化（`--mode full`，起独立 bridge server 按用例矩阵批量跑）和 self-loop 手工快查（`rebuild-test.sh` 换血 Test bot 后手工发消息、观察 audit + 回读卡片，适合逐个 bug 快速定验证）。
+- **L3 · 真 agent canary**：真 Claude/Codex 的**实际行为**（指令注入遵从、认证、session 续接）。`scripts/e2e-real.sh` 起独立 bridge server（真 App + 真 wss）+ 真 Claude/Codex wrapper 跑，产出 capabilities & summary。正式版发布跑，默认 warn，可 strict。
 
-`scripts/release-regression.sh` 把 L0（`verify.sh`）+ L1 race + L2 e2e-real full（真飞书 + fake Agent）+ L3b canary（真飞书 + 真 Claude）串成一次完整回归；发布凭证 `test-evidence ensure` 单独把 L1 + testfw regression sidecar 作为 publish 的强制门禁。
+`scripts/release-regression.sh` 把 L0（`verify.sh`）+ L0 race + L2 e2e-real full（真飞书 + fake Agent）+ L3 canary（真飞书 + 真 Claude）串成一次完整回归；发布凭证 `test-evidence ensure` 单独把 L0 + L1 testfw regression sidecar 作为 publish 的强制门禁。
 
 ```mermaid
 flowchart TD
     A[功能改动]:::primary
-    B[L1 Go 单元测试]:::success
-    C[L2 YAML testfw]:::primary
+    B[L0 Go 单元测试]:::success
+    C[L1 YAML testfw]:::primary
     D[simulate]:::grey
     E[simulate-action]:::grey
     F[Smoke 套件]:::success
     G[Regression sidecar]:::warning
     H[test-evidence 门禁]:::danger
-    I[L3a self-loop 手工]:::warning
-    J[L3b e2e-real canary]:::warning
+    I[L2 self-loop 手工快查]:::warning
+    J[L2/L3 e2e-real canary]:::warning
     K[release-regression 全量]:::danger
 
     A --> B
@@ -54,7 +56,7 @@ flowchart TD
     classDef grey    fill:#B0B5BD,stroke:#9FA4AC,color:#fff
 ```
 
-## L1 — Go 单元测试
+## L0 — 单元测试
 
 `go test ./...` 覆盖 29 个 package 的纯逻辑、状态机、渲染契约、协议解析。运行时钟秒级。发布凭证阶段用它作为核心门禁。
 
@@ -71,9 +73,9 @@ env -u E2E_PREFERENCE_STORE -u E2E_REPLY_STORE \
 
 `E2E_*` 清理是必需的：这些环境变量是 supervisor serve 时的 durable state 路径，遗留会让默认路径测试读到生产数据。
 
-`internal/testfw/smoke_suite_test.go::TestSmokeSuite` 把 `tests/smoke/` YAML 套件挂进 `go test ./...`——完整模式会执行、`-short` 会跳过。因此单纯跑 `go test ./...` 就已经同时覆盖了 L1 与 L2 smoke。
+`internal/testfw/smoke_suite_test.go::TestSmokeSuite` 把 `tests/smoke/` YAML 套件挂进 `go test ./...`——完整模式会执行、`-short` 会跳过。因此单纯跑 `go test ./...` 就已经同时覆盖了 L0 与 L1 smoke。
 
-## L2 — YAML simulate 回归
+## L1 — 组件测试（simulate + fake agent）
 
 框架代码在 `internal/testfw`，可执行入口是 `cmd/lark-bridge-test`。runner 调用 `cmd/lark-agent-bridge simulate` / `simulate-action`，捕获其 JSON 输出的 `events` 与 `audit`，用 YAML 里的 assert 条目断言。**不连接飞书、不启动真 Agent**——fake AgentRunner 会把 `BuildBatchPrompt` 输出 echo 到 `result` event 的 text segment 里（前缀 `simulated answer: `），所以断言本质上是在验证 bridge 的**数据模型 + prompt 拼装**。
 
@@ -91,7 +93,7 @@ GOCACHE=$PWD/.cache/go-build go run ./cmd/lark-bridge-test \
 
 runner 给每个用例一份临时工作目录，把 `E2E_PREFERENCE_STORE` / `E2E_REPLY_STORE` / `E2E_MEDIA_CACHE_DIR` / `E2E_SESSION_STORE` 指向它，用例之间互不污染。
 
-从同一 YAML 生成 L3 手工清单（不执行真实链路，仅投影为 Markdown 表格）：
+从同一 YAML 生成 L2 手工清单（不执行真实链路，仅投影为 Markdown 表格）：
 
 ```bash
 GOCACHE=$PWD/.cache/go-build go run ./cmd/lark-bridge-test \
@@ -125,7 +127,7 @@ steps:
 - `group: true` + `mentioned: false/true` 覆盖群聊未 @ / 已 @ bot 分支。
 - `quote_text` / `quote_sender` / `quote_sender_type` 注入被引用消息（内存 fake fetcher，不触发飞书 SDK）。用于验证引用主体身份边框（user / app / self_bot）和用户主指令前置的 prompt 顺序契约。
 - `action` 步骤可用 `prime_text` 建会话，`value` / `chat_id` / `open_message_id` / `form_values` / `prime_is_group` / `prime_chat_id` 精确注入卡片上下文。
-- `l3.skip: true` + `skip_reason` 显式排除该步骤进入 L3 清单——用于 L2 特有依赖分支（如 simulate 未装配 SessionStore/ScheduleStore 的早退路径），必须写明理由。
+- `l3.skip: true` + `skip_reason` 显式排除该步骤进入 L2 手工清单——用于 L1 特有依赖分支（如 simulate 未装配 SessionStore/ScheduleStore 的早退路径），必须写明理由。
 
 ### 支持的断言
 
@@ -134,7 +136,7 @@ steps:
 - **`any_segment_contains`**：遍历**全部** event 的可见文本，任一命中即通过。适合断言 prompt / answer / 思考区。
 - **`segments_order`**：把全部 event 的可见文本拼成一段，`texts` 里各元素必须**按序**依次出现（允许中间穿插）。倒序或缺段都失败。用于锁死 prompt 拼装顺序契约，例如"用户主指令必须先于引用块"。
 - **`header_title`**：首个 event 的 `HeaderTitle` 包含指定字符串。
-- **`has_button`**：`Event.Actions[]` 里存在指定 label 的按钮，或 StopButton 可见。**渲染期才生成的表单按钮**（ConfigForm / AgentModeForm）**不能在 L2 中断言**，改用 `event_type` 断言表单类型。
+- **`has_button`**：`Event.Actions[]` 里存在指定 label 的按钮，或 StopButton 可见。**渲染期才生成的表单按钮**（ConfigForm / AgentModeForm）**不能在 L1 中断言**，改用 `event_type` 断言表单类型。
 - **`stop_button_visible`** / **`stop_button_disabled`**：验证停止按钮生命周期。
 - **`no_events`**：验证消息被正确过滤（如群未 @）。
 - **`audit_empty`**：验证无 audit 事件；只有失败/拒绝/排队才写 audit，成功执行不写。
@@ -142,11 +144,15 @@ steps:
 
 ### 诚实断言的边界
 
-框架不会把整个 event 序列化为 JSON 兜底断言，也不会按 struct 是否非 nil 硬注入渲染期文案（"全局配置"、"保存" 等）。历史上这两条兜底导致 `/config` 表单卡在 L2 假通过、L3 才发现。现行契约：**断言只作用于真实承载可见文案的字段**——找不到就诚实失败，不糊弄。
+框架不会把整个 event 序列化为 JSON 兜底断言，也不会按 struct 是否非 nil 硬注入渲染期文案（"全局配置"、"保存" 等）。历史上这两条兜底导致 `/config` 表单卡在 L1 假通过、L2 才发现。现行契约：**断言只作用于真实承载可见文案的字段**——找不到就诚实失败，不糊弄。
 
-## L3a — self-loop 手工 L3
+## L2 — 确定性 e2e（真飞书 + fake agent）
 
-适用场景：**改动只涉及 bridge 单点行为**（引用主体识别、prompt 顺序、卡片渲染的时序细节），需要在真实链路 + 真 Claude 下验一遍。走 `~/bridge/bridge-self-loop/rebuild-test.sh`：
+真飞书 + CardKit + audit + 远端进程 + 重启，用 fake agent 保回复确定性，分钟级。含两种运行形态：**self-loop 手工快查**（`rebuild-test.sh` 换血后手工发消息）和 **e2e-real 自动化**（`scripts/e2e-real.sh --mode full` 批量跑用例矩阵）。
+
+### 手工快查形态（self-loop）
+
+适用场景：**改动只涉及 bridge 单点行为**（引用主体识别、prompt 顺序、卡片渲染的时序细节），需要在真实链路下快速验一遍。走 `~/bridge/bridge-self-loop/rebuild-test.sh`：
 
 ```bash
 bash ~/bridge/bridge-self-loop/rebuild-test.sh ~/bridge/worktrees/<需求 slug>
@@ -163,9 +169,9 @@ bash ~/bridge/bridge-self-loop/rebuild-test.sh ~/bridge/worktrees/<需求 slug>
 - **群聊消息必须用动态核验过的 Test open_id @ Test**（`+chat-members-list` 查），不要用 app_id。
 - **回读用 `+messages-mget`** 拿真实卡片正文，audit 出现 `cardkit_create` + `cardkit_reply` 即链路通。
 
-## L3b — e2e-real 自动化 canary
+### 自动化形态（e2e-real）
 
-适用场景：**发布回归、批量能力覆盖**。`scripts/e2e-real.sh` 起独立 bridge server（真 App、真 wss），批量跑 `case_*` 用例；每个 case 自己发消息、等 audit、读回复、断言。
+适用场景：**发布回归、批量能力覆盖**。`scripts/e2e-real.sh` 起独立 bridge server（真 App、真 wss），批量跑 `case_*` 用例；每个 case 自己发消息、等 audit、读回复、断言。**用 fake Claude（`--mode full`）保回复确定性时属本层（L2）**；换成真 agent 模式则升到 L3（见「L3 — 真 agent canary」）。
 
 用例矩阵分三类：
 
@@ -214,12 +220,26 @@ bash ~/bridge/bridge-self-loop/rebuild-test.sh ~/bridge/lark-ai-agent-bridge
 
 preflight 会评估一组 capabilities（`credentials` / `oauth_same_app` / `lark_cli_auth` / `bot_identity` / `test_group` / `p2p_chat` / `wrapper` / `exclusive_runtime` / `card_action` / `media_image` / `media_file` / `recall_event_delivery` / …）。每个 capability 有 `PASS` / `BLOCKED` / `FAIL` / `SKIPPED` 四态。`BLOCKED` 表明外部前置缺失（如 P2P chat 未配置），`FAIL` 表明 canary 真的失败了。`--strict-capabilities` 让任何 `BLOCKED` 都视作硬失败。
 
+## L3 — 真 agent canary
+
+适用场景：**正式版发布前验证真 Claude/Codex 的实际行为**——指令注入遵从、认证、session 续接等只有真 agent 能暴露的问题（fake agent 天然验不到）。它复用 L2 的 e2e-real 编排（同一 `scripts/e2e-real.sh`、同一 profile 与 capability 机制），区别只在**关闭 fake agent、放真 Claude/Codex 进链路**：
+
+```bash
+# 真 agent canary:去掉 fake Claude 注入,让真 Claude 实际执行
+env -u E2E_REAL_E2E_FAKE_CLAUDE \
+    ./scripts/e2e-real.sh --profile <name> --case new_basic
+```
+
+同一 case 在 L2 用 fake agent 跑「Bridge 管线」（收到 markdown → 上传飞书等确定性链路），在 L3 用真 agent 跑「指令遵从」（真的照注入指令行事）。两层职责分开：**L2 证明管线通，L3 证明指令真的改变了 AI 行为**。
+
+L3 默认 **warn-only**——真 agent 输出天然有波动，断言只锁指令要求的关键行为特征，不锁自然语言细节。经 `release-regression.sh` 的 `--strict-l3` 可转硬 gate。它只在正式版发布跑，不进 publish 强制门禁。
+
 ## release-regression.sh — 全量回归编排
 
 `scripts/release-regression.sh --profile <name>` 把上面各层串起来，作为发正式版前的完整回归：
 
-1. **L0/L1**：`REQUIRE_LARK=1 ./scripts/verify.sh`——文档契约 + `go test ./...` + doctor + 命令面 simulate + smoke 套件 + 会话行为 + 卡片/长连接 action 等。
-2. **L0/L1 race**：`go test -race ./internal/{schedule,session,bridge,card}`——重点 package 的并发正确性。
+1. **L0 + L1**：`REQUIRE_LARK=1 ./scripts/verify.sh`——文档契约 + `go test ./...`（L0）+ doctor + 命令面 simulate + smoke 套件 + 会话行为 + 卡片/长连接 action（L1）等。
+2. **L0 race**：`go test -race ./internal/{schedule,session,bridge,card}`——重点 package 的并发正确性。
 3. **L2**：`./scripts/e2e-real.sh --profile <name> --mode full --strict-capabilities`——真飞书 + fake Claude 完整能力矩阵。
 4. **L3**：`env -u E2E_REAL_E2E_FAKE_CLAUDE ./scripts/e2e-real.sh --profile <name> --case new_basic`——真 Claude canary，默认 warn-only。加 `--strict-l3` 转硬 gate。
 
@@ -236,24 +256,25 @@ preflight 会评估一组 capabilities（`credentials` / `oauth_same_app` / `lar
 - 记录 sidecar 的路径和 SHA-256、绑定 commit/tree、Go binary SHA、`go env` 关键项。
 - 只接受 `all_passed: true`。哈希不匹配、sidecar 缺失、`all_passed=false` 都会让凭证失效，publish 拒绝执行。
 
-这使 publish 自动覆盖 L1 + smoke integration + regression 三层，无需人工干预。**publish 不自动覆盖 L3**——L3 由 self-loop（L3a）或 release-regression.sh（L3b）另行执行。
+这使 publish 自动覆盖 L0 + L1 smoke integration + regression 三层，无需人工干预。**publish 不自动覆盖 L2/L3**——由 self-loop 手工快查或 `release-regression.sh` 的 e2e-real（L2 fake agent + L3 真 agent canary）另行执行。
 
 ## 新增或修改用例
 
-1. **先确定风险层级**。纯逻辑 → L1 Go 单测；跨命令 / 卡片数据模型 / prompt 拼装 → L2 YAML；真实飞书 / 真 AI / CardKit 时序 → L3a（快查）或 L3b（进 e2e-real case 库）。
+1. **先确定风险层级**。纯逻辑 → L0 Go 单测；跨命令 / 卡片数据模型 / prompt 拼装 → L1 YAML；真实飞书 / CardKit 时序（fake agent 保确定性）→ L2（self-loop 手工快查或进 e2e-real case 库）；真 AI 实际行为（指令注入遵从等）→ L3 真 agent canary。
 2. **smoke vs regression**：核心、高频、发布前必须秒级发现的入 `tests/smoke/` 带 `smoke` tag；广覆盖、边界、管理命令入 `tests/regression/` 带 `regression` tag。别只靠目录名，runner 以 tag 为准。
 3. **顺序契约用 `segments_order`**，不要串起多条 `any_segment_contains` 来暗示顺序——那样倒序也会通过。
 4. **卡片按钮**优先用 `action` 步骤，并为相同权限与输入契约的动作保持 `/action <id>` 消息等价入口。只在卡片上下文专有字段时才用 action 注入。
 5. **写完 e2e-real case 必须**：加进且只加进一个清单（`SMOKE_CASES` / `FULL_EXTRA_CASES` / `FEATURE_CASES`）；使用 `case_prerequisites` 复用现有 capability 名，无额外需求走默认分支；`configure_callback_for_cases` 只对需要 callback gateway 的 case 加白名单；跑 `--profile <name> --case <name> --strict-capabilities` 单验。完整 SOP 见 [testing.md](testing.md)。
-6. **变更收口**：跑 `go test ./...`（含 smoke integration）；涉及发布证据的另跑 regression；涉及真链路的按 self-loop GUIDE 决定 L3。
+6. **变更收口**：跑 `go test ./...`（含 smoke integration）；涉及发布证据的另跑 regression；涉及真链路的按 self-loop GUIDE 决定 L2/L3。
 
 ## 已知限制
 
-- **L2 断言的是 bridge 产生的卡片数据模型**，不是飞书最终渲染后的 UI。表单提交按钮、卡片样式细节等渲染期元素必须靠 L3。
+- **L1 断言的是 bridge 产生的卡片数据模型**，不是飞书最终渲染后的 UI。表单提交按钮、卡片样式细节等渲染期元素必须靠 L2/L3。
 - **simulate 未装配全部 store**：目前只装了 Preference、DevMode、Workspaces。Updates、Schedules、Access 仍未装配——相关 YAML 只能断言当前可观察行为，不能虚构本地模拟没有的状态。用 `l3.skip` 显式排除并留原因。
-- **L3 checklist 只投影消息型 `input` 步骤**，跳过 `action` 步骤——它不证明真实的 `card.action.trigger` 投递。带 `form_values` 的动作需另行执行真实卡片点击验收。
+- **L2 手工清单只投影消息型 `input` 步骤**，跳过 `action` 步骤——它不证明真实的 `card.action.trigger` 投递。带 `form_values` 的动作需另行执行真实卡片点击验收。
 - **release-regression.sh L2/L3 需要独占同 App 的 wss**：跑之前必须停 supervisor 或 Test。同一 App 建两条 wss 会话，飞书 gateway 不保证投递到哪一条，audit 会不稳定。
-- **`scripts/lib/simulate-suite.sh:21` 断言 SessionID 格式为 `chat-demo:message:...` 与真实输出不符**（现在带 `thread:@bot:local-...` 段）——`verify.sh` 因此在 origin/main HEAD 直接失败。这是既有 bug，与本轮改动无关，发正式版前需先修。
+- **`scripts/lib/simulate-suite.sh:21` 的 SessionID 断言已修**：原断言 `chat-demo:message:` 与真实输出（带 `thread:@bot:local-...` 段）不符，已放宽为稳定前缀 `"claude:chat-demo:`。
+- **命令面套件的 store 污染已修**：`smoke-local.sh` / `verify.sh` 的 `smoke_command_surface` / `smoke_group_intake` 曾因 simulate 的 durable store 落到调用者实时 workspace（supervisor `~/ws/.../.lark-agent-bridge/`）而读到生产 preferences override，导致 `all_group_messages` 用例假失败（读到 supervisor 的 `participated_topics`）——`all_group_messages` 功能本身正常，问题是测试隔离。已在 `scripts/lib/assert.sh` 的 `simulate()` 里统一注入套件级临时 `E2E_PREFERENCE_STORE` 隔离（调用方显式设的 store 仍优先）。修复后 `make smoke-local` / `make verify` 命令面套件在 HEAD 上全绿（此前从未绿过）。
 
 ## 相关代码
 
@@ -264,7 +285,7 @@ preflight 会评估一组 capabilities（`credentials` / `oauth_same_app` / `lar
 - `internal/testfw/runner.go`：隔离运行器、标签筛选、CLI 调用、报告。
 - `internal/testfw/assert.go`：10 种断言的语义与可见文本抽取（`extractVisibleText`）。
 - `internal/testfw/smoke_suite_test.go`：smoke 挂进 `go test` 的连接点。
-- `internal/testfw/report.go` / `checklist.go`：发布 sidecar 与 L3 清单投影。
+- `internal/testfw/report.go` / `checklist.go`：发布 sidecar 与 L2 手工清单投影。
 
 **发布门禁**：
 
@@ -278,7 +299,7 @@ preflight 会评估一组 capabilities（`credentials` / `oauth_same_app` / `lar
 - `scripts/lib/e2e-profile.sh`：profile 加载与安全字段/权限校验。
 - `scripts/lib/simulate-suite.sh` / `scripts/lib/assert.sh`：命令面 simulate 断言集。
 
-**self-loop L3a**：
+**self-loop（L2 手工快查）**：
 
 - `~/bridge/bridge-self-loop/rebuild-test.sh` (Linux) / `rebuild-test-macos.sh` (Mac)：Test bot 换血 + `l3_sender_preflight` 硬校验。
-- `~/bridge/bridge-self-loop/GUIDE.md`：L3 手工验证步骤、chat_id / open_id / audit 位置、发布收口协议。
+- `~/bridge/bridge-self-loop/GUIDE.md`：手工验证步骤、chat_id / open_id / audit 位置、发布收口协议。

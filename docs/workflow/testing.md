@@ -23,9 +23,9 @@ GOCACHE=$PWD/.cache/go-build go test ./...
 `E2E_MEDIA_CACHE_DIR` 和 `E2E_SESSION_STORE`。这些变量属于 serve/supervisor 的
 durable runtime 路径，不应改变默认路径单测；脚本不会删除或修改变量原本指向的数据。
 
-## 发布 L1 测试凭证
+## 发布 L0+L1 测试凭证
 
-`./scripts/release.sh tag <version>` 会对最终 clean `HEAD` 执行一次发布 L1，并在 git common
+`./scripts/release.sh tag <version>` 会对最终 clean `HEAD` 执行一次发布 L0+L1，并在 git common
 dir 的 `release-state/test-evidence/` 原子写入私有 JSON 凭证和测试日志。也可单独执行：
 
 ```bash
@@ -352,7 +352,7 @@ lark-cli im +messages-reply --as user \
 
 当前飞书事件权限下，群话题内不 @bot 的普通文本不会推送到 bridge；可作为负向验证。带 @ 的话题回复应进入 `chat_id + thread_id` 对应会话，并创建新的执行卡片。
 
-DM/group debounce、topic scope 与无 @ 过滤已迁到 L1 service/parser tests,不再占用真实飞书回归窗口。
+DM/group debounce、topic scope 与无 @ 过滤已迁到 L0 service/parser tests,不再占用真实飞书回归窗口。
 
 ### Media 输入真实 E2E
 
@@ -368,11 +368,11 @@ Media case 必须设置 `E2E_REAL_E2E_FAKE_CLAUDE=1` 和 `E2E_REAL_E2E_P2P_CHAT_
 - JPEG/PNG/WebP/GIF 和 `.txt/.md/.json/.csv` 的 SHA-256 cache path 出现在 fake Claude prompt。
 - evidence 目录至少包含 `summary.md`、`audit.jsonl`、`messages.jsonl`、`fake-claude.log` 和 `mget/*.json`。
 
-mixed/partial、forged MIME、oversized、PDF/DOCX/audio/未知二进制拒绝和失败卡隔离均由 L1 media/service tests 覆盖。
+mixed/partial、forged MIME、oversized、PDF/DOCX/audio/未知二进制拒绝和失败卡隔离均由 L0 media/service tests 覆盖。
 
-### Runtime Config L1
+### Runtime Config L0
 
-Runtime Config 已迁到 config/service/doctor L1 tests,用 fake renderer 与 fake Claude 确定性校验 form action、持久化、argv、actual model 和 wrapper preflight,不再占用真实飞书窗口。
+Runtime Config 已迁到 config/service/doctor L0 tests,用 fake renderer 与 fake Claude 确定性校验 form action、持久化、argv、actual model 和 wrapper preflight,不再占用真实飞书窗口。
 
 验收要求:
 
@@ -387,7 +387,7 @@ Runtime Config 已迁到 config/service/doctor L1 tests,用 fake renderer 与 fa
 
 ### Reply Experience 分层
 
-append/clean/latest policy、preview threshold 与 reaction 生命周期已迁到 L1。L2 只保留跨进程 stale CardKit mapping 场景:
+append/clean/latest policy、preview threshold 与 reaction 生命周期已迁到 L0。L2 只保留跨进程 stale CardKit mapping 场景:
 
 ```bash
 E2E_REAL_E2E_FAKE_CLAUDE=1 \

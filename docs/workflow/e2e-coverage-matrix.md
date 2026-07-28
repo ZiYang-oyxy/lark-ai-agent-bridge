@@ -40,98 +40,98 @@ flowchart TD
 ### 域 1 · 命令解析
 | 用例 | 层 | 状态 | 证据 |
 |---|:---:|:---:|---|
-| `/new` 基本 + Reset/Explicit | L1 | ✅ | `TestParseNewCommand` |
-| `/new --workdir` | L1 | ✅ | `TestParseNewCommand` / `TestTargetWorkDirUsesRunOption` |
-| `/new --cwd` 别名 | L1 | ✅ | `TestParseNewCwdAliasMatchesWorkdir`(新增) |
-| `--workdir` 缺参降级 | L1 | ✅ | `TestParseNewWorkdirMissingValueIsTreatedAsLiteralText`(新增) |
-| `/status` 解析 | L1 | ✅ | `TestParseStatusCommand`(新增) |
-| `/stop` 解析与 help | L1 | ✅ | `TestParseStopCommand` / `TestHelpTextIncludesStopQueueSemantics` |
-| `/help` 解析 | L1 | ✅ | `TestParseHelpCommand`(新增) |
-| `/resume` 列最近 10 个 Session | L1 | ✅ | `TestParseResumeCommand` / `TestServiceResumeListsTenRecentSessionsForCurrentIdentity` |
-| `/resume <session-id>` 精确恢复 | L1 | ✅ | `TestServiceResumeSwitchesBindingAndNextMessageUsesTarget` |
-| 未知命令文案 | L1 | ✅ | `TestParseUnknownCommandReturnsFormattedMessage`(新增) |
-| 纯文本续接 scope | L1 | ✅ | `TestParsePlainText*` |
-| 群未 @ 过滤 | L1 | ✅ | `TestParseCommandIgnoresGroupWithoutMention` |
+| `/new` 基本 + Reset/Explicit | L0 | ✅ | `TestParseNewCommand` |
+| `/new --workdir` | L0 | ✅ | `TestParseNewCommand` / `TestTargetWorkDirUsesRunOption` |
+| `/new --cwd` 别名 | L0 | ✅ | `TestParseNewCwdAliasMatchesWorkdir`(新增) |
+| `--workdir` 缺参降级 | L0 | ✅ | `TestParseNewWorkdirMissingValueIsTreatedAsLiteralText`(新增) |
+| `/status` 解析 | L0 | ✅ | `TestParseStatusCommand`(新增) |
+| `/stop` 解析与 help | L0 | ✅ | `TestParseStopCommand` / `TestHelpTextIncludesStopQueueSemantics` |
+| `/help` 解析 | L0 | ✅ | `TestParseHelpCommand`(新增) |
+| `/resume` 列最近 10 个 Session | L0 | ✅ | `TestParseResumeCommand` / `TestServiceResumeListsTenRecentSessionsForCurrentIdentity` |
+| `/resume <session-id>` 精确恢复 | L0 | ✅ | `TestServiceResumeSwitchesBindingAndNextMessageUsesTarget` |
+| 未知命令文案 | L0 | ✅ | `TestParseUnknownCommandReturnsFormattedMessage`(新增) |
+| 纯文本续接 scope | L0 | ✅ | `TestParsePlainText*` |
+| 群未 @ 过滤 | L0 | ✅ | `TestParseCommandIgnoresGroupWithoutMention` |
 
 ### 域 2 · 会话生命周期与并发
 | 用例 | 层 | 状态 | 证据 |
 |---|:---:|:---:|---|
-| restart 保留上下文/取消 queued/中断 running | L1 | ✅ | `store_test.go` 一组 `TestRestore*` |
-| debounce(DM/群) | L1 | ✅ | `TestServiceBatchesPlain{DM,Group}InputsWithinDebounceCohort` |
-| busy 合并输入 | L1 | ✅ | `TestServiceMergesBusyTopicInputsIntoNextBatch` |
-| queue 满拒绝 | L1 | ✅ | `TestServiceRejectsTwentyFirstPendingInput` / `TestEnqueueDurableRejectsFullQueue` |
-| 多 topic 并行隔离 | L1 | ✅ | `TestDifferentTopicsRunInParallel` |
-| 同 ID 并发去重恰好一次 | L1 | ✅ | `TestAcceptMessageConcurrentSameIDAcceptsExactlyOnce` |
-| resume 在 active/queued scope 拒绝且不改绑定 | L1 | ✅ | `TestManagerResumeRejectsUnavailableMissingAndBusyScopes` / `TestServiceResumeRejectsUnknownAndBusyWithoutChangingBinding` |
-| Claude/Codex + workdir catalog 隔离 | L1 | ✅ | `TestCatalogRecentIsolatedSortedAndLimited` |
+| restart 保留上下文/取消 queued/中断 running | L0 | ✅ | `store_test.go` 一组 `TestRestore*` |
+| debounce(DM/群) | L0 | ✅ | `TestServiceBatchesPlain{DM,Group}InputsWithinDebounceCohort` |
+| busy 合并输入 | L0 | ✅ | `TestServiceMergesBusyTopicInputsIntoNextBatch` |
+| queue 满拒绝 | L0 | ✅ | `TestServiceRejectsTwentyFirstPendingInput` / `TestEnqueueDurableRejectsFullQueue` |
+| 多 topic 并行隔离 | L0 | ✅ | `TestDifferentTopicsRunInParallel` |
+| 同 ID 并发去重恰好一次 | L0 | ✅ | `TestAcceptMessageConcurrentSameIDAcceptsExactlyOnce` |
+| resume 在 active/queued scope 拒绝且不改绑定 | L0 | ✅ | `TestManagerResumeRejectsUnavailableMissingAndBusyScopes` / `TestServiceResumeRejectsUnknownAndBusyWithoutChangingBinding` |
+| Claude/Codex + workdir catalog 隔离 | L0 | ✅ | `TestCatalogRecentIsolatedSortedAndLimited` |
 
 ### 域 3 · Action 与 Stop
 | 用例 | 层 | 状态 | 证据 |
 |---|:---:|:---:|---|
-| stop 终止当前 batch | L1 | ✅ | `TestServiceStopCancelsActiveOneShotRun` |
-| stop 保留后续 queue | L1 | ✅ | `TestServiceStopKeepsLaterQueue` |
-| 文本 `/stop` scope/agent 隔离 | L1 | ✅ | `TestServiceTextStopIsolatesTopics` / `TestServiceTextStopUsesSelectedAgent` |
-| 文本 `/stop` 参数、空闲与 queue | L1 | ✅ | `TestServiceTextStopCancelsCurrentScopeAndRejectsArguments` / `TestServiceTextStopIdleRendersExactResponseWithoutRunningAgent` / `TestServiceTextStopKeepsLaterQueue` |
+| stop 终止当前 batch | L0 | ✅ | `TestServiceStopCancelsActiveOneShotRun` |
+| stop 保留后续 queue | L0 | ✅ | `TestServiceStopKeepsLaterQueue` |
+| 文本 `/stop` scope/agent 隔离 | L0 | ✅ | `TestServiceTextStopIsolatesTopics` / `TestServiceTextStopUsesSelectedAgent` |
+| 文本 `/stop` 参数、空闲与 queue | L0 | ✅ | `TestServiceTextStopCancelsCurrentScopeAndRejectsArguments` / `TestServiceTextStopIdleRendersExactResponseWithoutRunningAgent` / `TestServiceTextStopKeepsLaterQueue` |
 | 真实飞书 deterministic `/stop` | **L2** | ✅ | Go runner 已通过 legacy shadow 等价验收并成为默认 gate |
 | 真实飞书 `/resume` 最近 10 条/指定恢复 | **L2** | ✅ | deterministic Agent fixture + `ResumeScenario` |
 | candidate 重启后恢复 + 下一条 `--resume` | **L2** | ✅ | controller-owned restart + invocation transcript |
 | 无效 ID / busy 恢复不调用 backend | **L2** | ✅ | one-shot negative fixture assertion |
-| 重复 stop 幂等 | L1 | ✅ | `TestServiceStopIsIdempotentForAlreadyStoppedRun`(新增) |
-| stop 未知/过期 batch 降级 | L1 | ✅ | `TestServiceStopUnknownSessionDegradesToStoppedCard`(新增) |
-| action 同步卡关闭 streaming_mode | L1 | ✅ | `TestServiceStopSyncCardDisablesStreamingMode`(新增) |
-| create_workdir / cancel_workdir | L1 | ✅ | `TestServiceMissingWorkdirAsksThenRunsAfterCreate` / `TestWorkdirCancelDoesNotRun` |
-| config.save 往返 | L1 | ✅ | `TestServiceConfigSavePersistsValidValuesAndRejectsInvalidValues` |
-| 真实 `card.action.trigger` 投递 | **L3** | ❌ | 飞书平台限制，无官方自动化手段（Codex + 官方文档查证 2026-07-22）；处理逻辑由 L1 确定性 + L2 render 注入覆盖 |
+| 重复 stop 幂等 | L0 | ✅ | `TestServiceStopIsIdempotentForAlreadyStoppedRun`(新增) |
+| stop 未知/过期 batch 降级 | L0 | ✅ | `TestServiceStopUnknownSessionDegradesToStoppedCard`(新增) |
+| action 同步卡关闭 streaming_mode | L0 | ✅ | `TestServiceStopSyncCardDisablesStreamingMode`(新增) |
+| create_workdir / cancel_workdir | L0 | ✅ | `TestServiceMissingWorkdirAsksThenRunsAfterCreate` / `TestWorkdirCancelDoesNotRun` |
+| config.save 往返 | L0 | ✅ | `TestServiceConfigSavePersistsValidValuesAndRejectsInvalidValues` |
+| 真实 `card.action.trigger` 投递 | **L3** | ❌ | 飞书平台限制，无官方自动化手段（Codex + 官方文档查证 2026-07-22）；处理逻辑由 L0 确定性 + L2 render 注入覆盖 |
 
 ### 域 4 · 流式卡片与 native streaming
 | 用例 | 层 | 状态 | 证据 |
 |---|:---:|:---:|---|
-| text delta 渲染 | L1 | ✅ | `TestStreamUpdateParsesClaudeDeltaThinking` 等 |
-| thinking delta 渲染 | L1 | ✅ | `TestStreamUpdateParsesClaudeDeltaThinking` |
-| content_block 级 thinking/redacted | L1 | ✅ | `TestStreamUpdateParsesContentBlockLevelThinking`(新增) |
-| tool_use 解析 | L1 | ✅ | `TestStreamUpdateParsesToolUseBlockIntoToolSegment`(新增) |
-| tool_result 解析 | L1 | ✅ | `TestStreamUpdateParsesToolResultBlockIntoToolSegment`(新增) |
-| CardMaxChars 截断 | L1 | ✅ | `TestLimitEventTruncatesTextFields` / capacity_test 一组 |
-| 本地容量拒绝 → emergency 重试 | L1 | ✅ | `TestCardKitRendererRetriesLocalCapacityRejection...` |
-| **服务端 429/5xx 自动重试** | L1 | ✅ | `TestCardKitClientRetriesRateLimitedRequestThenSucceeds` / `...DoesNotRetryNonRetryable`(新增) |
-| sequence 乱序 / sequence_unknown | L1 | ✅ | `native_sequence_journal_test.go` 一组 + `TestServiceRecoverySkipsSequenceUnknownCardOnce` |
+| text delta 渲染 | L0 | ✅ | `TestStreamUpdateParsesClaudeDeltaThinking` 等 |
+| thinking delta 渲染 | L0 | ✅ | `TestStreamUpdateParsesClaudeDeltaThinking` |
+| content_block 级 thinking/redacted | L0 | ✅ | `TestStreamUpdateParsesContentBlockLevelThinking`(新增) |
+| tool_use 解析 | L0 | ✅ | `TestStreamUpdateParsesToolUseBlockIntoToolSegment`(新增) |
+| tool_result 解析 | L0 | ✅ | `TestStreamUpdateParsesToolResultBlockIntoToolSegment`(新增) |
+| CardMaxChars 截断 | L0 | ✅ | `TestLimitEventTruncatesTextFields` / capacity_test 一组 |
+| 本地容量拒绝 → emergency 重试 | L0 | ✅ | `TestCardKitRendererRetriesLocalCapacityRejection...` |
+| **服务端 429/5xx 自动重试** | L0 | ✅ | `TestCardKitClientRetriesRateLimitedRequestThenSucceeds` / `...DoesNotRetryNonRetryable`(新增) |
+| sequence 乱序 / sequence_unknown | L0 | ✅ | `native_sequence_journal_test.go` 一组 + `TestServiceRecoverySkipsSequenceUnknownCardOnce` |
 | 真实 CardKit 渲染兼容性 | **L2** | ✅ | `native_text_stream`(e2e-real) |
 
 ### 域 5 · Reply 模式
 | 用例 | 层 | 状态 | 证据 |
 |---|:---:|:---:|---|
-| append / clean / latest 三模式 | L1+L2 | ✅ | reply `policy_test.go` + e2e `reply_*` |
-| latest 重启回退 stale card | L1+L2 | ✅ | `latest_restart_fallback` |
+| append / clean / latest 三模式 | L0+L2 | ✅ | reply `policy_test.go` + e2e `reply_*` |
+| latest 重启回退 stale card | L0+L2 | ✅ | `latest_restart_fallback` |
 
 ### 域 6 · Media
 | 用例 | 层 | 状态 | 证据 |
 |---|:---:|:---:|---|
 | 附件/图片/文本文件/部分成功/拒绝 | L2 | ✅ | e2e `media_*` 五个 case |
-| forged MIME / oversize / 未知二进制拒绝 | L1+L2 | ✅ | `media` 包单测 + `media_rejected` |
+| forged MIME / oversize / 未知二进制拒绝 | L0+L2 | ✅ | `media` 包单测 + `media_rejected` |
 
 ### 域 7 · 撤回与 reaction
 | 用例 | 层 | 状态 | 证据 |
 |---|:---:|:---:|---|
-| 撤回状态/pending workdir/queued input | L1+L2 | ✅ | `TestMessageRecall*` + e2e `message_revoke*` |
-| reaction 生命周期 | L1+L2 | ✅ | `reaction_lifecycle_test.go` + e2e `reaction_lifecycle` |
+| 撤回状态/pending workdir/queued input | L0+L2 | ✅ | `TestMessageRecall*` + e2e `message_revoke*` |
+| reaction 生命周期 | L0+L2 | ✅ | `reaction_lifecycle_test.go` + e2e `reaction_lifecycle` |
 | recall **事件投递**(非删除 API) | **L2** | ✅ | e2e `recall_state`;删除 API 成功 ≠ 事件已投递 |
 
 ### 域 8 · 配置与模型
 | 用例 | 层 | 状态 | 证据 |
 |---|:---:|:---:|---|
-| config 往返/reset/frozen queue | L1+L2 | ✅ | `TestServiceConfig*` + e2e `config_*` |
-| 非法 model/effort/mode 拒绝 | L1 | ✅ | `config_test.go` 一组 `RejectsInvalid*` |
-| requested vs actual model | L1+L2 | ✅ | `TestServiceSeparatesRequestedAndActualModel` + `requested_actual_model` |
+| config 往返/reset/frozen queue | L0+L2 | ✅ | `TestServiceConfig*` + e2e `config_*` |
+| 非法 model/effort/mode 拒绝 | L0 | ✅ | `config_test.go` 一组 `RejectsInvalid*` |
+| requested vs actual model | L0+L2 | ✅ | `TestServiceSeparatesRequestedAndActualModel` + `requested_actual_model` |
 
 ### 域 9 · 持久化与恢复(覆盖最完整,非缺口)
 | 用例 | 层 | 状态 | 证据 |
 |---|:---:|:---:|---|
-| session 跨重启恢复 + 去重 | L1 | ✅ | `TestAcceptAndEnqueuePersistsReceiptAtomicallyAndRejectsAfterRestart` |
-| snapshot 损坏/未知版本降级 | L1 | ✅ | `TestLoadSnapshotRejectsMalformedData` / `RejectsUnknownVersion` |
-| 持久化失败不发布脏状态 | L1 | ✅ | `store_test.go` 一组 rollback 测试 |
-| Session catalog 原子写、strict load、重启恢复 | L1 | ✅ | `catalog_test.go` / `TestOpenSessionStateAttachesCatalogAndRejectsCorruption` |
-| preference / reply store 全生命周期 | L1 | ✅ | `preferences_test.go` / `reply/store_test.go` |
-| ProcessRecoveryNotices 渲染侧 | L1 | ✅ | `service_test.go` 8 个 `TestServiceRecovery*` |
+| session 跨重启恢复 + 去重 | L0 | ✅ | `TestAcceptAndEnqueuePersistsReceiptAtomicallyAndRejectsAfterRestart` |
+| snapshot 损坏/未知版本降级 | L0 | ✅ | `TestLoadSnapshotRejectsMalformedData` / `RejectsUnknownVersion` |
+| 持久化失败不发布脏状态 | L0 | ✅ | `store_test.go` 一组 rollback 测试 |
+| Session catalog 原子写、strict load、重启恢复 | L0 | ✅ | `catalog_test.go` / `TestOpenSessionStateAttachesCatalogAndRejectsCorruption` |
+| preference / reply store 全生命周期 | L0 | ✅ | `preferences_test.go` / `reply/store_test.go` |
+| ProcessRecoveryNotices 渲染侧 | L0 | ✅ | `service_test.go` 8 个 `TestServiceRecovery*` |
 | 真实跨进程重启恢复 | **L2** | ✅ | e2e `session_restart_context` / `restart_*` |
 
 ### 域 10 · 安全与鉴权(**已知缺口,本轮不处理**)
@@ -166,7 +166,7 @@ flowchart TD
 ### 最大杠杆(阶段 3)
 真实列表已从 38 个收敛到 9 个。保留集合为 `new_basic`、`streaming_card`、`session_restart_context`、`recall_state`、`media_attachment_only`、`media_images`、`media_text_files`、`latest_restart_fallback`、`native_text_stream`。
 
-迁到 L1 门禁的 29 个原 case 按能力分组如下:
+迁到 L0 门禁的 29 个原 case 按能力分组如下:
 
 - 本地环境:`preflight`、`wrapper_preflight` → `e2e-preflight.sh`、doctor tests。
 - 命令与 scope:`help`、`status`、`workdir_existing`、`topic_reply_at`、`topic_reply_without_at_negative` → parser/service tests。
@@ -178,7 +178,7 @@ flowchart TD
 - reply:`reply_append`、`reply_clean`、`reply_latest` → reply policy tests。
 - preview/reaction:`preview_thresholds`、`reaction_lifecycle` → stream preview/reaction tests。
 
-决定性边界是:L1 证明业务语义,L2 只证明飞书 transport、CardKit、media、recall subscription 与跨进程集成没有断。
+决定性边界是:L0 证明业务语义,L2 只证明飞书 transport、CardKit、media、recall subscription 与跨进程集成没有断。
 
 ## 已知 flaky
 - `internal/doctor · TestClaudeWrapperPreflightUsesBoundedHarmlessInvocation`:全量并行跑时偶发 "timed out"(资源竞争),单独重跑稳定通过。属时间敏感测试,与业务逻辑无关。
