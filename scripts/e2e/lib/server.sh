@@ -49,6 +49,29 @@ sync_server_pid() {
   return 1
 }
 
+seed_controlled_bridge_access() {
+  # e2e 注入的 card action 里 operator.open_id 硬编码为 "e2e"（见 lib/lark.sh:submit_config),
+  # 不是真实飞书 user open_id;而 controlled bridge 每次都是全新 workdir、空的 access.json,
+  # 主动 refresh 到的 owner 是 bot app owner 而不是 "e2e"。为让 config.save 等 admin-only
+  # action 能过 canRunAdminCommand,把 "e2e" 预写进 policy.Admins。fake_claude 场景下这只是
+  # 测试脚手架,不影响真实生产的 access 语义。
+  local access_dir="$DEFAULT_WORKDIR/.lark-agent-bridge"
+  local access_file="$access_dir/access.json"
+  mkdir -p "$access_dir"
+  cat >"$access_file" <<'ACCESS_JSON'
+{
+  "schema_version": 2,
+  "revision": 0,
+  "access": {
+    "allowed_users": [],
+    "allowed_chats": [],
+    "admins": ["e2e"]
+  }
+}
+ACCESS_JSON
+  chmod 600 "$access_file"
+}
+
 start_server_if_needed() {
   if [[ "$1" == "preflight" ]]; then
     return
@@ -62,6 +85,7 @@ start_server_if_needed() {
     return 1
   fi
   mkdir -p "$DEFAULT_WORKDIR"
+  seed_controlled_bridge_access
   prepare_fake_claude_if_needed
   log "starting bridge serve"
   local log_mark=0
