@@ -361,6 +361,23 @@ func buildStatusBarSection(form ConfigForm) []map[string]any {
 }
 
 func buildAgentModeFormElements(sessionID string, form AgentModeForm) []any {
+	saveButton := map[string]any{
+		"tag":              "button",
+		"name":             "submit_agent_mode",
+		"text":             map[string]any{"tag": "plain_text", "content": "保存"},
+		"type":             "primary",
+		"width":            "fill",
+		"form_action_type": "submit",
+		"behaviors":        callbackBehavior(sessionID, "agent_mode.save", ""),
+	}
+	closeButton := map[string]any{
+		"tag":       "button",
+		"name":      "close_agent_mode",
+		"text":      map[string]any{"tag": "plain_text", "content": "关闭"},
+		"type":      "default",
+		"width":     "fill",
+		"behaviors": callbackBehavior(sessionID, "config.close", ""),
+	}
 	return []any{
 		markdownElement("agent_mode_intro", "⚙️ **Agent mode**\n\n选择后影响后续新进入队列的消息。"),
 		map[string]any{
@@ -370,12 +387,12 @@ func buildAgentModeFormElements(sessionID string, form AgentModeForm) []any {
 				markdownElement("agent_mode_label", "**使用 Agent**\n选择 `claude` 或 `codex`。"),
 				configSelectOptions("agent", form.Agent, form.Agents),
 				map[string]any{
-					"tag":              "button",
-					"name":             "submit_agent_mode",
-					"text":             map[string]any{"tag": "plain_text", "content": "保存"},
-					"type":             "primary",
-					"form_action_type": "submit",
-					"behaviors":        callbackBehavior(sessionID, "agent_mode.save", ""),
+					"tag":                "column_set",
+					"horizontal_spacing": "8px",
+					"columns": []any{
+						map[string]any{"tag": "column", "width": "weighted", "weight": 1, "elements": []any{saveButton}},
+						map[string]any{"tag": "column", "width": "weighted", "weight": 1, "elements": []any{closeButton}},
+					},
 				},
 			},
 		},
@@ -409,6 +426,7 @@ func buildHelpElements(sessionID string, help HelpCard) []any {
 	if row := buttonRowElements(buttons, sessionID); row != nil {
 		elements = append(elements, row)
 	}
+	elements = append(elements, closeButtonRow(sessionID))
 	return elements
 }
 
@@ -490,9 +508,9 @@ func statusFieldLine(id string, field StatusField) map[string]any {
 // buildStatusElements renders the /status card as bordered sections — 会话概览 /
 // 运行偏好 / 运行时 — mirroring the /config and /local-config visual language.
 // Chinese labels front every row; technical values (mode keys, ids, workdir)
-// stay verbatim as inline code. A refresh + open-config button row closes the
-// card. NotStarted sessions render only the sections that have fields plus a
-// friendly hint that no session has started yet.
+// stay verbatim as inline code. A refresh + open-config shortcut row is followed
+// by a dedicated close row. NotStarted sessions render only the sections that
+// have fields plus a friendly hint that no session has started yet.
 func buildStatusElements(sessionID string, status StatusCard) []any {
 	elements := make([]any, 0, len(status.Sections)+3)
 	elements = append(elements, noteElement("status_intro", "当前会话与运行偏好一览。技术取值（模式键、Session、工作目录）保留原文。"))
@@ -513,6 +531,7 @@ func buildStatusElements(sessionID string, status StatusCard) []any {
 	if row := buttonRowElements(buttons, sessionID); row != nil {
 		elements = append(elements, row)
 	}
+	elements = append(elements, closeButtonRow(sessionID))
 	return elements
 }
 
@@ -527,37 +546,38 @@ func buildResumeElements(sessionID string, resume ResumeCard) []any {
 	elements = append(elements, noteElement("resume_intro", fmt.Sprintf("最近历史会话（`%s`）· 点「恢复」继续", resume.Agent)))
 	if len(resume.Items) == 0 {
 		elements = append(elements, noteElement("resume_empty", "当前 Agent 与工作目录下没有可恢复的历史会话。直接发送消息开始新会话即可。"))
-		return elements
+	} else {
+		for i, item := range resume.Items {
+			line := fmt.Sprintf("**%d.** %s", item.Index, shortSessionID(item.SessionID, resume.Agent))
+			if item.Current {
+				line += " · 当前"
+			}
+			if summary := truncateResumeSummary(item.Summary); summary != "" {
+				line += " · " + summary
+			}
+			text := markdownElement(fmt.Sprintf("resume_%d", i), line)
+			button := map[string]any{
+				"tag":      "button",
+				"text":     map[string]any{"tag": "plain_text", "content": "恢复"},
+				"type":     "primary",
+				"width":    "default",
+				"size":     "small",
+				"disabled": item.Current,
+			}
+			if !item.Current {
+				button["behaviors"] = callbackBehaviorWithGrant(sessionID, "resume.select", item.SessionID, item.GrantID)
+			}
+			elements = append(elements, map[string]any{
+				"tag":                "column_set",
+				"horizontal_spacing": "8px",
+				"columns": []any{
+					map[string]any{"tag": "column", "width": "weighted", "weight": 1, "vertical_align": "center", "elements": []any{text}},
+					map[string]any{"tag": "column", "width": "auto", "vertical_align": "center", "elements": []any{button}},
+				},
+			})
+		}
 	}
-	for i, item := range resume.Items {
-		line := fmt.Sprintf("**%d.** %s", item.Index, shortSessionID(item.SessionID, resume.Agent))
-		if item.Current {
-			line += " · 当前"
-		}
-		if summary := truncateResumeSummary(item.Summary); summary != "" {
-			line += " · " + summary
-		}
-		text := markdownElement(fmt.Sprintf("resume_%d", i), line)
-		button := map[string]any{
-			"tag":      "button",
-			"text":     map[string]any{"tag": "plain_text", "content": "恢复"},
-			"type":     "primary",
-			"width":    "default",
-			"size":     "small",
-			"disabled": item.Current,
-		}
-		if !item.Current {
-			button["behaviors"] = callbackBehaviorWithGrant(sessionID, "resume.select", item.SessionID, item.GrantID)
-		}
-		elements = append(elements, map[string]any{
-			"tag":                "column_set",
-			"horizontal_spacing": "8px",
-			"columns": []any{
-				map[string]any{"tag": "column", "width": "weighted", "weight": 1, "vertical_align": "center", "elements": []any{text}},
-				map[string]any{"tag": "column", "width": "auto", "vertical_align": "center", "elements": []any{button}},
-			},
-		})
-	}
+	elements = append(elements, closeButtonRow(sessionID))
 	return elements
 }
 

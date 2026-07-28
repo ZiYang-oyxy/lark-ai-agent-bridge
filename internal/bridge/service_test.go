@@ -1259,6 +1259,53 @@ func TestServiceConfigCloseRejectsInvalidOrFailedDeletion(t *testing.T) {
 	}
 }
 
+func TestServiceCardCloseDeletesPanelMessage(t *testing.T) {
+	recorder := audit.NewRecorder()
+	deleter := &recordingMessageDeleter{}
+	svc := NewService(testConfig(t), card.NewFakeRenderer(), newFakeRunner(), recorder)
+	svc.MessageDeleter = deleter
+
+	result, err := svc.HandleActionResult(t.Context(), ActionRequest{
+		SessionID: "help-card", ActionID: "card.close", Actor: "user", OpenMessageID: "om_help",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result != (ActionResult{}) || !reflect.DeepEqual(deleter.messageIDs, []string{"om_help"}) {
+		t.Fatalf("result/deletes = %#v / %#v", result, deleter.messageIDs)
+	}
+	if !auditContainsAction(recorder.Events(), "card_closed") {
+		t.Fatalf("audit events = %#v", recorder.Events())
+	}
+}
+
+func TestServiceCardCloseRejectsInvalidOrFailedDeletion(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		messageID string
+		deleter   MessageDeleter
+	}{
+		{name: "missing message id", deleter: &recordingMessageDeleter{}},
+		{name: "missing deleter", messageID: "om_help"},
+		{name: "delete failed", messageID: "om_help", deleter: &recordingMessageDeleter{err: errors.New("delete denied")}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			recorder := audit.NewRecorder()
+			svc := NewService(testConfig(t), card.NewFakeRenderer(), newFakeRunner(), recorder)
+			svc.MessageDeleter = tc.deleter
+			result, err := svc.HandleActionResult(t.Context(), ActionRequest{
+				SessionID: "help-card", ActionID: "card.close", Actor: "user", OpenMessageID: tc.messageID,
+			})
+			if err == nil || result != (ActionResult{}) {
+				t.Fatalf("result/error = %#v / %v, want empty result and error", result, err)
+			}
+			if !auditContainsAction(recorder.Events(), "card_close_failed") {
+				t.Fatalf("audit events = %#v", recorder.Events())
+			}
+		})
+	}
+}
+
 func TestServiceFreezesPreferencesAtEnqueueTime(t *testing.T) {
 	cfg := testConfig(t)
 	cfg.Model, cfg.Effort = "sonnet", "low"

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"reflect"
 	"regexp"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -1399,10 +1400,10 @@ func TestBuildLarkCardRendersHelpCard(t *testing.T) {
 		value := behavior["value"].(map[string]any)
 		buttonIDs = append(buttonIDs, value["action_id"].(string))
 	}
-	if want := []string{"help.status", "help.open_config", "help.open_local_config"}; !reflect.DeepEqual(buttonIDs, want) {
+	if want := []string{"help.status", "help.open_config", "help.open_local_config", "card.close"}; !reflect.DeepEqual(buttonIDs, want) {
 		t.Fatalf("help buttons = %#v, want %#v", buttonIDs, want)
 	}
-	if want := []string{"📊 状态", "⚙️ 全局配置", "🏘️ 本群配置"}; !reflect.DeepEqual(buttonLabels, want) {
+	if want := []string{"📊 状态", "⚙️ 全局配置", "🏘️ 本群配置", "关闭"}; !reflect.DeepEqual(buttonLabels, want) {
 		t.Fatalf("help button labels = %#v, want %#v", buttonLabels, want)
 	}
 	localValue := buttons[2]["behaviors"].([]any)[0].(map[string]any)["value"].(map[string]any)
@@ -1420,7 +1421,7 @@ func TestBuildLarkCardOmitsLocalConfigFromDirectMessageHelp(t *testing.T) {
 		value := button["behaviors"].([]any)[0].(map[string]any)["value"].(map[string]any)
 		buttonIDs = append(buttonIDs, value["action_id"].(string))
 	}
-	if want := []string{"help.status", "help.open_config"}; !reflect.DeepEqual(buttonIDs, want) {
+	if want := []string{"help.status", "help.open_config", "card.close"}; !reflect.DeepEqual(buttonIDs, want) {
 		t.Fatalf("direct-message help buttons = %#v, want %#v", buttonIDs, want)
 	}
 }
@@ -1934,8 +1935,8 @@ func TestBuildLarkCardRendersStatusCard(t *testing.T) {
 		}
 	}
 
-	if ids := collectCallbackIDs(t, payload); !reflect.DeepEqual(ids, []string{"status.refresh", "help.open_config"}) {
-		t.Fatalf("status buttons = %#v, want [status.refresh help.open_config]", ids)
+	if ids := collectCallbackIDs(t, payload); !reflect.DeepEqual(ids, []string{"status.refresh", "help.open_config", "card.close"}) {
+		t.Fatalf("status buttons = %#v, want [status.refresh help.open_config card.close]", ids)
 	}
 }
 
@@ -2006,6 +2007,9 @@ func TestBuildLarkCardRendersResumeCard(t *testing.T) {
 	if selects != 1 {
 		t.Fatalf("resume.select callbacks = %d, want 1 (current row's button is disabled and carries no callback)", selects)
 	}
+	if !slices.Contains(ids, "card.close") {
+		t.Fatalf("resume callbacks = %#v, want card.close", ids)
+	}
 }
 
 func TestBuildLarkCardResumeEmptyShowsHint(t *testing.T) {
@@ -2017,6 +2021,54 @@ func TestBuildLarkCardResumeEmptyShowsHint(t *testing.T) {
 	data, _ := json.Marshal(payload)
 	if !strings.Contains(string(data), "没有可恢复的历史会话") {
 		t.Fatalf("empty resume card missing hint: %s", data)
+	}
+	if ids := collectCallbackIDs(t, payload); !reflect.DeepEqual(ids, []string{"card.close"}) {
+		t.Fatalf("empty resume callbacks = %#v, want [card.close]", ids)
+	}
+}
+
+func TestLargeCommandPanelCloseButtonsUseDefaultFullWidthStyle(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		event Event
+	}{
+		{name: "help", event: Event{Type: "help", SessionID: "help:msg", HelpCard: &HelpCard{}}},
+		{name: "status", event: Event{Type: "status", SessionID: "status:msg", StatusCard: &StatusCard{}}},
+		{name: "resume", event: Event{Type: "resume", SessionID: "resume:msg", ResumeCard: &ResumeCard{Agent: "claude"}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			payload := BuildLarkCard(tc.event)
+			var buttons []map[string]any
+			collectHelpButtonData(payload["body"].(map[string]any)["elements"].([]any), &buttons)
+			for _, button := range buttons {
+				behavior, _ := button["behaviors"].([]any)
+				if len(behavior) == 0 {
+					continue
+				}
+				value := behavior[0].(map[string]any)["value"].(map[string]any)
+				if value["action_id"] != "card.close" {
+					continue
+				}
+				if button["type"] != "default" || button["width"] != "fill" || button["text"].(map[string]any)["content"] != "关闭" {
+					t.Fatalf("close button = %#v, want default full-width 关闭", button)
+				}
+				return
+			}
+			t.Fatalf("card.close button missing: %#v", buttons)
+		})
+	}
+}
+
+func TestBuildLarkCardAgentModeFormIncludesClose(t *testing.T) {
+	payload := BuildLarkCard(Event{
+		Type:      "agent_mode",
+		SessionID: "agent-mode:msg",
+		AgentModeForm: &AgentModeForm{
+			Agent: "claude", Agents: []SelectOption{{Value: "claude", Label: "Claude"}},
+		},
+	})
+	if ids := collectCallbackIDs(t, payload); !reflect.DeepEqual(ids, []string{"agent_mode.save", "config.close"}) {
+		t.Fatalf("agent-mode callbacks = %#v, want [agent_mode.save config.close]", ids)
 	}
 }
 

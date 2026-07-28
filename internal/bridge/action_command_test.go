@@ -67,8 +67,8 @@ func TestMessageTriggerableActionWhitelist(t *testing.T) {
 	// 黑名单:依赖表单值 / 卡片渲染期上下文 / 未指明目标群,消息触发本无法提供,必须被拒。
 	rejected := []string{
 		"config.save", "local_config.save", "agent_mode.save", // 依赖 FormValues
-		"config.close",                          // 依赖 OpenMessageID
-		"create_workdir", "cancel_workdir",      // 依赖 pendingRun
+		"card.close", "config.close", // 依赖 OpenMessageID
+		"create_workdir", "cancel_workdir", // 依赖 pendingRun
 		"resume.select",                         // 依赖 resumeContext
 		"help.open_local_config", "help.status", // 依赖 helpContext
 		"status.refresh",    // 依赖 statusContext

@@ -2104,23 +2104,8 @@ func (s *Service) HandleActionResult(ctx context.Context, req ActionRequest) (Ac
 			workDir = pending.WorkDir
 		}
 		return s.renderActionEvent(workDirActionEvent("workdir_cancelled", req.SessionID, workDir))
-	case "config.close":
-		if req.OpenMessageID == "" {
-			err := errors.New("missing config card message id")
-			s.Audit.Record(req.Actor, "config_close_failed", req.SessionID, err.Error())
-			return ActionResult{}, err
-		}
-		if s.MessageDeleter == nil {
-			err := errors.New("message deleter is not configured")
-			s.Audit.Record(req.Actor, "config_close_failed", req.SessionID, err.Error())
-			return ActionResult{}, err
-		}
-		if err := s.MessageDeleter.DeleteMessage(ctx, req.OpenMessageID); err != nil {
-			s.Audit.Record(req.Actor, "config_close_failed", req.SessionID, err.Error())
-			return ActionResult{}, fmt.Errorf("close config card: %w", err)
-		}
-		s.Audit.Record(req.Actor, "config_closed", req.SessionID, "config card deleted")
-		return ActionResult{}, nil
+	case "card.close", "config.close":
+		return s.handleCloseCardAction(ctx, req)
 	case "config.save":
 		if s.Preferences == nil {
 			err := errors.New("preference store is not configured")
@@ -2361,6 +2346,33 @@ func (s *Service) HandleActionResult(ctx context.Context, req ActionRequest) (Ac
 	default:
 		return s.renderActionEvent(card.Event{Type: "error", SessionID: req.SessionID, Segments: []card.Segment{{Kind: card.SegmentError, Text: "unknown action: " + req.ActionID}}})
 	}
+}
+
+func (s *Service) handleCloseCardAction(ctx context.Context, req ActionRequest) (ActionResult, error) {
+	failedAction := "card_close_failed"
+	closedAction := "card_closed"
+	detail := "card deleted"
+	if req.ActionID == "config.close" {
+		failedAction = "config_close_failed"
+		closedAction = "config_closed"
+		detail = "config card deleted"
+	}
+	if req.OpenMessageID == "" {
+		err := errors.New("missing card message id")
+		s.Audit.Record(req.Actor, failedAction, req.SessionID, err.Error())
+		return ActionResult{}, err
+	}
+	if s.MessageDeleter == nil {
+		err := errors.New("message deleter is not configured")
+		s.Audit.Record(req.Actor, failedAction, req.SessionID, err.Error())
+		return ActionResult{}, err
+	}
+	if err := s.MessageDeleter.DeleteMessage(ctx, req.OpenMessageID); err != nil {
+		s.Audit.Record(req.Actor, failedAction, req.SessionID, err.Error())
+		return ActionResult{}, fmt.Errorf("close card: %w", err)
+	}
+	s.Audit.Record(req.Actor, closedAction, req.SessionID, detail)
+	return ActionResult{}, nil
 }
 
 func (s *Service) agentKindConfigured(kind string) bool {
@@ -4935,6 +4947,7 @@ func messageTriggerableAction(actionID string) bool {
 		return false
 	}
 }
+
 // 消息路径的 sessionID 首次遇到 CardKit renderer 时会缓存 miss,需要 event.ReplyToMessageID
 // 才能建 renderer。handleActionCommand 通过 primeActionReply(sessionID, msg.ID) 预登记映射,
 // renderActionEvent 在 event 未带 ReplyToMessageID 时自动从 hint 补齐。因此上表里除
@@ -4946,7 +4959,7 @@ func messageTriggerRejectReason(actionID string) string {
 	switch actionID {
 	case "config.save", "local_config.save", "agent_mode.save":
 		return "该动作需要卡片表单里的字段值,无法通过消息触发。请直接在对应配置卡片上操作。"
-	case "config.close":
+	case "card.close", "config.close":
 		return "该动作需要定位要关闭的卡片消息,无法通过消息触发。请点击卡片上的关闭按钮。"
 	case "create_workdir", "cancel_workdir":
 		return "该动作依赖创建工作目录时的待执行上下文,无法通过消息触发。请点击卡片上的按钮。"

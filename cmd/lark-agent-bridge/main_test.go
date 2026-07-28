@@ -439,6 +439,20 @@ func TestConfigCloseActionTransportReturnsDeleteFailure(t *testing.T) {
 	}
 }
 
+func TestGenericCardCloseActionTransportReturnsNoReplacementCard(t *testing.T) {
+	svc := bridge.NewService(config.Config{}, card.NewFakeRenderer(), simulateRunner{}, audit.NewRecorder())
+	svc.MessageDeleter = transportMessageDeleter{}
+	handler, _ := newServeActionTransports(bridge.ActionGateway{Service: svc}, 1000)
+
+	response, err := handler(t.Context(), feishu.CardAction{SessionID: "help-card", ActionID: "card.close", Actor: "user", OpenMessageID: "om_help"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if response == nil || response.Card != nil || response.ToastContent != "" {
+		t.Fatalf("response = %#v, want success without replacement card or toast", response)
+	}
+}
+
 func (f *recordingInteractionFencer) BeginCardInteraction(sessionID string) func() {
 	f.mu.Lock()
 	f.sessions = append(f.sessions, sessionID)

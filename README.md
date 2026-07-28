@@ -39,6 +39,7 @@ workspace：
 - 工作目录不存在时先发确认卡片；点击创建后确认卡变绿并禁用按钮，Claude 执行另起运行卡片。
 - 卡片按钮走长连接 `card.action.trigger`，回调会同步返回终态卡片并保留异步 CardKit update 兜底；HTTP `/card/callback` 只保留为本地兼容调试入口。
 - `/help` 显示当前 Bridge 版本；配置 HTTPS update manifest 后会提示新版本、在卡片内展示 Release note，并允许 owner/admin 一键原子升级。
+- `/help`、`/status`、`/resume` 等大型命令卡片提供“关闭”按钮，点击后删除当前卡片消息；配置类卡片的关闭仍受管理员权限约束。
 
 ## 本地命令
 

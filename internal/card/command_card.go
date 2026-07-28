@@ -58,8 +58,9 @@ func fieldElements(id, label, hint string, control map[string]any) []map[string]
 }
 
 // buttonRowElements lays buttons out in an equal-width column_set row. The first
-// button is styled primary, the rest default. Each button carries a callback
-// behavior tied to the session. Returns nil when there are no buttons.
+// command is styled primary, while close actions and later buttons stay default.
+// Each button carries a callback behavior tied to the session. Returns nil when
+// there are no buttons.
 func buttonRowElements(buttons []Action, sessionID string) map[string]any {
 	if len(buttons) == 0 {
 		return nil
@@ -67,7 +68,7 @@ func buttonRowElements(buttons []Action, sessionID string) map[string]any {
 	columns := make([]any, 0, len(buttons))
 	for i, action := range buttons {
 		buttonType := "default"
-		if i == 0 {
+		if i == 0 && action.ID != "card.close" && action.ID != "config.close" {
 			buttonType = "primary"
 		}
 		button := map[string]any{
@@ -96,6 +97,10 @@ func buttonRowElements(buttons []Action, sessionID string) map[string]any {
 		"horizontal_spacing": "8px",
 		"columns":            columns,
 	}
+}
+
+func closeButtonRow(sessionID string) map[string]any {
+	return buttonRowElements([]Action{{ID: "card.close", Label: "关闭"}}, sessionID)
 }
 
 // noteElement renders a small grey markdown line (text_size notation), used for
