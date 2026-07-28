@@ -69,7 +69,7 @@ test-l2: ## L2 确定性 e2e:真飞书 + fake agent(需 ENV=<env>,如 linux-stev
 	@test -n "$(ENV)" || { echo "错误: L2 需要 ENV=<name>,例如 make test-l2 ENV=linux-steve"; exit 2; }
 	@test -f "$(ENV_FILE)" || { echo "错误: environment 声明不存在: $(ENV_FILE)"; exit 2; }
 	@echo "== L2 确定性 e2e(真飞书 + fake agent)environment=$(ENV) =="
-	E2E_STATE_ROOT="$$HOME" ./scripts/e2e-real.sh --environment "$(ENV)" --mode full --strict-capabilities
+	E2E_STATE_ROOT="$$HOME" E2E_REAL_E2E_FAKE_CLAUDE=1 ./scripts/e2e-real.sh --environment "$(ENV)" --mode full --strict-capabilities
 
 test-l3: ## L3 真 agent canary:真 Claude/Codex(需 ENV=<env>)
 	@test -n "$(ENV)" || { echo "错误: L3 需要 ENV=<name>,例如 make test-l3 ENV=linux-steve"; exit 2; }

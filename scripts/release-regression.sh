@@ -115,7 +115,9 @@ main() {
   mapfile -d '' -t e2e_target < <(build_e2e_args)
 
   echo "== L2: e2e-real full (real Feishu + fake Agent) =="
-  ./scripts/e2e-real.sh "${e2e_target[@]}" --mode full --strict-capabilities
+  # L2 语义就是"确定性 fake agent";controlled case 内部会 require_fake_claude,
+  # 不显式 export 会一路挂在 process 断言上。真 agent canary 走下面的 L3(env -u)。
+  E2E_REAL_E2E_FAKE_CLAUDE=1 ./scripts/e2e-real.sh "${e2e_target[@]}" --mode full --strict-capabilities
 
   echo "== L3: real Claude canary (new_basic) =="
   l3="passed"
