@@ -244,6 +244,16 @@ enable_callback() {
   fi
 }
 
+configure_callback_for_cases() {
+  local case_name
+  for case_name in "${RUN_CASES[@]}"; do
+    if [[ "${E2E_CASE_NEEDS_CALLBACK[$case_name]:-0}" == "1" ]]; then
+      enable_callback
+      return
+    fi
+  done
+}
+
 summary_init() {
   {
     echo "# Feishu Real E2E"
