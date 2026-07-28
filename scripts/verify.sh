@@ -18,7 +18,7 @@ source "$ROOT/scripts/lib/simulate-suite.sh"
 echo "== group intake documentation contracts =="
 readme_output="$(<README.md)"
 help_source="$(<internal/bridge/command.go)"
-capability_source="$(<scripts/e2e-real.sh)"
+capability_source="$(find scripts/e2e -type f -name '*.sh' -print0 | xargs -0 cat)"
 for mode in mention_only participated_topics all_group_messages; do
   require_contains "$readme_output" "$mode" "README group intake modes"
 done
