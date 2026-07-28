@@ -5,6 +5,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 export GOCACHE="${GOCACHE:-$ROOT/.cache/go-build}"
 mkdir -p "$GOCACHE"
+export E2E_STATE_ROOT="${E2E_STATE_ROOT:-$HOME}"
 
 PROFILE=""
 RELEASE="dev"
