@@ -115,6 +115,12 @@ type Service struct {
 	mu                 sync.Mutex
 	pendingRuns        map[string]pendingRun
 	activeRuns         map[string]activeRun
+	// recentlyStoppedRuns 记录 sessionID 是否曾经被显式 stop 过。activeRuns[id] 会
+	// 在 executeBatch 的 defer 里被 clearActiveRun 删掉，与第二次 stop 的读检查存在竞态；
+	// 落进此集合的 sessionID 在 activeRuns 缺失时仍视为幂等 stop，避免双击停止误报
+	// "当前会话没有正在运行的任务"。recentlyStoppedOrder 提供 FIFO 淘汰。
+	recentlyStoppedRuns  map[string]struct{}
+	recentlyStoppedOrder []string
 	pendingCompletions map[string]pendingCompletion
 	waitingReactions   map[string]*reactionLifecycle
 	helpContexts       map[string]helpContext
@@ -388,6 +394,7 @@ func NewServiceWithSessions(cfg config.Config, renderer card.Renderer, runner Ag
 		Agents:               config.DefaultAgentsConfig(),
 		pendingRuns:          map[string]pendingRun{},
 		activeRuns:           map[string]activeRun{},
+		recentlyStoppedRuns:  map[string]struct{}{},
 		pendingCompletions:   map[string]pendingCompletion{},
 		waitingReactions:     map[string]*reactionLifecycle{},
 		helpContexts:         map[string]helpContext{},
@@ -2049,6 +2056,13 @@ func (s *Service) HandleActionResult(ctx context.Context, req ActionRequest) (Ac
 			s.Audit.Record(req.Actor, "batch_stop_requested", run.BaseSessionID, run.BatchID)
 			return actionResultFromEvent(event), nil
 		}
+		// activeRuns 里没有对应 id：可能是这个 run 刚刚被停止后 defer clearActiveRun
+		// 把 entry 删掉了（双击 stop 场景），也可能是从未存在过的 stale/expired 会话。
+		// 前者靠 recentlyStoppedRuns 幂等命中 stopped 事件，后者才降级为 notice。
+		if s.wasRecentlyStopped(req.SessionID) {
+			s.Audit.Record(req.Actor, "batch_stop_idempotent", req.SessionID, "run already stopped")
+			return s.renderActionEvent(stoppedActionEvent(req.SessionID))
+		}
 		s.Audit.Record(req.Actor, "batch_stop_ignored", req.SessionID, "no active run for card action")
 		return s.renderActionEvent(card.Event{
 			Type:           "notice",
@@ -3105,6 +3119,9 @@ func (s *Service) activeRun(id string) (activeRun, bool) {
 func (s *Service) requestActiveRunStop(id string) (activeRun, card.Event, bool) {
 	s.mu.Lock()
 	run, ok := s.activeRuns[id]
+	if ok && run.Stream != nil {
+		s.rememberStoppedRunLocked(id)
+	}
 	s.mu.Unlock()
 	if !ok || run.Stream == nil {
 		return run, card.Event{}, false
@@ -3114,15 +3131,50 @@ func (s *Service) requestActiveRunStop(id string) (activeRun, card.Event, bool) 
 	return run, event, true
 }
 
+// recentlyStoppedRunsMax bounds the tombstone set to keep memory constant even
+// when many sessions are stopped over the process lifetime. Older entries are
+// evicted FIFO once the cap is reached.
+const recentlyStoppedRunsMax = 512
+
+// rememberStoppedRunLocked records that sessionID was just handed a stop request
+// so a subsequent stop on the same id can still hit the idempotent branch even
+// if executeBatch's deferred clearActiveRun has already removed the entry from
+// activeRuns. Caller must hold s.mu.
+func (s *Service) rememberStoppedRunLocked(id string) {
+	if _, exists := s.recentlyStoppedRuns[id]; exists {
+		return
+	}
+	s.recentlyStoppedRuns[id] = struct{}{}
+	s.recentlyStoppedOrder = append(s.recentlyStoppedOrder, id)
+	if len(s.recentlyStoppedOrder) > recentlyStoppedRunsMax {
+		evict := s.recentlyStoppedOrder[0]
+		s.recentlyStoppedOrder = s.recentlyStoppedOrder[1:]
+		delete(s.recentlyStoppedRuns, evict)
+	}
+}
+
+// wasRecentlyStopped reports whether sessionID was previously handed a stop
+// request. Used to preserve stop idempotency after activeRuns has been cleared.
+func (s *Service) wasRecentlyStopped(id string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, ok := s.recentlyStoppedRuns[id]
+	return ok
+}
+
 func (s *Service) requestActiveRunStopByKey(key session.Key) (activeRun, card.Event, bool) {
 	s.mu.Lock()
 	var matched activeRun
+	var matchedID string
 	found := false
-	for _, run := range s.activeRuns {
+	for id, run := range s.activeRuns {
 		if run.Key == key {
-			matched, found = run, true
+			matched, matchedID, found = run, id, true
 			break
 		}
+	}
+	if found && matched.Stream != nil {
+		s.rememberStoppedRunLocked(matchedID)
 	}
 	s.mu.Unlock()
 	if !found || matched.Stream == nil {
