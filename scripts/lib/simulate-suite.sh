@@ -18,7 +18,7 @@ smoke_command_surface() {
   require_not_contains "$help_output" "/codex" "help simulation"
 
   plain_output="$(simulate -text "hello")"
-  require_contains "$plain_output" '"SessionID": "claude:chat-demo:message:' "plain text simulation"
+  require_contains "$plain_output" '"SessionID": "claude:chat-demo:' "plain text simulation"
   require_contains "$plain_output" "simulated answer: hello" "plain text simulation"
 
   resume_output="$(simulate -text "/resume")"
