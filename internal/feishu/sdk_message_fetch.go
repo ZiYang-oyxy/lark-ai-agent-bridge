@@ -89,7 +89,10 @@ func (s *SDKSender) fetchMessage(ctx context.Context, messageID string, state *m
 	state.active[messageID] = true
 	defer delete(state.active, messageID)
 
-	req := larkim.NewGetMessageReqBuilder().MessageId(messageID).Build()
+	req := larkim.NewGetMessageReqBuilder().
+		MessageId(messageID).
+		CardMsgContentType("user_card_content").
+		Build()
 	resp, err := s.getAPI.Get(ctx, req)
 	if err != nil {
 		return cacheMessageFetch(state, messageID, FetchedMessage{}, fmt.Errorf("fetch feishu message: %w", err))
@@ -112,7 +115,11 @@ func (s *SDKSender) fetchMessage(ctx context.Context, messageID string, state *m
 		out.MessageType = *item.MsgType
 	}
 	if item.Body != nil && item.Body.Content != nil {
-		out.Text = parseMessageText(*item.Body.Content)
+		if out.MessageType == "interactive" {
+			out.Text = parseInteractiveMessageText(*item.Body.Content)
+		} else {
+			out.Text = parseMessageText(*item.Body.Content)
+		}
 		out.Attachments = parseMessageAttachments(messageID, out.MessageType, *item.Body.Content)
 	}
 	if item.Sender != nil {
@@ -350,6 +357,8 @@ func renderCardText(value any) string {
 			return renderCardLink(node)
 		case "list":
 			return renderCardList(node, cardChildren(node, "items"))
+		case "table":
+			return renderCardTable(node)
 		case "code_block":
 			if content := cardContent(node); content != "" {
 				return content
@@ -366,7 +375,7 @@ func renderCardText(value any) string {
 		// This avoids leaking action payloads, configuration, or duplicated
 		// markdownElements from the normalized CardKit response.
 		parts := make([]string, 0)
-		for _, key := range []string{"title", "body", "newBody", "elements", "columns", "items", "contents", "text"} {
+		for _, key := range []string{"title", "header", "body", "newBody", "elements", "columns", "items", "contents", "text"} {
 			if child, ok := cardValue(node, key); ok {
 				separator := "\n"
 				if key == "contents" || key == "text" {
@@ -432,19 +441,23 @@ func renderCardLink(node map[string]any) string {
 }
 
 func renderCardImage(node map[string]any) string {
-	key := cardString(node, "image_key")
-	if key == "" {
-		if property, ok := node["property"].(map[string]any); ok {
-			key = cardString(property, "image_key")
-		}
-	}
-	if key == "" {
-		key = cardString(node, "img_key")
-	}
+	key := cardImageKey(node)
 	if key == "" {
 		return "[图片]"
 	}
 	return "[图片 image_key=" + key + "]"
+}
+
+func cardImageKey(node map[string]any) string {
+	if key := cardString(node, "image_key"); key != "" {
+		return key
+	}
+	if property, ok := node["property"].(map[string]any); ok {
+		if key := cardString(property, "image_key"); key != "" {
+			return key
+		}
+	}
+	return cardString(node, "img_key")
 }
 
 // cardExtractURL walks the documented URL-bearing fields on a button/link
@@ -602,6 +615,75 @@ func renderCardList(list map[string]any, items []any) string {
 		lines = append(lines, prefix+text)
 	}
 	return strings.Join(lines, "\n")
+}
+
+func renderCardTable(table map[string]any) string {
+	columns := cardChildren(table, "columns")
+	rows := cardChildren(table, "rows")
+	if len(columns) == 0 || len(rows) == 0 {
+		return ""
+	}
+
+	type column struct {
+		name  string
+		label string
+	}
+	ordered := make([]column, 0, len(columns))
+	for _, raw := range columns {
+		node, ok := raw.(map[string]any)
+		if !ok {
+			continue
+		}
+		name := cardString(node, "name")
+		if name == "" {
+			continue
+		}
+		label := strings.TrimSpace(cardString(node, "display_name"))
+		if label == "" {
+			label = name
+		}
+		ordered = append(ordered, column{name: name, label: label})
+	}
+	if len(ordered) == 0 {
+		return ""
+	}
+
+	var body strings.Builder
+	body.WriteString("| ")
+	for index, col := range ordered {
+		if index > 0 {
+			body.WriteString(" | ")
+		}
+		body.WriteString(escapeCardTableCell(col.label))
+	}
+	body.WriteString(" |\n|")
+	for range ordered {
+		body.WriteString(" --- |")
+	}
+
+	for _, raw := range rows {
+		row, ok := raw.(map[string]any)
+		if !ok {
+			continue
+		}
+		body.WriteString("\n| ")
+		for index, col := range ordered {
+			if index > 0 {
+				body.WriteString(" | ")
+			}
+			body.WriteString(escapeCardTableCell(renderCardText(row[col.name])))
+		}
+		body.WriteString(" |")
+	}
+	return body.String()
+}
+
+func escapeCardTableCell(value string) string {
+	value = strings.TrimSpace(value)
+	value = strings.ReplaceAll(value, "|", `\|`)
+	value = strings.ReplaceAll(value, "\r\n", "<br>")
+	value = strings.ReplaceAll(value, "\n", "<br>")
+	return value
 }
 
 func messageTimestamp(item *larkim.Message) int64 {

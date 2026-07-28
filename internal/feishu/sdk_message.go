@@ -116,9 +116,44 @@ func parseMessageAttachments(messageID, messageType, content string) []media.Ref
 		if json.Unmarshal([]byte(content), &payload) == nil {
 			collectPostAttachmentRefs(payload, appendRef)
 		}
+	case "interactive":
+		var payload any
+		if json.Unmarshal([]byte(content), &payload) == nil {
+			if envelope, ok := payload.(map[string]any); ok {
+				if encoded, ok := envelope["json_card"].(string); ok && encoded != "" {
+					var card any
+					if json.Unmarshal([]byte(encoded), &card) == nil {
+						payload = card
+					}
+				}
+			}
+			collectCardAttachmentRefs(payload, appendRef)
+		}
 	}
 
 	return refs
+}
+
+func collectCardAttachmentRefs(value any, appendRef func(kind, fileKey, name string)) {
+	switch node := value.(type) {
+	case []any:
+		for _, child := range node {
+			collectCardAttachmentRefs(child, appendRef)
+		}
+	case map[string]any:
+		tag := cardString(node, "tag")
+		if tag == "img" || tag == "image" {
+			appendRef("image", cardImageKey(node), "")
+		}
+		keys := make([]string, 0, len(node))
+		for key := range node {
+			keys = append(keys, key)
+		}
+		sort.Strings(keys)
+		for _, key := range keys {
+			collectCardAttachmentRefs(node[key], appendRef)
+		}
+	}
 }
 
 type attachmentKey struct {

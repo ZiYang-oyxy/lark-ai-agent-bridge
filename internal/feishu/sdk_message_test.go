@@ -65,6 +65,27 @@ func TestParsePostAttachmentsSortsObjectKeys(t *testing.T) {
 	}
 }
 
+func TestParseMessageAttachmentsInteractive(t *testing.T) {
+	content := `{"elements":[[{"tag":"img","image_key":"img_1"},{"tag":"img","image_key":"img_1"}],[{"tag":"image","property":{"image_key":"img_2"}}]]}`
+	got := parseMessageAttachments("m-card", "interactive", content)
+	want := []media.Ref{
+		{MessageID: "m-card", FileKey: "img_1", Kind: "image"},
+		{MessageID: "m-card", FileKey: "img_2", Kind: "image"},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("attachments = %#v, want %#v", got, want)
+	}
+}
+
+func TestParseMessageAttachmentsInteractiveJSONCard(t *testing.T) {
+	content := `{"json_card":"{\"body\":{\"elements\":[{\"tag\":\"img\",\"img_key\":\"img_nested\"}]}}"}`
+	got := parseMessageAttachments("m-card", "interactive", content)
+	want := []media.Ref{{MessageID: "m-card", FileKey: "img_nested", Kind: "image"}}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("attachments = %#v, want %#v", got, want)
+	}
+}
+
 func TestParseRejectedAttachments(t *testing.T) {
 	for _, messageType := range []string{"sticker", "audio", "video"} {
 		t.Run(messageType, func(t *testing.T) {

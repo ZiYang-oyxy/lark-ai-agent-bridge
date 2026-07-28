@@ -247,6 +247,29 @@ func TestParseInteractiveMessageTextSupportsLegacyCard(t *testing.T) {
 	}
 }
 
+func TestSDKSenderFetchMessageRendersInteractiveTable(t *testing.T) {
+	content := `{"header":{"title":{"tag":"plain_text","content":"测试失败!!!"}},"elements":[{"tag":"button","text":{"tag":"plain_text","content":"测试报告"},"url":"https://reports.example.com/rnic"},{"tag":"table","columns":[{"name":"A","display_name":"No."},{"name":"B","display_name":"用例名称"},{"name":"C","display_name":"结果"}],"rows":[{"A":{"tag":"plain_text","content":"1"},"B":{"tag":"plain_text","content":"case|one"},"C":{"tag":"plain_text","content":"failed"}},{"A":{"tag":"plain_text","content":"2"},"B":{"tag":"plain_text","content":"case two"},"C":{"tag":"plain_text","content":"passed"}}]}]}`
+	api := &captureGetMessageAPI{resp: getMessageResp("interactive", content, "ou_reporter")}
+	got, err := (&SDKSender{getAPI: api}).FetchMessage(t.Context(), "om_card")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"测试失败!!!",
+		"[按钮:测试报告](https://reports.example.com/rnic)",
+		"| No. | 用例名称 | 结果 |",
+		`| 1 | case\|one | failed |`,
+		"| 2 | case two | passed |",
+	} {
+		if !strings.Contains(got.Text, want) {
+			t.Fatalf("interactive text missing %q:\n%s", want, got.Text)
+		}
+	}
+	if strings.Contains(got.Text, `"tag":"table"`) {
+		t.Fatalf("interactive card leaked raw JSON instead of rendered text:\n%s", got.Text)
+	}
+}
+
 func TestParseInteractiveMessageTextPreservesButtonURL(t *testing.T) {
 	// Legacy card carrying a primary button with an explicit URL, as Feishu
 	// delivers when the quoted card was sent via the incoming webhook API.
