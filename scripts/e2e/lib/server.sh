@@ -8,116 +8,22 @@ prepare_fake_claude_if_needed() {
     return
   fi
   mkdir -p "$FAKE_BIN_DIR"
-  cat >"$FAKE_BIN_DIR/claude" <<'EOF'
-#!/usr/bin/env sh
-set -eu
-args="$(printf '%s' "$*" | tr '\n' ' ')"
-printf 'pid=%s args=%s\n' "$$" "$args" >>"${FAKE_CLAUDE_LOG:?FAKE_CLAUDE_LOG is required}"
-previous=
-instruction_file=
-prompt=
-for arg in "$@"; do
-  if [ "$previous" = "--append-system-prompt-file" ]; then
-    instruction_file="$arg"
-  fi
-  previous="$arg"
-  prompt="$arg"
-done
-case "$prompt" in
-  *'Reply with exactly OK. Do not use tools.'*) ;;
-  *)
-    test -n "$instruction_file" && test -r "$instruction_file"
-    grep -q 'Feishu Bridge Runtime Instructions' "$instruction_file"
-    case "$prompt" in *'Feishu Bridge Runtime Instructions'*) exit 92 ;; esac
-    ;;
-esac
-marker="$(printf '%s\n' "$args" | grep -Eo 'E2E_[A-Za-z0-9_-]+' | tail -n 1 || true)"
-write_test_image() {
-  image_name="e2e-output-${marker}.png"
-  image_base64='iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII='
-  if ! printf '%s' "$image_base64" | base64 --decode >"$image_name" 2>/dev/null; then
-    printf '%s' "$image_base64" | base64 -D >"$image_name"
-  fi
-  }
-case "$args" in
-  *E2E_BRIDGE_IMAGE_NO_INTENT*)
-    write_test_image
-    jq -nc --arg result "已按要求生成，但不发送图片 ${marker}" '{type:"result",result:$result,model:"fake-claude-e2e",usage:{output_tokens:1},session_id:"fake-e2e-session"}'
-    exit 0
-    ;;
-  *E2E_BRIDGE_IMAGE_AMBIGUOUS*)
-    jq -nc --arg result "存在多个合理候选，请确认要发送哪一张。 ${marker}" '{type:"result",result:$result,model:"fake-claude-e2e",usage:{output_tokens:1},session_id:"fake-e2e-session"}'
-    exit 0
-    ;;
-  *E2E_BRIDGE_IMAGE_INTENT*)
-    write_test_image
-    result="![${marker}](./${image_name})"
-    jq -nc --arg result "$result" '{type:"result",result:$result,model:"fake-claude-e2e",usage:{output_tokens:1},session_id:"fake-e2e-session"}'
-    exit 0
-    ;;
-  *E2E_*_OUTPUT_IMAGE*)
-    write_test_image
-    result="![${marker}](./${image_name})"
-    jq -nc --arg result "$result" '{type:"result",result:$result,model:"fake-claude-e2e",usage:{output_tokens:1},session_id:"fake-e2e-session"}'
-    exit 0
-    ;;
-  *E2E_*_NATIVE_TEXT_STREAM_STOP_E2E_BLOCK*)
-    printf '%s\n' '{"type":"content_block_delta","delta":{"type":"text_delta","text":"native-stop-one "}}'
-    sleep 1.2
-    printf '%s\n' '{"type":"content_block_delta","delta":{"type":"text_delta","text":"native-stop-two "}}'
-    sleep 1.2
-    printf '%s\n' '{"type":"content_block_delta","delta":{"type":"text_delta","text":"native-stop-three "}}'
-    exec sleep 300
-    ;;
-  *E2E_*_NATIVE_TEXT_STREAM_NORMAL*)
-    printf '%s\n' '{"type":"content_block_delta","delta":{"type":"text_delta","text":"native-normal-one "}}'
-    sleep 1.2
-    printf '%s\n' '{"type":"content_block_delta","delta":{"type":"text_delta","text":"native-normal-two "}}'
-    sleep 1.2
-    printf '%s\n' '{"type":"content_block_delta","delta":{"type":"text_delta","text":"native-normal-three "}}'
-    sleep 1.2
-    printf '%s\n' '{"type":"result","result":"native-normal-final","model":"fake-claude-e2e","usage":{"output_tokens":1},"session_id":"fake-e2e-session"}'
-    exit 0
-    ;;
-  *E2E_*_STREAM*)
-    jq -nc --arg text "streaming ${marker}" '{type:"content_block_delta",delta:{type:"text_delta",text:$text}}'
-    sleep 1.2
-    jq -nc --arg result "FAKE_E2E_STARTED ${marker}" '{type:"result",result:$result,model:"fake-claude-e2e",usage:{output_tokens:1},session_id:"fake-e2e-session"}'
-    exit 0
-    ;;
-  *E2E_PREVIEW_THRESHOLDS*)
-    printf '%s\n' '{"type":"content_block_delta","delta":{"type":"text_delta","text":"PREVIEW_FIRST_"}}'
-    sleep 0.2
-    printf '%s\n' '{"type":"content_block_delta","delta":{"type":"text_delta","text":"BBBBBBBBBBBBBBBBBBBBBBBBBBBBBB"}}'
-    sleep 1
-    long="$(awk 'BEGIN { for (i = 0; i < 2100; i++) printf "C" }')PREVIEW_TAIL_HIDDEN"
-    printf '{"type":"content_block_delta","delta":{"type":"text_delta","text":"%s"}}\n' "$long"
-    sleep 3
-    printf '{"type":"result","result":"PREVIEW_FINAL_COMPLETE_%s","model":"fake-claude-e2e","usage":{"output_tokens":1},"session_id":"fake-e2e-session"}\n' "$long"
-    exit 0
-    ;;
-  *E2E_REPLY_MODE_SEMANTICS*)
-    printf '%s\n' '{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"E2E_INTERMEDIATE_ANSWER"}]}}'
-    printf '%s\n' '{"type":"assistant","message":{"role":"assistant","content":[{"type":"thinking","thinking":"E2E_PRIVATE_THOUGHT"},{"type":"tool_use","name":"Read","id":"e2e-tool-1","input":{"path":"E2E_TOOL_CALL"}}]}}'
-    printf '%s\n' '{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"E2E_FINAL_ANSWER"}]}}'
-    printf '%s\n' '{"type":"result","result":"E2E_FINAL_ANSWER","model":"fake-claude-e2e","usage":{"output_tokens":2},"session_id":"fake-e2e-session"}'
-    exit 0
-    ;;
-  *E2E_PROCESS_PANELS*)
-    printf '%s\n' '{"type":"content_block_delta","delta":{"type":"thinking_delta","thinking":"E2E_PRIVATE_THOUGHT"}}'
-    printf '%s\n' '{"type":"content_block_delta","delta":{"type":"input_json_delta","partial_json":"E2E_TOOL_CALL"}}'
-    printf '%s\n' '{"type":"content_block_delta","delta":{"type":"text_delta","text":"E2E_CLEAN_ANSWER"}}'
-    printf '%s\n' '{"type":"result","result":"E2E_CLEAN_ANSWER","model":"fake-claude-e2e","usage":{"output_tokens":1},"session_id":"fake-e2e-session"}'
-    exit 0
-    ;;
-esac
-result="FAKE_E2E_STARTED${marker:+ $marker}"
-jq -nc --arg result "$result" '{type:"result",result:$result,model:"fake-claude-e2e",usage:{output_tokens:1},session_id:"fake-e2e-session"}'
-case "$args" in
-  *E2E_BLOCK*) exec sleep 300 ;;
-esac
-EOF
-  chmod +x "$FAKE_BIN_DIR/claude"
+
+  # P-OBSERVE §3.6 Step 6b:替换原 100+ 行 heredoc shim。fake claude 现在由
+  # cmd/lark-agent-fake-claude 二进制承接,fixture 定义在 scripts/e2e/fixtures/。
+  # 编译该二进制到 FAKE_BIN_DIR/claude,PATH 优先命中它。
+  local fake_bin="$FAKE_BIN_DIR/claude"
+  local fixture_dir="$ROOT/scripts/e2e/fixtures"
+  local go_bin="${GO:-$(command -v go || echo /usr/local/go/bin/go)}"
+  test -x "$go_bin" || { echo "prepare_fake_claude_if_needed: go binary not executable: $go_bin" >&2; return 1; }
+  test -d "$fixture_dir" || { echo "prepare_fake_claude_if_needed: fixture dir missing: $fixture_dir" >&2; return 1; }
+  GOCACHE="${GOCACHE:-$ROOT/.cache/go-build}" "$go_bin" build -o "$fake_bin" "$ROOT/cmd/lark-agent-fake-claude" \
+    || { echo "prepare_fake_claude_if_needed: build failed" >&2; return 1; }
+
+  # LAB_FAKE_FIXTURE_DIR 通过 server_env 注入到 bridge serve 进程,fake claude 二进制
+  # 从 PATH 命中并读到指定 fixture 目录。fixture 引擎负责所有 marker 分派、image
+  # side-effect、hang 语义、指令合规性校验。
+  export LAB_FAKE_FIXTURE_DIR="$fixture_dir"
 }
 
 sync_server_pid() {

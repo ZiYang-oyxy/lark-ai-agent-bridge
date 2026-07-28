@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -28,6 +29,7 @@ import (
 	"lark-agent-bridge/internal/config"
 	"lark-agent-bridge/internal/devmode"
 	"lark-agent-bridge/internal/doctor"
+	"lark-agent-bridge/internal/fakeclaude"
 	"lark-agent-bridge/internal/feishu"
 	"lark-agent-bridge/internal/feishueventlog"
 	"lark-agent-bridge/internal/media"
@@ -979,6 +981,19 @@ func (simulateRunner) Run(_ context.Context, req bridge.AgentRunRequest) (bridge
 		model = "simulate-codex"
 		sessionID = "simulate-thread"
 	}
+	// P-OBSERVE §3.6 Step 6b:if LAB_FAKE_FIXTURE_DIR is set and the prompt
+	// carries an E2E_* marker or matches a prompt-anchored fixture, run the
+	// fakeclaude engine and reuse the real claude stream parser so L1 sees
+	// exactly what L2 sees. Falls back to the historical 3-segment simulate
+	// output when no fixture matches — keeps all existing L1 smoke asserts
+	// (that don't use markers) untouched.
+	if dir := os.Getenv("LAB_FAKE_FIXTURE_DIR"); dir != "" {
+		if result, ok, err := runFixtureSimulate(dir, req, model, sessionID); err != nil {
+			return bridge.AgentRunResult{}, err
+		} else if ok {
+			return result, nil
+		}
+	}
 	return bridge.AgentRunResult{
 		Model:          model,
 		Tokens:         len([]rune(req.Prompt)),
@@ -989,6 +1004,43 @@ func (simulateRunner) Run(_ context.Context, req bridge.AgentRunRequest) (bridge
 			{Kind: card.SegmentTool, Text: "simulated tool call"},
 		},
 	}, nil
+}
+
+// runFixtureSimulate renders the fixture matching req.Prompt (interpreted as
+// argv-last token by fakeclaude), then parses the emitted NDJSON with the real
+// claude stream parser so the resulting AgentRunResult segments are structurally
+// identical to what serve+fake-claude would produce. Returns ok=false when no
+// fixture matches (caller falls back to the legacy 3-segment output).
+func runFixtureSimulate(dir string, req bridge.AgentRunRequest, model, sessionID string) (bridge.AgentRunResult, bool, error) {
+	fixtures, err := fakeclaude.LoadDir(dir)
+	if err != nil {
+		return bridge.AgentRunResult{}, false, fmt.Errorf("fake fixture load: %w", err)
+	}
+	inv := fakeclaude.NewInvocation([]string{req.Prompt})
+	f := fakeclaude.Resolve(fixtures, inv)
+	// Default fixture is engaged only when nothing matched — refuse to
+	// hijack the simulate path with a "FAKE_E2E_STARTED " default so
+	// existing L1 asserts that don't care about markers keep working.
+	if f.Name == "default" {
+		return bridge.AgentRunResult{}, false, nil
+	}
+	var buf bytes.Buffer
+	for i := range f.Emit {
+		buf.WriteString(f.RenderEmit(i, inv))
+		buf.WriteByte('\n')
+	}
+	// Reuse the real claude stream parser to get segments identical to L2.
+	result := bridge.ParseClaudeStreamOutput(buf.Bytes())
+	if result.Model == "" {
+		result.Model = model
+	}
+	if result.AgentSessionID == "" {
+		result.AgentSessionID = sessionID
+	}
+	if result.Tokens == 0 {
+		result.Tokens = len([]rune(req.Prompt))
+	}
+	return result, true, nil
 }
 
 var _ bridge.AgentRunner = simulateRunner{}

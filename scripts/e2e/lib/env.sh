@@ -23,7 +23,13 @@ build_server_env() {
     server_env+=("E2E_CALLBACK_ADDR=$CALLBACK_ADDR")
   fi
   if [[ "$USE_FAKE_CLAUDE" == "1" ]]; then
-    server_env+=("E2E_CLAUDE_BIN=$FAKE_BIN_DIR/claude" "FAKE_CLAUDE_LOG=$FAKE_CLAUDE_LOG")
+    server_env+=(
+      "E2E_CLAUDE_BIN=$FAKE_BIN_DIR/claude"
+      "FAKE_CLAUDE_LOG=$FAKE_CLAUDE_LOG"
+      # P-OBSERVE §3.6 Step 6b:告诉 fake claude 二进制去哪里读 fixture。
+      # 空则二进制 fail-closed(不自动猜路径)。
+      "LAB_FAKE_FIXTURE_DIR=${LAB_FAKE_FIXTURE_DIR:-$ROOT/scripts/e2e/fixtures}"
+    )
   fi
   if [[ -n "$SERVER_QUEUE_MAX_PENDING" ]]; then
     server_env+=("E2E_QUEUE_MAX_PENDING=$SERVER_QUEUE_MAX_PENDING")

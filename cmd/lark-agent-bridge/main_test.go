@@ -137,6 +137,71 @@ func TestSimulateRunnerReportsSelectedAgent(t *testing.T) {
 	}
 }
 
+// P-OBSERVE §3.6 Step 6b:LAB_FAKE_FIXTURE_DIR 声明且 prompt 含 marker 时,
+// simulateRunner 走 fakeclaude 引擎 + 真 claude stream parser。此测试锁死该路径,
+// 确保 L1 与 L2 共享同一份 fixture 语义,不出现"L1 走硬编码 3 段,L2 走 fixture"
+// 的分裂。
+func TestSimulateRunnerUsesFixtureWhenMarkerMatches(t *testing.T) {
+	dir := t.TempDir()
+	fixture := `{
+		"name": "test_marker",
+		"match": {"marker_pattern": "E2E_TEST_MARKER"},
+		"emit": [
+			{"line": "{\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"fixture-answer-${marker}\"}}"},
+			{"line": "{\"type\":\"result\",\"result\":\"fixture-answer-${marker}\",\"model\":\"fake-claude-e2e\",\"usage\":{\"output_tokens\":1},\"session_id\":\"fake-e2e-session\"}"}
+		]
+	}`
+	if err := os.WriteFile(filepath.Join(dir, "test.json"), []byte(fixture), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("LAB_FAKE_FIXTURE_DIR", dir)
+	result, err := (simulateRunner{}).Run(context.Background(), bridge.AgentRunRequest{
+		Kind:   agent.Claude,
+		Prompt: "hello E2E_TEST_MARKER world",
+	})
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	found := false
+	for _, seg := range result.Segments {
+		if strings.Contains(seg.Text, "fixture-answer-E2E_TEST_MARKER") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected fixture-driven segment, got segments = %+v", result.Segments)
+	}
+}
+
+// 反向:未命中 fixture 时 fallback 到硬编码 3 段(保 L1 向后兼容)。
+func TestSimulateRunnerFallsBackWhenNoFixtureMatches(t *testing.T) {
+	dir := t.TempDir()
+	fixture := `{
+		"name": "some_marker",
+		"match": {"marker_pattern": "E2E_NEVER_MATCHES_HERE"},
+		"emit": [{"line": "{\"type\":\"result\",\"result\":\"x\"}"}]
+	}`
+	if err := os.WriteFile(filepath.Join(dir, "unrelated.json"), []byte(fixture), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("LAB_FAKE_FIXTURE_DIR", dir)
+	result, err := (simulateRunner{}).Run(context.Background(), bridge.AgentRunRequest{
+		Kind:   agent.Claude,
+		Prompt: "no marker here",
+	})
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	// legacy 3-segment output;first segment must be "simulated answer: <prompt>"
+	if len(result.Segments) != 3 {
+		t.Fatalf("expected 3 legacy segments, got %d: %+v", len(result.Segments), result.Segments)
+	}
+	if result.Segments[0].Text != "simulated answer: no marker here" {
+		t.Fatalf("expected legacy first segment, got %q", result.Segments[0].Text)
+	}
+}
+
 func TestRunScheduleProposeValidatesRequiredEnvironment(t *testing.T) {
 	t.Setenv("LAB_SCHEDULE_SOCKET", "")
 	t.Setenv("LAB_SCHEDULE_TOKEN", "")
