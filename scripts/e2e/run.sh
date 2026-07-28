@@ -254,6 +254,36 @@ configure_callback_for_cases() {
   done
 }
 
+# case_prerequisites <name>: print each required capability on its own line.
+# base capabilities always required; optional capability is appended only when
+# the runtime capability doctor reports it available (see e2e_cap_index).
+# Data source is the P-CASES-Phase-2 registry (E2E_CASE_PREREQ_{BASE,OPTIONAL}).
+case_prerequisites() {
+  local name="$1"
+  local base="${E2E_CASE_PREREQ_BASE[$name]:-}"
+  local optional="${E2E_CASE_PREREQ_OPTIONAL[$name]:-}"
+  local cap
+  for cap in $base; do
+    [[ -n "$cap" ]] && printf '%s\n' "$cap"
+  done
+  if [[ -n "$optional" ]] && e2e_cap_index "$optional" >/dev/null 2>&1; then
+    printf '%s\n' "$optional"
+  fi
+}
+
+# any_selected_case_is_controlled: return 0 when at least one selected case has
+# execution_mode=controlled, meaning we must build the controlled bridge binary
+# and require go/pgrep/ps at runtime. Observe-only runs skip the build.
+any_selected_case_is_controlled() {
+  local case_name
+  for case_name in "${RUN_CASES[@]}"; do
+    if [[ "${E2E_CASE_EXECUTION_MODE[$case_name]:-observe}" == "controlled" ]]; then
+      return 0
+    fi
+  done
+  return 1
+}
+
 summary_init() {
   {
     echo "# Feishu Real E2E"
