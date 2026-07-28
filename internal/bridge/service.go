@@ -3770,6 +3770,13 @@ func (s *Service) attachPendingMergeForward(ctx context.Context, msg Message, cm
 	if !ok {
 		return msg, cmd
 	}
+	// P2P 里用户常见的操作是先转发卡片、再直接回复这张卡片。此时 pending
+	// 素材和 ParentID 指向同一个源消息；后续 resolveQuotedMessage 会按引用语义
+	// 拉取并内联它，这里不能再作为转发素材拼一次。
+	if pending.MessageID == msg.ParentID {
+		s.Audit.Record(msg.Sender, "merge_forward_context_deduplicated", msg.ChatID, "source="+pending.MessageID+" request="+msg.ID)
+		return msg, cmd
+	}
 
 	fetched, err := s.MessageFetcher.FetchMessage(ctx, pending.MessageID)
 	if err != nil {

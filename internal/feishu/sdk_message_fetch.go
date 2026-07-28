@@ -342,7 +342,7 @@ func renderCardText(value any) string {
 			return renderCardButton(node)
 		case "img", "image":
 			return renderCardImage(node)
-		case "plain_text", "code_span", "markdown", "md", "text":
+		case "plain_text", "code_span", "markdown", "md", "lark_md", "text":
 			if content := cardContent(node); content != "" {
 				return content
 			}
@@ -375,7 +375,7 @@ func renderCardText(value any) string {
 		// This avoids leaking action payloads, configuration, or duplicated
 		// markdownElements from the normalized CardKit response.
 		parts := make([]string, 0)
-		for _, key := range []string{"title", "header", "body", "newBody", "elements", "columns", "items", "contents", "text"} {
+		for _, key := range []string{"title", "header", "body", "newBody", "elements", "fields", "actions", "columns", "items", "contents", "text"} {
 			if child, ok := cardValue(node, key); ok {
 				separator := "\n"
 				if key == "contents" || key == "text" {

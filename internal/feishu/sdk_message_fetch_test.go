@@ -247,6 +247,22 @@ func TestParseInteractiveMessageTextSupportsLegacyCard(t *testing.T) {
 	}
 }
 
+func TestParseInteractiveMessageTextSupportsLegacyFieldsAndActions(t *testing.T) {
+	raw := `{"header":{"title":{"tag":"lark_md","content":"测试失败!!!"}},"elements":[{"tag":"div","fields":[{"is_short":true,"text":{"tag":"lark_md","content":"**任务名称**"}},{"is_short":true,"text":{"tag":"lark_md","content":"RNIC 版本回归测试(HAPS)"}}]},{"tag":"div","text":{"tag":"lark_md","content":"**报告链接**"}},{"tag":"action","actions":[{"tag":"button","text":{"tag":"lark_md","content":"**测试报告**"},"behaviors":[{"type":"open_url","default_url":"https://reports.example.com/rnic"}]}]}]}`
+	got := parseInteractiveMessageText(raw)
+	for _, want := range []string{
+		"测试失败!!!",
+		"**任务名称**",
+		"RNIC 版本回归测试(HAPS)",
+		"**报告链接**",
+		"[按钮:**测试报告**](https://reports.example.com/rnic)",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("legacy card text missing %q:\n%s", want, got)
+		}
+	}
+}
+
 func TestSDKSenderFetchMessageRendersInteractiveTable(t *testing.T) {
 	content := `{"header":{"title":{"tag":"plain_text","content":"测试失败!!!"}},"elements":[{"tag":"button","text":{"tag":"plain_text","content":"测试报告"},"url":"https://reports.example.com/rnic"},{"tag":"table","columns":[{"name":"A","display_name":"No."},{"name":"B","display_name":"用例名称"},{"name":"C","display_name":"结果"}],"rows":[{"A":{"tag":"plain_text","content":"1"},"B":{"tag":"plain_text","content":"case|one"},"C":{"tag":"plain_text","content":"failed"}},{"A":{"tag":"plain_text","content":"2"},"B":{"tag":"plain_text","content":"case two"},"C":{"tag":"plain_text","content":"passed"}}]}]}`
 	api := &captureGetMessageAPI{resp: getMessageResp("interactive", content, "ou_reporter")}

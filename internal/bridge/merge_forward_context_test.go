@@ -97,3 +97,45 @@ func TestPendingMergeForwardRequiresSameSenderAndIsConsumedOnce(t *testing.T) {
 		t.Fatalf("fetch calls = %v", fetcher.calls)
 	}
 }
+
+func TestPendingForwardMatchingReplyParentIsRenderedOnlyAsQuote(t *testing.T) {
+	now := time.Now()
+	recorder := audit.NewRecorder()
+	svc := NewService(testConfig(t), card.NewFakeRenderer(), newFakeRunner(), recorder)
+	fetcher := &fakeMessageFetcher{msg: QuotedMessage{
+		Text:        "测试失败!!!\n任务名称 RNIC\n[按钮:测试报告](https://reports.example.com/rnic)",
+		MessageType: "interactive",
+		SenderID:    "ou_reporter",
+		SenderType:  "user",
+	}}
+	svc.MessageFetcher = fetcher
+	svc.rememberSkippedMergeForward(Message{
+		ID: "om_card", ChatID: "chat", Sender: "user", MessageType: "interactive", Time: now,
+	}, IntakeReasonForwardMaterial)
+
+	request := Message{
+		ID: "om_request", ParentID: "om_card", ChatID: "chat", Sender: "user",
+		Text: "告诉我卡片内容", MessageType: "text", Time: now.Add(time.Second),
+	}
+	if err := svc.HandleMessage(context.Background(), request); err != nil {
+		t.Fatal(err)
+	}
+
+	queued, ok := svc.Sessions.Get(session.Key{Agent: "claude", ChatID: "chat"})
+	if !ok || len(queued.Queue) != 1 {
+		t.Fatalf("queued session = %#v", queued)
+	}
+	prompt := BuildBatchPrompt(session.Batch{Inputs: []session.Input{queued.Queue[0]}})
+	if count := strings.Count(prompt, "测试失败!!!"); count != 1 {
+		t.Fatalf("source card occurrences = %d, want 1:\n%s", count, prompt)
+	}
+	if strings.Contains(prompt, "以下是用户刚刚转发/分享的内容") {
+		t.Fatalf("same source was also rendered as forwarded material:\n%s", prompt)
+	}
+	if len(fetcher.calls) != 1 || fetcher.calls[0] != "om_card" {
+		t.Fatalf("fetch calls = %v, want one quote fetch", fetcher.calls)
+	}
+	if !auditContainsAction(recorder.Events(), "merge_forward_context_deduplicated") {
+		t.Fatalf("audit = %#v", recorder.Events())
+	}
+}
