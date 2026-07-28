@@ -1,0 +1,12 @@
+{
+  "name": "reply_mode_semantics",
+  "match": {
+    "marker_pattern": "E2E_REPLY_MODE_SEMANTICS"
+  },
+  "emit": [
+    {"line": "{\"type\":\"assistant\",\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"E2E_INTERMEDIATE_ANSWER\"}]}}"},
+    {"line": "{\"type\":\"assistant\",\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"thinking\",\"thinking\":\"E2E_PRIVATE_THOUGHT\"},{\"type\":\"tool_use\",\"name\":\"Read\",\"id\":\"e2e-tool-1\",\"input\":{\"path\":\"E2E_TOOL_CALL\"}}]}}"},
+    {"line": "{\"type\":\"assistant\",\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"E2E_FINAL_ANSWER\"}]}}"},
+    {"line": "{\"type\":\"result\",\"result\":\"E2E_FINAL_ANSWER\",\"model\":\"fake-claude-e2e\",\"usage\":{\"output_tokens\":2},\"session_id\":\"fake-e2e-session\"}"}
+  ]
+}

@@ -1,0 +1,9 @@
+{
+  "name": "preflight_ok_canary",
+  "match": {
+    "prompt_contains": "Reply with exactly OK. Do not use tools."
+  },
+  "emit": [
+    {"line": "{\"type\":\"result\",\"result\":\"OK\",\"model\":\"fake-claude-e2e\",\"usage\":{\"output_tokens\":1},\"session_id\":\"fake-e2e-session\"}"}
+  ]
+}

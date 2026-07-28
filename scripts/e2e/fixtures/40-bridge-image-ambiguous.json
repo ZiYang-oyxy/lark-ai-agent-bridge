@@ -1,0 +1,9 @@
+{
+  "name": "bridge_image_ambiguous",
+  "match": {
+    "marker_pattern": "E2E_BRIDGE_IMAGE_AMBIGUOUS"
+  },
+  "emit": [
+    {"line": "{\"type\":\"result\",\"result\":\"存在多个合理候选，请确认要发送哪一张。\",\"model\":\"fake-claude-e2e\",\"usage\":{\"output_tokens\":1},\"session_id\":\"fake-e2e-session\"}"}
+  ]
+}

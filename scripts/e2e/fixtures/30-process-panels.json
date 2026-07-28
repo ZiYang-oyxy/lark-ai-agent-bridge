@@ -1,0 +1,12 @@
+{
+  "name": "process_panels",
+  "match": {
+    "marker_pattern": "E2E_PROCESS_PANELS"
+  },
+  "emit": [
+    {"line": "{\"type\":\"content_block_delta\",\"delta\":{\"type\":\"thinking_delta\",\"thinking\":\"E2E_PRIVATE_THOUGHT\"}}"},
+    {"line": "{\"type\":\"content_block_delta\",\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"E2E_TOOL_CALL\"}}"},
+    {"line": "{\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"E2E_CLEAN_ANSWER\"}}"},
+    {"line": "{\"type\":\"result\",\"result\":\"E2E_CLEAN_ANSWER\",\"model\":\"fake-claude-e2e\",\"usage\":{\"output_tokens\":1},\"session_id\":\"fake-e2e-session\"}"}
+  ]
+}
