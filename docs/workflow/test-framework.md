@@ -79,7 +79,13 @@ env -u E2E_PREFERENCE_STORE -u E2E_REPLY_STORE \
 
 框架代码在 `internal/testfw`，可执行入口是 `cmd/lark-bridge-test`。runner 调用 `cmd/lark-agent-bridge simulate` / `simulate-action`，捕获其 JSON 输出的 `events` 与 `audit`，用 YAML 里的 assert 条目断言。**不连接飞书、不启动真 Agent**——fake AgentRunner 会把 `BuildBatchPrompt` 输出 echo 到 `result` event 的 text segment 里（前缀 `simulated answer: `），所以断言本质上是在验证 bridge 的**数据模型 + prompt 拼装**。
 
-**fake claude fixture 引擎地基**（P-OBSERVE §3.6 Step 6a，未切换现有 simulateRunner / L2 shell shim）：`internal/fakeclaude` 提供 fixture 加载 + 匹配 + emit 语义；`cmd/lark-agent-fake-claude` 是独立二进制，`LAB_FAKE_FIXTURE_DIR` 指定 fixture 目录（fail-closed，不自动猜路径）；示例 fixture 在 `scripts/e2e/fixtures/*.json`。一份 fixture 声明 `{match: {marker_pattern|prompt_contains}, emit: [{line, delay_sec}]}`——L1 用同一份 fixture 由 `simulateRunner` 解释，L2 用 shell shim 调二进制解释同一份 fixture。当前只落地基（引擎 + 单测 + 4 个示例 fixture），切换现有实现留 P-OBSERVE §3.6 Step 6b。
+**fake claude fixture 引擎**（P-OBSERVE §3.6 Step 6a + Step 6b 完成）：`internal/fakeclaude` 提供 fixture 加载 + 匹配 + emit + `${marker}` 插值 + image side-effect + hang 语义；`cmd/lark-agent-fake-claude` 是独立二进制，`LAB_FAKE_FIXTURE_DIR` 指定 fixture 目录（fail-closed）；fixture 集合 12 例在 `scripts/e2e/fixtures/*.json`，覆盖原 shell shim 全部 10 组 case 分支 + 兜底 fallback。
+
+**L1 与 L2 共享同一份 fixture**：
+- L2：`scripts/e2e/lib/server.sh` 的 `prepare_fake_claude_if_needed` 是 4 行 wrapper——`go build` fake claude 二进制到 `FAKE_BIN_DIR/claude` → PATH 前置 → env.sh 注入 `LAB_FAKE_FIXTURE_DIR`。fake 由二进制驱动，server.sh 从 337 行降到 234 行。
+- L1：`simulateRunner` 在 `LAB_FAKE_FIXTURE_DIR` 声明且 prompt 命中非-default fixture 时，走 fakeclaude 引擎 → `bridge.ParseClaudeStreamOutput` 解析成 AgentRunResult；未命中 fallback 到原来"simulated answer:"3 段输出（保现有 smoke 零回归）。
+
+一份 fixture 声明 `{match: {marker_pattern|prompt_contains}, emit: [{line, delay_sec}], write_image?, image_name?, hang?, post_delay_sec?}`——`${marker}` 与 `${image_name}` 会按 invocation 现场插值。加一种确定性场景 = 加一份 fixture，不改代码、不改 shim。
 
 用例位于 `tests/smoke/`（6 个）和 `tests/regression/`（17 个）。标签以 OR 语义筛选：`--tags smoke,config` = 带 `smoke` 或 `config` 的用例；`--regression` = `--tags smoke,regression`，跑两类并集。
 
