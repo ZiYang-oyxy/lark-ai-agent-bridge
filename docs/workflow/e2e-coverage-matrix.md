@@ -35,7 +35,13 @@ flowchart TD
 
 ## P-CASES 治理后的 L3 目录（2026-07-28）
 
-P-CASES 子 plan 把 L3 case 按**产品能力**分成 10 组，registry.sh 加 `capability` 字段做过滤入口。P-CASES 见 [P-CASES plan](../plans/2026-07-28-test-framework-overhaul-P-CASES.md)。当前分布（Phase 2 落地后 39 case）：
+P-CASES 子 plan 把 L3 case 按**产品能力**分成 10 组，registry.sh 加 `capability` 字段做过滤入口。P-CASES 见 [P-CASES plan](../plans/2026-07-28-test-framework-overhaul-P-CASES.md)。
+
+**治理成果**：L3 从 43 → **39**（净减 4，只删无补）。P-CASES v2 plan 曾拟补 12 个 case（1 L0 + 6 L1 + 5 L3），但 Phase 1/3 前置调研发现——
+- 7 个 L0/L1 拟补 case：全部已由 `internal/agent/agent_test.go`、`internal/bridge/agent_failure_test.go`、`command_test.go`、`service_test.go`、`update_test.go`、`internal/testfw/assert_test.go` 覆盖
+- 5 个 L3 拟补 case：全部已由 `service_test.go`、`agent_selection_test.go`、`group_config_test.go` 覆盖；且真 action callback 走飞书 gateway 层受平台限制无法自动化（见域 3 `card.action.trigger` 那行）
+
+结论：**12 个"补 case"全部为伪需求**。这是 §4.6 分层原则的最强验证，两条 PR 门禁把重复劳动拦截在实施前。当前分布（Phase 2 落地后 39 case，Phase 3 决策不新增）：
 
 | capability | 数量 | 主要 case |
 |---|---:|---|

@@ -294,14 +294,33 @@ L3 默认 **warn-only**——真 agent 输出天然有波动，断言只锁指�
 
 这使 publish 自动覆盖 L0 + L1 smoke integration + regression 三层，无需人工干预。**publish 不自动覆盖 L2/L3**——由 self-loop 手工快查或 `release-regression.sh` 的 e2e-real（L2 fake agent + L3 真 agent canary）另行执行。
 
+## 分层原则（P-CASES §4.6）
+
+新加 case 必须依次通过**两条 PR 门禁**，写不清就下沉一层：
+
+1. **前置调研门禁**：先证明**没有等价的已存在测试**。命令：`grep -rn <断言核心> --include="*_test.go" internal/`；若已有等价覆盖，**纳入目录索引**（挂到 `e2e-coverage-matrix.md` 相应能力组，不新加代码）。**这条是 P-CASES Phase 1 血泪教训**——v2 plan 里 7 个"新增"L0/L1 case 实际上全部已有测试，未审查就动手会重复劳动。
+
+2. **分层下沉门禁**：证明**为什么不能在 L0 或 L1 覆盖**。判定顺序 L0→L1→L3：
+   - **L0（`go test`）** —— 断言是**纯函数或纯数据结构变换**（`buildXxx` 返回值、parser 输出、序列化/反序列化、prompt 组装、mention 剥离）。**不涉及**：进程管理、外部 IO、时序。
+   - **L1（testfw YAML / simulate + fake claude）** —— 断言涉及**bridge 内部状态机的可观察输出**（command dispatch 类型、session 生命周期切换、卡片 event 结构、audit 记录），且这些输出可以在**进程内 simulate** 就能触发和读取。**不涉及**：真飞书 SDK 时序、真 action callback 往返、真 agent 行为、真群消息 intake。
+   - **L3（真飞书 + 真 Claude/Codex）** —— 只有以下三类之一才落 L3：
+     - **真 SDK 时序依赖**：cardkit_reply 落地顺序、message reaction 生命周期、message recall event 时序等，simulate 无法真实复现
+     - **真 action callback 往返**：需要飞书 gateway 转发的 card action（stop 按钮、resume 选择、config.save 表单）——**注意**：`e2e-coverage-matrix.md` 域 3 已确认此路径由飞书平台限制无法自动化，`card.action.trigger` 的真实用户点击目前只能靠 UI automation 手动测
+     - **真 agent 行为**：验证 bridge instructions 注入后真 Claude/Codex 是否遵从（图片意图、schedule 走 propose 路径）
+
+两条门禁都过了才准落 L3。若发现只是"想在真链路验一下同样的逻辑"，说明门禁 2 没过，应该下沉。
+
+**扩展：** 详细论证见 [P-CASES plan §4.6](../plans/2026-07-28-test-framework-overhaul-P-CASES.md#46-分层原则约束未来-case-该落哪一层)。
+
 ## 新增或修改用例
 
-1. **先确定风险层级**。纯逻辑 → L0 Go 单测；跨命令 / 卡片数据模型 / prompt 拼装 → L1 YAML；真实飞书 / CardKit 时序（fake agent 保确定性）→ L2（self-loop 手工快查或进 e2e-real case 库）；真 AI 实际行为（指令注入遵从等）→ L3 真 agent canary。
-2. **smoke vs regression**：核心、高频、发布前必须秒级发现的入 `tests/smoke/` 带 `smoke` tag；广覆盖、边界、管理命令入 `tests/regression/` 带 `regression` tag。别只靠目录名，runner 以 tag 为准。
-3. **顺序契约用 `segments_order`**，不要串起多条 `any_segment_contains` 来暗示顺序——那样倒序也会通过。
-4. **卡片按钮**优先用 `action` 步骤，并为相同权限与输入契约的动作保持 `/action <id>` 消息等价入口。只在卡片上下文专有字段时才用 action 注入。
-5. **写完 e2e-real case 必须**：加进且只加进一个清单（`SMOKE_CASES` / `FULL_EXTRA_CASES` / `FEATURE_CASES`）；使用 `case_prerequisites` 复用现有 capability 名，无额外需求走默认分支；`configure_callback_for_cases` 只对需要 callback gateway 的 case 加白名单；跑 `--profile <name> --case <name> --strict-capabilities` 单验。完整 SOP 见 [testing.md](testing.md)。
-6. **变更收口**：跑 `go test ./...`（含 smoke integration）；涉及发布证据的另跑 regression；涉及真链路的按 self-loop GUIDE 决定 L2/L3。
+1. **先跑分层门禁**（上一节 §分层原则）。确定 case 该落 L0/L1/L3，若已有等价测试则改为"纳入目录索引"而非新增。
+2. **在 L3 加 case 时**（`scripts/e2e/registry.sh` 的 `register_case`）：必须显式声明 `capability` 字段（`main_link|commands|config|lifecycle|queue|group|media|recovery|render|reply_mode|internal` 之一）；空值或未知值会让 `bash scripts/e2e/run.sh --list-cases` 直接报错。命名统一 snake_case，格式 `<capability-prefix>_<action>_<state>`（如 `revoke_during_queue`、`session_resume_after_restart`）。
+3. **smoke vs regression**：核心、高频、发布前必须秒级发现的入 `tests/smoke/` 带 `smoke` tag；广覆盖、边界、管理命令入 `tests/regression/` 带 `regression` tag。别只靠目录名，runner 以 tag 为准。
+4. **顺序契约用 `segments_order`**，不要串起多条 `any_segment_contains` 来暗示顺序——那样倒序也会通过。
+5. **卡片按钮**优先用 `action` 步骤，并为相同权限与输入契约的动作保持 `/action <id>` 消息等价入口。只在卡片上下文专有字段时才用 action 注入。
+6. **写完 e2e-real case 必须**：加进 `scripts/e2e/registry.sh` 声明 `register_case ... <capability>`；使用 `prereq_base` 复用现有 capability 名，无额外需求走默认分支；`needs_callback=1` 只给需要 callback gateway 的 case；跑 `bash scripts/e2e/run.sh --profile <name> --case <name> --strict-capabilities` 单验；跑 `bash scripts/e2e/run.sh --capability <name> --list-cases` 确认能力组归属正确。完整 SOP 见 [testing.md](testing.md)。
+7. **变更收口**：跑 `go test ./...`（含 smoke integration）；涉及发布证据的另跑 regression；涉及真链路的按 self-loop GUIDE 决定 L2/L3。
 
 ## 已知限制
 
