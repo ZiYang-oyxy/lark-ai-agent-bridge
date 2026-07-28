@@ -518,10 +518,10 @@ func buildStatusElements(sessionID string, status StatusCard) []any {
 
 // buildResumeElements renders a compact /resume list: a one-line intro, then one
 // row per recent session laid out as [ text | 恢复 button ]. Each row's text is a
-// single line — 序号 · 时间 · 摘要 (truncated) with a 当前 marker — so rows stay
-// low. The session id lives only on the button callback value (it is machine
-// detail, redundant on-screen); users tell rows apart by time and summary. Empty
-// Items renders a friendly note.
+// single line — 序号 · Session 短 ID · 摘要 (truncated) with a 当前 marker — so
+// rows stay low. The visible id reuses the status bar's suffix rule, while the
+// full id remains on the button callback value. Empty Items renders a friendly
+// note.
 func buildResumeElements(sessionID string, resume ResumeCard) []any {
 	elements := make([]any, 0, len(resume.Items)+2)
 	elements = append(elements, noteElement("resume_intro", fmt.Sprintf("最近历史会话（`%s`）· 点「恢复」继续", resume.Agent)))
@@ -530,7 +530,7 @@ func buildResumeElements(sessionID string, resume ResumeCard) []any {
 		return elements
 	}
 	for i, item := range resume.Items {
-		line := fmt.Sprintf("**%d.** %s", item.Index, item.UpdatedAt)
+		line := fmt.Sprintf("**%d.** %s", item.Index, shortSessionID(item.SessionID, resume.Agent))
 		if item.Current {
 			line += " · 当前"
 		}

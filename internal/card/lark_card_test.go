@@ -1959,8 +1959,8 @@ func TestBuildLarkCardRendersResumeCard(t *testing.T) {
 			Agent:   "claude",
 			WorkDir: "/tmp/work",
 			Items: []ResumeItem{
-				{Index: 1, SessionID: "s-current", UpdatedAt: "2026-07-21 10:00:00", Summary: "最新一轮", Current: true},
-				{Index: 2, SessionID: "s-older", UpdatedAt: "2026-07-20 09:00:00", Summary: "上一轮"},
+				{Index: 1, SessionID: "019f99ab-1234-7000-8000-000000a1b2c3", Summary: "最新一轮", Current: true},
+				{Index: 2, SessionID: "019f99ab-1234-7000-8000-000000d4e5f6", Summary: "上一轮"},
 			},
 		},
 	})
@@ -1978,17 +1978,22 @@ func TestBuildLarkCardRendersResumeCard(t *testing.T) {
 		t.Fatal(err)
 	}
 	text := string(data)
-	// Compact rows show time, summary and the 当前 marker; the session id is not
-	// shown on-screen (it rides the button callback value only).
-	for _, want := range []string{"2026-07-21 10:00:00", "2026-07-20 09:00:00", "当前", "最新一轮", "上一轮", "恢复"} {
+	// Compact rows show the same discriminating suffix as the status bar, plus
+	// summary and 当前 marker. Timestamps are intentionally absent.
+	for _, want := range []string{"a1b2c3", "d4e5f6", "当前", "最新一轮", "上一轮", "恢复"} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("resume card missing %q: %s", want, text)
 		}
 	}
+	for _, forbidden := range []string{"2026-07-21 10:00:00", "2026-07-20 09:00:00"} {
+		if strings.Contains(text, forbidden) {
+			t.Fatalf("resume card should not show timestamp %q: %s", forbidden, text)
+		}
+	}
 	// The non-current row's id rides its resume.select callback value; the
 	// current row's button is disabled and carries no callback.
-	if !strings.Contains(text, "s-older") {
-		t.Fatalf("resume card should carry s-older on a callback value: %s", text)
+	if !strings.Contains(text, "019f99ab-1234-7000-8000-000000d4e5f6") {
+		t.Fatalf("resume card should carry the full older id on a callback value: %s", text)
 	}
 
 	ids := collectCallbackIDs(t, payload)

@@ -938,15 +938,15 @@ func formatResumeList(identity session.CatalogIdentity, entries []session.Catalo
 
 // resumeCardData turns catalog entries into the /resume list card model: agent
 // and workdir for the intro, then each recent session as an ordered row with
-// its localised time, summary, and current-session flag. currentID marks which
-// row is the active session (its 恢复 button is disabled by the renderer).
+// its full session id, summary, and current-session flag. The card renderer
+// derives the same short id used by the status bar; callbacks retain the full
+// id. currentID marks the active row (its 恢复 button is disabled).
 func resumeCardData(identity session.CatalogIdentity, entries []session.CatalogEntry, currentID string) *card.ResumeCard {
 	items := make([]card.ResumeItem, 0, len(entries))
 	for i, entry := range entries {
 		items = append(items, card.ResumeItem{
 			Index:     i + 1,
 			SessionID: entry.SessionID,
-			UpdatedAt: entry.UpdatedAt.Local().Format("2006-01-02 15:04:05"),
 			Summary:   strings.TrimSpace(entry.Summary),
 			Current:   entry.SessionID == currentID,
 		})

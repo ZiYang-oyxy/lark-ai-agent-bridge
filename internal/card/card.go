@@ -215,14 +215,12 @@ type StatusCard struct {
 	NotStarted bool
 }
 
-// ResumeItem is one row of the /resume list: an ordered index, the agent
-// session id used both as the display value and the resume callback value, a
-// localised timestamp, an optional summary, and whether it is the currently
-// active session in this chat/topic.
+// ResumeItem is one row of the /resume list: an ordered index, the full agent
+// session id used to derive the displayed short id and as the resume callback
+// value, an optional summary, and whether it is the currently active session.
 type ResumeItem struct {
 	Index     int
 	SessionID string
-	UpdatedAt string
 	Summary   string
 	Current   bool
 	GrantID   string
