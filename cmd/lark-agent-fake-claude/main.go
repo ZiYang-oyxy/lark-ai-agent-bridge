@@ -60,12 +60,33 @@ func main() {
 		die(1, "fake-claude: %v", err)
 	}
 	f := fakeclaude.Resolve(fixtures, inv)
-	if err := emit(os.Stdout, f); err != nil {
+	if f.WriteImage {
+		imgName := f.ResolvedImageName(inv)
+		if err := writeTestImage(imgName); err != nil {
+			die(1, "fake-claude: write image %s: %v", imgName, err)
+		}
+	}
+	if err := emit(os.Stdout, f, inv); err != nil {
 		die(1, "fake-claude: emit %s: %v", f.Name, err)
 	}
 	if f.PostDelay > 0 {
 		time.Sleep(time.Duration(f.PostDelay * float64(time.Second)))
 	}
+	if f.Hang {
+		// Block until killed by the parent, matching the shim's `exec sleep 300`.
+		// select{} would trigger Go's deadlock detector; a very long sleep does
+		// not, and behaves identically from the parent's POV (it will SIGTERM
+		// this process during cleanup, we exit on the signal).
+		time.Sleep(24 * time.Hour)
+	}
+}
+
+func writeTestImage(name string) error {
+	data, err := fakeclaude.TestImagePNG()
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(name, data, 0o644)
 }
 
 func loadFixtures() ([]fakeclaude.Fixture, error) {
@@ -91,12 +112,13 @@ func appendLog(path string, pid int, argv []string) error {
 	return err
 }
 
-func emit(w io.Writer, f fakeclaude.Fixture) error {
-	for _, e := range f.Emit {
+func emit(w io.Writer, f fakeclaude.Fixture, inv fakeclaude.Invocation) error {
+	for i, e := range f.Emit {
 		if e.DelaySec > 0 {
 			time.Sleep(time.Duration(e.DelaySec * float64(time.Second)))
 		}
-		if _, err := fmt.Fprintln(w, e.Line); err != nil {
+		line := f.RenderEmit(i, inv)
+		if _, err := fmt.Fprintln(w, line); err != nil {
 			return err
 		}
 	}

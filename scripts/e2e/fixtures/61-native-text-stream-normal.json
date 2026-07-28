@@ -1,0 +1,12 @@
+{
+  "name": "native_text_stream_normal",
+  "match": {
+    "marker_pattern": "E2E_.*_NATIVE_TEXT_STREAM_NORMAL"
+  },
+  "emit": [
+    {"line": "{\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"native-normal-one \"}}"},
+    {"line": "{\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"native-normal-two \"}}", "delay_sec": 1.2},
+    {"line": "{\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"native-normal-three \"}}", "delay_sec": 1.2},
+    {"line": "{\"type\":\"result\",\"result\":\"native-normal-final\",\"model\":\"fake-claude-e2e\",\"usage\":{\"output_tokens\":1},\"session_id\":\"fake-e2e-session\"}", "delay_sec": 1.2}
+  ]
+}

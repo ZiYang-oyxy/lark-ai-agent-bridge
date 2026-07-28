@@ -1,0 +1,12 @@
+{
+  "name": "native_text_stream_stop",
+  "match": {
+    "marker_pattern": "E2E_.*_NATIVE_TEXT_STREAM_STOP_E2E_BLOCK"
+  },
+  "hang": true,
+  "emit": [
+    {"line": "{\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"native-stop-one \"}}"},
+    {"line": "{\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"native-stop-two \"}}", "delay_sec": 1.2},
+    {"line": "{\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"native-stop-three \"}}", "delay_sec": 1.2}
+  ]
+}

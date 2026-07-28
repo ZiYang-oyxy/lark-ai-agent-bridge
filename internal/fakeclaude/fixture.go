@@ -6,14 +6,26 @@
 //     three hard-coded segments regardless of prompt.
 //
 // A fixture declares:
-//   - name       : human label for evidence.
-//   - match      : how to trigger (any marker substring in argv, or a prompt
-//                  substring).
-//   - emit       : NDJSON lines to write to stdout, in order. Each line is
-//                  either a Claude "stream/result/assistant" event or a Codex
-//                  "response" event. Consumers parse them as Claude does today.
-//   - post_delay : optional trailing sleep (seconds) simulating a hang, for
-//                  the *_E2E_BLOCK class of markers.
+//   - name        : human label for evidence.
+//   - match       : how to trigger (any marker substring in argv, or a prompt
+//                   substring).
+//   - emit        : NDJSON lines to write to stdout, in order. Each line is
+//                   either a Claude "stream/result/assistant" event or a Codex
+//                   "response" event. Consumers parse them as Claude does today.
+//                   Template placeholders ${marker}, ${image_name} are
+//                   substituted per invocation.
+//   - write_image : when true, write a 1x1 test png to CWD before emit. The
+//                   filename is image_name (default "e2e-output-${marker}.png").
+//                   Reproduces the shim's write_test_image side-effect for the
+//                   bridge_image_* / *_OUTPUT_IMAGE fixture family.
+//   - image_name  : template for the image filename, allows ${marker}. Only
+//                   read when write_image=true.
+//   - hang        : when true, block after emit (equivalent to shim's
+//                   `exec sleep 300`). Consumers block forever until the
+//                   process is killed by the parent. Reproduces the
+//                   *_E2E_BLOCK / native_text_stream_stop semantics.
+//   - post_delay  : optional trailing sleep (seconds) after emit. Distinct
+//                   from hang (which is unbounded).
 //
 // A single fixture directory can hold any number of files; ResolveFirst
 // evaluates fixtures in registration order and returns the first match. When
@@ -26,6 +38,7 @@
 package fakeclaude
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -60,10 +73,18 @@ type FixtureEmit struct {
 
 // Fixture is one deterministic scenario.
 type Fixture struct {
-	Name      string       `json:"name"`
-	Match     FixtureMatch `json:"match"`
-	Emit      []FixtureEmit `json:"emit"`
-	PostDelay float64      `json:"post_delay_sec,omitempty"`
+	Name       string        `json:"name"`
+	Match      FixtureMatch  `json:"match"`
+	Emit       []FixtureEmit `json:"emit"`
+	PostDelay  float64       `json:"post_delay_sec,omitempty"`
+	// WriteImage: when true, materialise a 1x1 test png into CWD before emit.
+	// Reproduces the shim's write_test_image side-effect.
+	WriteImage bool `json:"write_image,omitempty"`
+	// ImageName template; ${marker} substituted. Default "e2e-output-${marker}.png".
+	ImageName string `json:"image_name,omitempty"`
+	// Hang: block indefinitely after emit (shim's exec sleep 300). Distinct
+	// from a finite post_delay; the caller is expected to kill this process.
+	Hang bool `json:"hang,omitempty"`
 	// SourcePath is populated by LoadDir; not serialised.
 	SourcePath string `json:"-"`
 }
@@ -202,6 +223,49 @@ func Default(inv Invocation) Fixture {
 		Match: FixtureMatch{},
 		Emit:  []FixtureEmit{{Line: string(line)}},
 	}
+}
+
+// ResolvedImageName returns the on-disk filename this fixture would write when
+// WriteImage is true, with the ${marker} placeholder filled from inv. When
+// WriteImage is false, returns "".
+func (f Fixture) ResolvedImageName(inv Invocation) string {
+	if !f.WriteImage {
+		return ""
+	}
+	tpl := f.ImageName
+	if tpl == "" {
+		tpl = "e2e-output-${marker}.png"
+	}
+	return renderTemplate(tpl, inv, "")
+}
+
+// RenderEmit returns emit line i with ${marker} / ${image_name} substituted.
+// image_name is resolved per fixture (see ResolvedImageName).
+func (f Fixture) RenderEmit(i int, inv Invocation) string {
+	if i < 0 || i >= len(f.Emit) {
+		return ""
+	}
+	return renderTemplate(f.Emit[i].Line, inv, f.ResolvedImageName(inv))
+}
+
+// renderTemplate does ${marker} / ${image_name} substitution. Kept intentionally
+// tiny — full text/template is overkill for two placeholders and would drag
+// escaping complications into fixture JSON authoring.
+func renderTemplate(s string, inv Invocation, imageName string) string {
+	s = strings.ReplaceAll(s, "${marker}", inv.Marker)
+	s = strings.ReplaceAll(s, "${image_name}", imageName)
+	return s
+}
+
+// testImagePNGBase64 is the 1x1 png the shim used, matches the original
+// heredoc's inline base64 literal byte-for-byte so evidence checks (audit sha /
+// image size) stay identical.
+const testImagePNGBase64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
+
+// TestImagePNG returns the decoded 1x1 png bytes. Callers write it to CWD to
+// reproduce the shim's write_test_image side-effect.
+func TestImagePNG() ([]byte, error) {
+	return base64.StdEncoding.DecodeString(testImagePNGBase64)
 }
 
 // ValidateInstruction verifies the shell shim's original invariant:

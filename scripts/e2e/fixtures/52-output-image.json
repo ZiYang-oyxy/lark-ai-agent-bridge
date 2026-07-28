@@ -1,0 +1,10 @@
+{
+  "name": "output_image_family",
+  "match": {
+    "marker_pattern": "E2E_.*_OUTPUT_IMAGE"
+  },
+  "write_image": true,
+  "emit": [
+    {"line": "{\"type\":\"result\",\"result\":\"![${marker}](./${image_name})\",\"model\":\"fake-claude-e2e\",\"usage\":{\"output_tokens\":1},\"session_id\":\"fake-e2e-session\"}"}
+  ]
+}

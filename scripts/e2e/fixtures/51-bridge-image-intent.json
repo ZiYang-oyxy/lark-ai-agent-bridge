@@ -1,0 +1,10 @@
+{
+  "name": "bridge_image_intent",
+  "match": {
+    "marker_pattern": "E2E_BRIDGE_IMAGE_INTENT"
+  },
+  "write_image": true,
+  "emit": [
+    {"line": "{\"type\":\"result\",\"result\":\"![${marker}](./${image_name})\",\"model\":\"fake-claude-e2e\",\"usage\":{\"output_tokens\":1},\"session_id\":\"fake-e2e-session\"}"}
+  ]
+}

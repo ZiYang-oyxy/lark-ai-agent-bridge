@@ -1,0 +1,10 @@
+{
+  "name": "bridge_image_no_intent",
+  "match": {
+    "marker_pattern": "E2E_BRIDGE_IMAGE_NO_INTENT"
+  },
+  "write_image": true,
+  "emit": [
+    {"line": "{\"type\":\"result\",\"result\":\"已按要求生成，但不发送图片 ${marker}\",\"model\":\"fake-claude-e2e\",\"usage\":{\"output_tokens\":1},\"session_id\":\"fake-e2e-session\"}"}
+  ]
+}

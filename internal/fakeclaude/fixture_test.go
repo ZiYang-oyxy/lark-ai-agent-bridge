@@ -156,3 +156,103 @@ func TestValidateInstructionRejectsMissingFile(t *testing.T) {
 		t.Fatalf("missing instruction file should error")
 	}
 }
+
+func TestResolvedImageNameDefault(t *testing.T) {
+	f := Fixture{WriteImage: true}
+	inv := NewInvocation([]string{"claude", "E2E_IMG_001 prompt"})
+	got := f.ResolvedImageName(inv)
+	want := "e2e-output-E2E_IMG_001.png"
+	if got != want {
+		t.Fatalf("default image name: want %q, got %q", want, got)
+	}
+}
+
+func TestResolvedImageNameCustom(t *testing.T) {
+	f := Fixture{WriteImage: true, ImageName: "custom-${marker}-page.png"}
+	inv := NewInvocation([]string{"claude", "E2E_X prompt"})
+	if got := f.ResolvedImageName(inv); got != "custom-E2E_X-page.png" {
+		t.Fatalf("custom image name: got %q", got)
+	}
+}
+
+func TestResolvedImageNameEmptyWhenNoWrite(t *testing.T) {
+	f := Fixture{WriteImage: false, ImageName: "shouldnotshow.png"}
+	inv := NewInvocation([]string{"claude", "E2E_X"})
+	if got := f.ResolvedImageName(inv); got != "" {
+		t.Fatalf("expected empty when WriteImage=false, got %q", got)
+	}
+}
+
+func TestRenderEmitSubstitutesMarkerAndImageName(t *testing.T) {
+	f := Fixture{
+		WriteImage: true,
+		Emit: []FixtureEmit{
+			{Line: `{"type":"result","result":"![${marker}](./${image_name})"}`},
+		},
+	}
+	inv := NewInvocation([]string{"claude", "E2E_PIC_9 hint"})
+	got := f.RenderEmit(0, inv)
+	want := `{"type":"result","result":"![E2E_PIC_9](./e2e-output-E2E_PIC_9.png)"}`
+	if got != want {
+		t.Fatalf("render: want %q, got %q", want, got)
+	}
+}
+
+func TestRenderEmitOutOfRange(t *testing.T) {
+	f := Fixture{Emit: []FixtureEmit{{Line: "x"}}}
+	inv := NewInvocation([]string{"claude", "prompt"})
+	if got := f.RenderEmit(5, inv); got != "" {
+		t.Fatalf("out-of-range should return empty, got %q", got)
+	}
+}
+
+func TestTestImagePNGDecodesToPNGHeader(t *testing.T) {
+	data, err := TestImagePNG()
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(data) < 8 {
+		t.Fatalf("too short: %d", len(data))
+	}
+	pngSig := []byte{0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a}
+	for i, b := range pngSig {
+		if data[i] != b {
+			t.Fatalf("byte %d: want %#x got %#x", i, b, data[i])
+		}
+	}
+}
+
+func TestLoadDirAcceptsExtensionFields(t *testing.T) {
+	dir := t.TempDir()
+	writeFixture(t, dir, "50-image.json", `{
+		"name": "img_intent",
+		"match": {"marker_pattern": "E2E_IMG"},
+		"write_image": true,
+		"image_name": "custom-${marker}.png",
+		"hang": false,
+		"post_delay_sec": 0.5,
+		"emit": [
+			{"line": "{\"type\":\"result\",\"result\":\"![${marker}](./${image_name})\"}"}
+		]
+	}`)
+	fixtures, err := LoadDir(dir)
+	if err != nil {
+		t.Fatalf("LoadDir: %v", err)
+	}
+	if len(fixtures) != 1 {
+		t.Fatalf("expected 1 fixture")
+	}
+	f := fixtures[0]
+	if !f.WriteImage {
+		t.Fatalf("WriteImage should be true")
+	}
+	if f.ImageName != "custom-${marker}.png" {
+		t.Fatalf("ImageName: %q", f.ImageName)
+	}
+	if f.Hang {
+		t.Fatalf("Hang should be false")
+	}
+	if f.PostDelay != 0.5 {
+		t.Fatalf("PostDelay: %v", f.PostDelay)
+	}
+}

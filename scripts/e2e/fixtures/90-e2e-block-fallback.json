@@ -1,0 +1,10 @@
+{
+  "name": "e2e_block_fallback",
+  "match": {
+    "marker_pattern": "E2E_.*_E2E_BLOCK"
+  },
+  "hang": true,
+  "emit": [
+    {"line": "{\"type\":\"result\",\"result\":\"FAKE_E2E_STARTED ${marker}\",\"model\":\"fake-claude-e2e\",\"usage\":{\"output_tokens\":1},\"session_id\":\"fake-e2e-session\"}"}
+  ]
+}

@@ -1,0 +1,10 @@
+{
+  "name": "generic_stream",
+  "match": {
+    "marker_pattern": "E2E_.*_STREAM"
+  },
+  "emit": [
+    {"line": "{\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"streaming ${marker}\"}}"},
+    {"line": "{\"type\":\"result\",\"result\":\"FAKE_E2E_STARTED ${marker}\",\"model\":\"fake-claude-e2e\",\"usage\":{\"output_tokens\":1},\"session_id\":\"fake-e2e-session\"}", "delay_sec": 1.2}
+  ]
+}
