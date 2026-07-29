@@ -283,15 +283,22 @@ func mergeForwardMessageText(item *larkim.Message) string {
 			content = parseInteractiveMessageText(*item.Body.Content)
 		}
 	}
+	// 展开 `@_user_N` 占位符为「@Name(open_id)」——name 缺失时退到 open_id;
+	// 只有 open_id 时给个 `@user(ou_xxx)` 让 agent 至少有个稳定 ID 可用。
+	// 二者都缺失才保留原占位符,不破坏可读性。
 	for _, mention := range item.Mentions {
 		if mention == nil {
 			continue
 		}
 		key := stringPtr(mention.Key)
-		name := stringPtr(mention.Name)
-		if key != "" && name != "" {
-			content = strings.ReplaceAll(content, key, "@"+name)
+		if key == "" {
+			continue
 		}
+		replacement := formatMergeForwardMentionIdentity(mention)
+		if replacement == "" {
+			continue
+		}
+		content = strings.ReplaceAll(content, key, replacement)
 	}
 	if strings.TrimSpace(content) != "" && msgType != "merge_forward" {
 		return strings.TrimSpace(content)
@@ -300,6 +307,21 @@ func mergeForwardMessageText(item *larkim.Message) string {
 		msgType = "unknown"
 	}
 	return "[" + msgType + " 消息]"
+}
+
+func formatMergeForwardMentionIdentity(mention *larkim.Mention) string {
+	name := strings.TrimSpace(stringPtr(mention.Name))
+	openID := strings.TrimSpace(stringPtr(mention.Id))
+	switch {
+	case name != "" && openID != "":
+		return "@" + name + "(" + openID + ")"
+	case openID != "":
+		return "@user(" + openID + ")"
+	case name != "":
+		return "@" + name
+	default:
+		return ""
+	}
 }
 
 // parseInteractiveMessageText extracts user-visible text from CardKit messages.

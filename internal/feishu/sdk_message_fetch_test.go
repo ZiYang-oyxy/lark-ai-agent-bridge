@@ -141,16 +141,46 @@ func TestSDKSenderFetchMessageExpandsMergeForwardTree(t *testing.T) {
 	if got.MessageType != "merge_forward" || got.SenderID != "ou_forwarder" {
 		t.Fatalf("metadata = type:%q sender:%q", got.MessageType, got.SenderID)
 	}
-	for _, want := range []string{"[合并转发消息，共 4 条]", "你好 @李四", "[嵌套合并转发]", "[image 消息]", "结论"} {
+	// 合并转发子消息里的 `@_user_N` 展开成 `@Name(open_id)`,让 agent 既知道被
+	// @ 的显示名,也拿到稳定的 open_id 便于后续操作。
+	for _, want := range []string{"[合并转发消息，共 4 条]", "你好 @李四(ou_b)", "[嵌套合并转发]", "[image 消息]", "结论"} {
 		if !strings.Contains(got.Text, want) {
 			t.Fatalf("expanded text missing %q:\n%s", want, got.Text)
 		}
+	}
+	if strings.Contains(got.Text, "@_user_1") {
+		t.Fatalf("mention placeholder must be expanded, got:\n%s", got.Text)
 	}
 	if earlyAt, nestedAt, lateAt := strings.Index(got.Text, "你好"), strings.Index(got.Text, "[嵌套合并转发]"), strings.Index(got.Text, "结论"); !(earlyAt < nestedAt && nestedAt < lateAt) {
 		t.Fatalf("messages are not chronological: early=%d nested=%d late=%d\n%s", earlyAt, nestedAt, lateAt, got.Text)
 	}
 	if len(got.Attachments) != 1 || got.Attachments[0].MessageID != "om_root" || got.Attachments[0].FileKey != "img_x" {
 		t.Fatalf("attachments = %#v", got.Attachments)
+	}
+}
+
+// TestSDKSenderFetchMessageMergeForwardMentionFallbackToOpenID 锁死 name 缺失时的
+// 退化路径:只要 mention 携带 open_id,子消息里的占位符就必须换成 `@user(open_id)`,
+// 而不是把裸 `@_user_N` 透给 agent。飞书外部人员 mention 常常没有 Name。
+func TestSDKSenderFetchMessageMergeForwardMentionFallbackToOpenID(t *testing.T) {
+	root := fetchedMessageItem("om_root2", "", "merge_forward", "Merged and Forwarded Message", "ou_forwarder", "1710500000000")
+	child := fetchedMessageItem("om_child2", "om_root2", "text", `{"text":"提醒 @_user_9 参加"}`, "ou_c", "1710500001000")
+	key, id := "@_user_9", "ou_stranger"
+	child.Mentions = []*larkim.Mention{{Key: &key, Id: &id}}
+
+	api := &captureGetMessageAPI{resp: &larkim.GetMessageResp{
+		CodeError: larkcore.CodeError{Code: 0},
+		Data:      &larkim.GetMessageRespData{Items: []*larkim.Message{root, child}},
+	}}
+	got, err := (&SDKSender{getAPI: api}).FetchMessage(t.Context(), "om_root2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(got.Text, "提醒 @user(ou_stranger) 参加") {
+		t.Fatalf("open_id fallback missing:\n%s", got.Text)
+	}
+	if strings.Contains(got.Text, "@_user_9") {
+		t.Fatalf("placeholder must be replaced:\n%s", got.Text)
 	}
 }
 
