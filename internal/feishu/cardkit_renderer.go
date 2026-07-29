@@ -305,6 +305,18 @@ func (r *CardKitRenderer) updatePrepared(ctx context.Context, e card.Event, prep
 	if fallbackReason == "" {
 		return r.updateElementContent(ctx, e, prepared)
 	}
+	// answer_unchanged 表示 static 指纹与 answer 都没变——这一帧对飞书客户端毫无信
+	// 息量。Coder + MarkdownLayout 的 flushPreview 常因 limitPreviewEvent 把 segments
+	// 裁到 MaxPreviewRunes 后生成同一段 markdown 而反复触发本分支;继续发全卡 update
+	// 会让飞书客户端在每秒多帧全卡替换下节流合并渲染,视觉上就是"卡片停滞到终态才
+	// 一次性追赶"。跳过时保留 snapshot 不变(与 updateCard 成功后覆盖 snapshot 的语
+	// 义等价——prepared 未变,snapshot 也无需更新),并记 audit 保留可观测性。
+	// heartbeat 显式设 ForceFullUpdate=true,走 full_update_requested 分支,不进这里,
+	// 因此仍能每 CardHeartbeatEvery(默认 5s) force full 一次防死锁。
+	if fallbackReason == "answer_unchanged" && prepared.EventCopy().Streaming && !prepared.EventCopy().ForceFullUpdate {
+		r.recordRender("cardkit_update_skipped", e, fmt.Sprintf("key=%s card_id=%s reason=answer_unchanged", r.renderKey(e), r.cardID))
+		return nil
+	}
 	if prepared.EventCopy().Streaming && r.snapshot != nil {
 		r.recordRender("cardkit_native_fallback", e, fmt.Sprintf("key=%s card_id=%s reason=%s", r.renderKey(e), r.cardID, fallbackReason))
 	}

@@ -585,6 +585,139 @@ func TestCardKitRendererHeartbeatForcesElapsedFullCardUpdate(t *testing.T) {
 	}
 }
 
+// TestCardKitRendererSkipsUnchangedStreamingUpdate 覆盖 Coder+MarkdownLayout 流式期间
+// 上游 flushPreview 因 contentRevision/metaRevision 递增反复触发,但 limitPreviewEvent
+// 把 segments 裁到 MaxPreviewRunes 后生成同一份 markdown,导致 nativeFallbackReason=
+// "answer_unchanged"。此时应跳过 CardKit 更新,不发全卡替换,让飞书客户端不再被无信息量
+// 更新淹没(4f8fb9 那次 6m24s 卡里 226 次 update 有 167 次是 answer_unchanged,直接触发
+// 客户端节流合并渲染,表现为"卡片停滞到终态才追赶")。同时记 audit 保留可观测性。
+func TestCardKitRendererSkipsUnchangedStreamingUpdate(t *testing.T) {
+	client := &fakeCardKitClient{}
+	observer := &fakeCardKitObserver{}
+	renderer := NewCardKitRendererWithNative(client, "source", observer, RenderBinding{
+		BaseSessionID: "claude:chat", BatchID: "batch", LatestScope: "claude:chat", RunCardSessionID: "run-card",
+	}, &fakeNativeJournal{})
+	first := card.Event{
+		Type: "stream", Streaming: true, SessionID: "run-card", HeaderTitle: "✍️ 正在回复 · ⏱ 1s",
+		MarkdownLayout: true, Markdown: "hello world",
+	}
+	if err := renderer.Render(first); err != nil {
+		t.Fatal(err)
+	}
+	// 第二帧: title/meta 都没变,markdown 完全一样。这在实际 Coder 流式里就是
+	// limitPreviewEvent 把 segments 裁剪后生成同一份 tail markdown 的场景。
+	second := first
+	if err := renderer.Render(second); err != nil {
+		t.Fatal(err)
+	}
+	if len(client.elementReqs) != 0 || len(client.updateReqs) != 0 {
+		t.Fatalf("unchanged frame leaked to CardKit: element=%d full=%d", len(client.elementReqs), len(client.updateReqs))
+	}
+	skipped := false
+	for i, action := range observer.actions {
+		if action == "cardkit_update_skipped" && strings.Contains(observer.details[i], "reason=answer_unchanged") {
+			skipped = true
+			break
+		}
+	}
+	if !skipped {
+		t.Fatalf("expected cardkit_update_skipped audit; got actions=%v", observer.actions)
+	}
+	// 第三帧: markdown 变化 → 正常走 native fast path
+	third := first
+	third.Markdown = "hello world updated"
+	if err := renderer.Render(third); err != nil {
+		t.Fatal(err)
+	}
+	if len(client.elementReqs) != 1 || len(client.updateReqs) != 0 {
+		t.Fatalf("changed frame did not go native: element=%d full=%d", len(client.elementReqs), len(client.updateReqs))
+	}
+}
+
+// TestCardKitRendererCoderFakeAgentReplayDropsUnchangedFrames 是 fake-agent 级回归用例:
+// 复现 4f8fb9 那种 Coder 长流式 preview 场景——上游 agentCardStream.flushPreview 因
+// contentRevision 递增反复触发,但 limitPreviewEvent 把 segments 裁到 MaxPreviewRunes 后
+// RenderInlineTimelineWithLimit 反复生成同一份 tail markdown。序列里模拟了 10 帧,
+// 其中 3 帧 markdown 真变化(打字机式推进)、7 帧内容相同(preview 触发但 markdown 没变),
+// 断言跳过逻辑生效: CardKit 只收到 3 次 native fast-path 调用 + 0 次全卡替换,
+// 剩余 7 帧被 cardkit_update_skipped audit,飞书客户端不再被同 payload 淹没。
+func TestCardKitRendererCoderFakeAgentReplayDropsUnchangedFrames(t *testing.T) {
+	client := &fakeCardKitClient{}
+	observer := &fakeCardKitObserver{}
+	renderer := NewCardKitRendererWithNative(client, "source", observer, RenderBinding{
+		BaseSessionID: "claude:chat", BatchID: "batch", LatestScope: "claude:chat", RunCardSessionID: "run-card",
+	}, &fakeNativeJournal{})
+	// 每帧的 markdown。"" 代表沿用上一帧内容 (limitPreviewEvent 裁掉尾部 delta 后
+	// 的稳定 tail);非空代表 markdown 真产生新增量。
+	frames := []string{
+		"> ✅ Read foo.go",                         // 帧 1:首次内容,应发
+		"> ✅ Read foo.go",                         // 帧 2:同 markdown,应跳过
+		"> ✅ Read foo.go",                         // 帧 3:同 markdown,应跳过
+		"> ✅ Read foo.go\n\n> ⏳ Bash pwd",         // 帧 4:markdown 更新,应发
+		"> ✅ Read foo.go\n\n> ⏳ Bash pwd",         // 帧 5:同,应跳过
+		"> ✅ Read foo.go\n\n> ⏳ Bash pwd",         // 帧 6:同,应跳过
+		"> ✅ Read foo.go\n\n> ⏳ Bash pwd",         // 帧 7:同,应跳过
+		"> ✅ Read foo.go\n\n> ✅ Bash pwd — done", // 帧 8:markdown 更新,应发
+		"> ✅ Read foo.go\n\n> ✅ Bash pwd — done", // 帧 9:同,应跳过
+		"> ✅ Read foo.go\n\n> ✅ Bash pwd — done", // 帧 10:同,应跳过
+	}
+	base := card.Event{
+		Type: "stream", Streaming: true, SessionID: "run-card", HeaderTitle: "✍️ 正在回复 · ⏱ 1s",
+		MarkdownLayout: true,
+	}
+	for i, markdown := range frames {
+		frame := base
+		frame.Markdown = markdown
+		if err := renderer.Render(frame); err != nil {
+			t.Fatalf("frame %d render err: %v", i+1, err)
+		}
+	}
+	// 帧 1: CreateCard+ReplyCard (首次,不进 updatePrepared)
+	// 帧 4/8: markdown 变化 → 2 次 native fast-path element update
+	if len(client.elementReqs) != 2 {
+		t.Fatalf("expected 2 native updates for 2 distinct markdown transitions, got %d", len(client.elementReqs))
+	}
+	if len(client.updateReqs) != 0 {
+		t.Fatalf("expected 0 full-card updates during coder streaming, got %d", len(client.updateReqs))
+	}
+	// 帧 2/3/5/6/7/9/10 = 7 次 answer_unchanged 跳过
+	skipCount := 0
+	for i, action := range observer.actions {
+		if action == "cardkit_update_skipped" && strings.Contains(observer.details[i], "reason=answer_unchanged") {
+			skipCount++
+		}
+	}
+	if skipCount != 7 {
+		t.Fatalf("expected 7 cardkit_update_skipped audits (frames 2/3/5/6/7/9/10), got %d; actions=%v", skipCount, observer.actions)
+	}
+}
+
+// TestCardKitRendererHeartbeatBypassesUnchangedSkip 保证跳过逻辑不吞掉 heartbeat。
+// heartbeat 显式设 ForceFullUpdate=true 走 full_update_requested 分支,即便 answer 与
+// static 都没变也必须发全卡 update,防止长时间静默让飞书客户端认为卡片死了。
+func TestCardKitRendererHeartbeatBypassesUnchangedSkip(t *testing.T) {
+	client := &fakeCardKitClient{}
+	renderer := NewCardKitRendererWithNative(client, "source", nil, RenderBinding{
+		BaseSessionID: "claude:chat", BatchID: "batch", LatestScope: "claude:chat", RunCardSessionID: "run-card",
+	}, &fakeNativeJournal{})
+	first := card.Event{
+		Type: "stream", Streaming: true, SessionID: "run-card", HeaderTitle: "🧠 正在推理 · ⏱ 0s",
+		MarkdownLayout: true, Markdown: "waiting",
+	}
+	if err := renderer.Render(first); err != nil {
+		t.Fatal(err)
+	}
+	// heartbeat: 同 markdown + 同 static,但 ForceFullUpdate=true。
+	heartbeat := first
+	heartbeat.ForceFullUpdate = true
+	if err := renderer.Render(heartbeat); err != nil {
+		t.Fatal(err)
+	}
+	if len(client.updateReqs) != 1 {
+		t.Fatalf("heartbeat did not force full update: element=%d full=%d", len(client.elementReqs), len(client.updateReqs))
+	}
+}
+
 func TestCardKitRendererNativeAnswerPreservesHeaderPhaseChanges(t *testing.T) {
 	client := &fakeCardKitClient{}
 	observer := &fakeCardKitObserver{}
