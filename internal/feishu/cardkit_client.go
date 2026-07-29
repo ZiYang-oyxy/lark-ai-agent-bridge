@@ -264,12 +264,10 @@ func (c *CardKitClient) UpdateElementContent(ctx context.Context, req CardKitUpd
 	if c == nil || c.tokens == nil {
 		return fmt.Errorf("missing feishu app credentials for cardkit")
 	}
-	token, err := c.tokens.Token(ctx)
-	if err != nil {
-		return err
-	}
 	path := "/open-apis/cardkit/v1/cards/" + url.PathEscape(req.CardID) + "/elements/" + url.PathEscape(req.ElementID) + "/content"
-	err = c.doWithRetry(ctx, http.MethodPut, path, token, payload, nil)
+	err = retryRejectedTenantToken(ctx, c.tokens, func(token string) error {
+		return c.doWithRetry(ctx, http.MethodPut, path, token, payload, nil)
+	})
 	var apiErr *FeishuAPIError
 	if errors.As(err, &apiErr) && apiErr.Code == 200810 {
 		return fmt.Errorf("%w: %v", ErrCardInteractionInProgress, err)
@@ -284,15 +282,13 @@ func (c *CardKitClient) doTenantJSON(ctx context.Context, method, path string, b
 	if c.tokens == nil {
 		return fmt.Errorf("missing feishu app credentials for cardkit")
 	}
-	token, err := c.tokens.Token(ctx)
-	if err != nil {
-		return err
-	}
 	payload, err := json.Marshal(body)
 	if err != nil {
 		return fmt.Errorf("marshal feishu api request: %w", err)
 	}
-	return c.doWithRetry(ctx, method, path, token, payload, out)
+	return retryRejectedTenantToken(ctx, c.tokens, func(token string) error {
+		return c.doWithRetry(ctx, method, path, token, payload, out)
+	})
 }
 
 func (c *CardKitClient) doWithRetry(ctx context.Context, method, path, token string, payload []byte, out any) error {

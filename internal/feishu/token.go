@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -15,6 +16,10 @@ import (
 // TenantTokenSource supplies app-scoped tenant access tokens.
 type TenantTokenSource interface {
 	Token(context.Context) (string, error)
+}
+
+type tenantTokenInvalidator interface {
+	Invalidate(string)
 }
 
 // CachedTenantTokenSource serializes refreshes and reuses a token until one
@@ -90,6 +95,46 @@ func (s *CachedTenantTokenSource) Token(ctx context.Context) (string, error) {
 	close(active.done)
 	s.mu.Unlock()
 	return active.value, active.err
+}
+
+// Invalidate removes value from the cache if it is still the current token.
+// Matching the value prevents a delayed rejected request from evicting a token
+// another request has already refreshed.
+func (s *CachedTenantTokenSource) Invalidate(value string) {
+	if s == nil || value == "" {
+		return
+	}
+	s.mu.Lock()
+	if s.token.Value == value {
+		s.token = tenantToken{}
+	}
+	s.mu.Unlock()
+}
+
+func retryRejectedTenantToken(ctx context.Context, source TenantTokenSource, request func(string) error) error {
+	token, err := source.Token(ctx)
+	if err != nil {
+		return err
+	}
+	err = request(token)
+	if !isRejectedTenantToken(err) {
+		return err
+	}
+	invalidator, ok := source.(tenantTokenInvalidator)
+	if !ok {
+		return err
+	}
+	invalidator.Invalidate(token)
+	freshToken, err := source.Token(ctx)
+	if err != nil {
+		return err
+	}
+	return request(freshToken)
+}
+
+func isRejectedTenantToken(err error) bool {
+	var apiErr *FeishuAPIError
+	return errors.As(err, &apiErr) && apiErr.Code == 99991663
 }
 
 func (s *CachedTenantTokenSource) refreshToken(ctx context.Context) (tenantToken, error) {

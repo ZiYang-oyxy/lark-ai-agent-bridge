@@ -22,6 +22,19 @@ func (s *countingTokenSource) Token(context.Context) (string, error) {
 	return "token", nil
 }
 
+type invalidatingTokenSource struct {
+	invalidateCalls int
+}
+
+func (s *invalidatingTokenSource) Token(context.Context) (string, error) {
+	if s.invalidateCalls > 0 {
+		return "fresh-token", nil
+	}
+	return "stale-token", nil
+}
+
+func (s *invalidatingTokenSource) Invalidate(string) { s.invalidateCalls++ }
+
 type recordingCardKitHTTP struct {
 	body   []byte
 	calls  int
@@ -142,6 +155,59 @@ func TestCardKitClientRetriesRateLimitedRequestThenSucceeds(t *testing.T) {
 	}
 	if calls != 2 {
 		t.Fatalf("http calls = %d, want 2 (one throttled, one success)", calls)
+	}
+}
+
+func TestCardKitClientRefreshesRejectedTenantTokenOnce(t *testing.T) {
+	tokens := &invalidatingTokenSource{}
+	var attempts int
+	client := NewCardKitClientWithTokenSource(tokens)
+	client.limiter = nil
+	client.http = HTTPDoerFunc(func(req *http.Request) (*http.Response, error) {
+		attempts++
+		if got := req.Header.Get("Authorization"); got == "Bearer stale-token" {
+			return &http.Response{StatusCode: http.StatusBadRequest, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"code":99991663,"msg":"invalid access token"}`))}, nil
+		}
+		if got := req.Header.Get("Authorization"); got != "Bearer fresh-token" {
+			t.Fatalf("Authorization = %q", got)
+		}
+		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"code":0,"data":{"card_id":"card-1"}}`))}, nil
+	})
+
+	result, err := client.CreateCard(context.Background(), CardKitCreateRequest{Card: map[string]any{"tag": "markdown", "content": "hello"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.CardID != "card-1" {
+		t.Fatalf("card id = %q", result.CardID)
+	}
+	if tokens.invalidateCalls != 1 {
+		t.Fatalf("token invalidations = %d, want 1", tokens.invalidateCalls)
+	}
+	if attempts != 2 {
+		t.Fatalf("requests = %d, want 2", attempts)
+	}
+}
+
+func TestCardKitClientStopsAfterOneRejectedTokenRefresh(t *testing.T) {
+	tokens := &invalidatingTokenSource{}
+	var attempts int
+	client := NewCardKitClientWithTokenSource(tokens)
+	client.limiter = nil
+	client.http = HTTPDoerFunc(func(*http.Request) (*http.Response, error) {
+		attempts++
+		return &http.Response{StatusCode: http.StatusBadRequest, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"code":99991663,"msg":"invalid access token"}`))}, nil
+	})
+
+	_, err := client.CreateCard(context.Background(), CardKitCreateRequest{Card: map[string]any{"tag": "markdown", "content": "hello"}})
+	if err == nil {
+		t.Fatal("CreateCard() error = nil")
+	}
+	if tokens.invalidateCalls != 1 {
+		t.Fatalf("token invalidations = %d, want 1", tokens.invalidateCalls)
+	}
+	if attempts != 2 {
+		t.Fatalf("requests = %d, want 2", attempts)
 	}
 }
 

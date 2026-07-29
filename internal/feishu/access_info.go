@@ -162,35 +162,40 @@ func (c *AccessInfoClient) ListChats(ctx context.Context) ([]KnownChat, error) {
 }
 
 func (c *AccessInfoClient) getJSON(ctx context.Context, endpoint string, out any) error {
-	token, err := c.Tokens.Token(ctx)
-	if err != nil {
-		return err
-	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
-	if err != nil {
-		return err
-	}
-	req.Header.Set("Authorization", "Bearer "+token)
-	client := c.Client
-	if client == nil {
-		client = http.DefaultClient
-	}
-	resp, err := client.Do(req)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
-	if err != nil {
-		return err
-	}
-	if err := json.Unmarshal(body, out); err != nil {
-		return fmt.Errorf("decode feishu access response: %w", err)
-	}
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return fmt.Errorf("feishu access API http status %d", resp.StatusCode)
-	}
-	return nil
+	return retryRejectedTenantToken(ctx, c.Tokens, func(token string) error {
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+		if err != nil {
+			return err
+		}
+		req.Header.Set("Authorization", "Bearer "+token)
+		client := c.Client
+		if client == nil {
+			client = http.DefaultClient
+		}
+		resp, err := client.Do(req)
+		if err != nil {
+			return err
+		}
+		defer resp.Body.Close()
+		body, err := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
+		if err != nil {
+			return err
+		}
+		var envelope struct {
+			Code int    `json:"code"`
+			Msg  string `json:"msg"`
+		}
+		if err := json.Unmarshal(body, &envelope); err != nil {
+			return fmt.Errorf("decode feishu access response: %w", err)
+		}
+		if resp.StatusCode < 200 || resp.StatusCode >= 300 || envelope.Code != 0 {
+			return &FeishuAPIError{HTTPStatus: resp.StatusCode, Code: envelope.Code, Message: envelope.Msg}
+		}
+		if err := json.Unmarshal(body, out); err != nil {
+			return fmt.Errorf("decode feishu access response: %w", err)
+		}
+		return nil
+	})
 }
 
 func (c *AccessInfoClient) baseURL() string {
