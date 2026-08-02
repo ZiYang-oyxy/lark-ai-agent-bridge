@@ -56,6 +56,56 @@ func TestParseBundleArgsAcceptsDocumentedTagFirstForm(t *testing.T) {
 	}
 }
 
+func TestReleaseChannelSeparatesRCFromStable(t *testing.T) {
+	for _, tc := range []struct{ tag, want string }{
+		{tag: "v1.2.3-rc.4", want: "prerelease"},
+		{tag: "v1.2.3", want: "stable"},
+	} {
+		got, err := releaseChannel(tc.tag)
+		if err != nil || got != tc.want {
+			t.Fatalf("releaseChannel(%q) = %q, %v; want %q", tc.tag, got, err, tc.want)
+		}
+	}
+}
+
+func TestParseBundleArgsAcceptsSplitAssetAndChannelBases(t *testing.T) {
+	opts, err := parseBundleOptions([]string{
+		"v1.2.3-rc.4",
+		"--asset-base-url", "https://github.com/acme/bridge/releases/download",
+		"--channel-base-url", "https://acme.github.io/bridge",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if opts.Tag != "v1.2.3-rc.4" || opts.AssetBaseURL != "https://github.com/acme/bridge/releases/download" || opts.ChannelBaseURL != "https://acme.github.io/bridge" {
+		t.Fatalf("options = %#v", opts)
+	}
+}
+
+func TestWriteBundleMetadataUsesSplitURLs(t *testing.T) {
+	dir := t.TempDir()
+	for name, content := range map[string]string{
+		"lark-agent-bridge-linux-amd64":  "linux",
+		"lark-agent-bridge-darwin-arm64": "darwin",
+	} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	manifest, err := writeBundleMetadataWithURLs(dir, "v1.2.3-rc.4",
+		"https://github.com/acme/bridge/releases/download",
+		"https://acme.github.io/bridge", time.Now().UTC())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := manifest.Assets["linux/amd64"].URL; got != "https://github.com/acme/bridge/releases/download/v1.2.3-rc.4/lark-agent-bridge-linux-amd64" {
+		t.Fatalf("asset URL = %q", got)
+	}
+	if got := manifest.ReleaseNotesURL; got != "https://acme.github.io/bridge/v1.2.3-rc.4/release-notes.md" {
+		t.Fatalf("release notes URL = %q", got)
+	}
+}
+
 func TestRenderReleaseNotesGroupsConventionalCommits(t *testing.T) {
 	got := renderReleaseNotes("v1.2.3", []string{
 		"feat(update): add cards",

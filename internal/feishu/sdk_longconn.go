@@ -3,6 +3,7 @@ package feishu
 import (
 	"context"
 	"fmt"
+	"os"
 
 	larkcore "github.com/larksuite/oapi-sdk-go/v3/core"
 	larkevent "github.com/larksuite/oapi-sdk-go/v3/event"
@@ -34,6 +35,7 @@ func NewLongConnClient(cfg LongConnConfig) LongConnClient {
 		ws.WithEventHandler(eventDispatcher),
 		ws.WithAutoReconnect(true),
 		ws.WithLogLevel(larkcore.LogLevelInfo),
+		ws.WithLogger(newSDKLogger(os.Stderr)),
 	)
 	return c
 }

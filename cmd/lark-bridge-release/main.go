@@ -133,15 +133,19 @@ func runTag(args []string) error {
 }
 
 func runBundle(args []string) error {
-	tag, baseURL, err := parseBundleArgs(args)
+	opts, err := parseBundleOptions(args)
 	if err != nil {
 		return err
 	}
+	tag := opts.Tag
 	canonical, err := canonicalReleaseVersion(tag)
 	if err != nil {
 		return err
 	}
-	if err := validateBaseURL(baseURL); err != nil {
+	if err := validateBaseURL(opts.AssetBaseURL); err != nil {
+		return err
+	}
+	if err := validateBaseURL(opts.ChannelBaseURL); err != nil {
 		return err
 	}
 	if err := requireCleanWorktree(); err != nil {
@@ -198,27 +202,39 @@ func runBundle(args []string) error {
 	if err := copyFile(noteSource, filepath.Join(versionDir, "release-notes.md"), 0o644); err != nil {
 		return err
 	}
-	manifest, err := writeBundleMetadata(versionDir, tag, baseURL, publishedAt.UTC())
+	manifest, err := writeBundleMetadataWithURLs(versionDir, tag, opts.AssetBaseURL, opts.ChannelBaseURL, publishedAt.UTC())
 	if err != nil {
 		return err
 	}
-	stableDir := filepath.Join("dist", "stable")
-	if err := os.MkdirAll(stableDir, 0o755); err != nil {
+	channel, err := releaseChannel(tag)
+	if err != nil {
+		return err
+	}
+	channelDir := filepath.Join("dist", channel)
+	if err := os.MkdirAll(channelDir, 0o755); err != nil {
 		return err
 	}
 	guideSource, err := os.ReadFile(filepath.Join("docs", "workflow", "ai-agent-install.md"))
 	if err != nil {
 		return fmt.Errorf("read AI install guide: %w", err)
 	}
-	if err := writeAIInstallGuides(versionDir, stableDir, tag, baseURL, guideSource); err != nil {
+	if err := writeAIInstallGuidesForChannel(versionDir, channelDir, tag, channel, opts.ChannelBaseURL, guideSource); err != nil {
 		return err
 	}
-	return writeJSONAtomic(filepath.Join(stableDir, "manifest.json"), manifest)
+	return writeJSONAtomic(filepath.Join(channelDir, "manifest.json"), manifest)
 }
 
-func parseBundleArgs(args []string) (string, string, error) {
+type bundleOptions struct {
+	Tag            string
+	AssetBaseURL   string
+	ChannelBaseURL string
+}
+
+func parseBundleOptions(args []string) (bundleOptions, error) {
 	fs := flag.NewFlagSet("bundle", flag.ContinueOnError)
-	baseURL := fs.String("base-url", "", "public HTTPS base URL")
+	baseURL := fs.String("base-url", "", "public HTTPS base URL for assets and channels")
+	assetBaseURL := fs.String("asset-base-url", "", "public HTTPS base URL for immutable assets")
+	channelBaseURL := fs.String("channel-base-url", "", "public HTTPS base URL for manifests and release notes")
 	var tag string
 	parseArgs := args
 	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
@@ -226,17 +242,49 @@ func parseBundleArgs(args []string) (string, string, error) {
 		parseArgs = args[1:]
 	}
 	if err := fs.Parse(parseArgs); err != nil {
-		return "", "", err
+		return bundleOptions{}, err
 	}
 	if tag == "" && fs.NArg() == 1 {
 		tag = fs.Arg(0)
 	} else if fs.NArg() != 0 {
-		return "", "", errors.New("usage: lark-bridge-release bundle vMAJOR.MINOR.PATCH[-rc.N] --base-url https://host/path")
+		return bundleOptions{}, bundleUsageError()
 	}
-	if tag == "" || strings.TrimSpace(*baseURL) == "" {
-		return "", "", errors.New("usage: lark-bridge-release bundle vMAJOR.MINOR.PATCH[-rc.N] --base-url https://host/path")
+	if strings.TrimSpace(*baseURL) != "" {
+		if strings.TrimSpace(*assetBaseURL) != "" || strings.TrimSpace(*channelBaseURL) != "" {
+			return bundleOptions{}, errors.New("--base-url cannot be combined with split URL options")
+		}
+		*assetBaseURL, *channelBaseURL = *baseURL, *baseURL
 	}
-	return tag, strings.TrimSpace(*baseURL), nil
+	if tag == "" || strings.TrimSpace(*assetBaseURL) == "" || strings.TrimSpace(*channelBaseURL) == "" {
+		return bundleOptions{}, bundleUsageError()
+	}
+	return bundleOptions{Tag: tag, AssetBaseURL: strings.TrimSpace(*assetBaseURL), ChannelBaseURL: strings.TrimSpace(*channelBaseURL)}, nil
+}
+
+func bundleUsageError() error {
+	return errors.New("usage: lark-bridge-release bundle vMAJOR.MINOR.PATCH[-rc.N] (--base-url https://host/path | --asset-base-url https://host/path --channel-base-url https://host/path)")
+}
+
+func parseBundleArgs(args []string) (string, string, error) {
+	opts, err := parseBundleOptions(args)
+	if err != nil {
+		return "", "", err
+	}
+	if opts.AssetBaseURL != opts.ChannelBaseURL {
+		return "", "", errors.New("split bundle URLs are unavailable through parseBundleArgs")
+	}
+	return opts.Tag, opts.AssetBaseURL, nil
+}
+
+func releaseChannel(tag string) (string, error) {
+	canonical, err := canonicalReleaseVersion(tag)
+	if err != nil {
+		return "", err
+	}
+	if strings.Contains(canonical, "-rc.") {
+		return "prerelease", nil
+	}
+	return "stable", nil
 }
 
 func canonicalReleaseVersion(tag string) (string, error) {
@@ -508,6 +556,10 @@ func validateReleaseNote(tag string, data []byte) error {
 const aiInstallManifestMarker = "{{MANIFEST_URL}}"
 
 func writeAIInstallGuides(versionDir, stableDir, tag, baseURL string, source []byte) error {
+	return writeAIInstallGuidesForChannel(versionDir, stableDir, tag, "stable", baseURL, source)
+}
+
+func writeAIInstallGuidesForChannel(versionDir, channelDir, tag, channel, baseURL string, source []byte) error {
 	if strings.Count(string(source), aiInstallManifestMarker) != 1 {
 		return errors.New("AI install guide must contain exactly one {{MANIFEST_URL}} marker")
 	}
@@ -521,8 +573,8 @@ func writeAIInstallGuides(versionDir, stableDir, tag, baseURL string, source []b
 			manifestURL: baseURL + "/" + tag + "/manifest.json",
 		},
 		{
-			path:        filepath.Join(stableDir, "AI_INSTALL.md"),
-			manifestURL: baseURL + "/stable/manifest.json",
+			path:        filepath.Join(channelDir, "AI_INSTALL.md"),
+			manifestURL: baseURL + "/" + channel + "/manifest.json",
 		},
 	}
 	for _, guide := range guides {
@@ -538,14 +590,19 @@ func writeAIInstallGuides(versionDir, stableDir, tag, baseURL string, source []b
 }
 
 func writeBundleMetadata(dir, tag, baseURL string, publishedAt time.Time) (bridgeupdate.Manifest, error) {
+	return writeBundleMetadataWithURLs(dir, tag, baseURL, baseURL, publishedAt)
+}
+
+func writeBundleMetadataWithURLs(dir, tag, assetBaseURL, channelBaseURL string, publishedAt time.Time) (bridgeupdate.Manifest, error) {
 	canonical, err := canonicalReleaseVersion(tag)
 	if err != nil {
 		return bridgeupdate.Manifest{}, err
 	}
-	baseURL = strings.TrimRight(baseURL, "/")
+	assetBaseURL = strings.TrimRight(assetBaseURL, "/")
+	channelBaseURL = strings.TrimRight(channelBaseURL, "/")
 	manifest := bridgeupdate.Manifest{
 		SchemaVersion: 1, Version: canonical, PublishedAt: publishedAt,
-		ReleaseNotesURL: baseURL + "/" + tag + "/release-notes.md",
+		ReleaseNotesURL: channelBaseURL + "/" + tag + "/release-notes.md",
 		Assets:          map[string]bridgeupdate.Asset{},
 	}
 	type target struct{ platform, name string }
@@ -562,7 +619,7 @@ func writeBundleMetadata(dir, tag, baseURL string, publishedAt time.Time) (bridg
 		}
 		digest := fmt.Sprintf("%x", sha256.Sum256(data))
 		manifest.Assets[target.platform] = bridgeupdate.Asset{
-			URL: baseURL + "/" + tag + "/" + target.name, SHA256: digest, Size: int64(len(data)),
+			URL: assetBaseURL + "/" + tag + "/" + target.name, SHA256: digest, Size: int64(len(data)),
 		}
 		checksumLines = append(checksumLines, digest+"  "+target.name)
 	}
