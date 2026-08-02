@@ -138,10 +138,8 @@ func newRunnerContext(t *testing.T) *RunContext {
 
 func TestRunnerReportsEvidenceWriteFailure(t *testing.T) {
 	runContext := newRunnerContext(t)
-	if err := os.Chmod(runContext.Evidence.Dir(), 0o500); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = os.Chmod(runContext.Evidence.Dir(), 0o700) })
+	// Opening a directory as the JSONL output fails for every UID, including root.
+	runContext.Evidence.actionsPath = runContext.Evidence.cardsDir
 	scenario := Scenario{Name: "stop", Steps: []Step{{Name: "complete", Run: func(context.Context, *RunContext) *Failure { return nil }}}}
 
 	result := NewRunner().Run(context.Background(), scenario, runContext)
