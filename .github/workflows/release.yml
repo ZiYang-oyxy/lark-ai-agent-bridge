@@ -43,10 +43,16 @@ jobs:
         run: |
           prerelease=()
           if [[ "$TAG" == *-rc.* ]]; then prerelease=(--prerelease); fi
-          gh release create "$TAG" "dist/$TAG/"* \
-            --repo "$GITHUB_REPOSITORY" --verify-tag \
-            --title "$TAG" --notes-file "docs/releases/$TAG.md" \
-            "${prerelease[@]}"
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$TAG" "dist/$TAG/"* --repo "$GITHUB_REPOSITORY" --clobber
+            gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" \
+              --title "$TAG" --notes-file "docs/releases/$TAG.md" "${prerelease[@]}"
+          else
+            gh release create "$TAG" "dist/$TAG/"* \
+              --repo "$GITHUB_REPOSITORY" --verify-tag \
+              --title "$TAG" --notes-file "docs/releases/$TAG.md" \
+              "${prerelease[@]}"
+          fi
 
       - name: Verify uploaded binaries
         env:
@@ -81,6 +87,8 @@ jobs:
           cp "dist/$channel/manifest.json" "dist/$channel/AI_INSTALL.md" "$pages_dir/$channel/"
           touch "$pages_dir/.nojekyll"
           git -C "$pages_dir" add .
-          git -C "$pages_dir" -c user.name=github-actions -c user.email=41898282+github-actions[bot]@users.noreply.github.com \
-            commit -m "release: publish $TAG $channel channel"
-          git -C "$pages_dir" push origin gh-pages
+          if ! git -C "$pages_dir" diff --cached --quiet; then
+            git -C "$pages_dir" -c user.name=github-actions -c user.email=41898282+github-actions[bot]@users.noreply.github.com \
+              commit -m "release: publish $TAG $channel channel"
+            git -C "$pages_dir" push origin gh-pages
+          fi
