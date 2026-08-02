@@ -303,7 +303,7 @@ func TestScheduleDispatchUsesFrozenConfiguration(t *testing.T) {
 	if result.Duplicate {
 		t.Fatal("first enqueue reported duplicate")
 	}
-	key := session.Key{Agent: agent.Codex, ChatID: task.Target.ChatID, Thread: "schedule:" + task.ID}
+	key := session.Key{Agent: agent.Codex, ChatID: task.Target.ChatID, Thread: "schedule-run:" + run.ID}
 	sess, ok := service.Sessions.Get(key)
 	if !ok || len(sess.Queue) != 1 {
 		t.Fatalf("session = %#v ok=%v", sess, ok)
@@ -322,6 +322,52 @@ func TestScheduleDispatchUsesFrozenConfiguration(t *testing.T) {
 	duplicate, err := service.Enqueue(context.Background(), task, run)
 	if err != nil || !duplicate.Duplicate {
 		t.Fatalf("duplicate result = %#v err=%v", duplicate, err)
+	}
+}
+
+func TestScheduleDispatchCreatesFreshSessionForEveryRun(t *testing.T) {
+	for _, kind := range []schedule.Kind{schedule.KindCron, schedule.KindTimer} {
+		t.Run(string(kind), func(t *testing.T) {
+			service, _, _ := scheduleTestService(t)
+			now := time.Now()
+			task := schedule.Task{
+				ID: "task1234", Kind: kind, Prompt: "生成日报", Creator: "ou_creator",
+				Target:    schedule.Target{ChatID: "oc_chat", ReplyToMessageID: "om_origin"},
+				Execution: schedule.FrozenExecution{Agent: "claude", WorkDir: t.TempDir()},
+			}
+			firstRun := schedule.Run{ID: string(kind) + ":task1234:2026-08-01T01:00:00Z", TaskID: task.ID, ScheduledAt: now, State: schedule.RunPending}
+			if _, err := service.Enqueue(context.Background(), task, firstRun); err != nil {
+				t.Fatal(err)
+			}
+			firstKey := session.Key{Agent: agent.Claude, ChatID: task.Target.ChatID, Thread: "schedule-run:" + firstRun.ID}
+			_, firstBatch, err := service.Sessions.FreezeReadyBatch(firstKey, now, session.BatchLimits{})
+			if err != nil || firstBatch == nil {
+				t.Fatalf("freeze first run: batch=%#v err=%v", firstBatch, err)
+			}
+			if _, _, err := service.Sessions.MarkBatchRunning(firstKey, firstBatch.ID, nil, now); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := service.Sessions.FinishBatch(firstKey, firstBatch.ID, session.BatchCompletion{Status: session.InputCompleted, AgentSessionID: "agent-session-from-first-run", At: now}); err != nil {
+				t.Fatal(err)
+			}
+
+			secondRun := schedule.Run{ID: string(kind) + ":task1234:2026-08-02T01:00:00Z", TaskID: task.ID, ScheduledAt: now.Add(24 * time.Hour), State: schedule.RunPending}
+			if _, err := service.Enqueue(context.Background(), task, secondRun); err != nil {
+				t.Fatal(err)
+			}
+			secondKey := session.Key{Agent: agent.Claude, ChatID: task.Target.ChatID, Thread: "schedule-run:" + secondRun.ID}
+			secondSession, ok := service.Sessions.Get(secondKey)
+			if !ok || len(secondSession.Queue) != 1 {
+				t.Fatalf("second run session = %#v ok=%v", secondSession, ok)
+			}
+			if firstKey.ID() == secondKey.ID() || secondSession.AgentSessionID != "" {
+				t.Fatalf("second run reused first session: first=%q second=%q agent_session=%q", firstKey.ID(), secondKey.ID(), secondSession.AgentSessionID)
+			}
+			firstSession, ok := service.Sessions.Get(firstKey)
+			if !ok || firstSession.AgentSessionID != "agent-session-from-first-run" {
+				t.Fatalf("first run session was mutated: %#v ok=%v", firstSession, ok)
+			}
+		})
 	}
 }
 
