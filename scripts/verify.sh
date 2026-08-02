@@ -33,7 +33,7 @@ echo "== go test ./... =="
 go test ./...
 
 echo "== doctor =="
-doctor_output="$(go run ./cmd/lark-agent-bridge doctor)"
+doctor_output="$(E2E_CLAUDE_BIN="${E2E_CLAUDE_BIN:-/bin/true}" go run ./cmd/lark-agent-bridge doctor)"
 echo "$doctor_output"
 require_contains "$doctor_output" "ok claude:" "doctor"
 require_contains "$doctor_output" "ok default_workdir:" "doctor"
@@ -95,7 +95,7 @@ echo "== card and long connection action tests =="
 go test ./internal/card ./internal/feishu ./internal/bridge -run 'TestBuildLarkCardFormatsRichSegments|TestBuildLarkCardUsesDynamicHeaderAndStreamingMode|TestBuildLarkCardSupportsStoppedGreyHeader|TestBuildLarkCardUsesFinalStopButtonLabels|TestBuildCardActionFromLark|TestSDKLongConn|TestCallbackHTTPHandler|TestActionRequestFrom'
 echo "card action ok"
 
-if [[ -z "${LAB_LARK_APP_ID:-${LARK_APP_ID:-}}" || -z "${LAB_LARK_APP_SECRET:-${LARK_APP_SECRET:-}}" ]]; then
+if [[ -z "${LAB_LARK_APP_ID:-${LARK_APP_ID:-${LAB_LARK_APP_ID_FILE:-${LARK_APP_ID_FILE:-}}}}" || -z "${LAB_LARK_APP_SECRET:-${LARK_APP_SECRET:-${LAB_LARK_APP_SECRET_FILE:-${LARK_APP_SECRET_FILE:-}}}}" ]]; then
   echo "== serve credential guard =="
   set +e
   serve_output="$(go run ./cmd/lark-agent-bridge serve 2>&1)"
@@ -105,7 +105,7 @@ if [[ -z "${LAB_LARK_APP_ID:-${LARK_APP_ID:-}}" || -z "${LAB_LARK_APP_SECRET:-${
     echo "verify failed: serve succeeded without LARK_APP_ID/LARK_APP_SECRET" >&2
     exit 1
   fi
-  require_contains "$serve_output" "LAB_LARK_APP_ID and LAB_LARK_APP_SECRET are required for serve" "serve credential guard"
+  require_contains "$serve_output" "Feishu App ID and App secret are required" "serve credential guard"
   echo "serve credential guard ok"
 else
   echo "== serve credential guard skipped: LARK_APP_ID/LARK_APP_SECRET are set =="
