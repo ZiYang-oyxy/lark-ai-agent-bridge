@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "version": "0.1.14-rc.5",
+  "published_at": "2026-08-02T16:50:28Z",
+  "release_notes_url": "https://ZiYang-oyxy.github.io/lark-ai-agent-bridge/v0.1.14-rc.5/release-notes.md",
+  "assets": {
+    "darwin/arm64": {
+      "url": "https://github.com/ZiYang-oyxy/lark-ai-agent-bridge/releases/download/v0.1.14-rc.5/lark-agent-bridge-darwin-arm64",
+      "sha256": "b95cb4abeded5578a431c5a6975d6f2de0c0d7f86c522ecf240bf7e62dc21580",
+      "size": 10408914
+    },
+    "linux/amd64": {
+      "url": "https://github.com/ZiYang-oyxy/lark-ai-agent-bridge/releases/download/v0.1.14-rc.5/lark-agent-bridge-linux-amd64",
+      "sha256": "d2262cb7621a479ac8fecfc525cecd5d00cf3da20f70a81f9ebeece4460de78d",
+      "size": 11030690
+    }
+  }
+}
