@@ -29,12 +29,11 @@ func (s *Service) Enqueue(_ context.Context, task schedule.Task, run schedule.Ru
 	if !ok {
 		return schedule.EnqueueResult{}, fmt.Errorf("scheduled task has invalid agent %q", task.Execution.Agent)
 	}
-	// Scheduled executions own a task-scoped session. Reusing the conversation
-	// key would inherit an unrelated AgentSessionID from ordinary chat (or an
-	// E2E fixture), causing the runner to pass an invalid --resume value. The
-	// task namespace keeps recurring runs continuous without mutating the user's
-	// interactive conversation session.
-	key := session.Key{Agent: kind, ChatID: task.Target.ChatID, Thread: "schedule:" + task.ID}
+	// Every scheduled execution owns a run-scoped session. This keeps timer and
+	// cron runs independent: a later run cannot resume either the interactive
+	// conversation or the previous execution's AgentSessionID. Retries of the
+	// same run remain idempotent because they reuse the stable run ID.
+	key := session.Key{Agent: kind, ChatID: task.Target.ChatID, Thread: "schedule-run:" + run.ID}
 	now := time.Now()
 	input := session.Input{
 		ID: run.ID, Sender: task.Creator, Text: task.Prompt, ReplyToMessageID: task.Target.ReplyToMessageID,
