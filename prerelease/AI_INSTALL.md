@@ -9,7 +9,7 @@
 发布 manifest：
 
 ```text
-https://ZiYang-oyxy.github.io/lark-ai-agent-bridge/v0.1.14-rc.5/manifest.json
+https://ZiYang-oyxy.github.io/lark-ai-agent-bridge/prerelease/manifest.json
 ```
 
 ## 执行规则
