@@ -1,7 +1,6 @@
 # Bridge 测试单一入口
 #
-# 分层测试体系统一编号 L0-L3(见 docs/workflow/test-framework.md、
-# docs/plans/2026-07-28-test-framework-overhaul.md):
+# 分层测试体系统一编号 L0-L3(见 docs/workflow/test-framework.md):
 #   L0 单元      纯逻辑 go test,秒级,无依赖
 #   L1 组件      simulate + fake agent,本地秒级,无网络
 #   L2 确定性e2e 真飞书 + fake agent,分钟级(需 profile)
@@ -13,7 +12,7 @@
 # 这些 target 是现有脚本的收口入口,不改脚本行为;逐步迁移的过渡形态,
 # 拆巨石(P1)后 L2/L3 会指向 scripts/e2e/run.sh。
 
-# go 二进制:Mac 走 PATH,Linux 服务器走 /usr/local/go/bin/go(见 self-loop GUIDE)。
+# 优先使用 PATH 中的 go；服务器可通过 GO 显式指定安装路径。
 GO ?= $(shell command -v go 2>/dev/null || echo /usr/local/go/bin/go)
 GOCACHE ?= $(CURDIR)/.cache/go-build
 # 部分子脚本(smoke-local.sh/verify.sh)内部调裸 `go`,服务器上 go 不在 PATH。
@@ -35,7 +34,7 @@ UNSET_STATE = E2E_PREFERENCE_STORE E2E_REPLY_STORE E2E_MEDIA_CACHE_DIR E2E_SESSI
 
 .DEFAULT_GOAL := help
 
-.PHONY: help test-l0 test-l1 test-fast test-l2 test-l3 test-release verify smoke deploy-test
+.PHONY: help test-l0 test-l1 test-fast test-l2 test-l3 test-release verify smoke
 
 help: ## 列出所有 target
 	@echo "Bridge 测试入口(分层 L0-L3):"
@@ -65,39 +64,17 @@ smoke-local: ## L1 shell 命令面断言(较重,不进 test-fast)
 test-fast: test-l0 test-l1 ## ★ 快速回归(合入前/rc 发版):L0 + L1
 	@echo "TEST_FAST_OK (L0 + L1 通过)"
 
-test-l2: ## L2 确定性 e2e:真飞书 + fake agent(需 ENV=<env>,如 linux-steve)
-	@test -n "$(ENV)" || { echo "错误: L2 需要 ENV=<name>,例如 make test-l2 ENV=linux-steve"; exit 2; }
+test-l2: ## L2 确定性 e2e:真飞书 + fake agent(需 ENV=<env>,如 local)
+	@test -n "$(ENV)" || { echo "错误: L2 需要 ENV=<name>,例如 make test-l2 ENV=local"; exit 2; }
 	@test -f "$(ENV_FILE)" || { echo "错误: environment 声明不存在: $(ENV_FILE)"; exit 2; }
 	@echo "== L2 确定性 e2e(真飞书 + fake agent)environment=$(ENV) =="
 	E2E_STATE_ROOT="$$HOME" E2E_REAL_E2E_FAKE_CLAUDE=1 ./scripts/e2e-real.sh --environment "$(ENV)" --mode full --strict-capabilities
 
 test-l3: ## L3 真 agent canary:真 Claude/Codex(需 ENV=<env>)
-	@test -n "$(ENV)" || { echo "错误: L3 需要 ENV=<name>,例如 make test-l3 ENV=linux-steve"; exit 2; }
+	@test -n "$(ENV)" || { echo "错误: L3 需要 ENV=<name>,例如 make test-l3 ENV=local"; exit 2; }
 	@test -f "$(ENV_FILE)" || { echo "错误: environment 声明不存在: $(ENV_FILE)"; exit 2; }
 	@echo "== L3 真 agent canary(真 Claude)environment=$(ENV) =="
 	env -u E2E_REAL_E2E_FAKE_CLAUDE E2E_STATE_ROOT="$$HOME" ./scripts/e2e-real.sh --environment "$(ENV)" --case new_basic
-
-# deploy-test:显式换血被测 bot(rebuild-test.sh)。故意不在 test-l2/test-l3 里
-# 自动跑,避免与 self-loop GUIDE 里 supervisor 手工 L3 语义混淆。测试框架和
-# self-loop 是同一 rebuild-test.sh 的两个调用者。
-#
-# 目前只支持 Linux ENV=linux-steve(调 ~/bridge/bridge-self-loop/rebuild-test.sh)。
-# Mac ENV=macos-mike 需走 rebuild-test-macos.sh --lease,当前 Makefile 未桥接
-# (未在 self-loop 仓做幂等改造前,交叉平台的部署入口不加,避免误踩)。
-deploy-test: ## 换血被测 bot 为本地构建版(需 ENV=linux-steve)
-	@test -n "$(ENV)" || { echo "错误: deploy-test 需要 ENV=<name>"; exit 2; }
-	@test -f "$(ENV_FILE)" || { echo "错误: environment 声明不存在: $(ENV_FILE)"; exit 2; }
-	@case "$(ENV)" in \
-		linux-steve) \
-			echo "== deploy-test environment=$(ENV) =="; \
-			bash $$HOME/bridge/bridge-self-loop/rebuild-test.sh $(CURDIR) ;; \
-		macos-mike) \
-			echo "错误: ENV=macos-mike 请直接跑 rebuild-test-macos.sh --lease,当前 Makefile 未桥接"; \
-			exit 2 ;; \
-		*) \
-			echo "错误: 未知 environment: $(ENV) (支持 linux-steve|macos-mike)"; \
-			exit 2 ;; \
-	esac
 
 test-release: ## 正式版全量回归:L0+L1+L2+L3(需 ENV=<profile>)
 	@test -n "$(PROFILE)" || { echo "错误: test-release 需要 ENV=<profile>"; exit 2; }

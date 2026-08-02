@@ -8,3 +8,5 @@
 .superpowers/
 /lark-bridge-test
 /lark-agent-bridge
+/docs/environments/*.env
+!/docs/environments/*.example.env

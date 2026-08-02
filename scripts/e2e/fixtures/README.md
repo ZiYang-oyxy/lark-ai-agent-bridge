@@ -1,7 +1,7 @@
 # fakeclaude fixtures
 
 - 建立日期:2026-07-28
-- 上下文:`docs/plans/2026-07-28-test-framework-overhaul-P-OBSERVE.md` §3.6 fake agent 统一
+- 上下文：fake agent fixture contract
 
 ## 是什么
 

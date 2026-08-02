@@ -75,7 +75,7 @@ export LAB_UPDATE_PRERELEASE_MANIFEST_URL=https://updates.example.com/lark-ai-ag
 
 只配 stable 时，即使发布了新的 rc 版本，`/help` 也不会展示——rc 只能在开发者模式（发送 `/.devel 1`）+ prerelease URL 已配置的前提下升级。若 stable URL 配了、prerelease URL 未配，Bridge 启动时会在 stderr 打印一条 `[warn] LAB_UPDATE_PRERELEASE_MANIFEST_URL 未配置` 提示，避免"发了 rc 但 /help 看不到"这类反复追根因的场景。
 
-**Linux 服务器 supervisor 推荐用 systemd user unit 托管**，避免手工 `nohup` 起时环境变量遗漏。参考模板见 `~/bridge/bridge-self-loop/config/linux-supervisor.service` 与 `linux-supervisor.env.example`（self-loop 仓）。手工临时启动示例：
+**Linux 服务器 supervisor 推荐用 systemd user unit 托管**，避免手工 `nohup` 启动时遗漏环境变量。unit 与 EnvironmentFile 应由部署仓库维护，不要把真实凭据提交到本仓库。手工临时启动示例：
 
 ```bash
 export LARK_APP_ID=... LARK_APP_SECRET=... \
@@ -105,7 +105,7 @@ nohup ~/bin/lark-agent-bridge-<name> serve --default-workdir "$LAB_DEFAULT_WORKD
 
 `bundle` 使用 Go `1.26.3`、`CGO_ENABLED=0`，在同一发布机交叉构建 Linux x86-64 与 macOS ARM64，输出 `dist/v1.2.3/` 和 `dist/stable/manifest.json`。仓库不内置托管平台或凭证；外部上传命令必须先上传并回读校验完整的 versioned 目录，最后才替换 stable manifest。
 
-人工回退时停止对应 Bridge 实例，把 `<binary>.previous` 原子恢复为 `<binary>`，再通过该部署目标唯一的启动入口恢复服务；不得宽泛 `pkill` 或混用 Test、Steve、Mac 三套部署事务。
+人工回退时停止对应 Bridge 实例，把 `<binary>.previous` 原子恢复为 `<binary>`，再通过该部署目标唯一的启动入口恢复服务；不得宽泛 `pkill` 或混用不同环境的部署事务。
 
 ## 自然语言定时任务
 
@@ -268,3 +268,17 @@ Bridge 拥有主 Codex invocation 的顶层 `developer_instructions`。显式 Co
 > 借此可绕开 workspace 的 `bin/cc` wrapper：把 bin 指向裸 `claude` 并配独立 home，即可让 bridge 直接掌控可执行与配置目录，而不受 wrapper profile 静默影响。
 
 详细架构见 `docs/framework/architecture.md`，测试流程见 `docs/workflow/testing.md`，真实飞书 E2E 工作流见 `docs/workflow/e2e-real.md`，当前交付状态与证据链汇总见 `docs/workflow/delivery-summary.md`。
+
+## Security
+
+请不要通过公开 Issue 报告漏洞或疑似凭据泄露。请使用 GitHub 的
+[Private vulnerability reporting](https://github.com/ZiYang-oyxy/lark-ai-agent-bridge/security/advisories/new)。
+
+## History rewrite notice
+
+仓库历史于 2026 年 8 月因公开发布前的信息清理而重写。基于旧历史的 clone
+请重新克隆，不要把旧分支 merge 或 push 回当前仓库。
+
+## License
+
+本项目使用 [MIT License](LICENSE)。

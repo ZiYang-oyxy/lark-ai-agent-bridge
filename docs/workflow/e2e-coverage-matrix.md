@@ -35,7 +35,7 @@ flowchart TD
 
 ## P-CASES 治理后的 L3 目录（2026-07-28）
 
-P-CASES 子 plan 把 L3 case 按**产品能力**分成 10 组，registry.sh 加 `capability` 字段做过滤入口。P-CASES 见 [P-CASES plan](../plans/2026-07-28-test-framework-overhaul-P-CASES.md)。
+L3 case 按**产品能力**分成 10 组，`registry.sh` 通过 `capability` 字段提供过滤入口；分层规则与新增用例约束见 [test-framework.md](test-framework.md)。
 
 **治理成果**：L3 从 43 → **39**（净减 4，只删无补）。P-CASES v2 plan 曾拟补 12 个 case（1 L0 + 6 L1 + 5 L3），但 Phase 1/3 前置调研发现——
 - 7 个 L0/L1 拟补 case：全部已由 `internal/agent/agent_test.go`、`internal/bridge/agent_failure_test.go`、`command_test.go`、`service_test.go`、`update_test.go`、`internal/testfw/assert_test.go` 覆盖
