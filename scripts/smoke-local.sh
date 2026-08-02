@@ -3,8 +3,7 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
-export GOCACHE="${GOCACHE:-$ROOT/.cache/go-build}"
-mkdir -p "$GOCACHE"
+source "$ROOT/scripts/lib/runtime-paths.sh"
 source "$ROOT/scripts/lib/assert.sh"
 source "$ROOT/scripts/lib/simulate-suite.sh"
 

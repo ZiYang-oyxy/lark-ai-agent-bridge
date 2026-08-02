@@ -372,23 +372,22 @@ func sanitizedReleaseTestEnvironment() []string {
 }
 
 func releaseTestEvidenceDir() (string, error) {
-	commonDir, err := gitOutput("rev-parse", "--git-common-dir")
-	if err != nil {
-		return "", err
+	if override := strings.TrimSpace(os.Getenv("LAB_RELEASE_STATE_DIR")); override != "" {
+		return filepath.Abs(override)
 	}
-	commonDir = strings.TrimSpace(commonDir)
-	if !filepath.IsAbs(commonDir) {
-		root, rootErr := gitOutput("rev-parse", "--show-toplevel")
-		if rootErr != nil {
-			return "", rootErr
+	stateHome := strings.TrimSpace(os.Getenv("XDG_STATE_HOME"))
+	if stateHome == "" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return "", fmt.Errorf("resolve user state directory: %w", err)
 		}
-		commonDir = filepath.Join(strings.TrimSpace(root), commonDir)
+		stateHome = filepath.Join(home, ".local", "state")
 	}
-	commonDir, err = filepath.Abs(commonDir)
+	stateHome, err := filepath.Abs(stateHome)
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(filepath.Clean(commonDir), "release-state", "test-evidence"), nil
+	return filepath.Join(filepath.Clean(stateHome), "lark-ai-agent-bridge", "release-test-evidence"), nil
 }
 
 func releaseTestFingerprint(identity releaseTestIdentity) (string, error) {

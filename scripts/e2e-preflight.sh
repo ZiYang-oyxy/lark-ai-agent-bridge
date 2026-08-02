@@ -4,8 +4,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
-export GOCACHE="${GOCACHE:-$ROOT/.cache/go-build}"
-mkdir -p "$GOCACHE"
+source "$ROOT/scripts/lib/runtime-paths.sh"
 
 require_env() {
   local name="$1"

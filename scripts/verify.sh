@@ -9,8 +9,7 @@ cd "$ROOT"
 # read the live workspace instead of the verifier's temporary workdir.
 unset E2E_PREFERENCE_STORE E2E_REPLY_STORE E2E_MEDIA_CACHE_DIR E2E_SESSION_STORE
 
-export GOCACHE="${GOCACHE:-$ROOT/.cache/go-build}"
-mkdir -p "$GOCACHE"
+source "$ROOT/scripts/lib/runtime-paths.sh"
 
 source "$ROOT/scripts/lib/assert.sh"
 source "$ROOT/scripts/lib/simulate-suite.sh"

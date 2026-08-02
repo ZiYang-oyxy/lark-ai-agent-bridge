@@ -4,9 +4,9 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
-export GOCACHE="${GOCACHE:-$ROOT/.cache/go-build}"
+source "$ROOT/scripts/lib/runtime-paths.sh"
 OUT_DIR="${EVIDENCE_DIR:-$ROOT/.cache/evidence}"
-mkdir -p "$GOCACHE" "$OUT_DIR"
+mkdir -p "$OUT_DIR"
 
 STAMP="$(date +%Y%m%d-%H%M%S)"
 REPORT="$OUT_DIR/evidence-$STAMP.md"

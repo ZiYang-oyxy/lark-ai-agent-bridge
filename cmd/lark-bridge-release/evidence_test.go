@@ -12,6 +12,32 @@ import (
 	"testing"
 )
 
+func TestReleaseTestEvidenceDirUsesExternalStateDirectory(t *testing.T) {
+	repo, _, _ := releaseEvidenceFixture(t)
+	t.Chdir(repo)
+	stateHome := filepath.Join(t.TempDir(), "state")
+	t.Setenv("XDG_STATE_HOME", stateHome)
+	t.Setenv("LAB_RELEASE_STATE_DIR", "")
+
+	got, err := releaseTestEvidenceDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := filepath.Join(stateHome, "lark-ai-agent-bridge", "release-test-evidence")
+	if got != want {
+		t.Fatalf("release evidence dir = %q, want %q", got, want)
+	}
+}
+
+func TestReleaseTestEvidenceDirHonorsExplicitOverride(t *testing.T) {
+	want := filepath.Join(t.TempDir(), "evidence")
+	t.Setenv("LAB_RELEASE_STATE_DIR", want)
+	got, err := releaseTestEvidenceDir()
+	if err != nil || got != want {
+		t.Fatalf("release evidence dir = %q, %v; want %q", got, err, want)
+	}
+}
+
 func TestReleaseTestEvidenceCreatesReusesAndRejectsTamperedLog(t *testing.T) {
 	repo, goBin, countFile := releaseEvidenceFixture(t)
 	t.Chdir(repo)
@@ -276,6 +302,7 @@ func TestReleaseTestEvidenceLockRemovalPreservesReplacementOwner(t *testing.T) {
 
 func releaseEvidenceFixture(t *testing.T) (repo, goBin, countFile string) {
 	t.Helper()
+	t.Setenv("LAB_RELEASE_STATE_DIR", filepath.Join(t.TempDir(), "release-evidence"))
 	repo = filepath.Join(t.TempDir(), "repo")
 	if err := os.Mkdir(repo, 0o755); err != nil {
 		t.Fatal(err)

@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
-
-export GOCACHE="${GOCACHE:-$PWD/.cache/go-build}"
-mkdir -p "$GOCACHE"
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
+source "$ROOT/scripts/lib/runtime-paths.sh"
+cd "$ROOT"
 go test ./...
 bash tests/e2e-profile-smoke.sh
 bash tests/e2e-capabilities-smoke.sh
