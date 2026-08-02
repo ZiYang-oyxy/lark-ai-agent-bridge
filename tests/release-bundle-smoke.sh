@@ -9,7 +9,8 @@ fi
 dist_dir="$(cd "$1" && pwd -P)"
 tag="$2"
 version_dir="$dist_dir/$tag"
-stable_manifest="$dist_dir/stable/manifest.json"
+if [[ "$tag" == *-rc.* ]]; then channel=prerelease; else channel=stable; fi
+channel_manifest="$dist_dir/$channel/manifest.json"
 version_manifest="$version_dir/manifest.json"
 
 for path in \
@@ -19,13 +20,13 @@ for path in \
   "$version_dir/release-notes.md" \
   "$version_dir/SHA256SUMS" \
   "$version_manifest" \
-  "$dist_dir/stable/AI_INSTALL.md" \
-  "$stable_manifest"; do
+  "$dist_dir/$channel/AI_INSTALL.md" \
+  "$channel_manifest"; do
   [[ -f "$path" ]] || { echo "missing release artifact: $path" >&2; exit 1; }
 done
 
-cmp -s "$version_manifest" "$stable_manifest" || {
-  echo "stable manifest differs from versioned manifest" >&2
+cmp -s "$version_manifest" "$channel_manifest" || {
+  echo "$channel manifest differs from versioned manifest" >&2
   exit 1
 }
 
@@ -39,18 +40,20 @@ jq -e --arg version "$canonical" '
 
 linux_asset_url="$(jq -r '.assets["linux/amd64"].url' "$version_manifest")"
 release_base="${linux_asset_url%/$tag/lark-agent-bridge-linux-amd64}"
-version_manifest_url="$release_base/$tag/manifest.json"
-stable_manifest_url="$release_base/stable/manifest.json"
+channel_base="$(jq -r '.release_notes_url' "$version_manifest")"
+channel_base="${channel_base%/$tag/release-notes.md}"
+version_manifest_url="$channel_base/$tag/manifest.json"
+channel_manifest_url="$channel_base/$channel/manifest.json"
 
 grep -Fq "$version_manifest_url" "$version_dir/AI_INSTALL.md" || {
   echo "versioned AI install guide has wrong manifest URL" >&2
   exit 1
 }
-grep -Fq "$stable_manifest_url" "$dist_dir/stable/AI_INSTALL.md" || {
-  echo "stable AI install guide has wrong manifest URL" >&2
+grep -Fq "$channel_manifest_url" "$dist_dir/$channel/AI_INSTALL.md" || {
+  echo "$channel AI install guide has wrong manifest URL" >&2
   exit 1
 }
-if grep -Fq '{{MANIFEST_URL}}' "$version_dir/AI_INSTALL.md" "$dist_dir/stable/AI_INSTALL.md"; then
+if grep -Fq '{{MANIFEST_URL}}' "$version_dir/AI_INSTALL.md" "$dist_dir/$channel/AI_INSTALL.md"; then
   echo "AI install guide still contains manifest marker" >&2
   exit 1
 fi

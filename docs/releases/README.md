@@ -41,4 +41,4 @@ commit/tree、实际选中的 Go 工具链和环境隔离契约完全一致时�
 2. 上传 `dist/stable/AI_INSTALL.md`；
 3. 最后原子替换 `dist/stable/manifest.json`。
 
-stable manifest 仍是版本切换的最终提交点。不得先发布指向尚未完整上传版本的 stable manifest。
+也可用 `--asset-base-url` 与 `--channel-base-url` 分离不可变 Release assets 和 channel 页面。正式版本最后更新 `stable`，RC 最后更新 `prerelease`；不得交叉覆盖，也不得先发布指向尚未完整上传版本的 channel manifest。

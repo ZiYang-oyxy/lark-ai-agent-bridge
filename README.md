@@ -67,10 +67,10 @@ GOCACHE=$PWD/.cache/go-build go run ./cmd/lark-agent-bridge serve --default-work
 
 ```bash
 # 必配：stable 通道，普通用户升级路径
-export LAB_UPDATE_MANIFEST_URL=https://updates.example.com/lark-ai-agent-bridge/stable/manifest.json
+export LAB_UPDATE_MANIFEST_URL=https://ziyang-oyxy.github.io/lark-ai-agent-bridge/stable/manifest.json
 
 # 可选：prerelease 通道，供开发者模式（/.devel 1）接收 rc 版本
-export LAB_UPDATE_PRERELEASE_MANIFEST_URL=https://updates.example.com/lark-ai-agent-bridge/prerelease/manifest.json
+export LAB_UPDATE_PRERELEASE_MANIFEST_URL=https://ziyang-oyxy.github.io/lark-ai-agent-bridge/prerelease/manifest.json
 ```
 
 只配 stable 时，即使发布了新的 rc 版本，`/help` 也不会展示——rc 只能在开发者模式（发送 `/.devel 1`）+ prerelease URL 已配置的前提下升级。若 stable URL 配了、prerelease URL 未配，Bridge 启动时会在 stderr 打印一条 `[warn] LAB_UPDATE_PRERELEASE_MANIFEST_URL 未配置` 提示，避免"发了 rc 但 /help 看不到"这类反复追根因的场景。
@@ -103,7 +103,9 @@ nohup ~/bin/lark-agent-bridge-<name> serve --default-workdir "$LAB_DEFAULT_WORKD
 ./tests/release-bundle-smoke.sh dist v1.2.3
 ```
 
-`bundle` 使用 Go `1.26.3`、`CGO_ENABLED=0`，在同一发布机交叉构建 Linux x86-64 与 macOS ARM64，输出 `dist/v1.2.3/` 和 `dist/stable/manifest.json`。仓库不内置托管平台或凭证；外部上传命令必须先上传并回读校验完整的 versioned 目录，最后才替换 stable manifest。
+`bundle` 使用 Go `1.26.3`、`CGO_ENABLED=0`，在同一发布机交叉构建 Linux x86-64 与 macOS ARM64。正式 tag 输出 `dist/stable/manifest.json`，RC tag 只输出 `dist/prerelease/manifest.json`。tag workflow 将 binary 发布为 GitHub Release asset，回读校验后才更新 GitHub Pages channel manifest；RC 不会覆盖 stable。
+
+部署可用 `LARK_APP_ID_FILE` / `LARK_APP_SECRET_FILE`（也支持 `LAB_LARK_*_FILE`）从 `0600`、当前用户拥有的普通文件加载凭据；直接环境变量优先。`doctor --strict --online --json` 会在有界超时内验证飞书凭据与 Bot 身份并输出结构化结果。`serve` 会持有同主机 App ID 摘要锁，阻止两个 Bridge 同时消费同一个 App 的长连接事件。
 
 人工回退时停止对应 Bridge 实例，把 `<binary>.previous` 原子恢复为 `<binary>`，再通过该部署目标唯一的启动入口恢复服务；不得宽泛 `pkill` 或混用不同环境的部署事务。
 

@@ -767,6 +767,7 @@ Usage:
   lark-bridge-release tag vMAJOR.MINOR.PATCH[-rc.N]
   lark-bridge-release test-evidence ensure
   lark-bridge-release bundle vMAJOR.MINOR.PATCH[-rc.N] --base-url https://host/path
+  lark-bridge-release bundle vMAJOR.MINOR.PATCH[-rc.N] --asset-base-url https://asset-host/path --channel-base-url https://channel-host/path
 `
 }
 

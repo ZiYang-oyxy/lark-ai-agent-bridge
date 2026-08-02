@@ -1,0 +1,86 @@
+name: Release tagged build
+
+on:
+  push:
+    tags:
+      - "v[0-9]+.[0-9]+.[0-9]+"
+      - "v[0-9]+.[0-9]+.[0-9]+-rc.[0-9]+"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: 1.26.3
+
+      - name: Build and validate bundle
+        env:
+          TAG: ${{ github.ref_name }}
+          ASSET_BASE: https://github.com/${{ github.repository }}/releases/download
+          CHANNEL_BASE: https://${{ github.repository_owner }}.github.io/lark-ai-agent-bridge
+        run: |
+          ./scripts/release.sh bundle "$TAG" \
+            --asset-base-url "$ASSET_BASE" \
+            --channel-base-url "$CHANNEL_BASE"
+          ./tests/release-bundle-smoke.sh dist "$TAG"
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          prerelease=()
+          if [[ "$TAG" == *-rc.* ]]; then prerelease=(--prerelease); fi
+          gh release create "$TAG" "dist/$TAG/"* \
+            --repo "$GITHUB_REPOSITORY" --verify-tag \
+            --title "$TAG" --notes-file "docs/releases/$TAG.md" \
+            "${prerelease[@]}"
+
+      - name: Verify uploaded binaries
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          download_dir="$(mktemp -d)"
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" \
+            --dir "$download_dir" --pattern 'lark-agent-bridge-*'
+          for binary in lark-agent-bridge-linux-amd64 lark-agent-bridge-darwin-arm64; do
+            cmp "dist/$TAG/$binary" "$download_dir/$binary"
+          done
+
+      - name: Publish channel last
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          if [[ "$TAG" == *-rc.* ]]; then channel=prerelease; else channel=stable; fi
+          pages_dir="$(mktemp -d)"
+          git fetch origin gh-pages:refs/remotes/origin/gh-pages || true
+          if git show-ref --verify --quiet refs/remotes/origin/gh-pages; then
+            git worktree add "$pages_dir" origin/gh-pages
+            git -C "$pages_dir" switch -C gh-pages
+          else
+            git worktree add --detach "$pages_dir"
+            git -C "$pages_dir" switch --orphan gh-pages
+            git -C "$pages_dir" rm -rf .
+          fi
+          mkdir -p "$pages_dir/$TAG" "$pages_dir/$channel"
+          cp "dist/$TAG/manifest.json" "dist/$TAG/AI_INSTALL.md" \
+            "dist/$TAG/release-notes.md" "dist/$TAG/SHA256SUMS" "$pages_dir/$TAG/"
+          cp "dist/$channel/manifest.json" "dist/$channel/AI_INSTALL.md" "$pages_dir/$channel/"
+          touch "$pages_dir/.nojekyll"
+          git -C "$pages_dir" add .
+          git -C "$pages_dir" -c user.name=github-actions -c user.email=41898282+github-actions[bot]@users.noreply.github.com \
+            commit -m "release: publish $TAG $channel channel"
+          git -C "$pages_dir" push origin gh-pages
