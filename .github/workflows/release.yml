@@ -87,7 +87,7 @@ jobs:
           else
             git worktree add --detach "$pages_dir"
             git -C "$pages_dir" switch --orphan gh-pages
-            git -C "$pages_dir" rm -rf .
+            git -C "$pages_dir" rm -rf --ignore-unmatch .
           fi
           mkdir -p "$pages_dir/$TAG" "$pages_dir/$channel"
           cp "dist/$TAG/manifest.json" "dist/$TAG/AI_INSTALL.md" \
