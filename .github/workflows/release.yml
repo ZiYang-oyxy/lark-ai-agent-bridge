@@ -17,11 +17,19 @@ jobs:
   release:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           fetch-depth: 0
 
-      - uses: actions/setup-go@v5
+      - name: Restore annotated tag object
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          git fetch --force origin "refs/tags/$TAG:refs/tags/$TAG"
+          test "$(git cat-file -t "refs/tags/$TAG")" = tag
+          test "$(git rev-parse "refs/tags/$TAG^{}")" = "$GITHUB_SHA"
+
+      - uses: actions/setup-go@v6
         with:
           go-version: 1.26.3
 
