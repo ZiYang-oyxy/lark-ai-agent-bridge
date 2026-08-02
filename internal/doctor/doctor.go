@@ -20,10 +20,10 @@ import (
 )
 
 type Check struct {
-	Name    string
-	OK      bool
-	Warning bool
-	Detail  string
+	Name    string `json:"name"`
+	OK      bool   `json:"ok"`
+	Warning bool   `json:"warning,omitempty"`
+	Detail  string `json:"detail"`
 }
 
 type RunOptions struct {
@@ -62,8 +62,8 @@ func runStatic(cfg config.Config) []Check {
 	}
 	checks := []Check{
 		lookPath("claude", claudeBin),
-		envPresent("LARK_APP_ID"),
-		envPresent("LARK_APP_SECRET"),
+		credentialPresent("LARK_APP_ID", "LAB_LARK_APP_ID", "LARK_APP_ID_FILE", "LAB_LARK_APP_ID_FILE"),
+		credentialPresent("LARK_APP_SECRET", "LAB_LARK_APP_SECRET", "LARK_APP_SECRET_FILE", "LAB_LARK_APP_SECRET_FILE"),
 		{Name: "default_agent", OK: cfg.DefaultAgent != "", Detail: cfg.DefaultAgent},
 		dirExists("default_workdir", cfg.DefaultWorkDir),
 		auditLogWritable(cfg.AuditLogPath),
@@ -769,6 +769,18 @@ func envPresent(name string) Check {
 		return Check{Name: name, OK: false, Detail: "not set"}
 	}
 	return Check{Name: name, OK: true, Detail: "set"}
+}
+
+func credentialPresent(name string, candidates ...string) Check {
+	if strings.TrimSpace(os.Getenv(name)) != "" {
+		return Check{Name: name, OK: true, Detail: "configured"}
+	}
+	for _, candidate := range candidates {
+		if strings.TrimSpace(os.Getenv(candidate)) != "" {
+			return Check{Name: name, OK: true, Detail: "configured"}
+		}
+	}
+	return Check{Name: name, OK: false, Detail: "not configured"}
 }
 
 func optionalEnv(name string) Check {

@@ -21,12 +21,14 @@ import (
 	"lark-agent-bridge/internal/actiongrant"
 	"lark-agent-bridge/internal/agent"
 	"lark-agent-bridge/internal/agentrequestlog"
+	"lark-agent-bridge/internal/applock"
 	"lark-agent-bridge/internal/audit"
 	"lark-agent-bridge/internal/bridge"
 	"lark-agent-bridge/internal/bridgeinstructions"
 	"lark-agent-bridge/internal/buildinfo"
 	"lark-agent-bridge/internal/card"
 	"lark-agent-bridge/internal/config"
+	"lark-agent-bridge/internal/credentials"
 	"lark-agent-bridge/internal/devmode"
 	"lark-agent-bridge/internal/doctor"
 	"lark-agent-bridge/internal/fakeclaude"
@@ -246,6 +248,15 @@ func runSimulateAction(args []string) error {
 }
 
 func runDoctor(args []string) error {
+	return runDoctorTo(args, os.Stdout, func(ctx context.Context, appID, appSecret string) doctor.Check {
+		if _, err := feishu.FetchBotInfo(ctx, appID, appSecret); err != nil {
+			return doctor.Check{Name: "feishu_online", OK: false, Detail: "bot identity verification failed"}
+		}
+		return doctor.Check{Name: "feishu_online", OK: true, Detail: "bot identity verified"}
+	})
+}
+
+func runDoctorTo(args []string, out io.Writer, onlineCheck func(context.Context, string, string) doctor.Check) error {
 	fs := flag.NewFlagSet("doctor", flag.ContinueOnError)
 	cfg, err := config.LoadFromEnvStrict()
 	if err != nil {
@@ -253,6 +264,8 @@ func runDoctor(args []string) error {
 	}
 	defaultWorkDir := fs.String("default-workdir", cfg.DefaultWorkDir, "default workdir for messages without --workdir")
 	strict := fs.Bool("strict", false, "treat wrapper preflight warnings as failures")
+	online := fs.Bool("online", false, "verify Feishu credentials and bot identity")
+	jsonOutput := fs.Bool("json", false, "print structured JSON")
 	preflightTimeout := fs.Duration("preflight-timeout", 20*time.Second, "bounded wrapper preflight timeout")
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -268,12 +281,38 @@ func runDoctor(args []string) error {
 		Strict:           *strict,
 		PreflightTimeout: *preflightTimeout,
 	})
-	fmt.Println(doctor.Summary(checks))
+	if *online {
+		creds, credentialErr := credentials.Load()
+		if credentialErr != nil {
+			checks = append(checks, doctor.Check{Name: "feishu_online", OK: false, Detail: "credentials unavailable or unsafe"})
+		} else {
+			onlineCtx, cancel := context.WithTimeout(context.Background(), *preflightTimeout)
+			checks = append(checks, onlineCheck(onlineCtx, creds.AppID, creds.AppSecret))
+			cancel()
+		}
+	}
+	allOK := true
+	for _, check := range checks {
+		if !check.OK {
+			allOK = false
+			break
+		}
+	}
+	if *jsonOutput {
+		encoder := json.NewEncoder(out)
+		encoder.SetIndent("", "  ")
+		if err := encoder.Encode(struct {
+			OK     bool           `json:"ok"`
+			Checks []doctor.Check `json:"checks"`
+		}{OK: allOK, Checks: checks}); err != nil {
+			return err
+		}
+	} else {
+		fmt.Fprintln(out, doctor.Summary(checks))
+	}
 	if *strict {
-		for _, check := range checks {
-			if !check.OK {
-				return errors.New("doctor strict verification failed")
-			}
+		if !allOK {
+			return errors.New("doctor strict verification failed")
 		}
 	}
 	return nil
@@ -452,11 +491,16 @@ func runServe(args []string) error {
 	}
 	// 凭据白名单：优先接受 persist 前缀 LAB_LARK_*，回落到旧的 LARK_* 以兼容真机部署。
 	// secret 只在内存持有，绝不落盘（Config.Config 不序列化）。
-	appID := firstNonEmpty(os.Getenv("LAB_LARK_APP_ID"), os.Getenv("LARK_APP_ID"))
-	appSecret := firstNonEmpty(os.Getenv("LAB_LARK_APP_SECRET"), os.Getenv("LARK_APP_SECRET"))
-	if appID == "" || appSecret == "" {
-		return fmt.Errorf("LAB_LARK_APP_ID and LAB_LARK_APP_SECRET are required for serve (旧 LARK_APP_ID/SECRET 仍兼容)")
+	creds, err := credentials.Load()
+	if err != nil {
+		return err
 	}
+	appID, appSecret := creds.AppID, creds.AppSecret
+	appLock, err := applock.Acquire(applock.DefaultDir(), appID)
+	if err != nil {
+		return fmt.Errorf("acquire Feishu App lock: %w", err)
+	}
+	defer appLock.Close()
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	botOpenID := firstNonEmpty(os.Getenv("LAB_LARK_BOT_OPEN_ID"), os.Getenv("LARK_BOT_OPEN_ID"))

@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -22,6 +23,7 @@ import (
 	"lark-agent-bridge/internal/buildinfo"
 	"lark-agent-bridge/internal/card"
 	"lark-agent-bridge/internal/config"
+	"lark-agent-bridge/internal/doctor"
 	"lark-agent-bridge/internal/feishu"
 	"lark-agent-bridge/internal/feishueventlog"
 	"lark-agent-bridge/internal/schedule"
@@ -758,6 +760,57 @@ func TestRunDoctorAcceptsBoundedPreflightTimeout(t *testing.T) {
 	if err := runDoctor([]string{"--preflight-timeout", "0s", "--default-workdir", workDir}); err == nil || err.Error() != "doctor preflight timeout must be positive" {
 		t.Fatalf("non-positive timeout error = %v", err)
 	}
+}
+
+func TestRunDoctorOnlineJSONIsStructuredAndSecretFree(t *testing.T) {
+	workDir := doctorWorkDir(t)
+	t.Setenv("LARK_APP_ID", "cli_json")
+	t.Setenv("LARK_APP_SECRET", "json-secret")
+	var out bytes.Buffer
+	err := runDoctorTo([]string{"--online", "--json", "--default-workdir", workDir}, &out,
+		func(context.Context, string, string) doctor.Check {
+			return doctor.Check{Name: "feishu_online", OK: true, Detail: "bot identity verified"}
+		})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(out.String(), "json-secret") || strings.Contains(out.String(), "cli_json") {
+		t.Fatalf("doctor JSON leaked credentials: %s", out.String())
+	}
+	var result struct {
+		OK     bool           `json:"ok"`
+		Checks []doctor.Check `json:"checks"`
+	}
+	if err := json.Unmarshal(out.Bytes(), &result); err != nil || !result.OK {
+		t.Fatalf("doctor JSON = %s, %v", out.String(), err)
+	}
+}
+
+func TestRunDoctorStrictOnlineFailureIsFatal(t *testing.T) {
+	workDir := doctorWorkDir(t)
+	t.Setenv("LARK_APP_ID", "cli_online")
+	t.Setenv("LARK_APP_SECRET", "online-secret")
+	err := runDoctorTo([]string{"--strict", "--online", "--default-workdir", workDir}, io.Discard,
+		func(context.Context, string, string) doctor.Check {
+			return doctor.Check{Name: "feishu_online", OK: false, Detail: "credentials rejected"}
+		})
+	if err == nil || err.Error() != "doctor strict verification failed" {
+		t.Fatalf("strict online error = %v", err)
+	}
+}
+
+func doctorWorkDir(t *testing.T) string {
+	t.Helper()
+	workDir, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	bin := filepath.Join(workDir, "fake-claude")
+	if err := os.WriteFile(bin, []byte("#!/bin/sh\nexit 0\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("E2E_CLAUDE_BIN", bin)
+	return workDir
 }
 
 func TestNewServeMediaUsesConfiguredLimitsAndSharedTokenSource(t *testing.T) {

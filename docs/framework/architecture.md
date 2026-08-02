@@ -237,6 +237,7 @@ Agent 只能通过私有 Unix socket 和单次 token 提交规则字段，不能
 - **去重**：消息 receipt、schedule run ID、action grant 和 CardKit sequence 分别约束不同的重复投递，不用一个通用 ID 假装覆盖全部一致性问题。
 - **关闭**：收到 SIGTERM/SIGINT 后停止接收新输入，关闭 schedule control，取消 active Agent，等待有界 grace period，并保存可恢复 context。
 - **自升级**：只有 owner/admin 可确认；升级前检查 active/queued 任务、manifest、文件大小与 SHA-256，原子替换失败时恢复旧 binary。
+- **部署安全**：凭据可来自受权限约束的 secret file；online doctor 验证 Bot 身份；`serve` 通过 App ID 摘要 advisory lock 避免同机重复消费。
 
 ## 配置与部署
 
