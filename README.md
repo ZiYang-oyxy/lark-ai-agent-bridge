@@ -33,7 +33,7 @@ workspace：
 - `/resume` 列出当前 Agent 与 workdir 最近使用的 10 个 Bridge Session；`/resume <session-id>` 切换后由下一条普通消息继续目标 Session。
 - 自然语言定时同时支持重复任务和一次性任务；Agent 只生成规则提案，用户确认后 Bridge 才持久化并启用。
 - `/config` 的三种回复模式是：`Coder`（按顺序展示回复与工具进展）、`Worker`（思考、正文、工具分区展示）、`Singleton`（维持单个卡片更新，搭配 pin 使用）。底层兼容 key 分别为 `append`、`append-clean-card`、`latest-card`，仅用于已有配置、环境变量和 API 兼容，不作为用户界面文案。
-- 执行中标题使用蓝色 `正在推理/正在执行工具/正在回复 · ⏱ Ns`，完成绿色，停止灰色，失败红色。
+- 执行中标题使用蓝色 `正在推理/正在执行工具/正在回复 · ⏱ Ns`，完成绿色，停止灰色，失败红色。完成态默认显示 `✅ 已完成 · ⏱ Ns`；管理员可用 `/config set completion_status_text=🎉任务完成` 改为最多 32 个字符的单行标题前缀，`/config set completion_status_text=` 恢复默认。该偏好在消息入队时冻结，只影响之后的新任务。
 - 执行中卡片连续 5 秒没有正常流式更新时会自动刷新耗时；无正文的等待阶段同时显示“任务仍在运行…”。每次正常更新会重新计时，完成、失败或停止后立即取消刷新。
 - 底部状态栏使用分割线和两行分栏：agent/model/tokens，以及 user/ip/workdir。Claude 从 stream 事件、Codex 从当前 session transcript 读取已生效的实际模型；尚未取得运行期记录时显示“同步中”，不会把请求配置伪装为实际模型。
 - 工作目录不存在时先发确认卡片；点击创建后确认卡变绿并禁用按钮，Claude 执行另起运行卡片。

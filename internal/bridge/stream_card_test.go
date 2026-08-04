@@ -95,6 +95,24 @@ func TestAgentCardStreamFinishAdoptsLatestVersionDiscoveredDuringRun(t *testing.
 	}
 }
 
+func TestAgentCardStreamUsesConfiguredCompletionStatusText(t *testing.T) {
+	cfg := testConfig(t)
+	renderer := card.NewFakeRenderer()
+	svc := NewService(cfg, renderer, newFakeRunner(), audit.NewRecorder())
+	clock := &fakeStreamClock{now: time.Unix(100, 0)}
+	stream := newAgentCardStreamWithClock(svc, "run", session.Session{ID: "claude:chat"}, session.Input{
+		ReplyToMessageID: "source", CompletionStatusText: "🎉 任务完成", Time: clock.Now(),
+	}, renderer, nil, clock)
+	clock.now = clock.now.Add(2 * time.Second)
+	if got := stream.headerTitleLocked(); got != "🧠 正在推理 · ⏱ 2s" {
+		t.Fatalf("running title = %q", got)
+	}
+	stream.status = "completed"
+	if got := stream.headerTitleLocked(); got != "🎉 任务完成 · ⏱ 2s" {
+		t.Fatalf("completed title = %q", got)
+	}
+}
+
 func TestAgentCardStreamHandleAdoptsFirstTurnContextUsage(t *testing.T) {
 	// 首轮:sess.AgentSessionID=="" 时 metaForRun 拿不到 sidecar,起始 meta.CtxOK=false;
 	// Handle 收到本轮 agent session id 后,如果 sidecar 已落盘且 mtime 晚于 runStartedAt,

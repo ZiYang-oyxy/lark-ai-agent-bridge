@@ -78,6 +78,23 @@ func TestNotifyOnCompleteTopicMentionsInitiatorInThread(t *testing.T) {
 	}
 }
 
+func TestCompletionStatusTextDefaultsAndIsCustomizable(t *testing.T) {
+	for _, test := range []struct {
+		name  string
+		input session.Input
+		want  string
+	}{
+		{name: "default", input: session.Input{}, want: config.DefaultCompletionStatusText},
+		{name: "custom", input: session.Input{CompletionStatusText: "🎉 任务完成"}, want: "🎉 任务完成"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if got := test.input.EffectiveCompletionStatusText(); got != test.want {
+				t.Fatalf("effective completion status text = %q, want %q", got, test.want)
+			}
+		})
+	}
+}
+
 func TestNotifyOnCompletePrivateChatDoesNotMention(t *testing.T) {
 	notifier := &fakeNotifier{}
 	svc := newNotifyTestService(notifier)

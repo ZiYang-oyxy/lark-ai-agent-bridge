@@ -9,9 +9,16 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"unicode/utf8"
 )
 
 const PreferenceSchemaVersion = 1
+
+// DefaultCompletionStatusText is the default terminal-card status label.
+// The elapsed-time suffix remains owned by the card stream.
+const DefaultCompletionStatusText = "✅ 已完成"
+
+const maxCompletionStatusTextRunes = 32
 
 var ErrPreferenceConflict = errors.New("config: preference revision conflict")
 
@@ -121,6 +128,10 @@ type RuntimePreference struct {
 	// unread notification (the terminal card is an in-place CardKit update and
 	// produces no new message). Defaults to false to avoid打扰.
 	NotifyOnComplete bool `json:"notify_on_complete,omitempty"`
+	// CompletionStatusText replaces the successful terminal-card label. Empty
+	// means use DefaultCompletionStatusText, which keeps existing preferences
+	// backward compatible.
+	CompletionStatusText string `json:"completion_status_text,omitempty"`
 	// ShowMetaRowAgent / ShowMetaRowRuntime / ShowMetaRowDeveloper 分别控制 AI 回复
 	// 卡片底部三行运行时元信息的独立开关:
 	//   agent 行:agent/会话/模型/tokens
@@ -370,6 +381,14 @@ func validateRuntimePreferenceWith(preference RuntimePreference, allowedModels [
 	if err := validateAgentSelection(preference, agents); err != nil {
 		return err
 	}
+	if text := strings.TrimSpace(preference.CompletionStatusText); text != "" {
+		if strings.ContainsAny(text, "\r\n") {
+			return errors.New("completion status text must be one line")
+		}
+		if utf8.RuneCountInString(text) > maxCompletionStatusTextRunes {
+			return fmt.Errorf("completion status text exceeds %d characters", maxCompletionStatusTextRunes)
+		}
+	}
 	return nil
 }
 
@@ -425,6 +444,7 @@ func normalizeRuntimePreference(preference RuntimePreference) RuntimePreference 
 	}
 	preference.AgentHome = strings.TrimSpace(preference.AgentHome)
 	preference.AgentBin = strings.TrimSpace(preference.AgentBin)
+	preference.CompletionStatusText = strings.TrimSpace(preference.CompletionStatusText)
 	for _, model := range builtinModels {
 		if strings.EqualFold(preference.Model, model) {
 			preference.Model = model
@@ -441,6 +461,19 @@ func normalizeRuntimePreference(preference RuntimePreference) RuntimePreference 
 	}
 	preference.ShowMetaRows = false
 	return preference
+}
+
+// EffectiveCompletionStatusText returns the configured terminal-card label or
+// the compatible default when a preference snapshot predates this field.
+func EffectiveCompletionStatusText(text string) string {
+	if text = strings.TrimSpace(text); text != "" {
+		return text
+	}
+	return DefaultCompletionStatusText
+}
+
+func (p RuntimePreference) EffectiveCompletionStatusText() string {
+	return EffectiveCompletionStatusText(p.CompletionStatusText)
 }
 
 func modelCatalog(additions []string) ([]string, error) {
