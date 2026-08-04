@@ -136,47 +136,48 @@ func compactInlineToolValue(text string, maxRunes int) (string, bool) {
 }
 
 type agentCardStream struct {
-	mu               sync.Mutex
-	renderMu         sync.Mutex
-	renderer         card.Renderer
-	refProvider      interface{ RenderRef() session.RenderRef }
-	clock            streamClock
-	previewPolicy    PreviewPolicy
-	previewTail      bool
-	previewTimer     streamTimer
-	previewGen       uint64
-	previewPending   bool
-	previewDisabled  bool
-	heartbeatEvery   time.Duration
-	heartbeatTimer   streamTimer
-	heartbeatGen     uint64
-	lastFlush        time.Time
-	lastFlushedRunes int
-	contentRevision  uint64
-	lastFlushedRev   uint64
-	metaRevision     uint64
-	lastFlushedMeta  uint64
-	sessionID        string
-	replyTo          string
-	replyInThread    bool
-	replyMode        config.ReplyMode
-	startedAt        time.Time
-	status           string
-	activity         string
-	meta             card.Meta
-	totalBefore      int
-	stopVisible      bool
-	stopGrantID      string
-	closed           bool
-	answer           strings.Builder
-	thought          strings.Builder
-	tools            strings.Builder
-	ordered          []card.Segment
-	orderedPartialAt int
-	orderedPartial   bool
-	toolCallCount    int
-	stopping         bool
-	stopRequested    bool
+	mu                   sync.Mutex
+	renderMu             sync.Mutex
+	renderer             card.Renderer
+	refProvider          interface{ RenderRef() session.RenderRef }
+	clock                streamClock
+	previewPolicy        PreviewPolicy
+	previewTail          bool
+	previewTimer         streamTimer
+	previewGen           uint64
+	previewPending       bool
+	previewDisabled      bool
+	heartbeatEvery       time.Duration
+	heartbeatTimer       streamTimer
+	heartbeatGen         uint64
+	lastFlush            time.Time
+	lastFlushedRunes     int
+	contentRevision      uint64
+	lastFlushedRev       uint64
+	metaRevision         uint64
+	lastFlushedMeta      uint64
+	sessionID            string
+	replyTo              string
+	replyInThread        bool
+	replyMode            config.ReplyMode
+	completionStatusText string
+	startedAt            time.Time
+	status               string
+	activity             string
+	meta                 card.Meta
+	totalBefore          int
+	stopVisible          bool
+	stopGrantID          string
+	closed               bool
+	answer               strings.Builder
+	thought              strings.Builder
+	tools                strings.Builder
+	ordered              []card.Segment
+	orderedPartialAt     int
+	orderedPartial       bool
+	toolCallCount        int
+	stopping             bool
+	stopRequested        bool
 
 	// append-clean-card 三段布局:思考/工具滚动显示「最后两次」,但用计数告诉用户
 	// 背后累计了多少轮。recentThoughts 保留最新两轮 COT;recentTools 保留最新两次
@@ -271,24 +272,25 @@ func newAgentCardStreamWithClock(service *Service, sessionID string, sess sessio
 		service.Audit.Record("system", "action_grant_issue_failed", sessionID, "action=stop error="+grantErr.Error())
 	}
 	return &agentCardStream{
-		renderer:       renderer,
-		refProvider:    refProvider,
-		clock:          clock,
-		previewPolicy:  policy,
-		heartbeatEvery: heartbeatEvery,
-		previewTail:    continuationPreview,
-		sessionID:      sessionID,
-		replyTo:        input.ReplyToMessageID,
-		replyInThread:  input.ConversationMode == config.ConversationModeTopic,
-		replyMode:      input.EffectiveReplyMode(),
-		startedAt:      startedAt,
-		status:         "running",
-		activity:       streamActivityReasoning,
-		meta:           service.metaForRunWithDir(sess, input, ctxDir),
-		totalBefore:    sess.Tokens,
-		stopVisible:    stopVisible,
-		stopGrantID:    stopGrantID,
-		ctxDir:         ctxDir,
+		renderer:             renderer,
+		refProvider:          refProvider,
+		clock:                clock,
+		previewPolicy:        policy,
+		heartbeatEvery:       heartbeatEvery,
+		previewTail:          continuationPreview,
+		sessionID:            sessionID,
+		replyTo:              input.ReplyToMessageID,
+		replyInThread:        input.ConversationMode == config.ConversationModeTopic,
+		replyMode:            input.EffectiveReplyMode(),
+		completionStatusText: input.EffectiveCompletionStatusText(),
+		startedAt:            startedAt,
+		status:               "running",
+		activity:             streamActivityReasoning,
+		meta:                 service.metaForRunWithDir(sess, input, ctxDir),
+		totalBefore:          sess.Tokens,
+		stopVisible:          stopVisible,
+		stopGrantID:          stopGrantID,
+		ctxDir:               ctxDir,
 	}
 }
 
@@ -1872,7 +1874,7 @@ func (s *agentCardStream) headerTitleLocked() string {
 	}
 	switch s.status {
 	case "completed":
-		return fmt.Sprintf("✅ 已完成 · ⏱ %s", elapsed)
+		return fmt.Sprintf("%s · ⏱ %s", config.EffectiveCompletionStatusText(s.completionStatusText), elapsed)
 	case "failed":
 		return fmt.Sprintf("❌ 执行失败 · ⏱ %s", elapsed)
 	case "stopped":

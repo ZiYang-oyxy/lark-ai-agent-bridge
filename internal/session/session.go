@@ -89,6 +89,7 @@ type Input struct {
 	ScheduleTargetThreadID    string `json:",omitempty"`
 	IsGroup                   bool   `json:",omitempty"`
 	NotifyOnComplete          bool   `json:",omitempty"`
+	CompletionStatusText      string `json:",omitempty"`
 	Time                      time.Time
 	DebounceUntil             time.Time
 	DebounceWindow            time.Duration `json:",omitempty"`
@@ -112,6 +113,12 @@ func (in Input) EffectiveAppendOverflowMode() config.AppendOverflowMode {
 		return config.AppendOverflowModeTruncate
 	}
 	return in.AppendOverflowMode
+}
+
+// EffectiveCompletionStatusText keeps durable inputs written before the
+// configurable terminal label compatible with the original card title.
+func (in Input) EffectiveCompletionStatusText() string {
+	return config.EffectiveCompletionStatusText(in.CompletionStatusText)
 }
 
 type Batch struct {

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -168,6 +169,23 @@ func TestRuntimePreferenceValidationUsesBuiltinsAndAllowedModels(t *testing.T) {
 	} {
 		if err := ValidateRuntimePreference(preference, "claude-custom-1"); err == nil {
 			t.Fatalf("ValidateRuntimePreference(%#v) error = nil", preference)
+		}
+	}
+}
+
+func TestCompletionStatusTextDefaultsAndRejectsInvalidValues(t *testing.T) {
+	base := RuntimePreference{Model: "default", Effort: "low", ReplyMode: ReplyModeAppend}
+	if got := base.EffectiveCompletionStatusText(); got != DefaultCompletionStatusText {
+		t.Fatalf("default completion status text = %q, want %q", got, DefaultCompletionStatusText)
+	}
+	base.CompletionStatusText = "🎉 任务完成"
+	if err := ValidateRuntimePreference(base); err != nil {
+		t.Fatalf("custom completion status text rejected: %v", err)
+	}
+	for _, value := range []string{"first\nsecond", strings.Repeat("长", maxCompletionStatusTextRunes+1)} {
+		base.CompletionStatusText = value
+		if err := ValidateRuntimePreference(base); err == nil {
+			t.Fatalf("invalid completion status text %q accepted", value)
 		}
 	}
 }

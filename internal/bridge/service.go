@@ -112,19 +112,19 @@ type Service struct {
 	accessMu           sync.RWMutex
 	knownChats         []feishu.KnownChat
 
-	mu                 sync.Mutex
-	pendingRuns        map[string]pendingRun
-	activeRuns         map[string]activeRun
+	mu          sync.Mutex
+	pendingRuns map[string]pendingRun
+	activeRuns  map[string]activeRun
 	// recentlyStoppedRuns 记录 sessionID 是否曾经被显式 stop 过。activeRuns[id] 会
 	// 在 executeBatch 的 defer 里被 clearActiveRun 删掉，与第二次 stop 的读检查存在竞态；
 	// 落进此集合的 sessionID 在 activeRuns 缺失时仍视为幂等 stop，避免双击停止误报
 	// "当前会话没有正在运行的任务"。recentlyStoppedOrder 提供 FIFO 淘汰。
 	recentlyStoppedRuns  map[string]struct{}
 	recentlyStoppedOrder []string
-	pendingCompletions map[string]pendingCompletion
-	waitingReactions   map[string]*reactionLifecycle
-	helpContexts       map[string]helpContext
-	resumeContexts     map[string]resumeContext
+	pendingCompletions   map[string]pendingCompletion
+	waitingReactions     map[string]*reactionLifecycle
+	helpContexts         map[string]helpContext
+	resumeContexts       map[string]resumeContext
 	// actionReplyHints:handleActionCommand 消息路径专用,在调 HandleActionResult 之前
 	// 登记 sessionID → 触发消息 msg.ID 的映射;renderActionEvent 内部 Render 时若 event
 	// 没带 ReplyToMessageID(渲染上下文里没 msg 引用)就从这里取回,让 CardKit 首次遇到
@@ -1010,7 +1010,7 @@ func (s *Service) handleConfigCommand(ctx context.Context, msg Message, cmd Comm
 				return s.renderTextWithMode("config-set", msg.ID, card.SegmentError, "用法：/config set key=value [key=value ...]", replyMode)
 			}
 			key, value := strings.ToLower(strings.TrimSpace(pair[0])), strings.TrimSpace(pair[1])
-			if key == "" || value == "" && key != "agent_home" && key != "agent_bin" && key != "meta_rows" {
+			if key == "" || value == "" && key != "agent_home" && key != "agent_bin" && key != "meta_rows" && key != "completion_status_text" {
 				return s.renderTextWithMode("config-set", msg.ID, card.SegmentError, "用法：/config set key=value [key=value ...]", replyMode)
 			}
 			if _, duplicate := values[key]; duplicate {
@@ -1371,7 +1371,7 @@ func (s *Service) runWithPreference(ctx context.Context, cmd Command, msg Messag
 	if seedMode == config.TopicSeedModeFork {
 		forkFrom = s.forkSeedForTopicSession(cmd.Agent, key, msg, preference.ConversationMode)
 	}
-	input := session.Input{ID: msg.ID, Sender: msg.Sender, Text: text, QuotedText: quotedText, QuotedSender: quotedSender, QuotedSenderType: quotedSenderType, Attachments: attachments, ReplyToMessageID: msg.ID, CardSessionID: cardSessionID, WorkDir: workDir, RequestedModel: preference.Model, RequestedEffort: preference.Effort, AgentBin: bin, AgentHome: home, ForkFromAgentSessionID: forkFrom, ReplyMode: preference.ReplyMode, AppendOverflowMode: preference.AppendOverflowMode, ConversationMode: preference.ConversationMode, NotifyOnComplete: preference.NotifyOnComplete, BridgeInstructionsVersion: bridgeinstructions.CurrentVersion, ScheduleKind: cmd.ScheduleKind, ScheduleTargetThreadID: msg.ThreadID, IsGroup: msg.IsGroup, Time: effectiveMessageTime(msg), DebounceUntil: receivedAt.Add(debounceWindow), DebounceWindow: debounceWindow, State: session.InputDebouncing, Reset: cmd.Reset || cmd.ScheduleKind != ""}
+	input := session.Input{ID: msg.ID, Sender: msg.Sender, Text: text, QuotedText: quotedText, QuotedSender: quotedSender, QuotedSenderType: quotedSenderType, Attachments: attachments, ReplyToMessageID: msg.ID, CardSessionID: cardSessionID, WorkDir: workDir, RequestedModel: preference.Model, RequestedEffort: preference.Effort, AgentBin: bin, AgentHome: home, ForkFromAgentSessionID: forkFrom, ReplyMode: preference.ReplyMode, AppendOverflowMode: preference.AppendOverflowMode, ConversationMode: preference.ConversationMode, NotifyOnComplete: preference.NotifyOnComplete, CompletionStatusText: preference.EffectiveCompletionStatusText(), BridgeInstructionsVersion: bridgeinstructions.CurrentVersion, ScheduleKind: cmd.ScheduleKind, ScheduleTargetThreadID: msg.ThreadID, IsGroup: msg.IsGroup, Time: effectiveMessageTime(msg), DebounceUntil: receivedAt.Add(debounceWindow), DebounceWindow: debounceWindow, State: session.InputDebouncing, Reset: cmd.Reset || cmd.ScheduleKind != ""}
 	accepted, queued, err := s.Sessions.AcceptAndEnqueue(key, input, receivedAt, s.dedupTTL(), s.dedupMaxEntries(), s.batchLimits())
 	if err != nil {
 		action := "queue_rejected"
@@ -2398,7 +2398,7 @@ func isKnownEffort(v string) bool {
 func preferenceFromFields(values map[string]string, current config.RuntimePreference) (config.RuntimePreference, error) {
 	for key := range values {
 		switch key {
-		case "agent", "agent_home", "agent_bin", "effort", "reply_mode", "append_overflow_mode", "conversation_mode", "topic_seed_mode", "group_message_mode", "respond_to_bots", "notify_on_complete", "meta_rows", "show_meta_row_agent", "show_meta_row_runtime", "show_meta_row_developer":
+		case "agent", "agent_home", "agent_bin", "effort", "reply_mode", "append_overflow_mode", "conversation_mode", "topic_seed_mode", "group_message_mode", "respond_to_bots", "notify_on_complete", "completion_status_text", "meta_rows", "show_meta_row_agent", "show_meta_row_runtime", "show_meta_row_developer":
 		default:
 			return config.RuntimePreference{}, fmt.Errorf("unsupported config field %q", key)
 		}
@@ -2441,6 +2441,9 @@ func preferenceFromFields(values map[string]string, current config.RuntimePrefer
 		if value := strings.TrimSpace(raw); value != "" {
 			preference.GroupMessageMode = config.GroupMessageMode(value)
 		}
+	}
+	if raw, ok := values["completion_status_text"]; ok {
+		preference.CompletionStatusText = strings.TrimSpace(raw)
 	}
 	for _, field := range []struct {
 		key string
@@ -2649,6 +2652,7 @@ func runtimePreferenceChanges(before, after config.RuntimePreference) []string {
 	appendChange("群消息接收", groupMessageModeText(before.GroupMessageMode), groupMessageModeText(after.GroupMessageMode))
 	appendChange("响应其他 bot", respondToBotsText(before.RespondToBots), respondToBotsText(after.RespondToBots))
 	appendChange("完成提醒", onOffText(before.NotifyOnComplete), onOffText(after.NotifyOnComplete))
+	appendChange("完成状态文案", before.EffectiveCompletionStatusText(), after.EffectiveCompletionStatusText())
 	appendChange("状态栏 Agent 信息", onOffText(before.ShowMetaRowAgent), onOffText(after.ShowMetaRowAgent))
 	appendChange("状态栏运行信息", onOffText(before.ShowMetaRowRuntime), onOffText(after.ShowMetaRowRuntime))
 	appendChange("状态栏开发信息", onOffText(before.ShowMetaRowDeveloper), onOffText(after.ShowMetaRowDeveloper))

@@ -1310,7 +1310,7 @@ func TestServiceFreezesPreferencesAtEnqueueTime(t *testing.T) {
 	cfg := testConfig(t)
 	cfg.Model, cfg.Effort = "sonnet", "low"
 	cfg.AllowedModels = []string{"default", "sonnet", "opus", "haiku"}
-	store, _ := testPreferenceStore(t, config.RuntimePreference{Model: cfg.Model, Effort: cfg.Effort}, cfg.AllowedModels)
+	store, _ := testPreferenceStore(t, config.RuntimePreference{Model: cfg.Model, Effort: cfg.Effort, CompletionStatusText: "✅ 旧文案"}, cfg.AllowedModels)
 	svc := NewService(cfg, card.NewFakeRenderer(), newFakeRunner(), audit.NewRecorder())
 	svc.Preferences = store
 	now := time.Now()
@@ -1321,7 +1321,7 @@ func TestServiceFreezesPreferencesAtEnqueueTime(t *testing.T) {
 	// and reply_mode are — mutate both to exercise the freeze-at-enqueue-time
 	// behaviour: the message that landed before the save keeps the old effort
 	// and reply_mode; the one after picks up the new values.
-	if _, err := svc.HandleActionResult(context.Background(), ActionRequest{SessionID: "config-card", ActionID: "config.save", Actor: "user", FormValues: map[string]string{"model": "opus", "effort": "high", "reply_mode": "latest-card"}}); err != nil {
+	if _, err := svc.HandleActionResult(context.Background(), ActionRequest{SessionID: "config-card", ActionID: "config.save", Actor: "user", FormValues: map[string]string{"model": "opus", "effort": "high", "reply_mode": "latest-card", "completion_status_text": "🎉 新文案"}}); err != nil {
 		t.Fatal(err)
 	}
 	if err := svc.HandleMessage(context.Background(), Message{ID: "after-config", ChatID: "chat", Sender: "user", Text: "second", Time: now.Add(time.Millisecond)}); err != nil {
@@ -1331,7 +1331,7 @@ func TestServiceFreezesPreferencesAtEnqueueTime(t *testing.T) {
 	if !ok || len(sess.Queue) != 2 {
 		t.Fatalf("session queue = %#v", sess)
 	}
-	if first, second := sess.Queue[0], sess.Queue[1]; first.RequestedModel != "sonnet" || first.RequestedEffort != "low" || first.ReplyMode != config.ReplyModeAppend || second.RequestedModel != "sonnet" || second.RequestedEffort != "high" || second.ReplyMode != config.ReplyModeLatestCard {
+	if first, second := sess.Queue[0], sess.Queue[1]; first.RequestedModel != "sonnet" || first.RequestedEffort != "low" || first.ReplyMode != config.ReplyModeAppend || first.CompletionStatusText != "✅ 旧文案" || second.RequestedModel != "sonnet" || second.RequestedEffort != "high" || second.ReplyMode != config.ReplyModeLatestCard || second.CompletionStatusText != "🎉 新文案" {
 		t.Fatalf("frozen queue preferences = %#v", sess.Queue)
 	}
 }
