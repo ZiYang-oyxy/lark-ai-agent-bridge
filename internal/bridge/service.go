@@ -246,6 +246,10 @@ type AgentRunResult struct {
 	// ProtocolUnknown/ProtocolAnomalies expose Codex JSONL drift for audit.
 	ProtocolUnknown   int
 	ProtocolAnomalies int
+	// codexMissingTerminal and codexPendingMessage are runner-private state for
+	// the clean-exit compatibility path. They never leave the bridge package.
+	codexMissingTerminal bool
+	codexPendingMessage  string
 }
 
 type AgentStreamUpdate struct {
@@ -4179,6 +4183,9 @@ func (r CLIExecRunner) Run(ctx context.Context, req AgentRunRequest) (AgentRunRe
 	}
 	waitErr := cmd.Wait()
 	if scanErr != nil {
+		if req.Kind == agent.Codex && waitErr == nil && isCodexTerminalMissingError(scanErr) && result.promoteCodexMissingTerminal(onEvent) {
+			return result, nil
+		}
 		return result, scanErr
 	}
 	if waitErr != nil {

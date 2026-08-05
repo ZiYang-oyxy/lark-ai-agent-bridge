@@ -147,6 +147,16 @@ func TestParseCodexStreamRejectsFailedTurnAndMissingTerminal(t *testing.T) {
 			t.Fatalf("error = %v", err)
 		}
 	})
+	t.Run("EOF after final message remains pending", func(t *testing.T) {
+		input := "{\"type\":\"thread.started\",\"thread_id\":\"thread-1\"}\n{\"type\":\"item.completed\",\"item\":{\"type\":\"agent_message\",\"text\":\"final candidate\"}}\n"
+		result, err := parseCodexStream(strings.NewReader(input), nil, nil)
+		if !isCodexTerminalMissingError(err) {
+			t.Fatalf("error = %T %v, want missing terminal", err, err)
+		}
+		if result.codexPendingMessage != "final candidate" || len(result.AnswerSegments) != 0 {
+			t.Fatalf("missing terminal result = %#v", result)
+		}
+	})
 }
 
 func TestParseCodexStreamTracksProtocolDrift(t *testing.T) {
