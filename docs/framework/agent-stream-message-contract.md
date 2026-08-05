@@ -4,7 +4,7 @@
 
 ## 归一化目标
 
-Bridge 把两个 Agent 的不同传输事件投影为四类内容：最终回答、可见过程进展、原生思考、工具调用。每条用户可见 assistant 文本在一次 run 中只能成为“过程进展”或“最终回答”之一，避免 clean/latest 模式出现丢文本或重复文本。
+Bridge 把两个 Agent 的不同传输事件投影为四类内容：最终回答、可见过程进展、原生思考、工具调用。运行期间，最新的完整 assistant 文本会保留在答案区，过程区可同时保留它作为执行记录；终态仍只将最后一条文本归类为最终回答。
 
 | 归一化类别 | 面向用户的含义 | 不显示的内容 |
 | --- | --- | --- |
@@ -30,11 +30,11 @@ Claude 的 assistant message 可能只含文本、只含 `tool_use`，或同时�
 
 ## Codex `exec --json`
 
-Codex 的 `agent_message` 不带“commentary”或“final” phase，不能仅根据事件类型判断。Bridge 始终暂存最新一条 `agent_message`：后续出现 `item.*`、下一条 `agent_message` 或其他活动时，已暂存文本归为过程进展；`turn.completed` 到达时，最后一条暂存文本归为最终回答。
+Codex 的 `agent_message` 不带“commentary”或“final” phase，不能仅根据事件类型判断。Bridge 收到每一条完整 `agent_message` 时先将其显示为当前答案候选，并暂存它：后续出现 `item.*`、下一条 `agent_message` 或其他活动时，已暂存文本归为过程进展，但不会清空答案区；下一条完整 `agent_message` 才会替换答案区内容。`turn.completed` 到达时，最后一条暂存文本归为最终回答。
 
 | Codex 原始事件 | Bridge 归类 | 说明 |
 | --- | --- | --- |
-| `item.completed` / `agent_message`，后续仍有活动 | 过程进展 | 依靠时序，不合成推理摘要 |
+| `item.completed` / `agent_message`，后续仍有活动 | 答案候选 + 过程进展 | 先显示为最新答案，依靠后续时序保留过程记录，不合成推理摘要 |
 | `item.completed` / `agent_message`，直到 `turn.completed` | 最终回答 | 本轮最后一条文本 |
 | `item.*` / `reasoning` 带可显示 text | 原生思考 | 无 text 的 reasoning 不渲染 |
 | `item.started` / `command_execution` | 工具调用 use | id 是调用计数主键 |
@@ -48,8 +48,8 @@ Codex 的 `agent_message` 不带“commentary”或“final” phase，不能仅
 | 回复模式（兼容 key） | 上方过程区 | 中间正文 | 下方工具区 | 终态保留 |
 | --- | --- | --- | --- | --- |
 | Coder（`append`） | 不单独展示 | 依事件顺序内联“进展、工具、最终回答” | 不单独展示 | 全部有序内容 |
-| Worker（`append-clean-card`） | 独立“思考推理”时间线，最新 2 条 | 仅最终回答 | 独立“工具调用”时间线，最新 2 条 | 两个折叠区、完整累计次数、超出数量提示 |
-| Singleton（`latest-card`） | 合并过程折叠区 | 仅最终回答 | 合并工具折叠区 | 过程与工具次数均保留，不使用 Coder 的最近 2 条时间线 |
+| Worker（`append-clean-card`） | 独立“思考推理”时间线，最新 2 条 | 运行中显示最新完整消息；终态保留最终回答 | 独立“工具调用”时间线，最新 2 条 | 两个折叠区、完整累计次数、超出数量提示 |
+| Singleton（`latest-card`） | 合并过程折叠区 | 运行中显示最新完整消息；终态保留最终回答 | 合并工具折叠区 | 过程与工具次数均保留，不使用 Coder 的最近 2 条时间线 |
 
 Worker 的条目格式是 `🔹 #N · HH:MM:SS` 紧邻内容与分隔线，分隔线上下不插入空白段；折叠标题分别使用 `💭 思考推理` 与 `🔧 工具调用`。超过两条时，对应折叠标题仅提示“仅保留最新 2 条”，正文不重复提示，也不展示较早省略数量。思考和工具必须是两个独立折叠区，最终回答始终位于二者之间。
 

@@ -216,9 +216,10 @@ func consumeCodexCompletedItem(item map[string]any, result *AgentRunResult, stat
 }
 
 // Codex records commentary and the final answer as agent_message items, while
-// exec --json currently omits their phase. Keep the newest message pending:
-// later activity proves it was commentary, and turn.completed identifies the
-// final message without synthesizing a reasoning summary.
+// exec --json currently omits their phase. Surface every complete message as
+// the newest answer candidate immediately, then keep it pending: later
+// activity preserves it as process history, while turn.completed identifies
+// the final message without synthesizing a reasoning summary.
 func bufferCodexAgentMessage(result *AgentRunResult, state *codexParseState, onEvent func(AgentStreamUpdate), text string) {
 	text = strings.TrimSpace(text)
 	if text == "" {
@@ -226,6 +227,7 @@ func bufferCodexAgentMessage(result *AgentRunResult, state *codexParseState, onE
 	}
 	flushPendingCodexMessage(result, state, onEvent, card.SegmentThought)
 	state.pendingMessage = text
+	emitCodexSegment(onEvent, card.Segment{Kind: card.SegmentText, Text: text}, streamActivityAnswering, true)
 }
 
 func flushPendingCodexMessage(result *AgentRunResult, state *codexParseState, onEvent func(AgentStreamUpdate), kind card.SegmentKind) {

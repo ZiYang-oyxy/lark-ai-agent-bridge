@@ -513,6 +513,84 @@ func TestAppendStreamPreservesTimeline(t *testing.T) {
 	}
 }
 
+func TestCleanCardsKeepLatestAnswerAcrossProgressSnapshots(t *testing.T) {
+	for _, mode := range []config.ReplyMode{config.ReplyModeAppendCleanCard, config.ReplyModeLatestCard} {
+		t.Run(string(mode), func(t *testing.T) {
+			clock := &fakeStreamClock{now: time.Unix(50, 0)}
+			renderer := card.NewFakeRenderer()
+			stream := newPreviewTestStreamForMode(t, renderer, clock, 1, 2000, mode)
+			if err := stream.Start(); err != nil {
+				t.Fatal(err)
+			}
+			stream.Handle(AgentStreamUpdate{
+				Segments:       []card.Segment{{Kind: card.SegmentText, Text: "已完成检查，继续执行。"}},
+				Activity:       streamActivityAnswering,
+				AnswerSnapshot: true,
+			})
+			stream.Handle(AgentStreamUpdate{
+				Segments:          []card.Segment{{Kind: card.SegmentThought, Text: "已完成检查，继续执行。"}},
+				Activity:          streamActivityReasoning,
+				AssistantSnapshot: true,
+				ProgressSnapshot:  true,
+			})
+			if err := stream.Flush(); err != nil {
+				t.Fatal(err)
+			}
+			preview := renderer.Events()[len(renderer.Events())-1]
+			if answer := segmentTextByKind(preview, card.SegmentText); answer != "已完成检查，继续执行。" {
+				t.Fatalf("%s answer after progress = %q", mode, answer)
+			}
+			if thought := segmentTextByKind(preview, card.SegmentThought); !strings.Contains(thought, "已完成检查，继续执行。") {
+				t.Fatalf("%s thought after progress = %q", mode, thought)
+			}
+
+			stream.Handle(AgentStreamUpdate{
+				Segments:       []card.Segment{{Kind: card.SegmentText, Text: "最终答案"}},
+				Activity:       streamActivityAnswering,
+				AnswerSnapshot: true,
+			})
+			if err := stream.Flush(); err != nil {
+				t.Fatal(err)
+			}
+			preview = renderer.Events()[len(renderer.Events())-1]
+			if answer := segmentTextByKind(preview, card.SegmentText); answer != "最终答案" {
+				t.Fatalf("%s answer after replacement = %q", mode, answer)
+			}
+		})
+	}
+}
+
+func TestCleanCardsKeepCandidateAnswerOnFailure(t *testing.T) {
+	for _, mode := range []config.ReplyMode{config.ReplyModeAppendCleanCard, config.ReplyModeLatestCard} {
+		t.Run(string(mode), func(t *testing.T) {
+			clock := &fakeStreamClock{now: time.Unix(50, 0)}
+			renderer := card.NewFakeRenderer()
+			stream := newPreviewTestStreamForMode(t, renderer, clock, 1, 2000, mode)
+			if err := stream.Start(); err != nil {
+				t.Fatal(err)
+			}
+			stream.Handle(AgentStreamUpdate{
+				Segments:       []card.Segment{{Kind: card.SegmentText, Text: "已完成检查，准备继续。"}},
+				Activity:       streamActivityAnswering,
+				AnswerSnapshot: true,
+			})
+			terminal, err := stream.Finish("failed", card.Meta{}, AgentRunResult{
+				Segments: []card.Segment{
+					{Kind: card.SegmentThought, Text: "已完成检查，准备继续。"},
+					{Kind: card.SegmentError, Text: "工具执行失败"},
+				},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			answer := segmentTextByKind(terminal, card.SegmentText)
+			if !containsAll(answer, "已完成检查，准备继续。", "工具执行失败") {
+				t.Fatalf("%s failed answer = %q", mode, answer)
+			}
+		})
+	}
+}
+
 func TestAgentCardStreamThinkingOnlySchedulesAppendPreview(t *testing.T) {
 	clock := &fakeStreamClock{now: time.Unix(55, 0)}
 	renderer := card.NewFakeRenderer()
