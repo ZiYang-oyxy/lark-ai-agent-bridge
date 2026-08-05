@@ -368,33 +368,39 @@ func hasExplicitBotMention(messageType, content string, mentions []Mention) bool
 		if json.Unmarshal([]byte(content), &payload) != nil {
 			return false
 		}
-		botIDs := make(map[string]struct{}, len(botMentions))
+		// Feishu post payloads carry the placeholder key (e.g. "@_user_1") in
+		// tag:at.user_id, not the real open_id. Match by Mention.Key to align
+		// with the text branch above; using OpenID here silently fails on every
+		// real post-form @bot and downgrades topic mode to chat routing.
+		botKeys := make(map[string]struct{}, len(botMentions))
 		for _, mention := range botMentions {
-			botIDs[mention.OpenID] = struct{}{}
+			if mention.Key != "" {
+				botKeys[mention.Key] = struct{}{}
+			}
 		}
-		return postContainsAtUser(payload, botIDs)
+		return postContainsAtUser(payload, botKeys)
 	}
 	return false
 }
 
-func postContainsAtUser(v any, userIDs map[string]struct{}) bool {
+func postContainsAtUser(v any, userKeys map[string]struct{}) bool {
 	switch typed := v.(type) {
 	case map[string]any:
 		if tag, _ := typed["tag"].(string); tag == "at" {
 			if userID, _ := typed["user_id"].(string); userID != "" {
-				if _, ok := userIDs[userID]; ok {
+				if _, ok := userKeys[userID]; ok {
 					return true
 				}
 			}
 		}
 		for _, child := range typed {
-			if postContainsAtUser(child, userIDs) {
+			if postContainsAtUser(child, userKeys) {
 				return true
 			}
 		}
 	case []any:
 		for _, child := range typed {
-			if postContainsAtUser(child, userIDs) {
+			if postContainsAtUser(child, userKeys) {
 				return true
 			}
 		}
