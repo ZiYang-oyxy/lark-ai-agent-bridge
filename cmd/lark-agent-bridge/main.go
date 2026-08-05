@@ -647,8 +647,19 @@ func runServe(args []string) error {
 	return errors.Join(longConnErr, controlErr, shutdownErr)
 }
 
-func newRuntimeUpdateManager(cfg config.Config, devMode *devmode.Store) *bridgeupdate.Manager {
-	return newRuntimeUpdateManagerTo(cfg, devMode, os.Stderr)
+// newRuntimeUpdateManager returns a bridge.UpdateManager interface value. When
+// self-upgrade is not configured it returns an **interface-nil** value, not a
+// typed-nil *bridgeupdate.Manager wrapped in a non-nil interface — that classic
+// Go pitfall previously made every `if svc.Updates == nil` guard downstream
+// silently fall through into `(*Manager)(nil).Check(...)`, surfacing the
+// misleading "update client is unavailable" error on every /help card of a
+// supervisor started without LAB_UPDATE_MANIFEST_URL.
+func newRuntimeUpdateManager(cfg config.Config, devMode *devmode.Store) bridge.UpdateManager {
+	m := newRuntimeUpdateManagerTo(cfg, devMode, os.Stderr)
+	if m == nil {
+		return nil
+	}
+	return m
 }
 
 // newRuntimeUpdateManagerTo is the testable core of newRuntimeUpdateManager:

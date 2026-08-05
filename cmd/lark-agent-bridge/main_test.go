@@ -26,6 +26,7 @@ import (
 	"lark-agent-bridge/internal/feishueventlog"
 	"lark-agent-bridge/internal/schedule"
 	"lark-agent-bridge/internal/session"
+	bridgeupdate "lark-agent-bridge/internal/update"
 )
 
 func TestRunVersionJSONReportsBuildInfo(t *testing.T) {
@@ -64,11 +65,18 @@ func TestNewRuntimeUpdateManagerFollowsConfiguration(t *testing.T) {
 	if got := newRuntimeUpdateManager(config.Config{}, nil); got != nil {
 		t.Fatalf("manager without URL = %#v", got)
 	}
-	got := newRuntimeUpdateManager(config.Config{
+	iface := newRuntimeUpdateManager(config.Config{
 		UpdateManifestURL:           "https://updates.example/manifest.json",
 		UpdatePrereleaseManifestURL: "https://updates.example/prerelease.json",
 	}, nil)
-	if got == nil || got.Client == nil || got.Client.ManifestURL != "https://updates.example/manifest.json" {
+	if iface == nil {
+		t.Fatalf("configured manager returned nil interface")
+	}
+	got, ok := iface.(*bridgeupdate.Manager)
+	if !ok {
+		t.Fatalf("configured manager = %T, want *bridgeupdate.Manager", iface)
+	}
+	if got.Client == nil || got.Client.ManifestURL != "https://updates.example/manifest.json" {
 		t.Fatalf("configured manager = %#v", got)
 	}
 	if got.Client.PrereleaseURL != "https://updates.example/prerelease.json" {
@@ -77,6 +85,28 @@ func TestNewRuntimeUpdateManagerFollowsConfiguration(t *testing.T) {
 	// A nil dev-mode store must yield a stable (non-prerelease) channel, not panic.
 	if got.Client.Prerelease == nil || got.Client.Prerelease() {
 		t.Fatalf("nil dev-mode store must report stable channel")
+	}
+}
+
+// TestNewRuntimeUpdateManagerReturnsNilInterfaceWhenUnconfigured guards the
+// specific Go pitfall behind supervisor Steve's 2026-08-06 "无法检查升级": a
+// typed-nil *bridgeupdate.Manager assigned to bridge.Service.Updates (an
+// interface field) makes downstream `if s.Updates == nil` guards fall through,
+// so every /help update check ran `(*Manager)(nil).Check` and surfaced
+// "update client is unavailable" (audit `update_check_failed`) on a supervisor
+// that simply had no LAB_UPDATE_MANIFEST_URL. Regression test asserts that
+// unconfigured startup produces a **truly-nil** interface value and that
+// assigning it into a bridge.Service leaves Updates == nil at the interface
+// level — i.e. that versionStatus's early-return guard actually fires.
+func TestNewRuntimeUpdateManagerReturnsNilInterfaceWhenUnconfigured(t *testing.T) {
+	got := newRuntimeUpdateManager(config.Config{}, nil)
+	if got != nil {
+		t.Fatalf("interface value must be nil when unconfigured, got %#v", got)
+	}
+	var svc bridge.Service
+	svc.Updates = got
+	if svc.Updates != nil {
+		t.Fatalf("bridge.Service.Updates must remain nil after assignment when self-upgrade is unconfigured; a non-nil interface here silently triggers 'update client is unavailable' at runtime")
 	}
 }
 
