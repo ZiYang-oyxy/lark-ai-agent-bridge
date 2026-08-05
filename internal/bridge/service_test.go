@@ -5072,6 +5072,66 @@ printf '%s\n' '{"type":"turn.completed","usage":{"input_tokens":2,"output_tokens
 	}
 }
 
+func TestCLIExecRunnerAcceptsCleanCodexExitWithoutLegacyTerminalEvent(t *testing.T) {
+	rt, err := bridgeinstructions.NewRuntime()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rt.Close()
+
+	bin := filepath.Join(t.TempDir(), "codex")
+	script := `#!/bin/sh
+printf '%s\n' '{"type":"thread.started","thread_id":"thread-no-terminal"}'
+printf '%s\n' '{"type":"item.completed","item":{"type":"agent_message","text":"clean completion"}}'
+`
+	if err := os.WriteFile(bin, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	var updates []AgentStreamUpdate
+	result, err := (CLIExecRunner{Instructions: rt}).Run(context.Background(), AgentRunRequest{
+		Kind: agent.Codex, Bin: bin, Prompt: "hi", BridgeInstructionsVersion: bridgeinstructions.CurrentVersion,
+		OnEvent: func(update AgentStreamUpdate) { updates = append(updates, update) },
+	})
+	if err != nil {
+		t.Fatalf("runner error: %v", err)
+	}
+	if result.AgentSessionID != "thread-no-terminal" || result.ProtocolAnomalies != 1 || len(result.AnswerSegments) != 1 || result.AnswerSegments[0] != "clean completion" {
+		t.Fatalf("result = %#v", result)
+	}
+	if len(updates) < 2 || !updates[len(updates)-1].AnswerSnapshot || len(updates[len(updates)-1].Segments) != 1 || updates[len(updates)-1].Segments[0].Text != "clean completion" {
+		t.Fatalf("updates = %#v", updates)
+	}
+}
+
+func TestCLIExecRunnerRejectsCodexMissingTerminalOnFailedExit(t *testing.T) {
+	rt, err := bridgeinstructions.NewRuntime()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rt.Close()
+
+	bin := filepath.Join(t.TempDir(), "codex")
+	script := `#!/bin/sh
+printf '%s\n' '{"type":"thread.started","thread_id":"thread-no-terminal"}'
+printf '%s\n' '{"type":"item.completed","item":{"type":"agent_message","text":"partial completion"}}'
+exit 9
+`
+	if err := os.WriteFile(bin, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	result, runErr := (CLIExecRunner{Instructions: rt}).Run(context.Background(), AgentRunRequest{
+		Kind: agent.Codex, Bin: bin, Prompt: "hi", BridgeInstructionsVersion: bridgeinstructions.CurrentVersion,
+	})
+	if !isCodexTerminalMissingError(runErr) {
+		t.Fatalf("runner error = %T %v, want missing terminal", runErr, runErr)
+	}
+	if len(result.AnswerSegments) != 0 || result.codexPendingMessage != "partial completion" {
+		t.Fatalf("failed result must not promote candidate: %#v", result)
+	}
+}
+
 func TestCLIExecRunnerStreamsCodexTranscriptModel(t *testing.T) {
 	rt, err := bridgeinstructions.NewRuntime()
 	if err != nil {
