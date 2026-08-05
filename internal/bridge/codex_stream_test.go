@@ -3,8 +3,10 @@ package bridge
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"lark-agent-bridge/internal/card"
+	"lark-agent-bridge/internal/config"
 )
 
 func TestParseCodexStreamTranslatesThreadContentToolsAndUsage(t *testing.T) {
@@ -88,16 +90,20 @@ func TestParseCodexStreamPreservesProcessMessagesBeforeFinalAnswer(t *testing.T)
 	if got := result.OrderedSegments[0].Text; got != "I will inspect the parser first." {
 		t.Fatalf("process message = %q", got)
 	}
+	processCandidateVisible := false
 	processVisible := false
-	processMisclassifiedAsAnswer := false
 	for _, update := range updates {
 		if len(update.Segments) != 1 || update.Segments[0].Text != "I will inspect the parser first." {
 			continue
 		}
-		processVisible = update.Segments[0].Kind == card.SegmentThought && update.Activity == streamActivityReasoning
-		processMisclassifiedAsAnswer = update.AnswerSnapshot
+		if update.Segments[0].Kind == card.SegmentText && update.Activity == streamActivityAnswering && update.AnswerSnapshot {
+			processCandidateVisible = true
+		}
+		if update.Segments[0].Kind == card.SegmentThought && update.Activity == streamActivityReasoning && !update.AnswerSnapshot {
+			processVisible = true
+		}
 	}
-	if !processVisible || processMisclassifiedAsAnswer {
+	if !processCandidateVisible || !processVisible {
 		t.Fatalf("process message updates = %#v", updates)
 	}
 }
@@ -117,6 +123,37 @@ func TestParseCodexStreamTreatsOnlyLastConsecutiveAgentMessageAsFinal(t *testing
 	}
 	assertCodexSegment(t, result.Segments, card.SegmentThought, "First process update")
 	assertCodexSegment(t, result.Segments, card.SegmentText, "Second and final answer")
+}
+
+func TestCodexCandidateRemainsVisibleWhileToolRuns(t *testing.T) {
+	input := strings.Join([]string{
+		`{"type":"item.completed","item":{"type":"agent_message","text":"正在检查工作区。"}}`,
+		`{"type":"item.started","item":{"id":"cmd-1","type":"command_execution","command":"pwd"}}`,
+	}, "\n")
+
+	for _, mode := range []config.ReplyMode{config.ReplyModeAppendCleanCard, config.ReplyModeLatestCard} {
+		t.Run(string(mode), func(t *testing.T) {
+			clock := &fakeStreamClock{now: time.Unix(50, 0)}
+			renderer := card.NewFakeRenderer()
+			stream := newPreviewTestStreamForMode(t, renderer, clock, 1, 2000, mode)
+			if err := stream.Start(); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := parseCodexStream(strings.NewReader(input), nil, stream.Handle); !isCodexTerminalMissingError(err) {
+				t.Fatalf("parse error = %v, want missing terminal", err)
+			}
+			if err := stream.Flush(); err != nil {
+				t.Fatal(err)
+			}
+			preview := renderer.Events()[len(renderer.Events())-1]
+			if answer := segmentTextByKind(preview, card.SegmentText); answer != "正在检查工作区。" {
+				t.Fatalf("%s answer = %q", mode, answer)
+			}
+			if thought := segmentTextByKind(preview, card.SegmentThought); !strings.Contains(thought, "正在检查工作区。") {
+				t.Fatalf("%s thought = %q", mode, thought)
+			}
+		})
+	}
 }
 
 func TestParseCodexStreamAllowsRetryErrorBeforeCompletion(t *testing.T) {

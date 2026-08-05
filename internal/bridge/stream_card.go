@@ -352,11 +352,6 @@ func (s *agentCardStream) Handle(update AgentStreamUpdate) {
 	if update.Activity != "" {
 		s.activity = update.Activity
 	}
-	if update.ProgressSnapshot && s.replyMode != config.ReplyModeAppend {
-		// Claude 的 assistant 文本会先以正文 snapshot 到达；后续工具活动证明它是
-		// 可展示的执行进展。clean/latest 在此移除正文副本，append 则保留原位内联文本。
-		s.answer.Reset()
-	}
 	if update.AnswerSnapshot {
 		s.answer.Reset()
 	}
@@ -1473,6 +1468,11 @@ func (s *agentCardStream) mergeFinalSegmentsLocked(segments []card.Segment, answ
 	if s.replyMode == config.ReplyModeAppendCleanCard || s.replyMode == config.ReplyModeLatestCard {
 		if last := lastNonEmpty(answerSegments); last != "" {
 			finalAnswer = last
+		} else if current := strings.TrimSpace(s.answer.String()); current != "" {
+			// A nonterminal candidate may already be visible when the runner
+			// fails. Preserve that latest answer rather than replacing it with
+			// only the error block.
+			finalAnswer = current
 		}
 	}
 	finalAnswer = stripTrailingBotSignature(finalAnswer)
