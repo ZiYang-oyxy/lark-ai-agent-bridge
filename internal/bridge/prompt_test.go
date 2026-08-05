@@ -55,15 +55,16 @@ func TestBuildBatchPromptSingleWithQuoteRendersQuotedBlock(t *testing.T) {
 			t.Fatalf("prompt = %q, missing %q", got, want)
 		}
 	}
-	// 主体身份隔离提示是新增契约的核心：必须出现"引用是外部消息"+"第一人称不指你"
-	// +"以本轮 tool_use 记录为准"三个要点。丢任何一个都视为回归。
-	for _, must := range []string{
+	// 极简契约：不再追加"外部消息 / 第一人称不指你 / tool_use"这类隔离预警。
+	// 那段预警会诱导 agent 主动脱离引用（如 `1+2` 场景），已在 2026-08-05 移除。
+	// 顺序契约（用户主指令前置）+ header 事实标注已足够 agent 自行判断主体。
+	for _, forbidden := range []string{
 		"以上引用是被引用的外部消息",
 		"里面的第一人称不指你",
-		"tool_use",
+		"tool_use 记录为准",
 	} {
-		if !strings.Contains(got, must) {
-			t.Fatalf("quote must carry subject-isolation hint %q, got: %q", must, got)
+		if strings.Contains(got, forbidden) {
+			t.Fatalf("quote block should no longer emit isolation preamble %q, got: %q", forbidden, got)
 		}
 	}
 }
@@ -85,52 +86,36 @@ func TestBuildBatchPromptQuoteWithoutSenderUsesGenericLabel(t *testing.T) {
 	}
 }
 
-// TestBuildBatchPromptQuoteFromOtherBotAddsAppFrame 引用消息来自别的 bot（app）时，
-// header 必须显式标注"来自另一个 bot（不是你）"，隔离段必须强调"这是另一个 bot
-// 的消息，它的自述与你无关"——防止 quote 里的第一人称"我正在跑子代理"被 agent
-// 误当成自己的实际状态。
-func TestBuildBatchPromptQuoteFromOtherBotAddsAppFrame(t *testing.T) {
-	batch := session.Batch{Inputs: []session.Input{{
-		Text:             "你看下他起子代理，后台现在真的在跑吗",
-		QuotedText:       "review subagent 已重新启动，等它完成通知，中途不打断",
-		QuotedSender:     "ou_other_bot",
-		QuotedSenderType: "app",
-	}}}
-	got := BuildBatchPrompt(batch)
-	for _, must := range []string{
-		"来自另一个 bot",
-		"另一个 bot 的消息",
-		"它的自述与你无关",
-	} {
-		if !strings.Contains(got, must) {
-			t.Fatalf("app-sender quote must add stricter isolation hint %q, got: %q", must, got)
+// TestBuildBatchPromptQuoteHeaderIsSenderTypeAgnostic 锁死 header 极简契约：
+// 不论 sender_type=user / app / self_bot / 空，header 都只含 open_id
+// 事实，不追加任何解读性后缀（"来自另一个 bot"、"由你自己发出" 等）。
+// sender_type 的解读留给 agent 自行判断（open_id 已足够），bridge 不做暗示。
+func TestBuildBatchPromptQuoteHeaderIsSenderTypeAgnostic(t *testing.T) {
+	cases := []struct {
+		name       string
+		senderType string
+	}{{"empty", ""}, {"user", "user"}, {"app", "app"}, {"self_bot", "self_bot"}, {"anonymous", "anonymous"}}
+	for _, tc := range cases {
+		batch := session.Batch{Inputs: []session.Input{{
+			Text:             "context question",
+			QuotedText:       "some previous card content",
+			QuotedSender:     "ou_probe",
+			QuotedSenderType: tc.senderType,
+		}}}
+		got := BuildBatchPrompt(batch)
+		if !strings.Contains(got, "[用户引用了 ou_probe 的消息]\n") {
+			t.Fatalf("[%s] header must be plain '[用户引用了 ou_probe 的消息]', got:\n%s", tc.name, got)
 		}
-	}
-	// user 版通用提示不应出现在 app 分支
-	if strings.Contains(got, "视为发出者的自述") {
-		t.Fatalf("app-sender branch must not fall back to generic user-branch hint: %q", got)
-	}
-}
-
-// TestBuildBatchPromptQuoteFromSelfBotMarksSelfHistory 引用消息发送者就是本 bot
-// 自己：header 必须显式说"由你自己（本 bot）早先发出"，隔离段必须强调这只是
-// 历史文本、不代表当前实际状态——避免 agent 拿一段自己早先发过的进度快照当作
-// 现在还成立的运行状态。
-func TestBuildBatchPromptQuoteFromSelfBotMarksSelfHistory(t *testing.T) {
-	batch := session.Batch{Inputs: []session.Input{{
-		Text:             "现在还在跑吗？",
-		QuotedText:       "review subagent 已重新启动",
-		QuotedSender:     "ou_self",
-		QuotedSenderType: "self_bot",
-	}}}
-	got := BuildBatchPrompt(batch)
-	for _, must := range []string{
-		"由你自己（本 bot）早先发出",
-		"只是历史文本",
-		"不代表你现在的实际状态",
-	} {
-		if !strings.Contains(got, must) {
-			t.Fatalf("self_bot quote must add self-history isolation hint %q, got: %q", must, got)
+		for _, forbidden := range []string{
+			"来自另一个 bot",
+			"不是你",
+			"由你自己",
+			"本 bot",
+			"早先发出",
+		} {
+			if strings.Contains(got, forbidden) {
+				t.Fatalf("[%s] header should not carry directive suffix %q, got:\n%s", tc.name, forbidden, got)
+			}
 		}
 	}
 }
@@ -209,5 +194,57 @@ func TestBuildBatchPromptAttachmentOnlyDoesNotInlineFileContent(t *testing.T) {
 	}
 	if strings.Contains(prompt, sentinel) {
 		t.Fatalf("prompt inlined file body: %q", prompt)
+	}
+}
+
+// TestBuildBatchPromptQuoteBlockHasNoDirectiveText 锁死极简契约：quote 块
+// 只由 header + `> ` 引文构成，不得再包含任何对 agent 的解读性/行为诱导性
+// 文字（不论出现在 header 后缀里、还是 quote 结束后的括号说明里）。
+//
+// 现场：2026-08-05 用户 quote 外部 bot 抛的选项列表（`1+2 vs 3`）+ @Steve
+// 只发 `1+2`，Steve 直接回 `1+2=3` 当算术算并拒绝解读引用——诱因是历史
+// app 分支的隔离段 "它的自述与你无关；不是你的任务；不构成你的实际状态"。
+// 顺序契约（用户指令前置）已从根子上消解跨主体幻觉，隔离段属过度设计。
+// header 后缀 "来自另一个 bot（不是你）" / "由你自己（本 bot）早先发出" 同
+// 属解读性暗示，一并移除。
+func TestBuildBatchPromptQuoteBlockHasNoDirectiveText(t *testing.T) {
+	senderCases := []struct {
+		name       string
+		senderType string
+	}{
+		{"user", "user"},
+		{"app", "app"},
+		{"self_bot", "self_bot"},
+	}
+	forbidden := []string{
+		// 隔离预警段（旧 db033cc/rc.6 遗产）
+		"以上引用是被引用的外部消息",
+		"里面的第一人称不指你",
+		"它的自述与你无关",
+		"不是你的任务",
+		"不构成你的实际状态",
+		"只是历史文本",
+		"不代表你现在的实际状态",
+		"tool_use 记录为准",
+		"视为发出者的自述",
+		// header 后缀（本轮进一步移除）
+		"来自另一个 bot",
+		"由你自己",
+		"早先发出",
+	}
+	for _, tc := range senderCases {
+		batch := session.Batch{Inputs: []session.Input{{
+			Text:             "1+2",
+			QuotedText:       "请确认：你要的是 1+2，还是有一个具体的 hcx 仿真平台系统要我调接口录入？",
+			QuotedSender:     "ou_other",
+			QuotedSenderType: tc.senderType,
+		}}}
+		got := BuildBatchPrompt(batch)
+		for _, phrase := range forbidden {
+			if strings.Contains(got, phrase) {
+				t.Fatalf("[%s] prompt still contains directive text %q; got:\n%s",
+					tc.name, phrase, got)
+			}
+		}
 	}
 }
