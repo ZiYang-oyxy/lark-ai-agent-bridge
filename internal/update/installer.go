@@ -7,12 +7,15 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 )
 
 type StageFunc func(context.Context, Asset, string) (Staged, error)
 type ExecFunc func(string, []string, []string) error
+
+const systemdRestartExitCode = 75
 
 type Installer struct {
 	Stage        StageFunc
@@ -208,15 +211,31 @@ func detachRestart(path string, argv, env []string) error {
 	}
 	// Detach: don't wait on the child, let it run independently.
 	_ = proc.Release()
-	// Give the child a moment to come up before we vacate, then exit so the old
-	// (stale) image stops handling traffic. StartProcess succeeding means the
-	// new binary is running; from here the current process must terminate.
-	osExit(0)
+	// systemd keeps descendants in the service cgroup. When the old main process
+	// exits it kills this validation child, so a successful exit would leave a
+	// Restart=on-failure unit dead. EX_TEMPFAIL makes systemd start the replaced
+	// binary as the new tracked main process. Outside systemd the detached child
+	// remains the owner and the historical success exit contract stays unchanged.
+	exitCode := 0
+	if envContainsNonEmpty(env, "INVOCATION_ID") {
+		exitCode = systemdRestartExitCode
+	}
+	osExit(exitCode)
 	return nil
 }
 
 // osExit is a seam so tests can assert the exit without terminating the runner.
 var osExit = os.Exit
+
+func envContainsNonEmpty(env []string, key string) bool {
+	prefix := key + "="
+	for _, entry := range env {
+		if strings.HasPrefix(entry, prefix) && strings.TrimPrefix(entry, prefix) != "" {
+			return true
+		}
+	}
+	return false
+}
 
 func syncFile(path string) error {
 	file, err := os.Open(path)
