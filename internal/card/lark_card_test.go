@@ -358,8 +358,8 @@ func TestMetaRowsGatedByIndependentToggles(t *testing.T) {
 		Version:        "v0.1.9",
 		LatestVersion:  "v0.1.10",
 		DeveloperMode:  true,
-		ChatID:         "oc_chat_123",
-		TopicID:        "omt_topic_456",
+		ChatID:         "oc_chat1234567890abcdef1234567890abcd",
+		TopicID:        "omt_topic1234567890abcdef",
 	}
 
 	// 默认隐藏:切片为空,buildMetaElements 会连分隔线一起跳过。
@@ -402,7 +402,7 @@ func TestMetaRowsGatedByIndependentToggles(t *testing.T) {
 	if len(rows) != 1 || rows[0].ElementID != "meta_developer" {
 		t.Fatalf("developer-only MetaRows = %+v, want single meta_developer", rows)
 	}
-	for _, want := range []string{"🐛 v0.1.9", "✨ 最新 v0.1.10", "Chat ID: `oc_chat_123`", "Topic ID: `omt_topic_456`"} {
+	for _, want := range []string{"🐛 v0.1.9", "✨ 最新 v0.1.10", "Chat ID: `oc_cha…90abcd`", "Topic ID: `omt_top…abcdef`"} {
 		if !strings.Contains(rows[0].Text, want) {
 			t.Fatalf("developer row %q missing %q", rows[0].Text, want)
 		}
@@ -537,6 +537,26 @@ func TestMetaRowsDeveloperRootChatShowsEmptyTopic(t *testing.T) {
 	}
 	if strings.Contains(rows[0].Text, "@bot:") {
 		t.Fatalf("developer row leaked synthetic topic key: %q", rows[0].Text)
+	}
+}
+
+func TestCompactFeishuID(t *testing.T) {
+	tests := map[string]string{
+		"chat":  "oc_cha…90abcd",
+		"topic": "omt_top…abcdef",
+		"short": "oc_short",
+		"empty": "",
+	}
+	inputs := map[string]string{
+		"chat":  "oc_chat1234567890abcdef1234567890abcd",
+		"topic": "omt_topic1234567890abcdef",
+		"short": "oc_short",
+		"empty": "",
+	}
+	for name, want := range tests {
+		if got := compactFeishuID(inputs[name]); got != want {
+			t.Fatalf("compactFeishuID(%q) = %q, want %q", inputs[name], got, want)
+		}
 	}
 }
 

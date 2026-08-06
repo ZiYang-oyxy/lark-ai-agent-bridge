@@ -355,7 +355,7 @@ func buildStatusBarSection(form ConfigForm) []map[string]any {
 		"例：👤 lijun.996 · 🖥️ 192.0.2.42 · 📁 /home/<USER>/ws",
 		configSelectOptions("show_meta_row_runtime", form.ShowMetaRowRuntime, boolOpts("显示主机信息行")))...)
 	out = append(out, fieldElements("cfg_bar_dev", "开发者行",
-		"例：🐛 v0.1.8-rc.5 · ✨ 最新 v0.1.8-rc.6 · 💬 Chat ID: `oc_xxx` · 🧵 Topic ID: `omt_xxx`（Developer Mode 显示 ID；🐛 rc / 🦋 stable）",
+		"例：🐛 v0.1.8-rc.5 · ✨ 最新 v0.1.8-rc.6 · 💬 Chat ID: `oc_f56…296b83` · 🧵 Topic ID: `omt_191…4d5a74`（Developer Mode 显示 ID；🐛 rc / 🦋 stable）",
 		configSelectOptions("show_meta_row_developer", form.ShowMetaRowDeveloper, boolOpts("显示开发者行")))...)
 	return out
 }
@@ -1060,9 +1060,22 @@ func metaDeveloperText(meta Meta) string {
 		if topicID == "" {
 			topicID = "-"
 		}
-		parts = append(parts, "💬 Chat ID: `"+chatID+"`", "🧵 Topic ID: `"+topicID+"`")
+		parts = append(parts, "💬 Chat ID: `"+compactFeishuID(chatID)+"`", "🧵 Topic ID: `"+compactFeishuID(topicID)+"`")
 	}
 	return strings.Join(parts, " · ")
+}
+
+func compactFeishuID(id string) string {
+	const (
+		headKeep = 3
+		tailKeep = 6
+	)
+	id = strings.TrimSpace(id)
+	prefixEnd := strings.IndexByte(id, '_') + 1
+	if prefixEnd <= 0 || len(id)-prefixEnd <= headKeep+tailKeep {
+		return id
+	}
+	return id[:prefixEnd+headKeep] + "…" + id[len(id)-tailKeep:]
 }
 
 // metaModelText uses this run's actual model when available. Before the agent
