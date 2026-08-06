@@ -270,8 +270,8 @@ type AgentStreamUpdate struct {
 	// PartialMessage marks content_block/stream_event updates emitted before
 	// the corresponding complete assistant message snapshot.
 	PartialMessage bool
-	// ProgressSnapshot 将此前暂显在正文中的 assistant 文本提升为可展示的过程进展。
-	// append 仍以内联文本保留它；clean/latest 清掉正文副本并写入过程面板。
+	// ProgressSnapshot marks assistant text promoted from an answer candidate to
+	// an independent process record. It does not replace the visible answer.
 	ProgressSnapshot bool
 }
 

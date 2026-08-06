@@ -48,7 +48,9 @@ every completed record as the newest visible answer candidate immediately:
 1. Emit `SegmentText` with `AnswerSnapshot=true` when the record arrives.
 2. Keep it pending until the next protocol boundary.
 3. If later activity proves it is not terminal, append the same text as a
-   `SegmentThought` process record without emitting `ProgressSnapshot`.
+   `SegmentThought` process record with `ProgressSnapshot=true` and
+   `AssistantSnapshot=false`. This counts one process round without triggering
+   ordered-answer replacement.
 4. On `turn.completed`, store the remaining candidate as the terminal answer.
 
 The resulting `AgentRunResult` continues to classify all non-final Codex
