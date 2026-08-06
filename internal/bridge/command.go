@@ -17,6 +17,7 @@ const (
 	CommandStatus      CommandType = "status"
 	CommandResume      CommandType = "resume"
 	CommandStop        CommandType = "stop"
+	CommandCompact     CommandType = "compact"
 	CommandConfig      CommandType = "config"
 	CommandLocalConfig CommandType = "local-config"
 	CommandAgentMode   CommandType = "agent-mode"
@@ -68,6 +69,8 @@ func ParseCommand(msg Message, defaultAgent agent.Kind) Command {
 		return Command{Type: CommandStatus, Agent: defaultAgent, Raw: raw}
 	case "stop":
 		return Command{Type: CommandStop, Agent: defaultAgent, Text: strings.TrimSpace(rest), Raw: raw}
+	case "compact":
+		return Command{Type: CommandCompact, Agent: defaultAgent, Text: strings.TrimSpace(rest), Raw: raw}
 	case "config":
 		return Command{Type: CommandConfig, Text: strings.TrimSpace(rest), Raw: raw}
 	case "local-config":
@@ -190,6 +193,7 @@ func HelpCardData() card.HelpCard {
 					"**`/new`** `[--workdir path] [prompt]` 开新会话",
 					"**`/status`** 当前会话状态",
 					"**`/stop`** 停止当前任务",
+					"**`/compact`** 手动压缩当前 Agent 上下文",
 					"**`/upgrade`** 升级 Bridge（开发者模式可选 `stable|rc`）",
 					"**`/resume`** `[session-id]` 恢复历史会话",
 					"**`/agent-mode`** 切换 claude / codex",
@@ -230,6 +234,7 @@ func HelpText() string {
 		"/resume - list the 10 most recent sessions for the current agent and workdir",
 		"/resume <session-id> - resume that session on the next message",
 		"/stop - stop the active task in this chat/topic; queued inputs are preserved",
+		"/compact - manually compact the current Claude or Codex session context",
 		"/upgrade - upgrade Bridge to the latest release (admin only; developer mode may select stable|rc)",
 		"/agent-mode - choose claude or codex for subsequent messages",
 		"/cd [path] - switch the working directory for this chat/topic",

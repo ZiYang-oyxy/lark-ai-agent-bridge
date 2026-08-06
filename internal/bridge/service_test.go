@@ -5018,6 +5018,162 @@ printf '{"type":"assistant","message":{"model":"fake-claude","content":[{"type":
 	}
 }
 
+func TestServiceCompactRequiresExistingSessionAndRunsSelectedAgent(t *testing.T) {
+	for _, kind := range []agent.Kind{agent.Claude, agent.Codex} {
+		t.Run(string(kind), func(t *testing.T) {
+			runner := newFakeRunner()
+			renderer := card.NewFakeRenderer()
+			cfg := testConfig(t)
+			cfg.DefaultAgent = string(kind)
+			svc := NewService(cfg, renderer, runner, audit.NewRecorder())
+			agents := []config.AgentDef{{Kind: "claude"}, {Kind: "codex"}}
+			preferences, err := config.OpenPreferenceStore(filepath.Join(t.TempDir(), "preferences.json"), config.RuntimePreference{
+				Agent: string(kind), Model: "default", Effort: "low", ReplyMode: config.ReplyModeAppend, ConversationMode: config.ConversationModeChat,
+			}, nil, agents...)
+			if err != nil {
+				t.Fatal(err)
+			}
+			svc.Preferences = preferences
+			msg := Message{ID: "compact", ChatID: "chat", Sender: "user", Text: "/compact", Time: time.Now()}
+
+			if err := svc.HandleMessage(context.Background(), msg); err != nil {
+				t.Fatal(err)
+			}
+			if len(runner.calls) != 0 || !eventsContainText(renderer.Events(), "尚无可压缩") {
+				t.Fatalf("runner calls = %d, events = %#v", len(runner.calls), renderer.Events())
+			}
+
+			key := session.Key{Agent: kind, ChatID: "chat"}
+			svc.Sessions.GetOrCreate(key, cfg.DefaultWorkDir)
+			svc.Sessions.UpdateRunResult(key.ID(), "agent-session", "model", 1)
+			msg.ID = "compact-existing"
+			msg.Time = msg.Time.Add(time.Second)
+			if err := svc.HandleMessage(context.Background(), msg); err != nil {
+				t.Fatal(err)
+			}
+			if err := svc.DrainReady(time.Now().Add(time.Second)); err != nil {
+				t.Fatal(err)
+			}
+			waitForCalls(t, runner, 1)
+			runner.mu.Lock()
+			call := runner.calls[0]
+			runner.mu.Unlock()
+			if call.Kind != kind || call.Prompt != "/compact" || call.AgentSessionID != "agent-session" {
+				t.Fatalf("compact call = %#v", call)
+			}
+		})
+	}
+}
+
+func TestServiceCompactRejectsArguments(t *testing.T) {
+	runner := newFakeRunner()
+	renderer := card.NewFakeRenderer()
+	svc := NewService(testConfig(t), renderer, runner, audit.NewRecorder())
+	if err := svc.HandleMessage(context.Background(), Message{ID: "bad", ChatID: "chat", Sender: "user", Text: "/compact now", Time: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	if len(runner.calls) != 0 || !eventsContainText(renderer.Events(), "用法：/compact") {
+		t.Fatalf("runner calls = %d, events = %#v", len(runner.calls), renderer.Events())
+	}
+}
+
+func TestCLIExecRunnerRunsNativeClaudeCompact(t *testing.T) {
+	bin := filepath.Join(t.TempDir(), "claude")
+	logPath := filepath.Join(t.TempDir(), "claude.log")
+	script := `#!/bin/sh
+printf 'args=%s\nhome=%s\n' "$*" "${CLAUDE_CONFIG_DIR:-}" >"$FAKE_CLAUDE_LOG"
+IFS= read -r prompt || true
+printf 'stdin=%s\n' "$prompt" >>"$FAKE_CLAUDE_LOG"
+printf '%s\n' '{"type":"system","subtype":"status","status":"compacting","session_id":"claude-session"}'
+printf '%s\n' '{"type":"assistant","message":{"model":"<synthetic>","content":[{"type":"text","text":"Conversation compacted."}]},"session_id":"claude-session"}'
+printf '%s\n' '{"type":"result","subtype":"success","result":"Conversation compacted.","session_id":"claude-session"}'
+`
+	if err := os.WriteFile(bin, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("FAKE_CLAUDE_LOG", logPath)
+	result, err := (CLIExecRunner{}).Run(context.Background(), AgentRunRequest{Kind: agent.Claude, Bin: bin, Home: "/claude-home", Prompt: "/compact", AgentSessionID: "claude-session"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.AgentSessionID != "claude-session" || !strings.Contains(fmt.Sprint(result.Segments), "Claude 上下文压缩完成") {
+		t.Fatalf("result = %#v", result)
+	}
+	data, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	log := string(data)
+	if !containsAll(log, "args=-p", "--resume claude-session", "home=/claude-home", "stdin=/compact") || strings.Contains(log, "append-system-prompt") {
+		t.Fatalf("claude compact log = %q", log)
+	}
+}
+
+func TestCLIExecRunnerReportsNativeClaudeCompactFailure(t *testing.T) {
+	bin := filepath.Join(t.TempDir(), "claude")
+	script := `#!/bin/sh
+cat >/dev/null
+printf '%s\n' '{"type":"system","subtype":"status","status":"compacting","session_id":"claude-session"}'
+printf '%s\n' '{"type":"system","subtype":"status","status":null,"compact_result":"failed","compact_error":"Not enough messages to compact.","session_id":"claude-session"}'
+printf '%s\n' '{"type":"result","subtype":"success","result":"Not enough messages to compact.","session_id":"claude-session"}'
+`
+	if err := os.WriteFile(bin, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	result, err := (CLIExecRunner{}).Run(context.Background(), AgentRunRequest{Kind: agent.Claude, Bin: bin, Prompt: "/compact", AgentSessionID: "claude-session"})
+	if err == nil || !strings.Contains(err.Error(), "Not enough messages") {
+		t.Fatalf("result/error = %#v / %v", result, err)
+	}
+	if result.Model != "" || result.Tokens != 0 {
+		t.Fatalf("compact failure must not change model/tokens: %#v", result)
+	}
+}
+
+func TestCLIExecRunnerRunsNativeCodexCompact(t *testing.T) {
+	bin := filepath.Join(t.TempDir(), "codex")
+	logPath := filepath.Join(t.TempDir(), "codex.log")
+	script := `#!/bin/sh
+printf 'args=%s\nhome=%s\npwd=%s\n' "$*" "${CODEX_HOME:-}" "$PWD" >"$FAKE_CODEX_LOG"
+IFS= read -r init
+printf '%s\n' "$init" >>"$FAKE_CODEX_LOG"
+printf '%s\n' '{"id":1,"result":{"userAgent":"fake"}}'
+IFS= read -r initialized
+printf '%s\n' "$initialized" >>"$FAKE_CODEX_LOG"
+IFS= read -r resume
+printf '%s\n' "$resume" >>"$FAKE_CODEX_LOG"
+printf '%s\n' '{"id":2,"result":{"thread":{"id":"codex-thread","turns":[]}}}'
+IFS= read -r compact
+printf '%s\n' "$compact" >>"$FAKE_CODEX_LOG"
+printf '%s\n' '{"id":3,"result":{}}'
+printf '%s\n' '{"method":"turn/started","params":{"threadId":"codex-thread","turn":{"id":"turn-1","status":"inProgress","items":[],"error":null}}}'
+printf '%s\n' '{"method":"item/started","params":{"threadId":"codex-thread","turnId":"turn-1","item":{"id":"compact-1","type":"contextCompaction"}}}'
+printf '%s\n' '{"method":"item/completed","params":{"threadId":"codex-thread","turnId":"turn-1","item":{"id":"compact-1","type":"contextCompaction"}}}'
+printf '%s\n' '{"method":"turn/completed","params":{"threadId":"codex-thread","turn":{"id":"turn-1","status":"completed","items":[],"error":null}}}'
+`
+	if err := os.WriteFile(bin, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("FAKE_CODEX_LOG", logPath)
+	workDir := t.TempDir()
+	result, err := (CLIExecRunner{}).Run(context.Background(), AgentRunRequest{Kind: agent.Codex, Bin: bin, Home: "/codex-home", WorkDir: workDir, Prompt: "/compact", AgentSessionID: "codex-thread"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.AgentSessionID != "codex-thread" || !strings.Contains(fmt.Sprint(result.Segments), "上下文压缩完成") {
+		t.Fatalf("result = %#v", result)
+	}
+	data, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	log := string(data)
+	for _, want := range []string{"args=app-server --listen stdio://", "home=/codex-home", "pwd=" + workDir, `"method":"initialize"`, `"method":"initialized"`, `"method":"thread/resume"`, `"threadId":"codex-thread"`, `"method":"thread/compact/start"`} {
+		if !strings.Contains(log, want) {
+			t.Fatalf("codex compact log missing %q: %s", want, log)
+		}
+	}
+}
+
 func TestCLIExecRunnerRunsCodexWithStdinImagesAndConfiguredWorkDir(t *testing.T) {
 	rt, err := bridgeinstructions.NewRuntime()
 	if err != nil {

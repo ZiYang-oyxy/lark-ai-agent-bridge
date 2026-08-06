@@ -42,7 +42,7 @@ Go binary/compiler/linker SHA256、版本和
 
 - `go test ./...`
 - `doctor`
-- `/help`、`/new`、`/status`、`/stop` 命令面
+- `/help`、`/new`、`/status`、`/stop`、`/compact` 命令面
 - `/cron`、`/timer` 管理命令、自然语言 proposal、确认/取消和作用域鉴权
 - `/resume`、`/codex` 等撤回命令不再开放
 - 群聊未 @ 过滤
@@ -55,6 +55,7 @@ Go binary/compiler/linker SHA256、版本和
 - 只有 `/new` 重置当前会话并形成独占 batch boundary
 - Claude one-shot 命令构造和 stream-json 解析
 - Codex `exec --json`/resume 精确 argv、stdin prompt、`cx*` executable/`CODEX_HOME` 冻结、JSONL 解析、图片 `--image` 和协议漂移 audit
+- Claude 原生 compact 的 `compact_result` 成败解析，以及 Codex app-server `thread/compact/start` 的 handshake、resume、`contextCompaction` 完成证据
 - CardKit 流式更新、标题颜色和 `⏱` 耗时、分栏底部状态栏、折叠面板、停止按钮、工作目录确认按钮
 - CardKit 最终 JSON 的 28 KiB / 200-component 容量闸门、UTF-8 多字节测量、分级压缩、静态 emergency fallback，以及 Create/Update 和两种 callback transport 的 prepared-card 边界
 - 工作目录创建、取消和超时

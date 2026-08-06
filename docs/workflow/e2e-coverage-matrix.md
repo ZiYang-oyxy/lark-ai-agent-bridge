@@ -77,6 +77,7 @@ bash scripts/e2e/run.sh --capability recovery                 # 只跑恢复类 
 | `--workdir` 缺参降级 | L0 | ✅ | `TestParseNewWorkdirMissingValueIsTreatedAsLiteralText`(新增) |
 | `/status` 解析 | L0 | ✅ | `TestParseStatusCommand`(新增) |
 | `/stop` 解析与 help | L0 | ✅ | `TestParseStopCommand` / `TestHelpTextIncludesStopQueueSemantics` |
+| `/compact` 解析、队列隔离与双 Agent 原生协议 | L0 | ✅ | `TestParseCompactCommand` / `TestServiceCompactRequiresExistingSessionAndRunsSelectedAgent` / `TestCLIExecRunnerRunsNative*Compact` |
 | `/help` 解析 | L0 | ✅ | `TestParseHelpCommand`(新增) |
 | `/resume` 列最近 10 个 Session | L0 | ✅ | `TestParseResumeCommand` / `TestServiceResumeListsTenRecentSessionsForCurrentIdentity` |
 | `/resume <session-id>` 精确恢复 | L0 | ✅ | `TestServiceResumeSwitchesBindingAndNextMessageUsesTarget` |
