@@ -12,6 +12,9 @@ type encodedComponentContainer struct {
 }
 
 func TestMarshalLarkCardMeasuresUTF8BytesAndNestedComponents(t *testing.T) {
+	if LarkCardSoftMaxJSONBytes != 29*1024 {
+		t.Fatalf("LarkCardSoftMaxJSONBytes = %d, want %d", LarkCardSoftMaxJSONBytes, 29*1024)
+	}
 	payload := map[string]any{
 		"body": map[string]any{
 			"elements": []any{
@@ -369,6 +372,50 @@ func TestPrepareLarkCardKeepsTwoThreeSectionToolUpdatesWhenCapacityShrinks(t *te
 	for _, want := range []string{"#9", "latest-command", "#8", "second-latest-command"} {
 		if !strings.Contains(tools, want) {
 			t.Fatalf("capacity fitting lost tool update %q: %q", want, tools)
+		}
+	}
+}
+
+func TestPrepareLarkCardExpandsThreeSectionTimelinesIntoRemainingJSONCapacity(t *testing.T) {
+	event := Event{
+		Type:               "result",
+		ThreeSectionLayout: true,
+		Segments: []Segment{
+			{Kind: SegmentText, Text: "answer " + strings.Repeat("detail ", 1400)},
+			{Kind: SegmentThought, Text: "**thought-title**\n" + strings.Repeat("reasoning ", 1800)},
+			{Kind: SegmentTool, Text: "**tool-title**\n`important-command`\n" + strings.Repeat("output ", 2600)},
+		},
+	}
+	if _, err := prepareLarkCard(event, true); !errors.Is(err, ErrCardPayloadOversize) {
+		t.Fatalf("fixture must exercise capacity fitting, got %v", err)
+	}
+
+	prepared, err := PrepareLarkCard(event)
+	if err != nil {
+		t.Fatalf("PrepareLarkCard() error: %v", err)
+	}
+	if got := prepared.Capacity().JSONBytes; got <= 27*1024 || got > LarkCardSoftMaxJSONBytes {
+		t.Fatalf("fitted JSON bytes = %d, want (27 KiB, 29 KiB]", got)
+	}
+	got := prepared.EventCopy()
+	var thought, tool string
+	for _, segment := range got.Segments {
+		switch segment.Kind {
+		case SegmentThought:
+			thought = segment.Text
+		case SegmentTool:
+			tool = segment.Text
+		}
+	}
+	if len([]rune(thought)) <= threeSectionThoughtReserveRunes {
+		t.Fatalf("thought stayed at reserve instead of using remaining capacity: %d", len([]rune(thought)))
+	}
+	if len([]rune(tool)) < threeSectionToolReserveRunes {
+		t.Fatalf("tool fell below reserve: %d", len([]rune(tool)))
+	}
+	for _, want := range []string{"thought-title", "tool-title", "important-command"} {
+		if !strings.Contains(thought+tool, want) {
+			t.Fatalf("fitted timelines lost %q", want)
 		}
 	}
 }

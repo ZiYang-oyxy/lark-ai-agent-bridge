@@ -55,6 +55,7 @@ func TestRunChecksRuntimeConfig(t *testing.T) {
 	assertCheck(t, checks, "card_heartbeat_every", true, "5s")
 	assertCheck(t, checks, "interaction_timeout", true, "2s")
 	assertCheck(t, checks, "card_max_chars", true, "12000")
+	assertCheck(t, checks, "card_payload_max_json_bytes", true, "29696")
 	assertCheck(t, checks, "card_min_delta_chars", true, "30")
 	assertCheck(t, checks, "card_preview_max_chars", true, "2000")
 

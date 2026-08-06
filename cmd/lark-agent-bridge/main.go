@@ -856,7 +856,7 @@ Environment:
   E2E_DEFAULT_WORKDIR    defaults to current directory
   E2E_CARD_UPDATE_MS     defaults to 800
   E2E_CARD_HEARTBEAT_SEC defaults to 5; refreshes a quiet running card
-  E2E_CARD_MAX_CHARS     defaults to 12000
+  E2E_CARD_MAX_CHARS     candidate rune window; defaults to 30000
   E2E_CARD_MIN_DELTA_CHARS defaults to 30
   E2E_CARD_PREVIEW_MAX_CHARS defaults to 2000
   E2E_REPLY_MODE         Coder=append, Worker=append-clean-card, or Singleton=latest-card

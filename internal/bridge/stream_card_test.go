@@ -474,15 +474,15 @@ func TestAgentCardStreamPreviewBudgetsFollowReplyMode(t *testing.T) {
 		overflow config.AppendOverflowMode
 		want     int
 	}{
-		{name: "coder single card", mode: config.ReplyModeAppend, want: 9000},
-		{name: "coder continuation", mode: config.ReplyModeAppend, overflow: config.AppendOverflowModeContinueCard, want: 54000},
-		{name: "worker", mode: config.ReplyModeAppendCleanCard, want: 12000},
-		{name: "singleton", mode: config.ReplyModeLatestCard, want: 12000},
+		{name: "coder single card", mode: config.ReplyModeAppend, want: 30000},
+		{name: "coder continuation", mode: config.ReplyModeAppend, overflow: config.AppendOverflowModeContinueCard, want: 270000},
+		{name: "worker", mode: config.ReplyModeAppendCleanCard, want: 30000},
+		{name: "singleton", mode: config.ReplyModeLatestCard, want: 30000},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			cfg := testConfig(t)
-			cfg.CardMaxChars = 12000
+			cfg.CardMaxChars = 30000
 			cfg.CardPreviewMaxChars = 2000
 			svc := NewService(cfg, card.NewFakeRenderer(), newFakeRunner(), audit.NewRecorder())
 			stream := newAgentCardStreamWithClock(svc, "run", session.Session{ID: "claude:chat"}, session.Input{
@@ -1878,7 +1878,7 @@ func TestFormatLatestToolClampsHugeOutputKeepsCommand(t *testing.T) {
 	if len([]rune(rendered)) >= len([]rune(huge)) {
 		t.Fatalf("渲染结果未收缩: %d >= %d", len([]rune(rendered)), len([]rune(huge)))
 	}
-	// 3) 渲染结果整体受控在预算附近(命令+框架+省略后的输出),远小于卡片 28KB 软上限,
+	// 3) 渲染结果整体受控在候选窗口内(命令+框架+输出),
 	//    从而下游 capacity 通常无需再对该 tool 段做 keepTail 截断(即便触发,命令也在头部已保住)。
 	if got := len([]rune(rendered)); got > maxToolOutputRunes+2000 {
 		t.Fatalf("渲染结果仍过大: %d runes", got)
@@ -1886,5 +1886,21 @@ func TestFormatLatestToolClampsHugeOutputKeepsCommand(t *testing.T) {
 	// 4) 结构完整:命令在前、输出在后
 	if strings.Index(rendered, cmd) > strings.Index(rendered, "**输出**") {
 		t.Fatalf("命令未排在输出之前")
+	}
+}
+
+func TestFormatLatestToolKeepsOutputBeyondLegacyLimit(t *testing.T) {
+	output := "OUTPUT_BEGIN\n" + strings.Repeat("x", 15000) + "\nOUTPUT_END"
+	s := &agentCardStream{
+		currentTool: &toolCall{ID: "tu-1", Name: "Bash", Cmd: "long-running-command", Output: output},
+	}
+	rendered := s.formatToolsLocked()
+	if strings.Contains(rendered, "中间省略") {
+		t.Fatal("output below the candidate window was truncated")
+	}
+	for _, want := range []string{"OUTPUT_BEGIN", "OUTPUT_END", strings.Repeat("x", 7000)} {
+		if !strings.Contains(rendered, want) {
+			t.Fatalf("tool output lost content beyond legacy 6000-rune limit: missing length=%d", len(want))
+		}
 	}
 }
