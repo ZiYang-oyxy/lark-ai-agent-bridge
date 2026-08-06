@@ -42,6 +42,57 @@ type captureMessageDeleteAPI struct {
 	nilResponse bool
 }
 
+type captureMessageUpdateAPI struct {
+	reqs        []*larkim.UpdateMessageReq
+	resp        *larkim.UpdateMessageResp
+	err         error
+	nilResponse bool
+}
+
+func (f *captureMessageUpdateAPI) Update(_ context.Context, req *larkim.UpdateMessageReq, _ ...larkcore.RequestOptionFunc) (*larkim.UpdateMessageResp, error) {
+	f.reqs = append(f.reqs, req)
+	if f.nilResponse {
+		return nil, f.err
+	}
+	if f.resp == nil && f.err == nil {
+		return &larkim.UpdateMessageResp{}, nil
+	}
+	return f.resp, f.err
+}
+
+func TestSDKSenderUpdateTextMessage(t *testing.T) {
+	api := &captureMessageUpdateAPI{}
+	sender := &SDKSender{messageUpdateAPI: api}
+	if err := sender.UpdateTextMessage(t.Context(), "om_guide", "topic omt_123"); err != nil {
+		t.Fatal(err)
+	}
+	if len(api.reqs) != 1 || api.reqs[0] == nil || api.reqs[0].Body == nil {
+		t.Fatalf("update requests = %#v", api.reqs)
+	}
+	body := api.reqs[0].Body
+	if body.MsgType == nil || *body.MsgType != "text" || body.Content == nil || *body.Content != `{"text":"topic omt_123"}` {
+		t.Fatalf("update body = %#v", body)
+	}
+
+	for _, tc := range []struct {
+		name   string
+		id     string
+		sender *SDKSender
+	}{
+		{name: "missing id", sender: &SDKSender{messageUpdateAPI: &captureMessageUpdateAPI{}}},
+		{name: "missing api", id: "om_guide", sender: &SDKSender{}},
+		{name: "sdk error", id: "om_guide", sender: &SDKSender{messageUpdateAPI: &captureMessageUpdateAPI{err: errors.New("network failed")}}},
+		{name: "nil response", id: "om_guide", sender: &SDKSender{messageUpdateAPI: &captureMessageUpdateAPI{nilResponse: true}}},
+		{name: "business error", id: "om_guide", sender: &SDKSender{messageUpdateAPI: &captureMessageUpdateAPI{resp: &larkim.UpdateMessageResp{CodeError: larkcore.CodeError{Code: 999, Msg: "denied"}}}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := tc.sender.UpdateTextMessage(t.Context(), tc.id, "topic"); err == nil {
+				t.Fatal("expected error")
+			}
+		})
+	}
+}
+
 func (f *captureMessageDeleteAPI) Delete(_ context.Context, req *larkim.DeleteMessageReq, _ ...larkcore.RequestOptionFunc) (*larkim.DeleteMessageResp, error) {
 	f.reqs = append(f.reqs, req)
 	if f.nilResponse {
