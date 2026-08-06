@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -22,6 +23,11 @@ type ResumableRenderer interface {
 type ContextRenderer interface {
 	RenderContext(context.Context, card.Event) error
 }
+
+const (
+	defaultMaxTerminalRenderers = 512
+	defaultTerminalRendererTTL  = 24 * time.Hour
+)
 
 type CardKitRenderer struct {
 	mu               sync.Mutex
@@ -59,11 +65,15 @@ func (r *CardKitRouterRenderer) BeginCardInteraction(sessionID string) func() {
 		return func() {}
 	}
 	r.mu.Lock()
-	renderer := r.renderers[sessionID]
-	r.mu.Unlock()
-	if renderer == nil {
+	entry := r.renderers[sessionID]
+	if entry == nil {
+		r.mu.Unlock()
 		return func() {}
 	}
+	entry.interactions++
+	entry.lastUsed = r.now().UTC()
+	renderer := entry.renderer
+	r.mu.Unlock()
 	renderer.mu.Lock()
 	renderer.interactionDepth++
 	renderer.mu.Unlock()
@@ -75,17 +85,61 @@ func (r *CardKitRouterRenderer) BeginCardInteraction(sessionID string) func() {
 				renderer.interactionDepth--
 			}
 			renderer.mu.Unlock()
+			r.mu.Lock()
+			if current := r.renderers[sessionID]; current == entry && current.interactions > 0 {
+				current.interactions--
+			}
+			r.sweepLocked(r.now().UTC())
+			r.mu.Unlock()
 		})
 	}
 }
 
 type CardKitRouterRenderer struct {
-	mu        sync.Mutex
-	client    CardKitClientAPI
-	observer  CardKitRenderObserver
-	journal   NativeSequenceJournal
-	now       func() time.Time
-	renderers map[string]*CardKitRenderer
+	mu          sync.Mutex
+	client      CardKitClientAPI
+	observer    CardKitRenderObserver
+	journal     NativeSequenceJournal
+	now         func() time.Time
+	maxTerminal int
+	terminalTTL time.Duration
+	renderers   map[string]*cardKitRendererEntry
+}
+
+type cardKitRendererEntry struct {
+	renderer     *CardKitRenderer
+	renderMu     sync.Mutex
+	lastUsed     time.Time
+	terminal     bool
+	rendering    int
+	interactions int
+}
+
+type trackingResumableRenderer struct {
+	ResumableRenderer
+	renderTracked func(card.Event, func() error) error
+}
+
+func (r *trackingResumableRenderer) Render(event card.Event) error {
+	if r.renderTracked == nil {
+		return r.ResumableRenderer.Render(event)
+	}
+	return r.renderTracked(event, func() error {
+		return r.ResumableRenderer.Render(event)
+	})
+}
+
+func (r *trackingResumableRenderer) RenderContext(ctx context.Context, event card.Event) error {
+	contextRenderer, ok := r.ResumableRenderer.(ContextRenderer)
+	if !ok {
+		return fmt.Errorf("tracked renderer does not support contextual rendering")
+	}
+	if r.renderTracked == nil {
+		return contextRenderer.RenderContext(ctx, event)
+	}
+	return r.renderTracked(event, func() error {
+		return contextRenderer.RenderContext(ctx, event)
+	})
 }
 
 type CardKitRenderObserver interface {
@@ -117,10 +171,24 @@ func NewCardKitRouterRendererWithObserverAndJournal(client CardKitClientAPI, obs
 }
 
 func newCardKitRouterRendererWithClock(client CardKitClientAPI, observer CardKitRenderObserver, journal NativeSequenceJournal, now func() time.Time) *CardKitRouterRenderer {
+	return newCardKitRouterRendererWithRetention(client, observer, journal, now, defaultMaxTerminalRenderers, defaultTerminalRendererTTL)
+}
+
+func newCardKitRouterRendererWithRetention(client CardKitClientAPI, observer CardKitRenderObserver, journal NativeSequenceJournal, now func() time.Time, maxTerminal int, terminalTTL time.Duration) *CardKitRouterRenderer {
 	if now == nil {
 		now = time.Now
 	}
-	return &CardKitRouterRenderer{client: client, observer: observer, journal: journal, now: now, renderers: map[string]*CardKitRenderer{}}
+	if maxTerminal <= 0 {
+		maxTerminal = defaultMaxTerminalRenderers
+	}
+	if terminalTTL <= 0 {
+		terminalTTL = defaultTerminalRendererTTL
+	}
+	return &CardKitRouterRenderer{
+		client: client, observer: observer, journal: journal, now: now,
+		maxTerminal: maxTerminal, terminalTTL: terminalTTL,
+		renderers: map[string]*cardKitRendererEntry{},
+	}
 }
 
 func NewCardKitRenderer(client CardKitClientAPI, replyToMessageID string) *CardKitRenderer {
@@ -155,9 +223,10 @@ func (r *CardKitRouterRenderer) NewStreamingBound(_ context.Context, binding Ren
 	}
 	renderer := newCardKitRendererWithClock(r.client, replyTo, r.observer, binding.RunCardSessionID, binding, r.journal, r.now)
 	r.mu.Lock()
-	r.renderers[binding.RunCardSessionID] = renderer
+	r.renderers[binding.RunCardSessionID] = &cardKitRendererEntry{renderer: renderer, lastUsed: r.now().UTC()}
+	r.sweepLocked(r.now().UTC())
 	r.mu.Unlock()
-	return renderer, nil
+	return r.track(binding.RunCardSessionID, renderer), nil
 }
 
 func (r *CardKitRouterRenderer) AppendTerminal(ctx context.Context, replyTo string, event card.Event) error {
@@ -184,9 +253,10 @@ func (r *CardKitRouterRenderer) RehydrateBound(binding RenderBinding, ref sessio
 	renderer.sequenceUnknown = ref.SequenceUnknown
 	renderer.pendingSequence = ref.PendingSequence
 	r.mu.Lock()
-	r.renderers[binding.RunCardSessionID] = renderer
+	r.renderers[binding.RunCardSessionID] = &cardKitRendererEntry{renderer: renderer, lastUsed: r.now().UTC()}
+	r.sweepLocked(r.now().UTC())
 	r.mu.Unlock()
-	return renderer
+	return r.track(binding.RunCardSessionID, renderer)
 }
 
 func (r *CardKitRouterRenderer) Render(e card.Event) error {
@@ -198,23 +268,132 @@ func (r *CardKitRouterRenderer) Render(e card.Event) error {
 		key = e.ReplyToMessageID
 	}
 	r.mu.Lock()
-	renderer := r.renderers[key]
-	if renderer == nil {
+	entry := r.renderers[key]
+	if entry == nil {
 		if e.ReplyToMessageID == "" {
 			r.mu.Unlock()
 			return fmt.Errorf("missing reply message id for new card session %q", key)
 		}
-		renderer = newCardKitRendererWithClock(r.client, e.ReplyToMessageID, r.observer, key, RenderBinding{}, nil, r.now)
-		r.renderers[key] = renderer
+		renderer := newCardKitRendererWithClock(r.client, e.ReplyToMessageID, r.observer, key, RenderBinding{}, nil, r.now)
+		entry = &cardKitRendererEntry{renderer: renderer, lastUsed: r.now().UTC()}
+		r.renderers[key] = entry
+		r.sweepLocked(r.now().UTC())
 	}
+	renderer := entry.renderer
+	trackedEntry := r.beginRenderingLocked(key, renderer)
 	r.mu.Unlock()
-	return renderer.Render(e)
+	return r.renderTrackedEntry(key, renderer, trackedEntry, e, func() error {
+		return renderer.Render(e)
+	})
 }
 
 func (r *CardKitRouterRenderer) ActiveCards() int {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return len(r.renderers)
+}
+
+func (r *CardKitRouterRenderer) track(key string, renderer *CardKitRenderer) ResumableRenderer {
+	return &trackingResumableRenderer{
+		ResumableRenderer: renderer,
+		renderTracked: func(event card.Event, render func() error) error {
+			return r.renderTracked(key, renderer, event, render)
+		},
+	}
+}
+
+func (r *CardKitRouterRenderer) renderTracked(key string, renderer *CardKitRenderer, event card.Event, render func() error) error {
+	r.mu.Lock()
+	entry := r.beginRenderingLocked(key, renderer)
+	r.mu.Unlock()
+	return r.renderTrackedEntry(key, renderer, entry, event, render)
+}
+
+func (r *CardKitRouterRenderer) renderTrackedEntry(key string, renderer *CardKitRenderer, entry *cardKitRendererEntry, event card.Event, render func() error) error {
+	if entry != nil {
+		entry.renderMu.Lock()
+		defer entry.renderMu.Unlock()
+	}
+	renderErr := render()
+	r.finishRendering(key, renderer, event, renderErr)
+	return renderErr
+}
+
+func (r *CardKitRouterRenderer) beginRenderingLocked(key string, renderer *CardKitRenderer) *cardKitRendererEntry {
+	entry := r.renderers[key]
+	if entry == nil || entry.renderer != renderer {
+		return nil
+	}
+	entry.lastUsed = r.now().UTC()
+	entry.terminal = false
+	entry.rendering++
+	return entry
+}
+
+func (r *CardKitRouterRenderer) finishRendering(key string, renderer *CardKitRenderer, event card.Event, renderErr error) {
+	now := r.now().UTC()
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	entry := r.renderers[key]
+	if entry == nil || entry.renderer != renderer {
+		return
+	}
+	if entry.rendering > 0 {
+		entry.rendering--
+	}
+	entry.lastUsed = now
+	entry.terminal = renderErr == nil && terminalCardEvent(event)
+	r.sweepLocked(now)
+}
+
+func terminalCardEvent(event card.Event) bool {
+	switch event.Type {
+	case "result", "error", "stopped":
+		return true
+	default:
+		return false
+	}
+}
+
+type terminalRendererCandidate struct {
+	key      string
+	lastUsed time.Time
+}
+
+func (r *CardKitRouterRenderer) sweepLocked(now time.Time) {
+	terminalCount := 0
+	candidates := make([]terminalRendererCandidate, 0)
+	for key, entry := range r.renderers {
+		if entry == nil || entry.renderer == nil || !entry.terminal {
+			continue
+		}
+		terminalCount++
+		if entry.interactions > 0 || entry.rendering > 0 {
+			continue
+		}
+		if !entry.lastUsed.IsZero() && !now.Before(entry.lastUsed.Add(r.terminalTTL)) {
+			delete(r.renderers, key)
+			terminalCount--
+			continue
+		}
+		candidates = append(candidates, terminalRendererCandidate{key: key, lastUsed: entry.lastUsed})
+	}
+	if terminalCount <= r.maxTerminal {
+		return
+	}
+	sort.Slice(candidates, func(i, j int) bool {
+		if candidates[i].lastUsed.Equal(candidates[j].lastUsed) {
+			return candidates[i].key < candidates[j].key
+		}
+		return candidates[i].lastUsed.Before(candidates[j].lastUsed)
+	})
+	for _, candidate := range candidates {
+		if terminalCount <= r.maxTerminal {
+			break
+		}
+		delete(r.renderers, candidate.key)
+		terminalCount--
+	}
 }
 
 var _ card.Renderer = (*CardKitRouterRenderer)(nil)
