@@ -14,6 +14,8 @@ the reply card itself.
   Feishu `thread_id` stored with the durable input.
 - On the developer row, append `Chat ID` and `Topic ID` only when
   `DeveloperMode` is true.
+- Compact long IDs for display by preserving the type prefix plus the first
+  three and last six identifier characters, for example `oc_f56…296b83`.
 - Render an empty Topic ID as `-`. Never display the synthetic
   `@bot:<message_id>` routing key as a Feishu Topic ID.
 - Stable mode keeps the existing developer-row output unchanged.
