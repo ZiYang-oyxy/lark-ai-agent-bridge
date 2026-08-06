@@ -1770,8 +1770,8 @@ func (s *agentCardStream) eventLocked(initial bool) card.Event {
 		ToolCallCount:      s.toolCallCount,
 		OrderedLayout:      s.replyMode == config.ReplyModeAppend,
 		ThreeSectionLayout: usesCleanCardLayout(s.replyMode),
-		// 三段布局:思考默认展开(用户要求),终态折叠让最终答案更清爽;工具恒默认折叠。
-		ThoughtExpanded:     usesCleanCardLayout(s.replyMode) && s.status == "running",
+		// Worker 的思考/工具默认折叠；Singleton 保持运行期展开思考的既有行为。
+		ThoughtExpanded:     s.replyMode == config.ReplyModeLatestCard && s.status == "running",
 		ToolsExpanded:       false,
 		ThoughtRoundCount:   s.thoughtRounds,
 		ToolRoundCount:      s.toolRounds,
@@ -1873,24 +1873,31 @@ func (s *agentCardStream) headerTitleLocked() string {
 	if elapsed < 0 {
 		elapsed = 0
 	}
+	title := ""
 	switch s.status {
 	case "completed":
-		return fmt.Sprintf("%s · ⏱ %s", config.EffectiveCompletionStatusText(s.completionStatusText), elapsed)
+		title = config.EffectiveCompletionStatusText(s.completionStatusText)
 	case "failed":
-		return fmt.Sprintf("❌ 执行失败 · ⏱ %s", elapsed)
+		title = "❌ 执行失败"
 	case "stopped":
-		return fmt.Sprintf("⏹ 已停止 · ⏱ %s", elapsed)
+		title = "⏹ 已停止"
 	case "interrupted":
-		return fmt.Sprintf("⚠️ 上游中断 · ⏱ %s", elapsed)
+		title = "⚠️ 上游中断"
 	}
-	switch s.activity {
-	case streamActivityTool:
-		return fmt.Sprintf("🛠️ 正在执行工具 · ⏱ %s", elapsed)
-	case streamActivityAnswering:
-		return fmt.Sprintf("✍️ 正在回复 · ⏱ %s", elapsed)
-	default:
-		return fmt.Sprintf("🧠 正在推理 · ⏱ %s", elapsed)
+	if title == "" {
+		switch s.activity {
+		case streamActivityTool:
+			title = "🛠️ 正在执行工具"
+		case streamActivityAnswering:
+			title = "✍️ 正在回复"
+		default:
+			title = "🧠 正在推理"
+		}
 	}
+	if s.replyMode == config.ReplyModeAppendCleanCard {
+		return fmt.Sprintf("%s · 💭 %d · 🔧 %d · ⏱ %s", title, s.thoughtRounds, s.toolRounds, elapsed)
+	}
+	return fmt.Sprintf("%s · ⏱ %s", title, elapsed)
 }
 
 func appendSegmentToBuilders(segment card.Segment, incremental bool, answer, thought, tools *strings.Builder) {
