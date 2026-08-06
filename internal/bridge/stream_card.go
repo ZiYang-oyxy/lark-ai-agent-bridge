@@ -1292,12 +1292,11 @@ func (s *agentCardStream) formatThoughtsLocked() string {
 	return b.String()
 }
 
-// maxToolOutputRunes 是单次工具调用「输出」段在卡片里的字符预算。
-// 远小于卡片整体软上限(LarkCardSoftMaxJSONBytes=28KB / CardMaxChars=12000),
-// 目的是:让工具名与命令(信息密度最高、用户最需要看到的部分)永远完整保留,
-// 只有冗长输出才被有界省略。否则下游 capacity.fitLarkCard 会用 keepTail 截断
-// 整个 tool 段——从头部吃起,反而先牺牲工具名和命令、只留一堆输出(本次修复的 bug)。
-const maxToolOutputRunes = 6000
+// maxToolOutputRunes bounds the candidate retained for one tool result. The
+// three-section JSON fitter applies the authoritative 29 KiB card limit while
+// preserving tool titles and commands, so this is an in-memory window rather
+// than a per-card capacity proxy.
+const maxToolOutputRunes = 30000
 
 // clampToolOutput 对过长的工具输出做「保头 + 保尾 + 省中间」截断。
 // 头尾都保留能同时体现「命令产出的开头」与「结尾/退出状态」,中间用一行省略提示替代。

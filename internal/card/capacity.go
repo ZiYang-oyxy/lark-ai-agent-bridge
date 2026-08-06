@@ -9,7 +9,7 @@ import (
 )
 
 const (
-	LarkCardSoftMaxJSONBytes = 28 * 1024
+	LarkCardSoftMaxJSONBytes = 29 * 1024
 	LarkCardMaxComponents    = 200
 )
 
@@ -190,29 +190,73 @@ func fitLarkCard(event Event) (PreparedLarkCard, bool) {
 
 const threeSectionTimelineSeparator = "\n────────────────────\n"
 
+const (
+	threeSectionThoughtReserveRunes = 1500
+	threeSectionToolReserveRunes    = 4000
+)
+
 // fitThreeSectionCard shrinks both timeline panels in one candidate. Trying the
 // panels independently can leave their combined payload oversized and fall
 // through to the generic keep-tail path, which destroys newest-first history.
 func fitThreeSectionCard(event Event) (PreparedLarkCard, bool) {
 	candidate := cloneEvent(event)
-	for _, target := range []struct {
+	targets := []struct {
 		kind     SegmentKind
 		maxRunes int
 	}{
-		{kind: SegmentThought, maxRunes: 1500},
-		{kind: SegmentTool, maxRunes: 4000},
-	} {
+		{kind: SegmentThought, maxRunes: threeSectionThoughtReserveRunes},
+		{kind: SegmentTool, maxRunes: threeSectionToolReserveRunes},
+	}
+	for _, target := range targets {
 		if index := findLatestSegmentIndex(candidate.Segments, target.kind); index >= 0 {
 			candidate.Segments[index].Text = shrinkThreeSectionTimelineText(candidate.Segments[index].Text, target.maxRunes)
 		}
 	}
-	if prepared, err := prepareLarkCard(candidate, true); err == nil {
-		return prepared, true
+	prepared, err := prepareLarkCard(candidate, true)
+	if err != nil {
+		var ok bool
+		candidate, prepared, ok = shrinkLatestAnswer(candidate)
+		if !ok {
+			return PreparedLarkCard{}, false
+		}
 	}
-	if _, prepared, ok := shrinkLatestAnswer(candidate); ok {
-		return prepared, true
+
+	// The reserve sizes protect every visible record's title and command. Once
+	// the card fits, spend all remaining JSON capacity by expanding the original
+	// timelines again instead of treating those reserves as final ceilings.
+	for _, target := range targets {
+		index := findLatestSegmentIndex(candidate.Segments, target.kind)
+		originalIndex := findLatestSegmentIndex(event.Segments, target.kind)
+		if index < 0 || originalIndex < 0 {
+			continue
+		}
+		candidate, prepared = maximizeThreeSectionTimeline(
+			candidate,
+			index,
+			event.Segments[originalIndex].Text,
+			prepared,
+		)
 	}
-	return PreparedLarkCard{}, false
+	return prepared, true
+}
+
+func maximizeThreeSectionTimeline(event Event, index int, original string, initial PreparedLarkCard) (Event, PreparedLarkCard) {
+	bestEvent, best := event, initial
+	low := len([]rune(event.Segments[index].Text))
+	high := len([]rune(original))
+	for low <= high {
+		mid := (low + high) / 2
+		candidate := cloneEvent(event)
+		candidate.Segments[index].Text = shrinkThreeSectionTimelineText(original, mid)
+		prepared, err := prepareLarkCard(candidate, true)
+		if err == nil {
+			bestEvent, best = candidate, prepared
+			low = mid + 1
+			continue
+		}
+		high = mid - 1
+	}
+	return bestEvent, best
 }
 
 // shrinkThreeSectionTimelineText keeps the newest-first timeline structure

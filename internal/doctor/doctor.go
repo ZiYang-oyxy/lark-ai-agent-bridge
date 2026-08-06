@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"lark-agent-bridge/internal/agent"
+	"lark-agent-bridge/internal/card"
 	"lark-agent-bridge/internal/config"
 	"lark-agent-bridge/internal/reply"
 	"lark-agent-bridge/internal/session"
@@ -77,6 +78,7 @@ func runStatic(cfg config.Config) []Check {
 		durationPositive("card_heartbeat_every", cfg.CardHeartbeatEvery),
 		durationPositive("interaction_timeout", cfg.InteractionTimeout),
 		intPositive("card_max_chars", cfg.CardMaxChars),
+		intPositive("card_payload_max_json_bytes", card.LarkCardSoftMaxJSONBytes),
 		intPositive("card_min_delta_chars", cfg.CardMinDeltaChars),
 		intPositive("card_preview_max_chars", cfg.CardPreviewMaxChars),
 		agentsConfigCheck(cfg),

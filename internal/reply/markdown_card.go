@@ -16,7 +16,7 @@ type markdownCardRenderer struct {
 }
 
 func NewMarkdownCardRenderer(next feishu.ResumableRenderer) feishu.ResumableRenderer {
-	return NewMarkdownCardRendererWithLimit(next, inlineTimelineMaxRunes)
+	return NewMarkdownCardRendererWithLimit(next, defaultCardCandidateMaxRunes)
 }
 
 func NewMarkdownCardRendererWithLimit(next feishu.ResumableRenderer, maxRunes int) feishu.ResumableRenderer {
@@ -27,7 +27,7 @@ func NewMarkdownContinuationRenderer(next interface {
 	RenderPages([]card.Event) error
 	RenderRef() session.RenderRef
 }) feishu.ResumableRenderer {
-	return NewMarkdownContinuationRendererWithLimit(next, continuationPageMaxRunes)
+	return NewMarkdownContinuationRendererWithLimit(next, defaultCardCandidateMaxRunes)
 }
 
 func NewMarkdownContinuationRendererWithLimit(next interface {
