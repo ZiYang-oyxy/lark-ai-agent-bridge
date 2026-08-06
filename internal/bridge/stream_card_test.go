@@ -14,6 +14,7 @@ import (
 	"lark-agent-bridge/internal/audit"
 	"lark-agent-bridge/internal/card"
 	"lark-agent-bridge/internal/config"
+	"lark-agent-bridge/internal/reply"
 	"lark-agent-bridge/internal/session"
 )
 
@@ -426,6 +427,12 @@ type indexedFailRenderer struct {
 	failCall int
 }
 
+type previewMarkdownCapture struct {
+	*card.FakeRenderer
+}
+
+func (r *previewMarkdownCapture) RenderRef() session.RenderRef { return session.RenderRef{} }
+
 func (r *indexedFailRenderer) Render(event card.Event) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -510,6 +517,38 @@ func TestAppendStreamPreservesTimeline(t *testing.T) {
 	assertSegmentKinds(t, terminal, card.SegmentText, card.SegmentTool, card.SegmentText)
 	if !terminal.OrderedLayout {
 		t.Fatal("append terminal did not request ordered layout")
+	}
+}
+
+func TestAppendStreamPreviewKeepsNewestTimelineTail(t *testing.T) {
+	clock := &fakeStreamClock{now: time.Unix(50, 0)}
+	cardRenderer := &previewMarkdownCapture{FakeRenderer: card.NewFakeRenderer()}
+	renderer := reply.NewMarkdownCardRendererWithLimit(cardRenderer, 80)
+	stream := newPreviewTestStream(t, renderer, clock, 1, 80)
+	if err := stream.Start(); err != nil {
+		t.Fatal(err)
+	}
+	stream.Handle(AgentStreamUpdate{Segments: []card.Segment{{Kind: card.SegmentThought, Text: "旧思考" + strings.Repeat("旧", 100)}}})
+	stream.Handle(AgentStreamUpdate{Segments: []card.Segment{{Kind: card.SegmentThought, Text: "最新思考"}}})
+	stream.Handle(AgentStreamUpdate{Segments: []card.Segment{{
+		Kind: card.SegmentTool,
+		Text: "最新工具",
+		Tool: &card.ToolMeta{ID: "tool-new", Name: "Bash", Phase: "use", Summary: "echo newest"},
+	}}})
+	if err := stream.Flush(); err != nil {
+		t.Fatal(err)
+	}
+
+	events := cardRenderer.Events()
+	preview := events[len(events)-1].Markdown
+	if !strings.Contains(preview, "较早过程已省略") {
+		t.Fatalf("preview did not mark the truncated head: %q", preview)
+	}
+	if strings.Contains(preview, "旧思考") {
+		t.Fatalf("preview retained the stale head: %q", preview)
+	}
+	if !strings.Contains(preview, "最新思考") || !strings.Contains(preview, "Bash") {
+		t.Fatalf("preview did not advance to newest thought and tool: %q", preview)
 	}
 }
 
@@ -742,13 +781,13 @@ func TestCardHeartbeatRefreshesQuietRunningCardAndStopsAtTerminal(t *testing.T) 
 func TestCardHeartbeatKeepsBodyWithinPreviewLimit(t *testing.T) {
 	clock := &fakeStreamClock{now: time.Unix(100, 0)}
 	renderer := card.NewFakeRenderer()
-	stream := newPreviewTestStream(t, renderer, clock, 1, 10)
+	stream := newPreviewTestStream(t, renderer, clock, 1, 20)
 	stream.heartbeatEvery = 15 * time.Second
 	if err := stream.Start(); err != nil {
 		t.Fatal(err)
 	}
 
-	stream.Handle(AgentStreamUpdate{Segments: []card.Segment{{Kind: card.SegmentText, Text: strings.Repeat("x", 20)}}})
+	stream.Handle(AgentStreamUpdate{Segments: []card.Segment{{Kind: card.SegmentText, Text: strings.Repeat("x", 30)}}})
 	clock.Advance(15 * time.Second)
 
 	events := renderer.Events()
@@ -759,8 +798,15 @@ func TestCardHeartbeatKeepsBodyWithinPreviewLimit(t *testing.T) {
 	if !heartbeat.ForceFullUpdate {
 		t.Fatalf("heartbeat did not request a full update: %#v", heartbeat)
 	}
-	if len(heartbeat.Segments) != 1 || heartbeat.Segments[0].Text != strings.Repeat("x", 10) {
-		t.Fatalf("heartbeat body = %#v, want preview-limited text", heartbeat.Segments)
+	if len(heartbeat.Segments) != 2 || heartbeat.Segments[0].Text != "_较早过程已省略_" || !strings.HasSuffix(heartbeat.Segments[1].Text, "x") {
+		t.Fatalf("heartbeat body = %#v, want preview-limited tail", heartbeat.Segments)
+	}
+	totalRunes := 0
+	for _, segment := range heartbeat.Segments {
+		totalRunes += utf8.RuneCountInString(segment.Text)
+	}
+	if totalRunes > 20 {
+		t.Fatalf("heartbeat body has %d runes, want at most 20", totalRunes)
 	}
 }
 
@@ -994,8 +1040,15 @@ func TestStreamPreviewTruncatesUnicodeButTerminalIsCompleteAndCancelsTimer(t *te
 	full := strings.Repeat("你", 25)
 	stream.Handle(AgentStreamUpdate{Segments: []card.Segment{{Kind: card.SegmentText, Text: full}}})
 	preview := renderer.Events()[1]
-	if len(preview.Segments) != 1 || utf8.RuneCountInString(preview.Segments[0].Text) != 20 {
+	if len(preview.Segments) != 2 || preview.Segments[0].Text != "_较早过程已省略_" || !strings.HasSuffix(preview.Segments[1].Text, "你") {
 		t.Fatalf("preview segments = %#v", preview.Segments)
+	}
+	previewRunes := 0
+	for _, segment := range preview.Segments {
+		previewRunes += utf8.RuneCountInString(segment.Text)
+	}
+	if previewRunes > 20 {
+		t.Fatalf("preview has %d runes, want at most 20", previewRunes)
 	}
 	stream.Handle(AgentStreamUpdate{Segments: []card.Segment{{Kind: card.SegmentText, Text: "尾"}}})
 	if _, err := stream.Finish("completed", card.Meta{}, AgentRunResult{Segments: []card.Segment{{Kind: card.SegmentText, Text: full + "尾"}}}); err != nil {
