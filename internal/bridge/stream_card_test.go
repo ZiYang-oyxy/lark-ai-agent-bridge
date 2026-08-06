@@ -1507,11 +1507,14 @@ func TestAppendCleanThreeSectionLatestOnly(t *testing.T) {
 	if !ev.ThreeSectionLayout {
 		t.Fatalf("expected ThreeSectionLayout for append-clean, got %#v", ev)
 	}
-	if !ev.ThoughtExpanded || ev.ToolsExpanded {
+	if ev.ThoughtExpanded || ev.ToolsExpanded {
 		t.Fatalf("running expand state wrong: thought=%v tools=%v", ev.ThoughtExpanded, ev.ToolsExpanded)
 	}
 	if ev.ThoughtRoundCount != 2 || ev.ToolRoundCount != 2 {
 		t.Fatalf("counts = thought:%d tool:%d, want 2/2", ev.ThoughtRoundCount, ev.ToolRoundCount)
+	}
+	if ev.HeaderTitle != "🛠️ 正在执行工具 · 💭 2 · 🔧 2 · ⏱ 1m20s" {
+		t.Fatalf("worker running header = %q", ev.HeaderTitle)
 	}
 	thought := segmentTextByKind(ev, card.SegmentThought)
 	for _, want := range []string{"**🔹 #3 · 11:32:30** · 再想第二步", "**🔹 #1 · 11:32:00** · 先想第一步", cleanTimelineSeparator} {
@@ -1573,6 +1576,9 @@ func TestAppendCleanThreeSectionLatestOnly(t *testing.T) {
 	}
 	if terminal.ThoughtRoundCount != 2 || terminal.ToolRoundCount != 2 {
 		t.Fatalf("terminal counts = thought:%d tool:%d, want 2/2", terminal.ThoughtRoundCount, terminal.ToolRoundCount)
+	}
+	if terminal.HeaderTitle != "✅ 已完成 · 💭 2 · 🔧 2 · ⏱ 1m20s" {
+		t.Fatalf("worker terminal header = %q", terminal.HeaderTitle)
 	}
 	if got := segmentTextByKind(terminal, card.SegmentThought); !strings.Contains(got, "🔹 #3 · 11:32:30") || !strings.Contains(got, "🔹 #1 · 11:32:00") {
 		t.Fatalf("terminal thought timeline should preserve two thoughts, got %q", got)
