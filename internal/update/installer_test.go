@@ -102,15 +102,53 @@ func TestDetachRestartStartsProcessAndExits(t *testing.T) {
 		t.Skipf("no %s on this host", bin)
 	}
 	prevExit := osExit
-	exited := 0
-	osExit = func(int) { exited++ }
+	exitCode := -1
+	osExit = func(code int) { exitCode = code }
 	t.Cleanup(func() { osExit = prevExit })
 
-	if err := detachRestart(bin, []string{bin}, os.Environ()); err != nil {
+	if err := detachRestart(bin, []string{bin}, []string{"A=B"}); err != nil {
 		t.Fatalf("detachRestart() error = %v", err)
 	}
-	if exited != 1 {
-		t.Fatalf("osExit called %d times, want 1", exited)
+	if exitCode != 0 {
+		t.Fatalf("osExit code = %d, want 0", exitCode)
+	}
+}
+
+func TestDetachRestartRequestsSystemdRestart(t *testing.T) {
+	bin := "/bin/true"
+	if _, err := os.Stat(bin); err != nil {
+		t.Skipf("no %s on this host", bin)
+	}
+	prevExit := osExit
+	exitCode := -1
+	osExit = func(code int) { exitCode = code }
+	t.Cleanup(func() { osExit = prevExit })
+
+	env := []string{"A=B", "INVOCATION_ID=systemd-invocation"}
+	if err := detachRestart(bin, []string{bin}, env); err != nil {
+		t.Fatalf("detachRestart() error = %v", err)
+	}
+	if exitCode != systemdRestartExitCode {
+		t.Fatalf("osExit code = %d, want %d", exitCode, systemdRestartExitCode)
+	}
+}
+
+func TestEnvContainsNonEmpty(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		env  []string
+		want bool
+	}{
+		{name: "present", env: []string{"INVOCATION_ID=abc"}, want: true},
+		{name: "empty", env: []string{"INVOCATION_ID="}, want: false},
+		{name: "missing", env: []string{"OTHER=abc"}, want: false},
+		{name: "prefix only", env: []string{"INVOCATION_ID_EXTRA=abc"}, want: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := envContainsNonEmpty(tc.env, "INVOCATION_ID"); got != tc.want {
+				t.Fatalf("envContainsNonEmpty() = %v, want %v", got, tc.want)
+			}
+		})
 	}
 }
 

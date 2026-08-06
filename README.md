@@ -85,7 +85,7 @@ export LARK_APP_ID=... LARK_APP_SECRET=... \
 nohup ~/bin/lark-agent-bridge-<name> serve --default-workdir "$LAB_DEFAULT_WORKDIR" &
 ```
 
-`/help` 会以 10 分钟内存缓存检查版本。所有授权用户都能查看卡片内 Release note；只有 bot owner/admin 能确认升级。升级前会重新获取 manifest，下载当前平台 binary，严格校验 size 与 SHA-256；存在 active/queued 任务时拒绝升级。通过校验后 Bridge 在当前 binary 同目录保留 `.previous`、原子替换，并以原 argv/env `exec` 新版本。替换或 `exec` 失败会恢复旧 binary；新版本已经启动后再崩溃不自动回滚。
+`/help` 会以 10 分钟内存缓存检查版本。所有授权用户都能查看卡片内 Release note；只有 bot owner/admin 能确认升级。升级前会重新获取 manifest，下载当前平台 binary，严格校验 size 与 SHA-256；存在 active/queued 任务时拒绝升级。通过校验后 Bridge 在当前 binary 同目录保留 `.previous`、原子替换，再以原 argv/env 启动新版本。systemd 环境使用专用退出码把最终重启交给 service manager，因此 `Restart=on-failure` 和 `Restart=always` 都能接管；非 systemd 环境保持 detached child 的原有行为。替换或新进程启动失败会恢复旧 binary；新版本已经启动后再崩溃不自动回滚。
 
 首版只支持：
 
