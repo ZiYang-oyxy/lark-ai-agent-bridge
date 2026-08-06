@@ -92,6 +92,7 @@ func TestParseCodexStreamPreservesProcessMessagesBeforeFinalAnswer(t *testing.T)
 	}
 	processCandidateVisible := false
 	processVisible := false
+	processBoundaryVisible := false
 	for _, update := range updates {
 		if len(update.Segments) != 1 || update.Segments[0].Text != "I will inspect the parser first." {
 			continue
@@ -101,9 +102,12 @@ func TestParseCodexStreamPreservesProcessMessagesBeforeFinalAnswer(t *testing.T)
 		}
 		if update.Segments[0].Kind == card.SegmentThought && update.Activity == streamActivityReasoning && !update.AnswerSnapshot {
 			processVisible = true
+			if update.ProgressSnapshot && !update.AssistantSnapshot {
+				processBoundaryVisible = true
+			}
 		}
 	}
-	if !processCandidateVisible || !processVisible {
+	if !processCandidateVisible || !processVisible || !processBoundaryVisible {
 		t.Fatalf("process message updates = %#v", updates)
 	}
 }

@@ -243,7 +243,11 @@ func flushPendingCodexMessage(result *AgentRunResult, state *codexParseState, on
 	}
 	segment := card.Segment{Kind: card.SegmentThought, Text: text}
 	appendCodexSegment(result, segment)
-	emitCodexSegment(onEvent, segment, streamActivityReasoning, false)
+	emitStreamUpdate(onEvent, AgentStreamUpdate{
+		Segments:         []card.Segment{segment},
+		Activity:         streamActivityReasoning,
+		ProgressSnapshot: true,
+	})
 }
 
 func appendCodexAnswer(result *AgentRunResult, state *codexParseState, text string) {

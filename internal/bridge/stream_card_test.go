@@ -1622,7 +1622,7 @@ func TestAppendCleanThreeSectionLatestOnly(t *testing.T) {
 	if ev.ThoughtRoundCount != 2 || ev.ToolRoundCount != 2 {
 		t.Fatalf("counts = thought:%d tool:%d, want 2/2", ev.ThoughtRoundCount, ev.ToolRoundCount)
 	}
-	if ev.HeaderTitle != "🛠️ 正在执行工具 · 💭 2 · 🔧 2 · ⏱ 1m20s" {
+	if ev.HeaderTitle != "🛠️ 正在执行工具 · ⏱ 1m20s · 💭 2 · 🔧 2" {
 		t.Fatalf("worker running header = %q", ev.HeaderTitle)
 	}
 	thought := segmentTextByKind(ev, card.SegmentThought)
@@ -1686,7 +1686,7 @@ func TestAppendCleanThreeSectionLatestOnly(t *testing.T) {
 	if terminal.ThoughtRoundCount != 2 || terminal.ToolRoundCount != 2 {
 		t.Fatalf("terminal counts = thought:%d tool:%d, want 2/2", terminal.ThoughtRoundCount, terminal.ToolRoundCount)
 	}
-	if terminal.HeaderTitle != "✅ 已完成 · 💭 2 · 🔧 2 · ⏱ 1m20s" {
+	if terminal.HeaderTitle != "✅ 已完成 · ⏱ 1m20s · 💭 2 · 🔧 2" {
 		t.Fatalf("worker terminal header = %q", terminal.HeaderTitle)
 	}
 	if got := segmentTextByKind(terminal, card.SegmentThought); !strings.Contains(got, "🔹 #3 · 11:32:30") || !strings.Contains(got, "🔹 #1 · 11:32:00") {
@@ -1694,6 +1694,59 @@ func TestAppendCleanThreeSectionLatestOnly(t *testing.T) {
 	}
 	if got := segmentTextByKind(terminal, card.SegmentTool); !strings.Contains(got, "🔹 #4 · 11:33:20") || !strings.Contains(got, "🔹 #2 · 11:32:10") {
 		t.Fatalf("terminal tool timeline should preserve two tools, got %q", got)
+	}
+}
+
+func TestCodexProgressMessagesCountAsWorkerThoughtRounds(t *testing.T) {
+	clock := &fakeStreamClock{now: time.Date(2026, 8, 6, 19, 0, 0, 0, time.FixedZone("CST", 8*60*60))}
+	renderer := card.NewFakeRenderer()
+	stream := newPreviewTestStreamForMode(t, renderer, clock, 1, 4000, config.ReplyModeAppendCleanCard)
+	if err := stream.Start(); err != nil {
+		t.Fatal(err)
+	}
+
+	input := strings.Join([]string{
+		`{"type":"thread.started","thread_id":"codex-worker-count"}`,
+		`{"type":"turn.started"}`,
+		`{"type":"item.completed","item":{"id":"msg-1","type":"agent_message","text":"先检查发布状态。"}}`,
+		`{"type":"item.started","item":{"id":"cmd-1","type":"command_execution","command":"git status"}}`,
+		`{"type":"item.completed","item":{"id":"cmd-1","type":"command_execution","output":"clean","exit_code":0}}`,
+		`{"type":"item.completed","item":{"id":"msg-2","type":"agent_message","text":"再核对远端标签。"}}`,
+		`{"type":"item.started","item":{"id":"cmd-2","type":"command_execution","command":"git tag -l"}}`,
+		`{"type":"item.completed","item":{"id":"cmd-2","type":"command_execution","output":"v0.1.15-rc.4","exit_code":0}}`,
+		`{"type":"item.completed","item":{"id":"msg-3","type":"agent_message","text":"发布核验完成。"}}`,
+		`{"type":"turn.completed"}`,
+	}, "\n")
+	result, err := parseCodexStream(strings.NewReader(input), nil, stream.Handle)
+	if err != nil {
+		t.Fatal(err)
+	}
+	clock.Advance(12 * time.Second)
+	if err := stream.Flush(); err != nil {
+		t.Fatal(err)
+	}
+
+	running := renderer.Events()[len(renderer.Events())-1]
+	if running.ThoughtRoundCount != 2 || running.ToolRoundCount != 2 {
+		t.Fatalf("Codex running counts = thought:%d tool:%d, want 2/2", running.ThoughtRoundCount, running.ToolRoundCount)
+	}
+	if running.HeaderTitle != "✍️ 正在回复 · ⏱ 1s · 💭 2 · 🔧 2" {
+		t.Fatalf("Codex running header = %q", running.HeaderTitle)
+	}
+	thought := segmentTextByKind(running, card.SegmentThought)
+	if !containsAll(thought, "先检查发布状态。", "再核对远端标签。") {
+		t.Fatalf("Codex progress timeline = %q", thought)
+	}
+
+	terminal, err := stream.Finish("completed", card.Meta{}, result)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if terminal.ThoughtRoundCount != 2 || terminal.ToolRoundCount != 2 {
+		t.Fatalf("Codex terminal counts = thought:%d tool:%d, want 2/2", terminal.ThoughtRoundCount, terminal.ToolRoundCount)
+	}
+	if terminal.HeaderTitle != "✅ 已完成 · ⏱ 12s · 💭 2 · 🔧 2" {
+		t.Fatalf("Codex terminal header = %q", terminal.HeaderTitle)
 	}
 }
 

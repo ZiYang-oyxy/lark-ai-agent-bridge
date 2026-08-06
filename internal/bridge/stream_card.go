@@ -894,10 +894,11 @@ func (s *agentCardStream) updateCleanSectionsLocked(segments []card.Segment, inc
 	if s.seenToolIDs == nil {
 		s.seenToolIDs = make(map[string]bool)
 	}
+	thoughtSnapshot := assistantSnapshot || progressSnapshot
 	// snapshot 到来时,收集该 update 里的最后一段完整 thought(权威版)用于覆盖 delta 中间态。
 	// 一轮 assistant message 内即使有多段 thinking,视觉上只保留最后一段(用户视角=同一次思考的最终版)。
 	latestSnapshotThought := ""
-	if assistantSnapshot {
+	if thoughtSnapshot {
 		for _, segment := range segments {
 			if segment.Kind == card.SegmentThought {
 				if t := strings.TrimSpace(segment.Text); t != "" {
@@ -920,7 +921,7 @@ func (s *agentCardStream) updateCleanSectionsLocked(segments []card.Segment, inc
 	for _, segment := range segments {
 		switch segment.Kind {
 		case card.SegmentThought:
-			if segment.Text == "" || assistantSnapshot {
+			if segment.Text == "" || thoughtSnapshot {
 				// snapshot 帧的 thought 交给下面一次性权威覆盖,不再在这里逐段拼。
 				continue
 			}
@@ -1010,7 +1011,7 @@ func (s *agentCardStream) updateCleanSectionsLocked(segments []card.Segment, inc
 			}
 		}
 	}
-	if assistantSnapshot {
+	if thoughtSnapshot {
 		alreadyCounted := false
 		if latestSnapshotThought != "" {
 			if progressSnapshot {
@@ -1902,7 +1903,7 @@ func (s *agentCardStream) headerTitleLocked() string {
 		}
 	}
 	if s.replyMode == config.ReplyModeAppendCleanCard {
-		return fmt.Sprintf("%s · 💭 %d · 🔧 %d · ⏱ %s", title, s.thoughtRounds, s.toolRounds, elapsed)
+		return fmt.Sprintf("%s · ⏱ %s · 💭 %d · 🔧 %d", title, elapsed, s.thoughtRounds, s.toolRounds)
 	}
 	return fmt.Sprintf("%s · ⏱ %s", title, elapsed)
 }
