@@ -476,8 +476,8 @@ func TestAgentCardStreamPreviewBudgetsFollowReplyMode(t *testing.T) {
 	}{
 		{name: "coder single card", mode: config.ReplyModeAppend, want: 9000},
 		{name: "coder continuation", mode: config.ReplyModeAppend, overflow: config.AppendOverflowModeContinueCard, want: 54000},
-		{name: "worker", mode: config.ReplyModeAppendCleanCard, want: 2000},
-		{name: "singleton", mode: config.ReplyModeLatestCard, want: 2000},
+		{name: "worker", mode: config.ReplyModeAppendCleanCard, want: 12000},
+		{name: "singleton", mode: config.ReplyModeLatestCard, want: 12000},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -606,6 +606,45 @@ func TestAppendStreamUsesSingleCardCapacityBeforeOmitting(t *testing.T) {
 	preview := events[len(events)-1].Markdown
 	if strings.Contains(preview, "较早过程已省略") {
 		t.Fatalf("single-card preview omitted content at the legacy 2000-rune threshold: %q", preview[:80])
+	}
+}
+
+func TestCleanCardPreviewsUseCardCapacityInsteadOfLegacyLimit(t *testing.T) {
+	for _, mode := range []config.ReplyMode{config.ReplyModeAppendCleanCard, config.ReplyModeLatestCard} {
+		t.Run(string(mode), func(t *testing.T) {
+			clock := &fakeStreamClock{now: time.Unix(50, 0)}
+			renderer := card.NewFakeRenderer()
+			cfg := testConfig(t)
+			cfg.CardMaxChars = 12000
+			cfg.CardPreviewMaxChars = 2000
+			cfg.CardMinDeltaChars = 1
+			cfg.CardUpdateEvery = time.Millisecond
+			cfg.CardHeartbeatEvery = time.Hour
+			svc := NewService(cfg, card.NewFakeRenderer(), newFakeRunner(), audit.NewRecorder())
+			stream := newAgentCardStreamWithClock(svc, "run", session.Session{ID: "claude:chat"}, session.Input{
+				ReplyMode: mode, Time: clock.Now(),
+			}, renderer, nil, clock)
+			if err := stream.Start(); err != nil {
+				t.Fatal(err)
+			}
+			want := strings.Repeat("分析", 1250)
+			stream.Handle(AgentStreamUpdate{Segments: []card.Segment{{Kind: card.SegmentThought, Text: want}}})
+			if err := stream.Flush(); err != nil {
+				t.Fatal(err)
+			}
+			events := renderer.Events()
+			preview := events[len(events)-1]
+			if got := segmentTextByKind(preview, card.SegmentThought); !strings.Contains(got, want) {
+				t.Fatalf("clean-card preview was truncated at the legacy 2000-rune threshold: got %d runes", len([]rune(got)))
+			}
+			prepared, err := card.PrepareLarkCard(preview)
+			if err != nil {
+				t.Fatalf("PrepareLarkCard() error: %v", err)
+			}
+			if got := prepared.Capacity(); got.JSONBytes > card.LarkCardSoftMaxJSONBytes || got.Components > card.LarkCardMaxComponents {
+				t.Fatalf("prepared capacity = %#v", got)
+			}
+		})
 	}
 }
 
