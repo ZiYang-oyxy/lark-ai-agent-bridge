@@ -1103,8 +1103,8 @@ var _ bridge.AgentRunner = simulateRunner{}
 // simulateFakeSender is a minimal feishu.Sender used by simulate --fake-thread
 // to exercise the topic-precreate path without Feishu access. SendReply returns
 // a canned SendResult carrying the caller-configured thread_id and a synthetic
-// message_id ("om_probe_<threadID>"), so the recall step in
-// precreateTopicForPost fires and lands in audit as topic_precreate_probe.
+// message_id ("om_probe_<threadID>"). UpdateTextMessage is a no-op so L2 can
+// exercise the two-stage guide flow and assert its audit events.
 type simulateFakeSender struct {
 	feishu.NoopSender
 	threadID string
@@ -1118,6 +1118,10 @@ func (s *simulateFakeSender) SendReply(_ context.Context, _ feishu.Reply) (feish
 }
 
 func (s *simulateFakeSender) DeleteMessage(_ context.Context, _ string) error {
+	return nil
+}
+
+func (s *simulateFakeSender) UpdateTextMessage(_ context.Context, _, _ string) error {
 	return nil
 }
 

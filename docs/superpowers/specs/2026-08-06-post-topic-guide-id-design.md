@@ -60,7 +60,9 @@ AI 回复仍会继续生成。
 
 - Unit tests cover successful update, empty-thread degraded update, missing
   updater, API failure, alias preservation, and zero message deletion.
-- L2 simulation asserts the updated guide text and `topic_precreate_ok` audit.
+- L2 simulation asserts the `topic_precreate_guide_updated` state, the complete
+  topic ID in `topic_precreate_ok`, and topic-routed CardKit events. Unit tests
+  own the exact guide text contract.
 - L3 sends a real top-level `post` to Mac Test, then reads the same guide
   message back and asserts `updated=true`, `deleted=false`, and the complete
   `omt_*` value matching the CardKit reply topic.
