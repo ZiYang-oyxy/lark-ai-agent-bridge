@@ -90,11 +90,14 @@ type Input struct {
 	IsGroup                   bool   `json:",omitempty"`
 	NotifyOnComplete          bool   `json:",omitempty"`
 	CompletionStatusText      string `json:",omitempty"`
-	Time                      time.Time
-	DebounceUntil             time.Time
-	DebounceWindow            time.Duration `json:",omitempty"`
-	State                     InputState
-	Reset                     bool
+	// Compact marks the native /compact control input. It stays in the durable
+	// FIFO but must never be merged with a user prompt or another compact run.
+	Compact        bool `json:",omitempty"`
+	Time           time.Time
+	DebounceUntil  time.Time
+	DebounceWindow time.Duration `json:",omitempty"`
+	State          InputState
+	Reset          bool
 }
 
 // EffectiveReplyMode keeps durable inputs written before ReplyMode was added
@@ -1095,6 +1098,9 @@ func snapshotReceipts(receipts []Receipt) []Receipt {
 }
 
 func compatibleBatchInput(first, next Input) bool {
+	if first.Compact || next.Compact {
+		return first.Compact && next.Compact && first.ID == next.ID
+	}
 	if first.ScheduleRunID != "" || next.ScheduleRunID != "" {
 		return first.ScheduleRunID != "" && first.ScheduleRunID == next.ScheduleRunID
 	}

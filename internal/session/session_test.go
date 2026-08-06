@@ -838,6 +838,27 @@ func TestFinishBatchReleasesEveryTerminalStatusAndPreservesQueue(t *testing.T) {
 	}
 }
 
+func TestFreezeReadyBatchKeepsCompactControlSeparateFromPlainInput(t *testing.T) {
+	m := NewManager()
+	key := Key{Agent: agent.Claude, ChatID: "chat"}
+	now := time.Now()
+	for _, input := range []Input{
+		{ID: "compact", Text: "/compact", Compact: true, State: InputQueued, Time: now},
+		{ID: "plain", Text: "continue", State: InputQueued, Time: now.Add(time.Second)},
+	} {
+		if _, _, err := m.EnqueueDurable(key, input, "/work", BatchLimits{}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	_, batch, err := m.FreezeReadyBatch(key, now.Add(2*time.Second), BatchLimits{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if batch == nil || len(batch.Inputs) != 1 || !batch.Inputs[0].Compact {
+		t.Fatalf("batch = %#v, want compact-only batch", batch)
+	}
+}
+
 func TestFinishBatchRejectsStaleBatchAndInvalidStatusWithoutMutation(t *testing.T) {
 	m := NewManager()
 	key := Key{Agent: agent.Claude, ChatID: "stale"}

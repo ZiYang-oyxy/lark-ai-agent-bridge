@@ -355,6 +355,33 @@ func TestParseStopCommand(t *testing.T) {
 	}
 }
 
+func TestParseCompactCommand(t *testing.T) {
+	cmd := ParseCommand(Message{Text: "/compact"}, agent.Codex)
+	if cmd.Type != CommandCompact || cmd.Agent != agent.Codex || cmd.Text != "" {
+		t.Fatalf("cmd = %#v, want exact codex compact", cmd)
+	}
+
+	withArgs := ParseCommand(Message{Text: "/compact now"}, agent.Claude)
+	if withArgs.Type != CommandCompact || withArgs.Agent != agent.Claude || withArgs.Text != "now" {
+		t.Fatalf("compact with args = %#v, want retained args", withArgs)
+	}
+}
+
+func TestHelpIncludesCompactCommand(t *testing.T) {
+	if text := HelpText(); !strings.Contains(text, "/compact") {
+		t.Fatalf("help text = %q, want /compact", text)
+	}
+	var found bool
+	for _, group := range HelpCardData().Groups {
+		for _, line := range group.Lines {
+			found = found || strings.Contains(line, "**`/compact`**")
+		}
+	}
+	if !found {
+		t.Fatal("help card must expose /compact")
+	}
+}
+
 func TestParseGroupAccessCommand(t *testing.T) {
 	cmd := ParseCommand(Message{Text: "/group-access selected"}, agent.Claude)
 	if cmd.Type != CommandGroupAccess || cmd.Text != "selected" {
