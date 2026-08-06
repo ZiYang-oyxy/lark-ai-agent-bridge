@@ -23,7 +23,9 @@
 
 - renderer 指针；
 - 最后使用时间；
-- terminal 状态。
+- terminal 状态；
+- 正在渲染与正在交互的计数；
+- entry 级 render mutex，用于保持底层渲染与生命周期完成回调的顺序一致。
 
 测试构造器可注入较小的容量和 TTL；公开生产构造器继续使用固定默认值，避免本轮扩张配置面。
 
@@ -36,17 +38,21 @@
 
 容量只约束 terminal entry，不约束 active entry。这样高并发运行不会因 cache 管理而丢失正在写入的卡片。
 
-`BeginCardInteraction` 找到 entry 后增加 renderer 的 `interactionDepth` 并刷新最后使用时间。release callback 将 depth 减一，然后触发 sweep。锁顺序保持 router mutex 先于 renderer mutex；release 在释放 renderer mutex 后才获取 router mutex，避免反向持锁。
+`BeginCardInteraction` 找到 entry 后先在 router mutex 下增加 interaction 计数并刷新最后使用时间，再释放 router mutex、更新 renderer 的 `interactionDepth`。release callback 先更新 renderer，再更新 entry 并触发 sweep；两类 mutex 不嵌套持有。
+
+sweep 只读取 router entry 的计数，不在持有 router mutex 时等待 renderer mutex。这样慢 CardKit 请求不会阻塞其他 renderer 的创建、交互和回收。
 
 ## 渲染语义
 
 - `NewStreamingBound` 和 `RehydrateBound` 创建 active entry。
-- `Render` 和直接持有的 resumable renderer 每次成功使用后刷新 entry 的最后使用时间。
+- `Render` 和直接持有的 resumable renderer 在调用底层网络渲染前增加 entry 的 rendering 计数并临时退出 terminal 集合；完成后减少计数并刷新最后使用时间。
+- direct router 路径在释放 router mutex 前完成 rendering pin，避免 lookup 与 pin 之间被并发 sweep 淘汰。
+- 同一 entry 的渲染与完成回调共用 render mutex，最终 terminal 状态按实际渲染完成顺序收敛。
 - 成功渲染 terminal event 后将 entry 标记 terminal，再执行 sweep。
 - 渲染失败不标记 terminal，保留 renderer 供既有失败处理与重试路径使用。
 - 被淘汰的旧 action 若缺少 `ReplyToMessageID`，保持现有 router 行为：不能凭空创建替代卡片，而是返回缺少 reply message ID 的错误。
 
-为保证通过 `ResumableRenderer` 直接调用 `Render` 时 router 也能观察终态，router 返回一个内部 tracking wrapper；wrapper 只在底层渲染成功后回调 router 更新 entry 元数据，不改变 `RenderRef`。
+为保证通过 `ResumableRenderer` 直接调用 `Render` 时 router 也能观察生命周期，router 返回一个内部 tracking wrapper；wrapper 在底层渲染前后回调 router 更新 entry 元数据，不改变 `RenderRef`，并继续转发 `RenderContext` 的调用方 deadline。
 
 ## 测试策略
 
