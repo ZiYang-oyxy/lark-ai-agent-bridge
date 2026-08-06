@@ -456,6 +456,7 @@ func newPreviewTestStream(t *testing.T, renderer card.Renderer, clock streamCloc
 func newPreviewTestStreamForMode(t *testing.T, renderer card.Renderer, clock streamClock, minDelta, maxPreview int, mode config.ReplyMode) *agentCardStream {
 	t.Helper()
 	cfg := testConfig(t)
+	cfg.CardMaxChars = maxPreview
 	cfg.CardUpdateEvery = 800 * time.Millisecond
 	cfg.CardHeartbeatEvery = time.Hour
 	cfg.CardMinDeltaChars = minDelta
@@ -464,6 +465,34 @@ func newPreviewTestStreamForMode(t *testing.T, renderer card.Renderer, clock str
 	sess := session.Session{ID: "claude:chat", Tokens: 2}
 	input := session.Input{ReplyToMessageID: "source", RequestedModel: "default", RequestedEffort: "low", ReplyMode: mode, Time: clock.Now()}
 	return newAgentCardStreamWithClock(svc, "run", sess, input, renderer, nil, clock)
+}
+
+func TestAgentCardStreamPreviewBudgetsFollowReplyMode(t *testing.T) {
+	tests := []struct {
+		name     string
+		mode     config.ReplyMode
+		overflow config.AppendOverflowMode
+		want     int
+	}{
+		{name: "coder single card", mode: config.ReplyModeAppend, want: 9000},
+		{name: "coder continuation", mode: config.ReplyModeAppend, overflow: config.AppendOverflowModeContinueCard, want: 54000},
+		{name: "worker", mode: config.ReplyModeAppendCleanCard, want: 2000},
+		{name: "singleton", mode: config.ReplyModeLatestCard, want: 2000},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := testConfig(t)
+			cfg.CardMaxChars = 12000
+			cfg.CardPreviewMaxChars = 2000
+			svc := NewService(cfg, card.NewFakeRenderer(), newFakeRunner(), audit.NewRecorder())
+			stream := newAgentCardStreamWithClock(svc, "run", session.Session{ID: "claude:chat"}, session.Input{
+				ReplyMode: tt.mode, AppendOverflowMode: tt.overflow, Time: time.Unix(50, 0),
+			}, card.NewFakeRenderer(), nil, &fakeStreamClock{now: time.Unix(50, 0)})
+			if got := stream.previewPolicy.MaxPreviewRunes; got != tt.want {
+				t.Fatalf("preview max = %d, want %d", got, tt.want)
+			}
+		})
+	}
 }
 
 func segmentKinds(segments []card.Segment) []card.SegmentKind {
@@ -549,6 +578,34 @@ func TestAppendStreamPreviewKeepsNewestTimelineTail(t *testing.T) {
 	}
 	if !strings.Contains(preview, "最新思考") || !strings.Contains(preview, "Bash") {
 		t.Fatalf("preview did not advance to newest thought and tool: %q", preview)
+	}
+}
+
+func TestAppendStreamUsesSingleCardCapacityBeforeOmitting(t *testing.T) {
+	clock := &fakeStreamClock{now: time.Unix(50, 0)}
+	cardRenderer := &previewMarkdownCapture{FakeRenderer: card.NewFakeRenderer()}
+	renderer := reply.NewMarkdownCardRendererWithLimit(cardRenderer, 12000)
+	cfg := testConfig(t)
+	cfg.CardMaxChars = 12000
+	cfg.CardPreviewMaxChars = 2000
+	cfg.CardMinDeltaChars = 1
+	cfg.CardUpdateEvery = time.Millisecond
+	cfg.CardHeartbeatEvery = time.Hour
+	svc := NewService(cfg, card.NewFakeRenderer(), newFakeRunner(), audit.NewRecorder())
+	stream := newAgentCardStreamWithClock(svc, "run", session.Session{ID: "claude:chat"}, session.Input{
+		ReplyMode: config.ReplyModeAppend, Time: clock.Now(),
+	}, renderer, nil, clock)
+	if err := stream.Start(); err != nil {
+		t.Fatal(err)
+	}
+	stream.Handle(AgentStreamUpdate{Segments: []card.Segment{{Kind: card.SegmentThought, Text: strings.Repeat("分析", 1250)}}})
+	if err := stream.Flush(); err != nil {
+		t.Fatal(err)
+	}
+	events := cardRenderer.Events()
+	preview := events[len(events)-1].Markdown
+	if strings.Contains(preview, "较早过程已省略") {
+		t.Fatalf("single-card preview omitted content at the legacy 2000-rune threshold: %q", preview[:80])
 	}
 }
 
