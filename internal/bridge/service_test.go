@@ -5124,11 +5124,46 @@ exit 9
 	result, runErr := (CLIExecRunner{Instructions: rt}).Run(context.Background(), AgentRunRequest{
 		Kind: agent.Codex, Bin: bin, Prompt: "hi", BridgeInstructionsVersion: bridgeinstructions.CurrentVersion,
 	})
-	if !isCodexTerminalMissingError(runErr) {
-		t.Fatalf("runner error = %T %v, want missing terminal", runErr, runErr)
+	var processErr *agentProcessError
+	if !errors.As(runErr, &processErr) {
+		t.Fatalf("runner error = %T %v, want process error", runErr, runErr)
+	}
+	if processErr.source != agentFailureSourceResult || !strings.Contains(processErr.diagnostic, "thread-no-terminal") {
+		t.Fatalf("process error = %#v, want stdout diagnostic", processErr)
 	}
 	if len(result.AnswerSegments) != 0 || result.codexPendingMessage != "partial completion" {
 		t.Fatalf("failed result must not promote candidate: %#v", result)
+	}
+}
+
+func TestCLIExecRunnerReportsCodexLauncherStderrBeforeMissingTerminal(t *testing.T) {
+	rt, err := bridgeinstructions.NewRuntime()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rt.Close()
+
+	bin := filepath.Join(t.TempDir(), "codex")
+	script := `#!/bin/sh
+printf '%s\n' 'missing OPENAI_API_KEY' >&2
+exit 1
+`
+	if err := os.WriteFile(bin, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	_, runErr := (CLIExecRunner{Instructions: rt}).Run(context.Background(), AgentRunRequest{
+		Kind: agent.Codex, Bin: bin, Prompt: "hi", BridgeInstructionsVersion: bridgeinstructions.CurrentVersion,
+	})
+	var processErr *agentProcessError
+	if !errors.As(runErr, &processErr) {
+		t.Fatalf("runner error = %T %v, want process error", runErr, runErr)
+	}
+	if processErr.source != agentFailureSourceStderr || processErr.diagnostic != "missing OPENAI_API_KEY" {
+		t.Fatalf("process error = %#v, want launcher stderr", processErr)
+	}
+	if isCodexTerminalMissingError(runErr) {
+		t.Fatalf("launcher failure was masked as missing terminal: %v", runErr)
 	}
 }
 

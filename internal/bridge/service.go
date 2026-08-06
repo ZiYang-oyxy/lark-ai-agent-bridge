@@ -4182,12 +4182,6 @@ func (r CLIExecRunner) Run(ctx context.Context, req AgentRunRequest) (AgentRunRe
 		result.Model = observedCodexModel
 	}
 	waitErr := cmd.Wait()
-	if scanErr != nil {
-		if req.Kind == agent.Codex && waitErr == nil && isCodexTerminalMissingError(scanErr) && result.promoteCodexMissingTerminal(onEvent) {
-			return result, nil
-		}
-		return result, scanErr
-	}
 	if waitErr != nil {
 		detail := strings.TrimSpace(stderr.String())
 		source := agentFailureSourceStderr
@@ -4199,6 +4193,12 @@ func (r CLIExecRunner) Run(ctx context.Context, req AgentRunRequest) (AgentRunRe
 			return result, newAgentProcessError(waitErr, source, detail)
 		}
 		return result, waitErr
+	}
+	if scanErr != nil {
+		if req.Kind == agent.Codex && isCodexTerminalMissingError(scanErr) && result.promoteCodexMissingTerminal(onEvent) {
+			return result, nil
+		}
+		return result, scanErr
 	}
 	return result, nil
 }
