@@ -172,6 +172,10 @@ func normalizedTimelineLimit(configured, fallback int) int {
 	return configured
 }
 
+func AppendPreviewMaxRunes(cardMaxRunes int) int {
+	return normalizedTimelineLimit(cardMaxRunes, inlineTimelineMaxRunes)
+}
+
 func ContinuationPreviewMaxRunes(cardMaxRunes int) int {
 	return normalizedTimelineLimit(cardMaxRunes, continuationPageMaxRunes) * maxContinuationCards
 }

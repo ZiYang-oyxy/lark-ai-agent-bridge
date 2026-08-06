@@ -255,6 +255,9 @@ func newAgentCardStreamWithClock(service *Service, sessionID string, sess sessio
 	}
 	appendPreview := input.EffectiveReplyMode() == config.ReplyModeAppend
 	continuationPreview := appendPreview && input.EffectiveAppendOverflowMode() == config.AppendOverflowModeContinueCard
+	if appendPreview {
+		policy.MaxPreviewRunes = reply.AppendPreviewMaxRunes(service.Config.CardMaxChars)
+	}
 	if continuationPreview {
 		policy.MaxPreviewRunes = reply.ContinuationPreviewMaxRunes(service.Config.CardMaxChars)
 	}

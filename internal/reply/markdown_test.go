@@ -378,6 +378,22 @@ func TestAppendMarkdownLimitsHonorConfiguredCardMaxChars(t *testing.T) {
 	}
 }
 
+func TestAppendPreviewMaxRunesUsesSingleCardCapacity(t *testing.T) {
+	tests := []struct {
+		cardMax int
+		want    int
+	}{
+		{cardMax: 12000, want: inlineTimelineMaxRunes},
+		{cardMax: 4000, want: 4000},
+		{cardMax: 0, want: inlineTimelineMaxRunes},
+	}
+	for _, tt := range tests {
+		if got := AppendPreviewMaxRunes(tt.cardMax); got != tt.want {
+			t.Fatalf("AppendPreviewMaxRunes(%d) = %d, want %d", tt.cardMax, got, tt.want)
+		}
+	}
+}
+
 func TestRenderInlineTimelineRedactsAnswerWhenAppendBypassesGenericLimit(t *testing.T) {
 	got := RenderInlineTimeline(card.Event{Type: "result", Segments: []card.Segment{{Kind: card.SegmentText, Text: "Authorization: Bearer abc.def"}}})
 	if strings.Contains(got, "abc.def") || !strings.Contains(got, "REDACTED") {
