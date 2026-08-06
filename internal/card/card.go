@@ -70,6 +70,10 @@ type Meta struct {
 	Version       string
 	LatestVersion string
 	DeveloperMode bool
+	// ChatID and TopicID are real Feishu conversation identifiers. TopicID is
+	// empty for a chat-root message or before Feishu assigns a thread_id.
+	ChatID  string
+	TopicID string
 }
 
 type StopButton struct {

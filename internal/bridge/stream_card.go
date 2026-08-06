@@ -588,6 +588,7 @@ func (s *Service) metaForRunWithDir(sess session.Session, input session.Input, c
 	meta.CtxUsedPercent = 0
 	meta.CtxTokens = 0
 	meta.CtxWindow = 0
+	meta.TopicID = input.TopicID
 	return meta
 }
 
