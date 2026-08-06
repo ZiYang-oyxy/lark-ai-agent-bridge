@@ -355,7 +355,7 @@ func buildStatusBarSection(form ConfigForm) []map[string]any {
 		"例：👤 lijun.996 · 🖥️ 192.0.2.42 · 📁 /home/<USER>/ws",
 		configSelectOptions("show_meta_row_runtime", form.ShowMetaRowRuntime, boolOpts("显示主机信息行")))...)
 	out = append(out, fieldElements("cfg_bar_dev", "开发者行",
-		"例：🐛 v0.1.8-rc.5 · ✨ 最新 v0.1.8-rc.6（🐛 rc / 🦋 stable）",
+		"例：🐛 v0.1.8-rc.5 · ✨ 最新 v0.1.8-rc.6 · 💬 Chat ID: `oc_xxx` · 🧵 Topic ID: `omt_xxx`（Developer Mode 显示 ID；🐛 rc / 🦋 stable）",
 		configSelectOptions("show_meta_row_developer", form.ShowMetaRowDeveloper, boolOpts("显示开发者行")))...)
 	return out
 }
@@ -1050,6 +1050,17 @@ func metaDeveloperText(meta Meta) string {
 	}
 	if latest := strings.TrimSpace(meta.LatestVersion); latest != "" {
 		parts = append(parts, "✨ 最新 "+latest)
+	}
+	if meta.DeveloperMode {
+		chatID := strings.TrimSpace(meta.ChatID)
+		if chatID == "" {
+			chatID = "-"
+		}
+		topicID := strings.TrimSpace(meta.TopicID)
+		if topicID == "" {
+			topicID = "-"
+		}
+		parts = append(parts, "💬 Chat ID: `"+chatID+"`", "🧵 Topic ID: `"+topicID+"`")
 	}
 	return strings.Join(parts, " · ")
 }

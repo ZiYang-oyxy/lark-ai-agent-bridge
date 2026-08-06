@@ -358,6 +358,8 @@ func TestMetaRowsGatedByIndependentToggles(t *testing.T) {
 		Version:        "v0.1.9",
 		LatestVersion:  "v0.1.10",
 		DeveloperMode:  true,
+		ChatID:         "oc_chat_123",
+		TopicID:        "omt_topic_456",
 	}
 
 	// 默认隐藏:切片为空,buildMetaElements 会连分隔线一起跳过。
@@ -400,7 +402,7 @@ func TestMetaRowsGatedByIndependentToggles(t *testing.T) {
 	if len(rows) != 1 || rows[0].ElementID != "meta_developer" {
 		t.Fatalf("developer-only MetaRows = %+v, want single meta_developer", rows)
 	}
-	for _, want := range []string{"🐛 v0.1.9", "✨ 最新 v0.1.10"} {
+	for _, want := range []string{"🐛 v0.1.9", "✨ 最新 v0.1.10", "Chat ID: `oc_chat_123`", "Topic ID: `omt_topic_456`"} {
 		if !strings.Contains(rows[0].Text, want) {
 			t.Fatalf("developer row %q missing %q", rows[0].Text, want)
 		}
@@ -512,6 +514,29 @@ func TestMetaRowsDeveloperFallbacks(t *testing.T) {
 	}
 	if strings.Contains(rows[0].Text, "开发者模式") {
 		t.Fatalf("no explicit 开发者模式 label — emoji carries it: %q", rows[0].Text)
+	}
+	if strings.Contains(rows[0].Text, "Chat ID") || strings.Contains(rows[0].Text, "Topic ID") {
+		t.Fatalf("stable mode must not expose developer channel IDs: %q", rows[0].Text)
+	}
+}
+
+func TestMetaRowsDeveloperRootChatShowsEmptyTopic(t *testing.T) {
+	rows := MetaRows(Meta{
+		ShowMetaRowDeveloper: true,
+		DeveloperMode:        true,
+		Version:              "dev",
+		ChatID:               "oc_root_chat",
+	})
+	if len(rows) != 1 {
+		t.Fatalf("developer root rows = %#v, want one row", rows)
+	}
+	for _, want := range []string{"Chat ID: `oc_root_chat`", "Topic ID: `-`"} {
+		if !strings.Contains(rows[0].Text, want) {
+			t.Fatalf("developer root row %q missing %q", rows[0].Text, want)
+		}
+	}
+	if strings.Contains(rows[0].Text, "@bot:") {
+		t.Fatalf("developer row leaked synthetic topic key: %q", rows[0].Text)
 	}
 }
 

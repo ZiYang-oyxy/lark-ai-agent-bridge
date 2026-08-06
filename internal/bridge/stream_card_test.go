@@ -11,6 +11,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"lark-agent-bridge/internal/agent"
 	"lark-agent-bridge/internal/audit"
 	"lark-agent-bridge/internal/card"
 	"lark-agent-bridge/internal/config"
@@ -93,6 +94,18 @@ func TestAgentCardStreamFinishAdoptsLatestVersionDiscoveredDuringRun(t *testing.
 	rows := card.MetaRows(terminal.Meta)
 	if len(rows) != 1 || !strings.Contains(rows[0].Text, "✨ 最新 v0.1.11-rc.6") {
 		t.Fatalf("terminal developer row = %#v", rows)
+	}
+}
+
+func TestMetaForRunCarriesRealFeishuConversationIDs(t *testing.T) {
+	svc := &Service{Config: config.Config{ClaudeContextUsageDir: t.TempDir()}}
+	sess := session.Session{Key: session.Key{Agent: agent.Claude, ChatID: "oc_chat", Thread: "@bot:om_seed"}}
+	meta := svc.metaForRun(sess, session.Input{TopicID: "omt_real"})
+	if meta.ChatID != "oc_chat" || meta.TopicID != "omt_real" {
+		t.Fatalf("conversation IDs = chat %q topic %q, want oc_chat/omt_real", meta.ChatID, meta.TopicID)
+	}
+	if meta.TopicID == sess.Key.Thread {
+		t.Fatalf("TopicID must not use synthetic session key %q", sess.Key.Thread)
 	}
 }
 

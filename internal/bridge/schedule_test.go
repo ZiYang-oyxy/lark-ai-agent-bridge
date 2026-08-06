@@ -316,7 +316,7 @@ func TestScheduleDispatchUsesFrozenConfiguration(t *testing.T) {
 	if input.ID != run.ID || input.Text != task.Prompt || input.WorkDir != workDir || input.RequestedModel != "frozen-model" || input.RequestedEffort != "high" || input.AgentHome != "/tmp/codex-home" || input.AgentBin != "/opt/codex" {
 		t.Fatalf("frozen input = %#v", input)
 	}
-	if input.ScheduleRunID != run.ID || input.ScheduleTaskID != task.ID || input.ConversationMode != "topic" || input.ReplyMode != "append-clean-card" || input.AppendOverflowMode != config.AppendOverflowModeContinueCard {
+	if input.ScheduleRunID != run.ID || input.ScheduleTaskID != task.ID || input.ConversationMode != "topic" || input.TopicID != task.Target.ThreadID || input.ReplyMode != "append-clean-card" || input.AppendOverflowMode != config.AppendOverflowModeContinueCard {
 		t.Fatalf("schedule correlation = %#v", input)
 	}
 	duplicate, err := service.Enqueue(context.Background(), task, run)

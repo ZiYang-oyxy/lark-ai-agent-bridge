@@ -78,10 +78,13 @@ type Input struct {
 	// has no AgentSessionID of its own yet — after the first successful run
 	// the session owns a real (forked) AgentSessionID and this hint is
 	// ignored. Empty means "no fork, start fresh".
-	ForkFromAgentSessionID    string `json:",omitempty"`
-	ReplyMode                 config.ReplyMode
-	AppendOverflowMode        config.AppendOverflowMode `json:",omitempty"`
-	ConversationMode          config.ConversationMode
+	ForkFromAgentSessionID string `json:",omitempty"`
+	ReplyMode              config.ReplyMode
+	AppendOverflowMode     config.AppendOverflowMode `json:",omitempty"`
+	ConversationMode       config.ConversationMode
+	// TopicID is the real Feishu thread_id observed on the inbound message. It
+	// stays separate from Key.Thread, which may be a synthetic Bridge routing key.
+	TopicID                   string `json:",omitempty"`
 	BridgeInstructionsVersion string `json:",omitempty"`
 	ScheduleRunID             string `json:",omitempty"`
 	ScheduleTaskID            string `json:",omitempty"`
