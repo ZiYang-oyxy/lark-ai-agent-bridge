@@ -2539,6 +2539,22 @@ func (s *Service) configFormAtRevision(preference config.RuntimePreference, revi
 	if agentKind == "" {
 		agentKind = config.DefaultAgentKind
 	}
+	// Re-read agents.json every /config render so edits (e.g. a bin's desc)
+	// show up without a serve restart. Startup snapshot (s.Agents) still owns
+	// BinPath/HomePath/preference validation to keep persistence consistent;
+	// the fresh copy only feeds the card's dropdown options. A missing or
+	// broken file falls back to s.Agents so an accidental delete/typo can't
+	// silently replace the picker with the built-in default catalogue.
+	catalogue := s.Agents
+	if path := strings.TrimSpace(s.Config.AgentsConfigPath); path != "" {
+		if _, err := os.Stat(path); err == nil {
+			if fresh, err := config.LoadAgentsConfig(path); err == nil {
+				catalogue = fresh
+			} else if s.Audit != nil {
+				s.Audit.Record("system", "agents_config_reload_failed", "", err.Error())
+			}
+		}
+	}
 	form := &card.ConfigForm{
 		PreferenceRevision: revision,
 		Agent:              agentKind, AgentHome: preference.AgentHome, AgentBin: preference.AgentBin,
@@ -2550,7 +2566,7 @@ func (s *Service) configFormAtRevision(preference config.RuntimePreference, revi
 		ShowMetaRowAgent:     strconv.FormatBool(preference.ShowMetaRowAgent),
 		ShowMetaRowRuntime:   strconv.FormatBool(preference.ShowMetaRowRuntime),
 		ShowMetaRowDeveloper: strconv.FormatBool(preference.ShowMetaRowDeveloper),
-		Agents:               toCardOptions(s.Agents.AgentOptions()), AgentHomes: toCardOptions(s.Agents.HomeOptions(agentKind)), AgentBins: toCardOptions(s.Agents.BinOptions(agentKind)),
+		Agents:               toCardOptions(catalogue.AgentOptions()), AgentHomes: toCardOptions(catalogue.HomeOptions(agentKind)), AgentBins: toCardOptions(catalogue.BinOptions(agentKind)),
 		Models: s.configModelOptions(), Efforts: []string{"default", "low", "medium", "high"},
 		ReplyModes:          []string{string(config.ReplyModeCoder), string(config.ReplyModeWorker), string(config.ReplyModeSingleton)},
 		AppendOverflowModes: []card.SelectOption{{Value: string(config.AppendOverflowModeTruncate), Label: "尾部截断（默认）"}, {Value: string(config.AppendOverflowModeContinueCard), Label: "自动续卡（最多 9 张）"}},
