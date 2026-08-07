@@ -1,8 +1,8 @@
-name: 引用消息主体身份边框(冒烟)
-description: 冒烟层最小校验:引用来自"别的 bot"(sender_type=app)时,prompt 必须带
-  主体身份边框——header 明确"来自另一个 bot",隔离段明确"另一个 bot 的消息 / 它
-  的自述与你无关"。回归 07-27 那次跨分身 quote 导致的幻觉。完整三分支覆盖在
-  tests/regression/24-quote-identity.yaml。
+name: 引用消息 header 极简契约(冒烟)
+description: 冒烟层最小校验:引用有 sender 时,prompt 只带一行纯 open_id header
+  `[用户引用了 <open_id> 的消息]`,不加 sender_type 相关后缀说明。完整三档
+  sender_type 覆盖在 tests/regression/24-quote-identity.yaml,负向"header
+  与括号说明都不得含解读性暗示"由 L1 单测 covers。
 tags: [smoke, quote-identity]
 steps:
   - input: "你在跑吗?"
@@ -10,7 +10,6 @@ steps:
     quote_sender: "ou_other_bot"
     quote_sender_type: "app"
     asserts:
-      - {type: any_segment_contains, text: "来自另一个 bot"}
-      - {type: any_segment_contains, text: "另一个 bot 的消息"}
-      - {type: any_segment_contains, text: "它的自述与你无关"}
+      - {type: any_segment_contains, text: "[用户引用了 ou_other_bot 的消息]"}
+      - {type: any_segment_contains, text: "> review subagent 已重新启动"}
       - {type: no_error}

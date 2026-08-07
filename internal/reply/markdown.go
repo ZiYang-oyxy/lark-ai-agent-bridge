@@ -9,10 +9,9 @@ import (
 )
 
 const (
-	toolHeaderSummaryMaxRunes = 80
-	inlineTimelineMaxRunes    = 9000
-	continuationPageMaxRunes  = 6000
-	maxContinuationCards      = 9
+	toolHeaderSummaryMaxRunes    = 80
+	defaultCardCandidateMaxRunes = 30000
+	maxContinuationCards         = 9
 )
 
 func RenderMarkdown(event card.Event) string {
@@ -78,7 +77,7 @@ func renderThoughtLine(text string) string {
 // single Markdown element used by append cards. Card status, actions, and meta
 // remain in the surrounding CardKit shell and are intentionally omitted here.
 func RenderInlineTimeline(event card.Event) string {
-	return RenderInlineTimelineWithLimit(event, inlineTimelineMaxRunes)
+	return RenderInlineTimelineWithLimit(event, defaultCardCandidateMaxRunes)
 }
 
 func RenderInlineTimelineWithLimit(event card.Event, maxRunes int) string {
@@ -86,14 +85,14 @@ func RenderInlineTimelineWithLimit(event card.Event, maxRunes int) string {
 	if len(parts) == 0 {
 		return "_（未返回内容）_"
 	}
-	return fitTimelineParts(parts, normalizedTimelineLimit(maxRunes, inlineTimelineMaxRunes))
+	return fitTimelineParts(parts, normalizedTimelineLimit(maxRunes, defaultCardCandidateMaxRunes))
 }
 
 // RenderInlineTimelinePages projects the same append timeline into at most
 // nine cards. Once the combined window is full, it keeps a continuous tail so
 // the newest answer and terminal state remain on the last card.
 func RenderInlineTimelinePages(event card.Event) []string {
-	return RenderInlineTimelinePagesWithLimit(event, continuationPageMaxRunes)
+	return RenderInlineTimelinePagesWithLimit(event, defaultCardCandidateMaxRunes)
 }
 
 func RenderInlineTimelinePagesWithLimit(event card.Event, maxRunes int) []string {
@@ -101,7 +100,7 @@ func RenderInlineTimelinePagesWithLimit(event card.Event, maxRunes int) []string
 	if len(parts) == 0 {
 		parts = []string{"_（未返回内容）_"}
 	}
-	return paginateTimelineParts(event, parts, normalizedTimelineLimit(maxRunes, continuationPageMaxRunes), maxContinuationCards)
+	return paginateTimelineParts(event, parts, normalizedTimelineLimit(maxRunes, defaultCardCandidateMaxRunes), maxContinuationCards)
 }
 
 func inlineTimelineParts(event card.Event) []string {
@@ -172,8 +171,12 @@ func normalizedTimelineLimit(configured, fallback int) int {
 	return configured
 }
 
+func AppendPreviewMaxRunes(cardMaxRunes int) int {
+	return normalizedTimelineLimit(cardMaxRunes, defaultCardCandidateMaxRunes)
+}
+
 func ContinuationPreviewMaxRunes(cardMaxRunes int) int {
-	return normalizedTimelineLimit(cardMaxRunes, continuationPageMaxRunes) * maxContinuationCards
+	return normalizedTimelineLimit(cardMaxRunes, defaultCardCandidateMaxRunes) * maxContinuationCards
 }
 
 func paginateTimelineParts(event card.Event, parts []string, maxRunes, maxPages int) []string {

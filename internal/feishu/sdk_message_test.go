@@ -192,19 +192,60 @@ func TestBuildInboundMessageDistinguishesExplicitAndImplicitBotMentions(t *testi
 	}
 }
 
+// Regression: Feishu post payloads carry the placeholder key (e.g. "@_user_1")
+// in tag:at.user_id, NOT the real open_id. postContainsAtUser must match by
+// Mention.Key, not OpenID; otherwise post-form @bot mentions read as implicit
+// and topic mode silently downgrades to chat routing on every rich-text ping.
 func TestBuildInboundMessageDetectsExplicitBotMentionInPost(t *testing.T) {
 	botOpenID, botKey, botName := "ou_bot", "@_user_1", "Bridge"
+	otherOpenID, otherKey, otherName := "ou_other", "@_user_2", "Alice"
 	messageType := "post"
-	content := `{"zh_cn":{"content":[[{"tag":"at","user_id":"ou_bot","user_name":"Bridge"},{"tag":"text","text":" hello"}]]}}`
-	event := &larkim.P2MessageReceiveV1{Event: &larkim.P2MessageReceiveV1Data{Message: &larkim.EventMessage{
-		MessageType: &messageType,
-		Content:     &content,
-		Mentions: []*larkim.MentionEvent{{
-			Key: &botKey, Id: &larkim.UserId{OpenId: &botOpenID}, Name: &botName,
-		}},
-	}}}
-	got := BuildInboundMessageFromLark(event, botOpenID)
-	if !got.ExplicitBotMention {
-		t.Fatal("ExplicitBotMention = false, want true for visible post at node")
+
+	cases := []struct {
+		name    string
+		content string
+		want    bool
+	}{
+		{
+			name:    "top-level at bot via placeholder user_id",
+			content: `{"zh_cn":{"content":[[{"tag":"at","user_id":"@_user_1","user_name":"Bridge"},{"tag":"text","text":" hello"}]]}}`,
+			want:    true,
+		},
+		{
+			name:    "nested at bot survives recursion",
+			content: `{"zh_cn":{"title":"","content":[[{"tag":"text","text":"prefix"}],[{"tag":"at","user_id":"@_user_1","user_name":"Bridge"},{"tag":"text","text":" body"}]]}}`,
+			want:    true,
+		},
+		{
+			name:    "at another user only, bot mention metadata present but no visible at bot",
+			content: `{"zh_cn":{"content":[[{"tag":"at","user_id":"@_user_2","user_name":"Alice"},{"tag":"text","text":" ping"}]]}}`,
+			want:    false,
+		},
+		{
+			name:    "no at node at all, only bot mention metadata (implicit)",
+			content: `{"zh_cn":{"content":[[{"tag":"text","text":"just text"}]]}}`,
+			want:    false,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			content := tc.content
+			event := &larkim.P2MessageReceiveV1{Event: &larkim.P2MessageReceiveV1Data{Message: &larkim.EventMessage{
+				MessageType: &messageType,
+				Content:     &content,
+				Mentions: []*larkim.MentionEvent{
+					{Key: &botKey, Id: &larkim.UserId{OpenId: &botOpenID}, Name: &botName},
+					{Key: &otherKey, Id: &larkim.UserId{OpenId: &otherOpenID}, Name: &otherName},
+				},
+			}}}
+			got := BuildInboundMessageFromLark(event, botOpenID)
+			if !got.MentionsBot {
+				t.Fatal("MentionsBot = false, want true (bot mention metadata attached)")
+			}
+			if got.ExplicitBotMention != tc.want {
+				t.Fatalf("ExplicitBotMention = %v, want %v", got.ExplicitBotMention, tc.want)
+			}
+		})
 	}
 }

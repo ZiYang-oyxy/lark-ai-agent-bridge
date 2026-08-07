@@ -340,6 +340,27 @@ func TestBuildLarkCardIncludesActionsAndHidesMeta(t *testing.T) {
 	}
 }
 
+func TestBuildLarkCardUsesFullAvailableWidth(t *testing.T) {
+	tests := []struct {
+		name  string
+		event Event
+	}{
+		{name: "streaming reply", event: Event{Type: "stream", Streaming: true}},
+		{name: "terminal reply", event: Event{Type: "result", Segments: []Segment{{Kind: SegmentText, Text: "done"}}}},
+		{name: "markdown layout", event: Event{Type: "result", MarkdownLayout: true, Markdown: "| A | B |\n|---|---|\n| 1 | 2 |"}},
+		{name: "command card", event: Event{Type: "help", HelpCard: &HelpCard{}}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			config := BuildLarkCard(tt.event)["config"].(map[string]any)
+			if config["width_mode"] != "fill" {
+				t.Fatalf("width_mode = %#v, want fill", config["width_mode"])
+			}
+		})
+	}
+}
+
 // meta 三行(agent/会话ID/模型/tokens · user/ip/workdir · 版本/最新/开发者模式)
 // 由三个独立开关 ShowMetaRow{Agent,Runtime,Developer} 控制:全 false 时返回空切片
 // 与旧的"总开关关闭"视觉一致;分别打开只渲染对应行。
@@ -358,6 +379,8 @@ func TestMetaRowsGatedByIndependentToggles(t *testing.T) {
 		Version:        "v0.1.9",
 		LatestVersion:  "v0.1.10",
 		DeveloperMode:  true,
+		ChatID:         "oc_chat1234567890abcdef1234567890abcd",
+		TopicID:        "omt_topic1234567890abcdef",
 	}
 
 	// 默认隐藏:切片为空,buildMetaElements 会连分隔线一起跳过。
@@ -400,7 +423,7 @@ func TestMetaRowsGatedByIndependentToggles(t *testing.T) {
 	if len(rows) != 1 || rows[0].ElementID != "meta_developer" {
 		t.Fatalf("developer-only MetaRows = %+v, want single meta_developer", rows)
 	}
-	for _, want := range []string{"🐛 v0.1.9", "✨ 最新 v0.1.10"} {
+	for _, want := range []string{"🐛 v0.1.9", "✨ 最新 v0.1.10", "Chat ID: `oc_cha…90abcd`", "Topic ID: `omt_top…abcdef`"} {
 		if !strings.Contains(rows[0].Text, want) {
 			t.Fatalf("developer row %q missing %q", rows[0].Text, want)
 		}
@@ -512,6 +535,49 @@ func TestMetaRowsDeveloperFallbacks(t *testing.T) {
 	}
 	if strings.Contains(rows[0].Text, "开发者模式") {
 		t.Fatalf("no explicit 开发者模式 label — emoji carries it: %q", rows[0].Text)
+	}
+	if strings.Contains(rows[0].Text, "Chat ID") || strings.Contains(rows[0].Text, "Topic ID") {
+		t.Fatalf("stable mode must not expose developer channel IDs: %q", rows[0].Text)
+	}
+}
+
+func TestMetaRowsDeveloperRootChatShowsEmptyTopic(t *testing.T) {
+	rows := MetaRows(Meta{
+		ShowMetaRowDeveloper: true,
+		DeveloperMode:        true,
+		Version:              "dev",
+		ChatID:               "oc_root_chat",
+	})
+	if len(rows) != 1 {
+		t.Fatalf("developer root rows = %#v, want one row", rows)
+	}
+	for _, want := range []string{"Chat ID: `oc_root_chat`", "Topic ID: `-`"} {
+		if !strings.Contains(rows[0].Text, want) {
+			t.Fatalf("developer root row %q missing %q", rows[0].Text, want)
+		}
+	}
+	if strings.Contains(rows[0].Text, "@bot:") {
+		t.Fatalf("developer row leaked synthetic topic key: %q", rows[0].Text)
+	}
+}
+
+func TestCompactFeishuID(t *testing.T) {
+	tests := map[string]string{
+		"chat":  "oc_cha…90abcd",
+		"topic": "omt_top…abcdef",
+		"short": "oc_short",
+		"empty": "",
+	}
+	inputs := map[string]string{
+		"chat":  "oc_chat1234567890abcdef1234567890abcd",
+		"topic": "omt_topic1234567890abcdef",
+		"short": "oc_short",
+		"empty": "",
+	}
+	for name, want := range tests {
+		if got := compactFeishuID(inputs[name]); got != want {
+			t.Fatalf("compactFeishuID(%q) = %q, want %q", inputs[name], got, want)
+		}
 	}
 }
 

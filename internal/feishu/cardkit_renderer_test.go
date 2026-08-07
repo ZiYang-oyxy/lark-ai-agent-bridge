@@ -58,6 +58,43 @@ func (blockingCardKitClient) UpdateElementContent(ctx context.Context, _ CardKit
 	return ctx.Err()
 }
 
+type retentionBlockingCardKitClient struct {
+	mu            sync.Mutex
+	created       int
+	updateStarted chan struct{}
+	releaseUpdate chan struct{}
+	startOnce     sync.Once
+}
+
+func newRetentionBlockingCardKitClient() *retentionBlockingCardKitClient {
+	return &retentionBlockingCardKitClient{updateStarted: make(chan struct{}), releaseUpdate: make(chan struct{})}
+}
+
+func (c *retentionBlockingCardKitClient) CreateCard(context.Context, CardKitCreateRequest) (CardKitCreateResult, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.created++
+	return CardKitCreateResult{CardID: fmt.Sprintf("retention-card-%d", c.created)}, nil
+}
+
+func (c *retentionBlockingCardKitClient) ReplyCard(context.Context, CardKitReplyRequest) (CardKitReplyResult, error) {
+	return CardKitReplyResult{MessageID: "retention-reply"}, nil
+}
+
+func (c *retentionBlockingCardKitClient) UpdateCard(context.Context, CardKitUpdateCardRequest) error {
+	c.startOnce.Do(func() { close(c.updateStarted) })
+	<-c.releaseUpdate
+	return nil
+}
+
+func (c *retentionBlockingCardKitClient) UpdateSettings(context.Context, CardKitUpdateSettingsRequest) error {
+	return nil
+}
+
+func (c *retentionBlockingCardKitClient) UpdateElementContent(context.Context, CardKitUpdateElementContentRequest) error {
+	return nil
+}
+
 type fakeCardKitObserver struct {
 	actions []string
 	details []string
@@ -135,11 +172,13 @@ func TestPreparedAccessorBoundary(t *testing.T) {
 
 func TestCardKitRouterInteractionFenceIsScopedAndIdempotent(t *testing.T) {
 	router := NewCardKitRouterRenderer(&fakeCardKitClient{})
-	renderer, err := router.NewStreaming(context.Background(), "session", "message")
+	_, err := router.NewStreaming(context.Background(), "session", "message")
 	if err != nil {
 		t.Fatal(err)
 	}
-	concrete := renderer.(*CardKitRenderer)
+	router.mu.Lock()
+	concrete := router.renderers["session"].renderer
+	router.mu.Unlock()
 	release := router.BeginCardInteraction("session")
 	concrete.mu.Lock()
 	if concrete.interactionDepth != 1 {
@@ -312,6 +351,369 @@ func (c *controlledRendererClock) Set(now time.Time) {
 	c.mu.Unlock()
 }
 
+func TestCardKitRouterEvictsOldestTerminalRendererOverLimit(t *testing.T) {
+	now := time.Date(2026, time.August, 6, 10, 0, 0, 0, time.UTC)
+	clock := &controlledRendererClock{now: now}
+	router := newCardKitRouterRendererWithRetention(&fakeCardKitClient{}, nil, nil, clock.Now, 1, 24*time.Hour)
+
+	first, err := router.NewStreaming(t.Context(), "run-1", "message-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := first.Render(card.Event{Type: "result", SessionID: "run-1"}); err != nil {
+		t.Fatal(err)
+	}
+
+	clock.Set(now.Add(time.Minute))
+	second, err := router.NewStreaming(t.Context(), "run-2", "message-2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := second.Render(card.Event{Type: "result", SessionID: "run-2"}); err != nil {
+		t.Fatal(err)
+	}
+
+	if got := router.ActiveCards(); got != 1 {
+		t.Fatalf("active cards = %d, want 1", got)
+	}
+	router.mu.Lock()
+	defer router.mu.Unlock()
+	if _, ok := router.renderers["run-1"]; ok {
+		t.Fatal("oldest terminal renderer was retained")
+	}
+	if _, ok := router.renderers["run-2"]; !ok {
+		t.Fatal("newest terminal renderer was evicted")
+	}
+}
+
+func TestCardKitRouterRetentionNeverEvictsActiveRenderer(t *testing.T) {
+	now := time.Date(2026, time.August, 6, 11, 0, 0, 0, time.UTC)
+	clock := &controlledRendererClock{now: now}
+	router := newCardKitRouterRendererWithRetention(&fakeCardKitClient{}, nil, nil, clock.Now, 1, 24*time.Hour)
+
+	activeOne, err := router.NewStreaming(t.Context(), "active-1", "message-active-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := activeOne.Render(card.Event{Type: "stream", SessionID: "active-1"}); err != nil {
+		t.Fatal(err)
+	}
+	terminalOne, err := router.NewStreaming(t.Context(), "terminal-1", "message-terminal-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := terminalOne.Render(card.Event{Type: "result", SessionID: "terminal-1"}); err != nil {
+		t.Fatal(err)
+	}
+
+	clock.Set(now.Add(time.Minute))
+	activeTwo, err := router.NewStreaming(t.Context(), "active-2", "message-active-2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := activeTwo.Render(card.Event{Type: "stream", SessionID: "active-2"}); err != nil {
+		t.Fatal(err)
+	}
+	terminalTwo, err := router.NewStreaming(t.Context(), "terminal-2", "message-terminal-2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := terminalTwo.Render(card.Event{Type: "result", SessionID: "terminal-2"}); err != nil {
+		t.Fatal(err)
+	}
+
+	router.mu.Lock()
+	defer router.mu.Unlock()
+	for _, key := range []string{"active-1", "active-2", "terminal-2"} {
+		if _, ok := router.renderers[key]; !ok {
+			t.Fatalf("renderer %q was evicted", key)
+		}
+	}
+	if _, ok := router.renderers["terminal-1"]; ok {
+		t.Fatal("oldest terminal renderer was retained")
+	}
+}
+
+func TestCardKitRouterRetentionDefersInteractionEvictionUntilRelease(t *testing.T) {
+	now := time.Date(2026, time.August, 6, 12, 0, 0, 0, time.UTC)
+	clock := &controlledRendererClock{now: now}
+	router := newCardKitRouterRendererWithRetention(&fakeCardKitClient{}, nil, nil, clock.Now, 10, time.Hour)
+
+	renderer, err := router.NewStreaming(t.Context(), "terminal", "message")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := renderer.Render(card.Event{Type: "result", SessionID: "terminal"}); err != nil {
+		t.Fatal(err)
+	}
+	release := router.BeginCardInteraction("terminal")
+	clock.Set(now.Add(2 * time.Hour))
+	if _, err := router.NewStreaming(t.Context(), "sweep-trigger", "message-2"); err != nil {
+		t.Fatal(err)
+	}
+
+	router.mu.Lock()
+	_, retainedDuringInteraction := router.renderers["terminal"]
+	router.mu.Unlock()
+	if !retainedDuringInteraction {
+		t.Fatal("terminal renderer was evicted during interaction")
+	}
+
+	release()
+	router.mu.Lock()
+	_, retainedAfterRelease := router.renderers["terminal"]
+	router.mu.Unlock()
+	if retainedAfterRelease {
+		t.Fatal("expired terminal renderer was retained after interaction release")
+	}
+}
+
+func TestCardKitRouterFailedTerminalRenderRemainsActive(t *testing.T) {
+	now := time.Date(2026, time.August, 6, 13, 0, 0, 0, time.UTC)
+	clock := &controlledRendererClock{now: now}
+	client := &fakeCardKitClient{updateErr: errors.New("update failed")}
+	router := newCardKitRouterRendererWithRetention(client, nil, nil, clock.Now, 1, 24*time.Hour)
+	failed := router.Rehydrate("failed", session.RenderRef{CardID: "card-failed", ReplyMessageID: "reply-failed", Version: 1})
+	if err := failed.Render(card.Event{Type: "result", SessionID: "failed"}); err == nil {
+		t.Fatal("terminal render error = nil")
+	}
+
+	client.updateErr = nil
+	for i, key := range []string{"terminal-1", "terminal-2"} {
+		clock.Set(now.Add(time.Duration(i+1) * time.Minute))
+		renderer, err := router.NewStreaming(t.Context(), key, "message-"+key)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := renderer.Render(card.Event{Type: "result", SessionID: key}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	router.mu.Lock()
+	defer router.mu.Unlock()
+	entry := router.renderers["failed"]
+	if entry == nil {
+		t.Fatal("failed terminal renderer was evicted")
+	}
+	if entry.terminal {
+		t.Fatal("failed terminal render was marked terminal")
+	}
+}
+
+func TestCardKitRouterTrackedRendererPreservesRenderRef(t *testing.T) {
+	now := time.Date(2026, time.August, 6, 14, 0, 0, 0, time.UTC)
+	clock := &controlledRendererClock{now: now}
+	server := &strictSequenceCardKitServer{}
+	router := newCardKitRouterRendererWithRetention(server, nil, nil, clock.Now, 4, 24*time.Hour)
+	renderer, err := router.NewStreaming(t.Context(), "run", "source")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := renderer.Render(card.Event{Type: "stream", Streaming: true, SessionID: "run"}); err != nil {
+		t.Fatal(err)
+	}
+	first := renderer.RenderRef()
+	if first.CardID == "" || first.ReplyMessageID == "" {
+		t.Fatalf("initial RenderRef = %#v, want card and reply ids", first)
+	}
+	if !first.CreatedAt.Equal(now) {
+		t.Fatalf("initial CreatedAt = %s, want %s", first.CreatedAt, now)
+	}
+
+	if err := renderer.Render(card.Event{Type: "result", SessionID: "run"}); err != nil {
+		t.Fatal(err)
+	}
+	terminal := renderer.RenderRef()
+	if terminal.CardID != first.CardID || terminal.ReplyMessageID != first.ReplyMessageID {
+		t.Fatalf("terminal RenderRef = %#v, want ids from %#v", terminal, first)
+	}
+	if terminal.Version != first.Version+1 {
+		t.Fatalf("terminal version = %d, want %d", terminal.Version, first.Version+1)
+	}
+	if !terminal.CreatedAt.Equal(first.CreatedAt) {
+		t.Fatalf("terminal CreatedAt = %s, want %s", terminal.CreatedAt, first.CreatedAt)
+	}
+}
+
+func TestCardKitRouterTrackedRendererPreservesRenderContext(t *testing.T) {
+	router := NewCardKitRouterRenderer(blockingCardKitClient{})
+	renderer := router.Rehydrate("recovery", session.RenderRef{CardID: "card", ReplyMessageID: "reply", Version: 1})
+	contextRenderer, ok := renderer.(ContextRenderer)
+	if !ok {
+		t.Fatalf("rehydrated renderer type %T does not implement ContextRenderer", renderer)
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	if err := contextRenderer.RenderContext(ctx, card.Event{Type: "interrupted", SessionID: "recovery"}); !errors.Is(err, context.Canceled) {
+		t.Fatalf("RenderContext error = %v, want context canceled", err)
+	}
+}
+
+func TestCardKitRouterRetentionConcurrentRenderAndInteraction(t *testing.T) {
+	now := time.Date(2026, time.August, 6, 15, 0, 0, 0, time.UTC)
+	clock := &controlledRendererClock{now: now}
+	server := &strictSequenceCardKitServer{}
+	router := newCardKitRouterRendererWithRetention(server, nil, nil, clock.Now, 2, 24*time.Hour)
+	active, err := router.NewStreaming(t.Context(), "active", "source")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := active.Render(card.Event{Type: "stream", Streaming: true, SessionID: "active"}); err != nil {
+		t.Fatal(err)
+	}
+
+	const callers = 12
+	errCh := make(chan error, callers*2)
+	var wg sync.WaitGroup
+	for i := range callers {
+		wg.Add(2)
+		go func(i int) {
+			defer wg.Done()
+			errCh <- active.Render(card.Event{Type: "stream", Streaming: true, SessionID: "active", Segments: []card.Segment{{Kind: card.SegmentText, Text: fmt.Sprintf("frame-%d", i)}}})
+		}(i)
+		go func(i int) {
+			defer wg.Done()
+			release := router.BeginCardInteraction("active")
+			release()
+			terminal, createErr := router.NewStreaming(t.Context(), fmt.Sprintf("terminal-%d", i), fmt.Sprintf("source-%d", i))
+			if createErr != nil {
+				errCh <- createErr
+				return
+			}
+			errCh <- terminal.Render(card.Event{Type: "result", SessionID: fmt.Sprintf("terminal-%d", i)})
+		}(i)
+	}
+	wg.Wait()
+	close(errCh)
+	for err := range errCh {
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	router.mu.Lock()
+	_, activeRetained := router.renderers["active"]
+	router.mu.Unlock()
+	if !activeRetained {
+		t.Fatal("active renderer was evicted during concurrent retention activity")
+	}
+}
+
+func TestCardKitRouterRetentionDoesNotEvictTerminalRendererWhileItRendersAgain(t *testing.T) {
+	now := time.Date(2026, time.August, 6, 16, 0, 0, 0, time.UTC)
+	clock := &controlledRendererClock{now: now}
+	client := newRetentionBlockingCardKitClient()
+	router := newCardKitRouterRendererWithRetention(client, nil, nil, clock.Now, 1, 24*time.Hour)
+	first, err := router.NewStreaming(t.Context(), "first", "source-first")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := first.Render(card.Event{Type: "result", SessionID: "first"}); err != nil {
+		t.Fatal(err)
+	}
+
+	renderDone := make(chan error, 1)
+	go func() {
+		renderDone <- first.Render(card.Event{Type: "stream", Streaming: true, SessionID: "first"})
+	}()
+	<-client.updateStarted
+
+	clock.Set(now.Add(time.Minute))
+	second, err := router.NewStreaming(t.Context(), "second", "source-second")
+	if err != nil {
+		close(client.releaseUpdate)
+		t.Fatal(err)
+	}
+	if err := second.Render(card.Event{Type: "result", SessionID: "second"}); err != nil {
+		close(client.releaseUpdate)
+		t.Fatal(err)
+	}
+	router.mu.Lock()
+	_, retained := router.renderers["first"]
+	router.mu.Unlock()
+	close(client.releaseUpdate)
+	if err := <-renderDone; err != nil {
+		t.Fatal(err)
+	}
+	if !retained {
+		t.Fatal("renderer was evicted while a new render was in progress")
+	}
+}
+
+func TestCardKitRouterDirectRenderPinsTerminalRendererBeforeCapacitySweep(t *testing.T) {
+	now := time.Date(2026, time.August, 6, 17, 0, 0, 0, time.UTC)
+	clock := &controlledRendererClock{now: now}
+	client := newRetentionBlockingCardKitClient()
+	router := newCardKitRouterRendererWithRetention(client, nil, nil, clock.Now, 1, 24*time.Hour)
+	if err := router.Render(card.Event{Type: "result", SessionID: "first", ReplyToMessageID: "source-first"}); err != nil {
+		t.Fatal(err)
+	}
+
+	renderDone := make(chan error, 1)
+	go func() {
+		renderDone <- router.Render(card.Event{Type: "stream", Streaming: true, SessionID: "first"})
+	}()
+	<-client.updateStarted
+
+	clock.Set(now.Add(time.Minute))
+	if err := router.Render(card.Event{Type: "result", SessionID: "second", ReplyToMessageID: "source-second"}); err != nil {
+		close(client.releaseUpdate)
+		t.Fatal(err)
+	}
+	router.mu.Lock()
+	_, retained := router.renderers["first"]
+	router.mu.Unlock()
+	close(client.releaseUpdate)
+	if err := <-renderDone; err != nil {
+		t.Fatal(err)
+	}
+	if !retained {
+		t.Fatal("direct Render entry was evicted after lookup but before it was pinned")
+	}
+}
+
+func TestCardKitRouterRetentionFollowsResultThenStreamCompletionOrder(t *testing.T) {
+	now := time.Date(2026, time.August, 6, 18, 0, 0, 0, time.UTC)
+	clock := &controlledRendererClock{now: now}
+	client := newRetentionBlockingCardKitClient()
+	router := newCardKitRouterRendererWithRetention(client, nil, nil, clock.Now, 4, 24*time.Hour)
+	renderer, err := router.NewStreaming(t.Context(), "run", "source")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := renderer.Render(card.Event{Type: "stream", Streaming: true, SessionID: "run"}); err != nil {
+		t.Fatal(err)
+	}
+
+	resultDone := make(chan error, 1)
+	go func() {
+		resultDone <- renderer.Render(card.Event{Type: "result", SessionID: "run"})
+	}()
+	<-client.updateStarted
+	streamDone := make(chan error, 1)
+	go func() {
+		streamDone <- renderer.Render(card.Event{Type: "stream", Streaming: true, SessionID: "run"})
+	}()
+	close(client.releaseUpdate)
+	if err := <-resultDone; err != nil {
+		t.Fatal(err)
+	}
+	if err := <-streamDone; err != nil {
+		t.Fatal(err)
+	}
+
+	router.mu.Lock()
+	entry := router.renderers["run"]
+	router.mu.Unlock()
+	if entry == nil {
+		t.Fatal("renderer was evicted after trailing stream frame")
+	}
+	if entry.terminal {
+		t.Fatal("trailing stream frame was overwritten by an earlier result completion")
+	}
+}
+
 func TestCardKitRendererCreatedAtUsesCreateSuccessClockAndSurvivesLaterPaths(t *testing.T) {
 	createdAt := time.Date(2026, time.July, 18, 9, 30, 0, 0, time.FixedZone("create", -7*60*60))
 	replyCompletedAt := createdAt.Add(11 * time.Minute)
@@ -324,7 +726,9 @@ func TestCardKitRendererCreatedAtUsesCreateSuccessClockAndSurvivesLaterPaths(t *
 		t.Fatal(err)
 	}
 	var beforeReply session.RenderRef
-	concrete := renderer.(*CardKitRenderer)
+	router.mu.Lock()
+	concrete := router.renderers["run"].renderer
+	router.mu.Unlock()
 	server.replyHook = func() {
 		beforeReply = session.RenderRef{CardID: concrete.cardID, ReplyMessageID: concrete.replyMessageID, CreatedAt: concrete.createdAt}
 		clock.Set(replyCompletedAt)
@@ -650,13 +1054,13 @@ func TestCardKitRendererCoderFakeAgentReplayDropsUnchangedFrames(t *testing.T) {
 	// 每帧的 markdown。"" 代表沿用上一帧内容 (limitPreviewEvent 裁掉尾部 delta 后
 	// 的稳定 tail);非空代表 markdown 真产生新增量。
 	frames := []string{
-		"> ✅ Read foo.go",                         // 帧 1:首次内容,应发
-		"> ✅ Read foo.go",                         // 帧 2:同 markdown,应跳过
-		"> ✅ Read foo.go",                         // 帧 3:同 markdown,应跳过
-		"> ✅ Read foo.go\n\n> ⏳ Bash pwd",         // 帧 4:markdown 更新,应发
-		"> ✅ Read foo.go\n\n> ⏳ Bash pwd",         // 帧 5:同,应跳过
-		"> ✅ Read foo.go\n\n> ⏳ Bash pwd",         // 帧 6:同,应跳过
-		"> ✅ Read foo.go\n\n> ⏳ Bash pwd",         // 帧 7:同,应跳过
+		"> ✅ Read foo.go",                        // 帧 1:首次内容,应发
+		"> ✅ Read foo.go",                        // 帧 2:同 markdown,应跳过
+		"> ✅ Read foo.go",                        // 帧 3:同 markdown,应跳过
+		"> ✅ Read foo.go\n\n> ⏳ Bash pwd",        // 帧 4:markdown 更新,应发
+		"> ✅ Read foo.go\n\n> ⏳ Bash pwd",        // 帧 5:同,应跳过
+		"> ✅ Read foo.go\n\n> ⏳ Bash pwd",        // 帧 6:同,应跳过
+		"> ✅ Read foo.go\n\n> ⏳ Bash pwd",        // 帧 7:同,应跳过
 		"> ✅ Read foo.go\n\n> ✅ Bash pwd — done", // 帧 8:markdown 更新,应发
 		"> ✅ Read foo.go\n\n> ✅ Bash pwd — done", // 帧 9:同,应跳过
 		"> ✅ Read foo.go\n\n> ✅ Bash pwd — done", // 帧 10:同,应跳过

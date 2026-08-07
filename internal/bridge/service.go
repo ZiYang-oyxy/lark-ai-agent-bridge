@@ -112,19 +112,19 @@ type Service struct {
 	accessMu           sync.RWMutex
 	knownChats         []feishu.KnownChat
 
-	mu                 sync.Mutex
-	pendingRuns        map[string]pendingRun
-	activeRuns         map[string]activeRun
+	mu          sync.Mutex
+	pendingRuns map[string]pendingRun
+	activeRuns  map[string]activeRun
 	// recentlyStoppedRuns 记录 sessionID 是否曾经被显式 stop 过。activeRuns[id] 会
 	// 在 executeBatch 的 defer 里被 clearActiveRun 删掉，与第二次 stop 的读检查存在竞态；
 	// 落进此集合的 sessionID 在 activeRuns 缺失时仍视为幂等 stop，避免双击停止误报
 	// "当前会话没有正在运行的任务"。recentlyStoppedOrder 提供 FIFO 淘汰。
 	recentlyStoppedRuns  map[string]struct{}
 	recentlyStoppedOrder []string
-	pendingCompletions map[string]pendingCompletion
-	waitingReactions   map[string]*reactionLifecycle
-	helpContexts       map[string]helpContext
-	resumeContexts     map[string]resumeContext
+	pendingCompletions   map[string]pendingCompletion
+	waitingReactions     map[string]*reactionLifecycle
+	helpContexts         map[string]helpContext
+	resumeContexts       map[string]resumeContext
 	// actionReplyHints:handleActionCommand 消息路径专用,在调 HandleActionResult 之前
 	// 登记 sessionID → 触发消息 msg.ID 的映射;renderActionEvent 内部 Render 时若 event
 	// 没带 ReplyToMessageID(渲染上下文里没 msg 引用)就从这里取回,让 CardKit 首次遇到
@@ -246,6 +246,10 @@ type AgentRunResult struct {
 	// ProtocolUnknown/ProtocolAnomalies expose Codex JSONL drift for audit.
 	ProtocolUnknown   int
 	ProtocolAnomalies int
+	// codexMissingTerminal and codexPendingMessage are runner-private state for
+	// the clean-exit compatibility path. They never leave the bridge package.
+	codexMissingTerminal bool
+	codexPendingMessage  string
 }
 
 type AgentStreamUpdate struct {
@@ -266,8 +270,8 @@ type AgentStreamUpdate struct {
 	// PartialMessage marks content_block/stream_event updates emitted before
 	// the corresponding complete assistant message snapshot.
 	PartialMessage bool
-	// ProgressSnapshot 将此前暂显在正文中的 assistant 文本提升为可展示的过程进展。
-	// append 仍以内联文本保留它；clean/latest 清掉正文副本并写入过程面板。
+	// ProgressSnapshot marks assistant text promoted from an answer candidate to
+	// an independent process record. It does not replace the visible answer.
 	ProgressSnapshot bool
 }
 
@@ -635,14 +639,14 @@ func (s *Service) HandleMessage(ctx context.Context, msg Message) error {
 	if cmd.Type == CommandRun {
 		msg, cmd = s.attachPendingMergeForward(ctx, msg, cmd)
 	}
-	if selected, ok := agent.ParseKind(preference.Agent); ok && (cmd.Type == CommandRun || cmd.Type == CommandStatus || cmd.Type == CommandStop || cmd.Type == CommandResume || cmd.Type == CommandCron || cmd.Type == CommandTimer || cmd.Type == CommandTodo) {
+	if selected, ok := agent.ParseKind(preference.Agent); ok && (cmd.Type == CommandRun || cmd.Type == CommandStatus || cmd.Type == CommandStop || cmd.Type == CommandCompact || cmd.Type == CommandResume || cmd.Type == CommandCron || cmd.Type == CommandTimer || cmd.Type == CommandTodo) {
 		cmd.Agent = selected
 	}
 	if s.adminCommand(cmd.Type) && !s.canRunAdminCommand(msg.Sender) {
 		s.Audit.Record(msg.Sender, "admin_denied", msg.ChatID, string(cmd.Type))
 		return s.renderTextWithMode("admin-denied", msg.ID, card.SegmentError, "❌ 此命令仅管理员可用。", preference.ConversationMode)
 	}
-	if cmd.Type != CommandRun && cmd.Type != CommandTodo && !scheduleCommandStartsAgentRun(cmd) {
+	if cmd.Type != CommandRun && cmd.Type != CommandCompact && cmd.Type != CommandTodo && !scheduleCommandStartsAgentRun(cmd) {
 		accepted, err := s.Sessions.AcceptMessage(msg.ID, effectiveMessageTime(msg), s.dedupTTL(), s.dedupMaxEntries())
 		if err != nil {
 			s.Audit.Record(msg.Sender, "command_persist_failed", "", err.Error())
@@ -677,6 +681,8 @@ func (s *Service) HandleMessage(ctx context.Context, msg Message) error {
 		})
 	case CommandStop:
 		return s.handleStopCommand(msg, cmd, preference)
+	case CommandCompact:
+		return s.handleCompactCommand(ctx, msg, cmd, preference)
 	case CommandResume:
 		return s.handleResumeCommand(msg, cmd, preference)
 	case CommandConfig:
@@ -866,6 +872,19 @@ func (s *Service) handleStopCommand(msg Message, cmd Command, preference config.
 	return nil
 }
 
+func (s *Service) handleCompactCommand(ctx context.Context, msg Message, cmd Command, preference config.RuntimePreference) error {
+	if strings.TrimSpace(cmd.Text) != "" {
+		return s.renderTextWithMode("compact-usage", msg.ID, card.SegmentError, "用法：/compact（手动压缩当前 Claude 或 Codex Session 的上下文）", preference.ConversationMode)
+	}
+	key := s.keyForMessage(cmd.Agent, msg, preference.ConversationMode)
+	current, ok := s.Sessions.Get(key)
+	if !ok || strings.TrimSpace(current.AgentSessionID) == "" {
+		return s.renderTextWithMode("compact-empty", msg.ID, card.SegmentText, "当前 Agent 尚无可压缩的历史 Session。请先完成至少一轮对话。", preference.ConversationMode)
+	}
+	cmd.Text = "/compact"
+	return s.runWithPreference(ctx, cmd, msg, "", preference)
+}
+
 func (s *Service) handleResumeCommand(msg Message, cmd Command, preference config.RuntimePreference) error {
 	key := s.keyForMessage(cmd.Agent, msg, preference.ConversationMode)
 	workDir, err := session.CanonicalWorkDir(s.effectiveWorkDir(key, Command{}))
@@ -1010,7 +1029,7 @@ func (s *Service) handleConfigCommand(ctx context.Context, msg Message, cmd Comm
 				return s.renderTextWithMode("config-set", msg.ID, card.SegmentError, "用法：/config set key=value [key=value ...]", replyMode)
 			}
 			key, value := strings.ToLower(strings.TrimSpace(pair[0])), strings.TrimSpace(pair[1])
-			if key == "" || value == "" && key != "agent_home" && key != "agent_bin" && key != "meta_rows" {
+			if key == "" || value == "" && key != "agent_home" && key != "agent_bin" && key != "meta_rows" && key != "completion_status_text" {
 				return s.renderTextWithMode("config-set", msg.ID, card.SegmentError, "用法：/config set key=value [key=value ...]", replyMode)
 			}
 			if _, duplicate := values[key]; duplicate {
@@ -1371,7 +1390,7 @@ func (s *Service) runWithPreference(ctx context.Context, cmd Command, msg Messag
 	if seedMode == config.TopicSeedModeFork {
 		forkFrom = s.forkSeedForTopicSession(cmd.Agent, key, msg, preference.ConversationMode)
 	}
-	input := session.Input{ID: msg.ID, Sender: msg.Sender, Text: text, QuotedText: quotedText, QuotedSender: quotedSender, QuotedSenderType: quotedSenderType, Attachments: attachments, ReplyToMessageID: msg.ID, CardSessionID: cardSessionID, WorkDir: workDir, RequestedModel: preference.Model, RequestedEffort: preference.Effort, AgentBin: bin, AgentHome: home, ForkFromAgentSessionID: forkFrom, ReplyMode: preference.ReplyMode, AppendOverflowMode: preference.AppendOverflowMode, ConversationMode: preference.ConversationMode, NotifyOnComplete: preference.NotifyOnComplete, BridgeInstructionsVersion: bridgeinstructions.CurrentVersion, ScheduleKind: cmd.ScheduleKind, ScheduleTargetThreadID: msg.ThreadID, IsGroup: msg.IsGroup, Time: effectiveMessageTime(msg), DebounceUntil: receivedAt.Add(debounceWindow), DebounceWindow: debounceWindow, State: session.InputDebouncing, Reset: cmd.Reset || cmd.ScheduleKind != ""}
+	input := session.Input{ID: msg.ID, Sender: msg.Sender, Text: text, QuotedText: quotedText, QuotedSender: quotedSender, QuotedSenderType: quotedSenderType, Attachments: attachments, ReplyToMessageID: msg.ID, CardSessionID: cardSessionID, WorkDir: workDir, RequestedModel: preference.Model, RequestedEffort: preference.Effort, AgentBin: bin, AgentHome: home, ForkFromAgentSessionID: forkFrom, ReplyMode: preference.ReplyMode, AppendOverflowMode: preference.AppendOverflowMode, ConversationMode: preference.ConversationMode, TopicID: msg.ThreadID, NotifyOnComplete: preference.NotifyOnComplete, CompletionStatusText: preference.EffectiveCompletionStatusText(), BridgeInstructionsVersion: bridgeinstructions.CurrentVersion, ScheduleKind: cmd.ScheduleKind, ScheduleTargetThreadID: msg.ThreadID, IsGroup: msg.IsGroup, Compact: cmd.Type == CommandCompact, Time: effectiveMessageTime(msg), DebounceUntil: receivedAt.Add(debounceWindow), DebounceWindow: debounceWindow, State: session.InputDebouncing, Reset: cmd.Reset || cmd.ScheduleKind != ""}
 	accepted, queued, err := s.Sessions.AcceptAndEnqueue(key, input, receivedAt, s.dedupTTL(), s.dedupMaxEntries(), s.batchLimits())
 	if err != nil {
 		action := "queue_rejected"
@@ -2398,7 +2417,7 @@ func isKnownEffort(v string) bool {
 func preferenceFromFields(values map[string]string, current config.RuntimePreference) (config.RuntimePreference, error) {
 	for key := range values {
 		switch key {
-		case "agent", "agent_home", "agent_bin", "effort", "reply_mode", "append_overflow_mode", "conversation_mode", "topic_seed_mode", "group_message_mode", "respond_to_bots", "notify_on_complete", "meta_rows", "show_meta_row_agent", "show_meta_row_runtime", "show_meta_row_developer":
+		case "agent", "agent_home", "agent_bin", "effort", "reply_mode", "append_overflow_mode", "conversation_mode", "topic_seed_mode", "group_message_mode", "respond_to_bots", "notify_on_complete", "completion_status_text", "meta_rows", "show_meta_row_agent", "show_meta_row_runtime", "show_meta_row_developer":
 		default:
 			return config.RuntimePreference{}, fmt.Errorf("unsupported config field %q", key)
 		}
@@ -2441,6 +2460,9 @@ func preferenceFromFields(values map[string]string, current config.RuntimePrefer
 		if value := strings.TrimSpace(raw); value != "" {
 			preference.GroupMessageMode = config.GroupMessageMode(value)
 		}
+	}
+	if raw, ok := values["completion_status_text"]; ok {
+		preference.CompletionStatusText = strings.TrimSpace(raw)
 	}
 	for _, field := range []struct {
 		key string
@@ -2517,6 +2539,22 @@ func (s *Service) configFormAtRevision(preference config.RuntimePreference, revi
 	if agentKind == "" {
 		agentKind = config.DefaultAgentKind
 	}
+	// Re-read agents.json every /config render so edits (e.g. a bin's desc)
+	// show up without a serve restart. Startup snapshot (s.Agents) still owns
+	// BinPath/HomePath/preference validation to keep persistence consistent;
+	// the fresh copy only feeds the card's dropdown options. A missing or
+	// broken file falls back to s.Agents so an accidental delete/typo can't
+	// silently replace the picker with the built-in default catalogue.
+	catalogue := s.Agents
+	if path := strings.TrimSpace(s.Config.AgentsConfigPath); path != "" {
+		if _, err := os.Stat(path); err == nil {
+			if fresh, err := config.LoadAgentsConfig(path); err == nil {
+				catalogue = fresh
+			} else if s.Audit != nil {
+				s.Audit.Record("system", "agents_config_reload_failed", "", err.Error())
+			}
+		}
+	}
 	form := &card.ConfigForm{
 		PreferenceRevision: revision,
 		Agent:              agentKind, AgentHome: preference.AgentHome, AgentBin: preference.AgentBin,
@@ -2528,7 +2566,7 @@ func (s *Service) configFormAtRevision(preference config.RuntimePreference, revi
 		ShowMetaRowAgent:     strconv.FormatBool(preference.ShowMetaRowAgent),
 		ShowMetaRowRuntime:   strconv.FormatBool(preference.ShowMetaRowRuntime),
 		ShowMetaRowDeveloper: strconv.FormatBool(preference.ShowMetaRowDeveloper),
-		Agents:               toCardOptions(s.Agents.AgentOptions()), AgentHomes: toCardOptions(s.Agents.HomeOptions(agentKind)), AgentBins: toCardOptions(s.Agents.BinOptions(agentKind)),
+		Agents:               toCardOptions(catalogue.AgentOptions()), AgentHomes: toCardOptions(catalogue.HomeOptions(agentKind)), AgentBins: toCardOptions(catalogue.BinOptions(agentKind)),
 		Models: s.configModelOptions(), Efforts: []string{"default", "low", "medium", "high"},
 		ReplyModes:          []string{string(config.ReplyModeCoder), string(config.ReplyModeWorker), string(config.ReplyModeSingleton)},
 		AppendOverflowModes: []card.SelectOption{{Value: string(config.AppendOverflowModeTruncate), Label: "尾部截断（默认）"}, {Value: string(config.AppendOverflowModeContinueCard), Label: "自动续卡（最多 9 张）"}},
@@ -2649,6 +2687,7 @@ func runtimePreferenceChanges(before, after config.RuntimePreference) []string {
 	appendChange("群消息接收", groupMessageModeText(before.GroupMessageMode), groupMessageModeText(after.GroupMessageMode))
 	appendChange("响应其他 bot", respondToBotsText(before.RespondToBots), respondToBotsText(after.RespondToBots))
 	appendChange("完成提醒", onOffText(before.NotifyOnComplete), onOffText(after.NotifyOnComplete))
+	appendChange("完成状态文案", before.EffectiveCompletionStatusText(), after.EffectiveCompletionStatusText())
 	appendChange("状态栏 Agent 信息", onOffText(before.ShowMetaRowAgent), onOffText(after.ShowMetaRowAgent))
 	appendChange("状态栏运行信息", onOffText(before.ShowMetaRowRuntime), onOffText(after.ShowMetaRowRuntime))
 	appendChange("状态栏开发信息", onOffText(before.ShowMetaRowDeveloper), onOffText(after.ShowMetaRowDeveloper))
@@ -3899,6 +3938,7 @@ func (s *Service) metaFromSessionWithDirAfter(sess session.Session, dir string, 
 		ShowMetaRowAgent:     showAgent,
 		ShowMetaRowRuntime:   showRuntime,
 		ShowMetaRowDeveloper: showDeveloper,
+		ChatID:               sess.Key.ChatID,
 	}
 	if showDeveloper {
 		meta.Version = developerVersionText()
@@ -4037,17 +4077,6 @@ func (r CLIExecRunner) Run(ctx context.Context, req AgentRunRequest) (AgentRunRe
 	if bin == "" {
 		bin = req.ClaudeBin
 	}
-	version := strings.TrimSpace(req.BridgeInstructionsVersion)
-	if version == "" {
-		return AgentRunResult{}, errors.New("missing bridge instructions version")
-	}
-	if r.Instructions == nil {
-		return AgentRunResult{}, errors.New("bridge instructions runtime is not configured")
-	}
-	content, err := r.Instructions.Content(version)
-	if err != nil {
-		return AgentRunResult{}, err
-	}
 	cfg := agent.OneShotConfig{
 		Kind:                   req.Kind,
 		Bin:                    bin,
@@ -4060,14 +4089,35 @@ func (r CLIExecRunner) Run(ctx context.Context, req AgentRunRequest) (AgentRunRe
 		Home:                   req.Home,
 		Images:                 req.Images,
 	}
-	switch req.Kind {
-	case agent.Claude:
-		cfg.ClaudeSystemPromptFile, err = r.Instructions.ClaudeFile(version)
-	case agent.Codex:
-		cfg.DeveloperInstructions = content
-	}
-	if err != nil {
-		return AgentRunResult{}, err
+	manualCompact := strings.TrimSpace(req.Prompt) == "/compact"
+	if manualCompact {
+		if strings.TrimSpace(req.AgentSessionID) == "" {
+			return AgentRunResult{}, errors.New("manual compact requires an existing agent session")
+		}
+		if req.Kind == agent.Codex {
+			return runCodexCompact(ctx, req, bin)
+		}
+	} else {
+		version := strings.TrimSpace(req.BridgeInstructionsVersion)
+		if version == "" {
+			return AgentRunResult{}, errors.New("missing bridge instructions version")
+		}
+		if r.Instructions == nil {
+			return AgentRunResult{}, errors.New("bridge instructions runtime is not configured")
+		}
+		content, err := r.Instructions.Content(version)
+		if err != nil {
+			return AgentRunResult{}, err
+		}
+		switch req.Kind {
+		case agent.Claude:
+			cfg.ClaudeSystemPromptFile, err = r.Instructions.ClaudeFile(version)
+		case agent.Codex:
+			cfg.DeveloperInstructions = content
+		}
+		if err != nil {
+			return AgentRunResult{}, err
+		}
 	}
 	command, err := agent.BuildOneShotCommand(cfg)
 	if err != nil {
@@ -4165,7 +4215,9 @@ func (r CLIExecRunner) Run(ctx context.Context, req AgentRunRequest) (AgentRunRe
 		}
 	}
 	var scanErr error
-	if req.Kind == agent.Codex {
+	if manualCompact && req.Kind == agent.Claude {
+		result, scanErr = parseClaudeCompactStream(pipe, &stdout)
+	} else if req.Kind == agent.Codex {
 		result, scanErr = parseCodexStream(pipe, &stdout, onEvent)
 	} else {
 		result, scanErr = parseClaudeStream(pipe, &stdout, onEvent)
@@ -4174,9 +4226,6 @@ func (r CLIExecRunner) Run(ctx context.Context, req AgentRunRequest) (AgentRunRe
 		result.Model = observedCodexModel
 	}
 	waitErr := cmd.Wait()
-	if scanErr != nil {
-		return result, scanErr
-	}
 	if waitErr != nil {
 		detail := strings.TrimSpace(stderr.String())
 		source := agentFailureSourceStderr
@@ -4188,6 +4237,12 @@ func (r CLIExecRunner) Run(ctx context.Context, req AgentRunRequest) (AgentRunRe
 			return result, newAgentProcessError(waitErr, source, detail)
 		}
 		return result, waitErr
+	}
+	if scanErr != nil {
+		if req.Kind == agent.Codex && isCodexTerminalMissingError(scanErr) && result.promoteCodexMissingTerminal(onEvent) {
+			return result, nil
+		}
+		return result, scanErr
 	}
 	return result, nil
 }

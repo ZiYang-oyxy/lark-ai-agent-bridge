@@ -48,9 +48,10 @@ func TestLoadFromEnvDefaultsCardHeartbeatToFiveSeconds(t *testing.T) {
 }
 
 func TestLoadFromEnvPreviewDefaults(t *testing.T) {
+	t.Setenv("E2E_CARD_MAX_CHARS", "")
 	cfg := LoadFromEnv()
-	if cfg.CardMinDeltaChars != 30 || cfg.CardPreviewMaxChars != 2000 {
-		t.Fatalf("preview defaults = min delta %d max %d", cfg.CardMinDeltaChars, cfg.CardPreviewMaxChars)
+	if cfg.CardMaxChars != 30000 || cfg.CardMinDeltaChars != 30 || cfg.CardPreviewMaxChars != 2000 {
+		t.Fatalf("card defaults = candidate %d min delta %d preview max %d", cfg.CardMaxChars, cfg.CardMinDeltaChars, cfg.CardPreviewMaxChars)
 	}
 }
 

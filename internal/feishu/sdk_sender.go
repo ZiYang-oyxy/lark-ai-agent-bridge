@@ -26,6 +26,10 @@ type MessageDeleteAPI interface {
 	Delete(ctx context.Context, req *larkim.DeleteMessageReq, options ...larkcore.RequestOptionFunc) (*larkim.DeleteMessageResp, error)
 }
 
+type MessageUpdateAPI interface {
+	Update(ctx context.Context, req *larkim.UpdateMessageReq, options ...larkcore.RequestOptionFunc) (*larkim.UpdateMessageResp, error)
+}
+
 type ImageAPI interface {
 	Create(context.Context, *larkim.CreateImageReq, ...larkcore.RequestOptionFunc) (*larkim.CreateImageResp, error)
 }
@@ -33,20 +37,54 @@ type ImageAPI interface {
 type SDKSender struct {
 	api              ReplyAPI
 	messageDeleteAPI MessageDeleteAPI
+	messageUpdateAPI MessageUpdateAPI
 	reactionAPI      MessageReactionAPI
 	imageAPI         ImageAPI
 	getAPI           GetMessageAPI
 }
+
+var _ MessageUpdater = (*SDKSender)(nil)
 
 func NewSDKSender(appID, appSecret string) *SDKSender {
 	client := lark.NewClient(appID, appSecret)
 	return &SDKSender{
 		api:              client.Im.V1.Message,
 		messageDeleteAPI: client.Im.V1.Message,
+		messageUpdateAPI: client.Im.V1.Message,
 		reactionAPI:      client.Im.V1.MessageReaction,
 		imageAPI:         client.Im.V1.Image,
 		getAPI:           client.Im.V1.Message,
 	}
+}
+
+func (s *SDKSender) UpdateTextMessage(ctx context.Context, messageID, text string) error {
+	if messageID == "" {
+		return fmt.Errorf("missing message id")
+	}
+	if s == nil || s.messageUpdateAPI == nil {
+		return fmt.Errorf("update feishu message: api is not configured")
+	}
+	content, err := json.Marshal(map[string]string{"text": text})
+	if err != nil {
+		return fmt.Errorf("update feishu message: marshal content: %w", err)
+	}
+	body := larkim.NewUpdateMessageReqBodyBuilder().
+		MsgType("text").
+		Content(string(content)).
+		Build()
+	req := larkim.NewUpdateMessageReqBuilder().MessageId(messageID).Body(body).Build()
+	req.Body = body
+	resp, err := s.messageUpdateAPI.Update(ctx, req)
+	if err != nil {
+		return fmt.Errorf("update feishu message: %w", err)
+	}
+	if resp == nil {
+		return fmt.Errorf("update feishu message failed: empty response")
+	}
+	if !resp.Success() {
+		return fmt.Errorf("update feishu message failed: code=%d msg=%s", resp.Code, resp.Msg)
+	}
+	return nil
 }
 
 func (s *SDKSender) DeleteMessage(ctx context.Context, messageID string) error {

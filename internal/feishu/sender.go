@@ -54,6 +54,13 @@ type Sender interface {
 	ReactionSink
 }
 
+// MessageUpdater is optional because only the production SDK sender needs to
+// edit messages. Senders used by transports or tests can omit the capability;
+// callers must degrade without failing the primary message flow.
+type MessageUpdater interface {
+	UpdateTextMessage(ctx context.Context, messageID, text string) error
+}
+
 type ImageReply struct {
 	ReplyToMessageID string
 	ReplyInThread    bool

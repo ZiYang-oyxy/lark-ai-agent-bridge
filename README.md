@@ -24,7 +24,7 @@ workspace：
 - `/config` 可从 `agents.json` 选择 `claude` / `codex` 及其 wrapper presets（包括 `cx1`～`cx4`）。
 - Claude 以 `claude -p --output-format stream-json --dangerously-skip-permissions --effort low` 启动。
 - Codex 以 `codex exec [-c model_reasoning_effort="<value>"] --json ... -` 启动，prompt 通过 stdin 传入；非 `default` effort 由 Bridge 显式覆盖，`default` 继承所选 executable/home，model、sandbox、approval 和 profile 仍不由 Bridge 覆盖。
-- Codex 的 `exec --json` 会将过程 commentary 与最终回答都输出为 `agent_message`；Bridge 保留末答之前的过程消息原文并放入 thinking 折叠区，不依赖 reasoning summary 配置。
+- Codex 的 `exec --json` 会将过程 commentary 与最终回答都输出为 `agent_message`；Bridge 会立即将最新消息显示在答案区，后续活动再将它保留到 thinking 折叠区。直到下一条 `agent_message` 到来前，答案区始终可见最新内容，不依赖 reasoning summary 配置。
 - 默认使用普通聊天模式：回复进入聊天主消息流，同一 chat 按 Agent 共用 session 并串行执行。
 - `/config` 可切换为话题模式：回复进入话题，有 `ThreadID` 时每个 topic 独立 session，不同 topic 可并行执行。
 - `/local-config` 让每个群覆盖全局默认的执行类偏好（逐字段继承），从而不同群可用不同方式（如 A 群 `topic`、B 群 `chat`）；访问控制永远全局。
@@ -33,7 +33,7 @@ workspace：
 - `/resume` 列出当前 Agent 与 workdir 最近使用的 10 个 Bridge Session；`/resume <session-id>` 切换后由下一条普通消息继续目标 Session。
 - 自然语言定时同时支持重复任务和一次性任务；Agent 只生成规则提案，用户确认后 Bridge 才持久化并启用。
 - `/config` 的三种回复模式是：`Coder`（按顺序展示回复与工具进展）、`Worker`（思考、正文、工具分区展示）、`Singleton`（维持单个卡片更新，搭配 pin 使用）。底层兼容 key 分别为 `append`、`append-clean-card`、`latest-card`，仅用于已有配置、环境变量和 API 兼容，不作为用户界面文案。
-- 执行中标题使用蓝色 `正在推理/正在执行工具/正在回复 · ⏱ Ns`，完成绿色，停止灰色，失败红色。
+- 执行中标题使用蓝色 `正在推理/正在执行工具/正在回复 · ⏱ Ns`，完成绿色，停止灰色，失败红色。完成态默认显示 `✅ 已完成 · ⏱ Ns`；管理员可用 `/config set completion_status_text=🎉任务完成` 改为最多 32 个字符的单行标题前缀，`/config set completion_status_text=` 恢复默认。该偏好在消息入队时冻结，只影响之后的新任务。
 - 执行中卡片连续 5 秒没有正常流式更新时会自动刷新耗时；无正文的等待阶段同时显示“任务仍在运行…”。每次正常更新会重新计时，完成、失败或停止后立即取消刷新。
 - 底部状态栏使用分割线和两行分栏：agent/model/tokens，以及 user/ip/workdir。Claude 从 stream 事件、Codex 从当前 session transcript 读取已生效的实际模型；尚未取得运行期记录时显示“同步中”，不会把请求配置伪装为实际模型。
 - 工作目录不存在时先发确认卡片；点击创建后确认卡变绿并禁用按钮，Claude 执行另起运行卡片。
@@ -85,7 +85,7 @@ export LARK_APP_ID=... LARK_APP_SECRET=... \
 nohup ~/bin/lark-agent-bridge-<name> serve --default-workdir "$LAB_DEFAULT_WORKDIR" &
 ```
 
-`/help` 会以 10 分钟内存缓存检查版本。所有授权用户都能查看卡片内 Release note；只有 bot owner/admin 能确认升级。升级前会重新获取 manifest，下载当前平台 binary，严格校验 size 与 SHA-256；存在 active/queued 任务时拒绝升级。通过校验后 Bridge 在当前 binary 同目录保留 `.previous`、原子替换，并以原 argv/env `exec` 新版本。替换或 `exec` 失败会恢复旧 binary；新版本已经启动后再崩溃不自动回滚。
+`/help` 会以 10 分钟内存缓存检查版本。所有授权用户都能查看卡片内 Release note；只有 bot owner/admin 能确认升级。升级前会重新获取 manifest，下载当前平台 binary，严格校验 size 与 SHA-256；存在 active/queued 任务时拒绝升级。通过校验后 Bridge 在当前 binary 同目录保留 `.previous`、原子替换，再以原 argv/env 启动新版本。systemd 环境使用专用退出码把最终重启交给 service manager，因此 `Restart=on-failure` 和 `Restart=always` 都能接管；非 systemd 环境保持 detached child 的原有行为。替换或新进程启动失败会恢复旧 binary；新版本已经启动后再崩溃不自动回滚。
 
 首版只支持：
 

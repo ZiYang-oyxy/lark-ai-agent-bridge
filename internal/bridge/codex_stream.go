@@ -22,6 +22,21 @@ type codexParseState struct {
 	anomalies      int
 }
 
+// codexTerminalMissingError preserves the protocol violation until the runner
+// has observed the child process exit status. A zero exit plus a final message
+// is a known compatible completion shape; every other missing-terminal case
+// remains an error.
+type codexTerminalMissingError struct{ detail string }
+
+func (e *codexTerminalMissingError) Error() string {
+	return "codex stream ended before a terminal event" + e.detail
+}
+
+func isCodexTerminalMissingError(err error) bool {
+	_, ok := err.(*codexTerminalMissingError)
+	return ok
+}
+
 func parseCodexStream(input io.Reader, copyTo *bytes.Buffer, onEvent func(AgentStreamUpdate)) (AgentRunResult, error) {
 	state := &codexParseState{startedItems: map[string]struct{}{}}
 	var result AgentRunResult
@@ -56,14 +71,37 @@ func parseCodexStream(input io.Reader, copyTo *bytes.Buffer, onEvent func(AgentS
 	result.ProtocolUnknown = state.unknownEvents
 	result.ProtocolAnomalies = state.anomalies
 	if !state.terminal {
-		flushPendingCodexMessage(&result, state, onEvent, card.SegmentThought)
 		detail := ""
 		if state.lastError != "" {
 			detail = ": " + state.lastError
 		}
-		return result, fmt.Errorf("codex stream ended before a terminal event%s", detail)
+		result.codexMissingTerminal = true
+		result.codexPendingMessage = state.pendingMessage
+		return result, &codexTerminalMissingError{detail: detail}
 	}
 	return result, nil
+}
+
+// promoteCodexMissingTerminal accepts the only safe compatibility fallback:
+// the process exited cleanly after yielding a final agent message. It is
+// deliberately called by CLIExecRunner only after cmd.Wait confirms exit 0.
+func (result *AgentRunResult) promoteCodexMissingTerminal(onEvent func(AgentStreamUpdate)) bool {
+	if !result.codexMissingTerminal {
+		return false
+	}
+	text := strings.TrimSpace(result.codexPendingMessage)
+	if text == "" {
+		return false
+	}
+	result.codexMissingTerminal = false
+	result.codexPendingMessage = ""
+	result.ProtocolAnomalies++
+	segment := card.Segment{Kind: card.SegmentText, Text: text}
+	result.Segments = append(result.Segments, segment)
+	result.OrderedSegments = append(result.OrderedSegments, segment)
+	result.AnswerSegments = append(result.AnswerSegments, text)
+	emitCodexSegment(onEvent, segment, streamActivityAnswering, true)
+	return true
 }
 
 func consumeCodexEvent(event map[string]any, result *AgentRunResult, state *codexParseState, onEvent func(AgentStreamUpdate)) error {
@@ -178,9 +216,10 @@ func consumeCodexCompletedItem(item map[string]any, result *AgentRunResult, stat
 }
 
 // Codex records commentary and the final answer as agent_message items, while
-// exec --json currently omits their phase. Keep the newest message pending:
-// later activity proves it was commentary, and turn.completed identifies the
-// final message without synthesizing a reasoning summary.
+// exec --json currently omits their phase. Surface every complete message as
+// the newest answer candidate immediately, then keep it pending: later
+// activity preserves it as process history, while turn.completed identifies
+// the final message without synthesizing a reasoning summary.
 func bufferCodexAgentMessage(result *AgentRunResult, state *codexParseState, onEvent func(AgentStreamUpdate), text string) {
 	text = strings.TrimSpace(text)
 	if text == "" {
@@ -188,6 +227,7 @@ func bufferCodexAgentMessage(result *AgentRunResult, state *codexParseState, onE
 	}
 	flushPendingCodexMessage(result, state, onEvent, card.SegmentThought)
 	state.pendingMessage = text
+	emitCodexSegment(onEvent, card.Segment{Kind: card.SegmentText, Text: text}, streamActivityAnswering, true)
 }
 
 func flushPendingCodexMessage(result *AgentRunResult, state *codexParseState, onEvent func(AgentStreamUpdate), kind card.SegmentKind) {
@@ -203,7 +243,11 @@ func flushPendingCodexMessage(result *AgentRunResult, state *codexParseState, on
 	}
 	segment := card.Segment{Kind: card.SegmentThought, Text: text}
 	appendCodexSegment(result, segment)
-	emitCodexSegment(onEvent, segment, streamActivityReasoning, false)
+	emitStreamUpdate(onEvent, AgentStreamUpdate{
+		Segments:         []card.Segment{segment},
+		Activity:         streamActivityReasoning,
+		ProgressSnapshot: true,
+	})
 }
 
 func appendCodexAnswer(result *AgentRunResult, state *codexParseState, text string) {

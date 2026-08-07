@@ -691,8 +691,19 @@ func runServe(args []string) error {
 	return errors.Join(longConnErr, controlErr, shutdownErr)
 }
 
-func newRuntimeUpdateManager(cfg config.Config, devMode *devmode.Store) *bridgeupdate.Manager {
-	return newRuntimeUpdateManagerTo(cfg, devMode, os.Stderr)
+// newRuntimeUpdateManager returns a bridge.UpdateManager interface value. When
+// self-upgrade is not configured it returns an **interface-nil** value, not a
+// typed-nil *bridgeupdate.Manager wrapped in a non-nil interface — that classic
+// Go pitfall previously made every `if svc.Updates == nil` guard downstream
+// silently fall through into `(*Manager)(nil).Check(...)`, surfacing the
+// misleading "update client is unavailable" error on every /help card of a
+// supervisor started without LAB_UPDATE_MANIFEST_URL.
+func newRuntimeUpdateManager(cfg config.Config, devMode *devmode.Store) bridge.UpdateManager {
+	m := newRuntimeUpdateManagerTo(cfg, devMode, os.Stderr)
+	if m == nil {
+		return nil
+	}
+	return m
 }
 
 // newRuntimeUpdateManagerTo is the testable core of newRuntimeUpdateManager:
@@ -845,7 +856,7 @@ Environment:
   E2E_DEFAULT_WORKDIR    defaults to current directory
   E2E_CARD_UPDATE_MS     defaults to 800
   E2E_CARD_HEARTBEAT_SEC defaults to 5; refreshes a quiet running card
-  E2E_CARD_MAX_CHARS     defaults to 12000
+  E2E_CARD_MAX_CHARS     candidate rune window; defaults to 30000
   E2E_CARD_MIN_DELTA_CHARS defaults to 30
   E2E_CARD_PREVIEW_MAX_CHARS defaults to 2000
   E2E_REPLY_MODE         Coder=append, Worker=append-clean-card, or Singleton=latest-card
@@ -1092,8 +1103,8 @@ var _ bridge.AgentRunner = simulateRunner{}
 // simulateFakeSender is a minimal feishu.Sender used by simulate --fake-thread
 // to exercise the topic-precreate path without Feishu access. SendReply returns
 // a canned SendResult carrying the caller-configured thread_id and a synthetic
-// message_id ("om_probe_<threadID>"), so the recall step in
-// precreateTopicForPost fires and lands in audit as topic_precreate_probe.
+// message_id ("om_probe_<threadID>"). UpdateTextMessage is a no-op so L2 can
+// exercise the two-stage guide flow and assert its audit events.
 type simulateFakeSender struct {
 	feishu.NoopSender
 	threadID string
@@ -1107,6 +1118,10 @@ func (s *simulateFakeSender) SendReply(_ context.Context, _ feishu.Reply) (feish
 }
 
 func (s *simulateFakeSender) DeleteMessage(_ context.Context, _ string) error {
+	return nil
+}
+
+func (s *simulateFakeSender) UpdateTextMessage(_ context.Context, _, _ string) error {
 	return nil
 }
 

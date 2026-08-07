@@ -76,7 +76,7 @@ func LoadFromEnv() Config {
 		CodexBin:                    "codex",
 		CardUpdateEvery:             800 * time.Millisecond,
 		CardHeartbeatEvery:          5 * time.Second,
-		CardMaxChars:                12000,
+		CardMaxChars:                30000,
 		CardMinDeltaChars:           30,
 		CardPreviewMaxChars:         2000,
 		InteractionTimeout:          120 * time.Second,

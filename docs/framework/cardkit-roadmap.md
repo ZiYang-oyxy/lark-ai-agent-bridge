@@ -93,10 +93,11 @@ PUT /open-apis/cardkit/v1/cards/{card_id}/elements/{element_id}/content
 
 已有能力：
 
-- `E2E_CARD_MAX_CHARS` 默认限制为 12000 字符。
+- `E2E_CARD_MAX_CHARS` 默认提供 30000 rune 的候选窗口；每张 CardKit
+  卡片最终按 29 KiB 紧凑 JSON 和 200 个组件动态拟合。
 - 长内容支持截断或分页。
 - CardKit client 对部分网络错误和服务端错误进行重试。
-- 最终序列化 JSON 执行 28 KiB / 200-component 硬闸，并按 reasoning、tool、answer 分级压缩，最终可退化为静态 emergency 卡。
+- 最终序列化 JSON 执行 29 KiB / 200-component 硬闸，并按 reasoning、tool、answer 分级压缩，最终可退化为静态 emergency 卡。
 - `card_id`、reply message ID、最后成功 `sequence`、`CreatedAt` 和 sequence unknown 状态均通过 `RenderRef` 持久化；重启可 rehydrate 并把遗留 running 卡片收敛为 interrupted。
 - latest-card 对 14 天过期和 sequence unknown 引用执行持久清理后换卡；recovery 对 unknown 引用只审计、不续写。
 - 全卡与 guarded element-content 路径复用同一 renderer mutex 和 `RenderRef.Version`；durable journal 覆盖 native PUT 的崩溃窗口。

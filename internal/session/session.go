@@ -78,10 +78,13 @@ type Input struct {
 	// has no AgentSessionID of its own yet — after the first successful run
 	// the session owns a real (forked) AgentSessionID and this hint is
 	// ignored. Empty means "no fork, start fresh".
-	ForkFromAgentSessionID    string `json:",omitempty"`
-	ReplyMode                 config.ReplyMode
-	AppendOverflowMode        config.AppendOverflowMode `json:",omitempty"`
-	ConversationMode          config.ConversationMode
+	ForkFromAgentSessionID string `json:",omitempty"`
+	ReplyMode              config.ReplyMode
+	AppendOverflowMode     config.AppendOverflowMode `json:",omitempty"`
+	ConversationMode       config.ConversationMode
+	// TopicID is the real Feishu thread_id observed on the inbound message. It
+	// stays separate from Key.Thread, which may be a synthetic Bridge routing key.
+	TopicID                   string `json:",omitempty"`
 	BridgeInstructionsVersion string `json:",omitempty"`
 	ScheduleRunID             string `json:",omitempty"`
 	ScheduleTaskID            string `json:",omitempty"`
@@ -89,11 +92,15 @@ type Input struct {
 	ScheduleTargetThreadID    string `json:",omitempty"`
 	IsGroup                   bool   `json:",omitempty"`
 	NotifyOnComplete          bool   `json:",omitempty"`
-	Time                      time.Time
-	DebounceUntil             time.Time
-	DebounceWindow            time.Duration `json:",omitempty"`
-	State                     InputState
-	Reset                     bool
+	CompletionStatusText      string `json:",omitempty"`
+	// Compact marks the native /compact control input. It stays in the durable
+	// FIFO but must never be merged with a user prompt or another compact run.
+	Compact        bool `json:",omitempty"`
+	Time           time.Time
+	DebounceUntil  time.Time
+	DebounceWindow time.Duration `json:",omitempty"`
+	State          InputState
+	Reset          bool
 }
 
 // EffectiveReplyMode keeps durable inputs written before ReplyMode was added
@@ -112,6 +119,12 @@ func (in Input) EffectiveAppendOverflowMode() config.AppendOverflowMode {
 		return config.AppendOverflowModeTruncate
 	}
 	return in.AppendOverflowMode
+}
+
+// EffectiveCompletionStatusText keeps durable inputs written before the
+// configurable terminal label compatible with the original card title.
+func (in Input) EffectiveCompletionStatusText() string {
+	return config.EffectiveCompletionStatusText(in.CompletionStatusText)
 }
 
 type Batch struct {
@@ -1088,6 +1101,9 @@ func snapshotReceipts(receipts []Receipt) []Receipt {
 }
 
 func compatibleBatchInput(first, next Input) bool {
+	if first.Compact || next.Compact {
+		return first.Compact && next.Compact && first.ID == next.ID
+	}
 	if first.ScheduleRunID != "" || next.ScheduleRunID != "" {
 		return first.ScheduleRunID != "" && first.ScheduleRunID == next.ScheduleRunID
 	}

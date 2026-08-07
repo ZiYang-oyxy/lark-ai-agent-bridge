@@ -136,47 +136,48 @@ func compactInlineToolValue(text string, maxRunes int) (string, bool) {
 }
 
 type agentCardStream struct {
-	mu               sync.Mutex
-	renderMu         sync.Mutex
-	renderer         card.Renderer
-	refProvider      interface{ RenderRef() session.RenderRef }
-	clock            streamClock
-	previewPolicy    PreviewPolicy
-	previewTail      bool
-	previewTimer     streamTimer
-	previewGen       uint64
-	previewPending   bool
-	previewDisabled  bool
-	heartbeatEvery   time.Duration
-	heartbeatTimer   streamTimer
-	heartbeatGen     uint64
-	lastFlush        time.Time
-	lastFlushedRunes int
-	contentRevision  uint64
-	lastFlushedRev   uint64
-	metaRevision     uint64
-	lastFlushedMeta  uint64
-	sessionID        string
-	replyTo          string
-	replyInThread    bool
-	replyMode        config.ReplyMode
-	startedAt        time.Time
-	status           string
-	activity         string
-	meta             card.Meta
-	totalBefore      int
-	stopVisible      bool
-	stopGrantID      string
-	closed           bool
-	answer           strings.Builder
-	thought          strings.Builder
-	tools            strings.Builder
-	ordered          []card.Segment
-	orderedPartialAt int
-	orderedPartial   bool
-	toolCallCount    int
-	stopping         bool
-	stopRequested    bool
+	mu                   sync.Mutex
+	renderMu             sync.Mutex
+	renderer             card.Renderer
+	refProvider          interface{ RenderRef() session.RenderRef }
+	clock                streamClock
+	previewPolicy        PreviewPolicy
+	previewTail          bool
+	previewTimer         streamTimer
+	previewGen           uint64
+	previewPending       bool
+	previewDisabled      bool
+	heartbeatEvery       time.Duration
+	heartbeatTimer       streamTimer
+	heartbeatGen         uint64
+	lastFlush            time.Time
+	lastFlushedRunes     int
+	contentRevision      uint64
+	lastFlushedRev       uint64
+	metaRevision         uint64
+	lastFlushedMeta      uint64
+	sessionID            string
+	replyTo              string
+	replyInThread        bool
+	replyMode            config.ReplyMode
+	completionStatusText string
+	startedAt            time.Time
+	status               string
+	activity             string
+	meta                 card.Meta
+	totalBefore          int
+	stopVisible          bool
+	stopGrantID          string
+	closed               bool
+	answer               strings.Builder
+	thought              strings.Builder
+	tools                strings.Builder
+	ordered              []card.Segment
+	orderedPartialAt     int
+	orderedPartial       bool
+	toolCallCount        int
+	stopping             bool
+	stopRequested        bool
 
 	// append-clean-card 三段布局:思考/工具滚动显示「最后两次」,但用计数告诉用户
 	// 背后累计了多少轮。recentThoughts 保留最新两轮 COT;recentTools 保留最新两次
@@ -252,7 +253,15 @@ func newAgentCardStreamWithClock(service *Service, sessionID string, sess sessio
 	if policy.MaxPreviewRunes <= 0 {
 		policy.MaxPreviewRunes = 2000
 	}
-	continuationPreview := input.EffectiveReplyMode() == config.ReplyModeAppend && input.EffectiveAppendOverflowMode() == config.AppendOverflowModeContinueCard
+	appendPreview := input.EffectiveReplyMode() == config.ReplyModeAppend
+	cleanPreview := usesCleanCardLayout(input.EffectiveReplyMode())
+	continuationPreview := appendPreview && input.EffectiveAppendOverflowMode() == config.AppendOverflowModeContinueCard
+	if appendPreview {
+		policy.MaxPreviewRunes = reply.AppendPreviewMaxRunes(service.Config.CardMaxChars)
+	}
+	if cleanPreview && service.Config.CardMaxChars > 0 {
+		policy.MaxPreviewRunes = service.Config.CardMaxChars
+	}
 	if continuationPreview {
 		policy.MaxPreviewRunes = reply.ContinuationPreviewMaxRunes(service.Config.CardMaxChars)
 	}
@@ -271,24 +280,25 @@ func newAgentCardStreamWithClock(service *Service, sessionID string, sess sessio
 		service.Audit.Record("system", "action_grant_issue_failed", sessionID, "action=stop error="+grantErr.Error())
 	}
 	return &agentCardStream{
-		renderer:       renderer,
-		refProvider:    refProvider,
-		clock:          clock,
-		previewPolicy:  policy,
-		heartbeatEvery: heartbeatEvery,
-		previewTail:    continuationPreview,
-		sessionID:      sessionID,
-		replyTo:        input.ReplyToMessageID,
-		replyInThread:  input.ConversationMode == config.ConversationModeTopic,
-		replyMode:      input.EffectiveReplyMode(),
-		startedAt:      startedAt,
-		status:         "running",
-		activity:       streamActivityReasoning,
-		meta:           service.metaForRunWithDir(sess, input, ctxDir),
-		totalBefore:    sess.Tokens,
-		stopVisible:    stopVisible,
-		stopGrantID:    stopGrantID,
-		ctxDir:         ctxDir,
+		renderer:             renderer,
+		refProvider:          refProvider,
+		clock:                clock,
+		previewPolicy:        policy,
+		heartbeatEvery:       heartbeatEvery,
+		previewTail:          appendPreview,
+		sessionID:            sessionID,
+		replyTo:              input.ReplyToMessageID,
+		replyInThread:        input.ConversationMode == config.ConversationModeTopic,
+		replyMode:            input.EffectiveReplyMode(),
+		completionStatusText: input.EffectiveCompletionStatusText(),
+		startedAt:            startedAt,
+		status:               "running",
+		activity:             streamActivityReasoning,
+		meta:                 service.metaForRunWithDir(sess, input, ctxDir),
+		totalBefore:          sess.Tokens,
+		stopVisible:          stopVisible,
+		stopGrantID:          stopGrantID,
+		ctxDir:               ctxDir,
 	}
 }
 
@@ -349,11 +359,6 @@ func (s *agentCardStream) Handle(update AgentStreamUpdate) {
 	}
 	if update.Activity != "" {
 		s.activity = update.Activity
-	}
-	if update.ProgressSnapshot && s.replyMode != config.ReplyModeAppend {
-		// Claude 的 assistant 文本会先以正文 snapshot 到达；后续工具活动证明它是
-		// 可展示的执行进展。clean/latest 在此移除正文副本，append 则保留原位内联文本。
-		s.answer.Reset()
 	}
 	if update.AnswerSnapshot {
 		s.answer.Reset()
@@ -583,6 +588,7 @@ func (s *Service) metaForRunWithDir(sess session.Session, input session.Input, c
 	meta.CtxUsedPercent = 0
 	meta.CtxTokens = 0
 	meta.CtxWindow = 0
+	meta.TopicID = input.TopicID
 	return meta
 }
 
@@ -903,10 +909,11 @@ func (s *agentCardStream) updateCleanSectionsLocked(segments []card.Segment, inc
 	if s.seenToolIDs == nil {
 		s.seenToolIDs = make(map[string]bool)
 	}
+	thoughtSnapshot := assistantSnapshot || progressSnapshot
 	// snapshot 到来时,收集该 update 里的最后一段完整 thought(权威版)用于覆盖 delta 中间态。
 	// 一轮 assistant message 内即使有多段 thinking,视觉上只保留最后一段(用户视角=同一次思考的最终版)。
 	latestSnapshotThought := ""
-	if assistantSnapshot {
+	if thoughtSnapshot {
 		for _, segment := range segments {
 			if segment.Kind == card.SegmentThought {
 				if t := strings.TrimSpace(segment.Text); t != "" {
@@ -929,7 +936,7 @@ func (s *agentCardStream) updateCleanSectionsLocked(segments []card.Segment, inc
 	for _, segment := range segments {
 		switch segment.Kind {
 		case card.SegmentThought:
-			if segment.Text == "" || assistantSnapshot {
+			if segment.Text == "" || thoughtSnapshot {
 				// snapshot 帧的 thought 交给下面一次性权威覆盖,不再在这里逐段拼。
 				continue
 			}
@@ -1019,7 +1026,7 @@ func (s *agentCardStream) updateCleanSectionsLocked(segments []card.Segment, inc
 			}
 		}
 	}
-	if assistantSnapshot {
+	if thoughtSnapshot {
 		alreadyCounted := false
 		if latestSnapshotThought != "" {
 			if progressSnapshot {
@@ -1302,12 +1309,11 @@ func (s *agentCardStream) formatThoughtsLocked() string {
 	return b.String()
 }
 
-// maxToolOutputRunes 是单次工具调用「输出」段在卡片里的字符预算。
-// 远小于卡片整体软上限(LarkCardSoftMaxJSONBytes=28KB / CardMaxChars=12000),
-// 目的是:让工具名与命令(信息密度最高、用户最需要看到的部分)永远完整保留,
-// 只有冗长输出才被有界省略。否则下游 capacity.fitLarkCard 会用 keepTail 截断
-// 整个 tool 段——从头部吃起,反而先牺牲工具名和命令、只留一堆输出(本次修复的 bug)。
-const maxToolOutputRunes = 6000
+// maxToolOutputRunes bounds the candidate retained for one tool result. The
+// three-section JSON fitter applies the authoritative 29 KiB card limit while
+// preserving tool titles and commands, so this is an in-memory window rather
+// than a per-card capacity proxy.
+const maxToolOutputRunes = 30000
 
 // clampToolOutput 对过长的工具输出做「保头 + 保尾 + 省中间」截断。
 // 头尾都保留能同时体现「命令产出的开头」与「结尾/退出状态」,中间用一行省略提示替代。
@@ -1486,6 +1492,11 @@ func (s *agentCardStream) mergeFinalSegmentsLocked(segments []card.Segment, answ
 	if s.replyMode == config.ReplyModeAppendCleanCard || s.replyMode == config.ReplyModeLatestCard {
 		if last := lastNonEmpty(answerSegments); last != "" {
 			finalAnswer = last
+		} else if current := strings.TrimSpace(s.answer.String()); current != "" {
+			// A nonterminal candidate may already be visible when the runner
+			// fails. Preserve that latest answer rather than replacing it with
+			// only the error block.
+			finalAnswer = current
 		}
 	}
 	finalAnswer = stripTrailingBotSignature(finalAnswer)
@@ -1782,8 +1793,8 @@ func (s *agentCardStream) eventLocked(initial bool) card.Event {
 		ToolCallCount:      s.toolCallCount,
 		OrderedLayout:      s.replyMode == config.ReplyModeAppend,
 		ThreeSectionLayout: usesCleanCardLayout(s.replyMode),
-		// 三段布局:思考默认展开(用户要求),终态折叠让最终答案更清爽;工具恒默认折叠。
-		ThoughtExpanded:     usesCleanCardLayout(s.replyMode) && s.status == "running",
+		// Worker 的思考/工具默认折叠；Singleton 保持运行期展开思考的既有行为。
+		ThoughtExpanded:     s.replyMode == config.ReplyModeLatestCard && s.status == "running",
 		ToolsExpanded:       false,
 		ThoughtRoundCount:   s.thoughtRounds,
 		ToolRoundCount:      s.toolRounds,
@@ -1885,24 +1896,31 @@ func (s *agentCardStream) headerTitleLocked() string {
 	if elapsed < 0 {
 		elapsed = 0
 	}
+	title := ""
 	switch s.status {
 	case "completed":
-		return fmt.Sprintf("✅ 已完成 · ⏱ %s", elapsed)
+		title = config.EffectiveCompletionStatusText(s.completionStatusText)
 	case "failed":
-		return fmt.Sprintf("❌ 执行失败 · ⏱ %s", elapsed)
+		title = "❌ 执行失败"
 	case "stopped":
-		return fmt.Sprintf("⏹ 已停止 · ⏱ %s", elapsed)
+		title = "⏹ 已停止"
 	case "interrupted":
-		return fmt.Sprintf("⚠️ 上游中断 · ⏱ %s", elapsed)
+		title = "⚠️ 上游中断"
 	}
-	switch s.activity {
-	case streamActivityTool:
-		return fmt.Sprintf("🛠️ 正在执行工具 · ⏱ %s", elapsed)
-	case streamActivityAnswering:
-		return fmt.Sprintf("✍️ 正在回复 · ⏱ %s", elapsed)
-	default:
-		return fmt.Sprintf("🧠 正在推理 · ⏱ %s", elapsed)
+	if title == "" {
+		switch s.activity {
+		case streamActivityTool:
+			title = "🛠️ 正在执行工具"
+		case streamActivityAnswering:
+			title = "✍️ 正在回复"
+		default:
+			title = "🧠 正在推理"
+		}
 	}
+	if s.replyMode == config.ReplyModeAppendCleanCard {
+		return fmt.Sprintf("%s · ⏱ %s · 💭 %d · 🔧 %d", title, elapsed, s.thoughtRounds, s.toolRounds)
+	}
+	return fmt.Sprintf("%s · ⏱ %s", title, elapsed)
 }
 
 func appendSegmentToBuilders(segment card.Segment, incremental bool, answer, thought, tools *strings.Builder) {

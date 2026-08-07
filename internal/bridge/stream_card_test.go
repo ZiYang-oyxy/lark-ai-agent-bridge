@@ -11,9 +11,11 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"lark-agent-bridge/internal/agent"
 	"lark-agent-bridge/internal/audit"
 	"lark-agent-bridge/internal/card"
 	"lark-agent-bridge/internal/config"
+	"lark-agent-bridge/internal/reply"
 	"lark-agent-bridge/internal/session"
 )
 
@@ -92,6 +94,36 @@ func TestAgentCardStreamFinishAdoptsLatestVersionDiscoveredDuringRun(t *testing.
 	rows := card.MetaRows(terminal.Meta)
 	if len(rows) != 1 || !strings.Contains(rows[0].Text, "✨ 最新 v0.1.11-rc.6") {
 		t.Fatalf("terminal developer row = %#v", rows)
+	}
+}
+
+func TestMetaForRunCarriesRealFeishuConversationIDs(t *testing.T) {
+	svc := &Service{Config: config.Config{ClaudeContextUsageDir: t.TempDir()}}
+	sess := session.Session{Key: session.Key{Agent: agent.Claude, ChatID: "oc_chat", Thread: "@bot:om_seed"}}
+	meta := svc.metaForRun(sess, session.Input{TopicID: "omt_real"})
+	if meta.ChatID != "oc_chat" || meta.TopicID != "omt_real" {
+		t.Fatalf("conversation IDs = chat %q topic %q, want oc_chat/omt_real", meta.ChatID, meta.TopicID)
+	}
+	if meta.TopicID == sess.Key.Thread {
+		t.Fatalf("TopicID must not use synthetic session key %q", sess.Key.Thread)
+	}
+}
+
+func TestAgentCardStreamUsesConfiguredCompletionStatusText(t *testing.T) {
+	cfg := testConfig(t)
+	renderer := card.NewFakeRenderer()
+	svc := NewService(cfg, renderer, newFakeRunner(), audit.NewRecorder())
+	clock := &fakeStreamClock{now: time.Unix(100, 0)}
+	stream := newAgentCardStreamWithClock(svc, "run", session.Session{ID: "claude:chat"}, session.Input{
+		ReplyToMessageID: "source", CompletionStatusText: "🎉 任务完成", Time: clock.Now(),
+	}, renderer, nil, clock)
+	clock.now = clock.now.Add(2 * time.Second)
+	if got := stream.headerTitleLocked(); got != "🧠 正在推理 · ⏱ 2s" {
+		t.Fatalf("running title = %q", got)
+	}
+	stream.status = "completed"
+	if got := stream.headerTitleLocked(); got != "🎉 任务完成 · ⏱ 2s" {
+		t.Fatalf("completed title = %q", got)
 	}
 }
 
@@ -408,6 +440,12 @@ type indexedFailRenderer struct {
 	failCall int
 }
 
+type previewMarkdownCapture struct {
+	*card.FakeRenderer
+}
+
+func (r *previewMarkdownCapture) RenderRef() session.RenderRef { return session.RenderRef{} }
+
 func (r *indexedFailRenderer) Render(event card.Event) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -431,6 +469,7 @@ func newPreviewTestStream(t *testing.T, renderer card.Renderer, clock streamCloc
 func newPreviewTestStreamForMode(t *testing.T, renderer card.Renderer, clock streamClock, minDelta, maxPreview int, mode config.ReplyMode) *agentCardStream {
 	t.Helper()
 	cfg := testConfig(t)
+	cfg.CardMaxChars = maxPreview
 	cfg.CardUpdateEvery = 800 * time.Millisecond
 	cfg.CardHeartbeatEvery = time.Hour
 	cfg.CardMinDeltaChars = minDelta
@@ -439,6 +478,34 @@ func newPreviewTestStreamForMode(t *testing.T, renderer card.Renderer, clock str
 	sess := session.Session{ID: "claude:chat", Tokens: 2}
 	input := session.Input{ReplyToMessageID: "source", RequestedModel: "default", RequestedEffort: "low", ReplyMode: mode, Time: clock.Now()}
 	return newAgentCardStreamWithClock(svc, "run", sess, input, renderer, nil, clock)
+}
+
+func TestAgentCardStreamPreviewBudgetsFollowReplyMode(t *testing.T) {
+	tests := []struct {
+		name     string
+		mode     config.ReplyMode
+		overflow config.AppendOverflowMode
+		want     int
+	}{
+		{name: "coder single card", mode: config.ReplyModeAppend, want: 30000},
+		{name: "coder continuation", mode: config.ReplyModeAppend, overflow: config.AppendOverflowModeContinueCard, want: 270000},
+		{name: "worker", mode: config.ReplyModeAppendCleanCard, want: 30000},
+		{name: "singleton", mode: config.ReplyModeLatestCard, want: 30000},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := testConfig(t)
+			cfg.CardMaxChars = 30000
+			cfg.CardPreviewMaxChars = 2000
+			svc := NewService(cfg, card.NewFakeRenderer(), newFakeRunner(), audit.NewRecorder())
+			stream := newAgentCardStreamWithClock(svc, "run", session.Session{ID: "claude:chat"}, session.Input{
+				ReplyMode: tt.mode, AppendOverflowMode: tt.overflow, Time: time.Unix(50, 0),
+			}, card.NewFakeRenderer(), nil, &fakeStreamClock{now: time.Unix(50, 0)})
+			if got := stream.previewPolicy.MaxPreviewRunes; got != tt.want {
+				t.Fatalf("preview max = %d, want %d", got, tt.want)
+			}
+		})
+	}
 }
 
 func segmentKinds(segments []card.Segment) []card.SegmentKind {
@@ -492,6 +559,183 @@ func TestAppendStreamPreservesTimeline(t *testing.T) {
 	assertSegmentKinds(t, terminal, card.SegmentText, card.SegmentTool, card.SegmentText)
 	if !terminal.OrderedLayout {
 		t.Fatal("append terminal did not request ordered layout")
+	}
+}
+
+func TestAppendStreamPreviewKeepsNewestTimelineTail(t *testing.T) {
+	clock := &fakeStreamClock{now: time.Unix(50, 0)}
+	cardRenderer := &previewMarkdownCapture{FakeRenderer: card.NewFakeRenderer()}
+	renderer := reply.NewMarkdownCardRendererWithLimit(cardRenderer, 80)
+	stream := newPreviewTestStream(t, renderer, clock, 1, 80)
+	if err := stream.Start(); err != nil {
+		t.Fatal(err)
+	}
+	stream.Handle(AgentStreamUpdate{Segments: []card.Segment{{Kind: card.SegmentThought, Text: "旧思考" + strings.Repeat("旧", 100)}}})
+	stream.Handle(AgentStreamUpdate{Segments: []card.Segment{{Kind: card.SegmentThought, Text: "最新思考"}}})
+	stream.Handle(AgentStreamUpdate{Segments: []card.Segment{{
+		Kind: card.SegmentTool,
+		Text: "最新工具",
+		Tool: &card.ToolMeta{ID: "tool-new", Name: "Bash", Phase: "use", Summary: "echo newest"},
+	}}})
+	if err := stream.Flush(); err != nil {
+		t.Fatal(err)
+	}
+
+	events := cardRenderer.Events()
+	preview := events[len(events)-1].Markdown
+	if !strings.Contains(preview, "较早过程已省略") {
+		t.Fatalf("preview did not mark the truncated head: %q", preview)
+	}
+	if strings.Contains(preview, "旧思考") {
+		t.Fatalf("preview retained the stale head: %q", preview)
+	}
+	if !strings.Contains(preview, "最新思考") || !strings.Contains(preview, "Bash") {
+		t.Fatalf("preview did not advance to newest thought and tool: %q", preview)
+	}
+}
+
+func TestAppendStreamUsesSingleCardCapacityBeforeOmitting(t *testing.T) {
+	clock := &fakeStreamClock{now: time.Unix(50, 0)}
+	cardRenderer := &previewMarkdownCapture{FakeRenderer: card.NewFakeRenderer()}
+	renderer := reply.NewMarkdownCardRendererWithLimit(cardRenderer, 12000)
+	cfg := testConfig(t)
+	cfg.CardMaxChars = 12000
+	cfg.CardPreviewMaxChars = 2000
+	cfg.CardMinDeltaChars = 1
+	cfg.CardUpdateEvery = time.Millisecond
+	cfg.CardHeartbeatEvery = time.Hour
+	svc := NewService(cfg, card.NewFakeRenderer(), newFakeRunner(), audit.NewRecorder())
+	stream := newAgentCardStreamWithClock(svc, "run", session.Session{ID: "claude:chat"}, session.Input{
+		ReplyMode: config.ReplyModeAppend, Time: clock.Now(),
+	}, renderer, nil, clock)
+	if err := stream.Start(); err != nil {
+		t.Fatal(err)
+	}
+	stream.Handle(AgentStreamUpdate{Segments: []card.Segment{{Kind: card.SegmentThought, Text: strings.Repeat("分析", 1250)}}})
+	if err := stream.Flush(); err != nil {
+		t.Fatal(err)
+	}
+	events := cardRenderer.Events()
+	preview := events[len(events)-1].Markdown
+	if strings.Contains(preview, "较早过程已省略") {
+		t.Fatalf("single-card preview omitted content at the legacy 2000-rune threshold: %q", preview[:80])
+	}
+}
+
+func TestCleanCardPreviewsUseCardCapacityInsteadOfLegacyLimit(t *testing.T) {
+	for _, mode := range []config.ReplyMode{config.ReplyModeAppendCleanCard, config.ReplyModeLatestCard} {
+		t.Run(string(mode), func(t *testing.T) {
+			clock := &fakeStreamClock{now: time.Unix(50, 0)}
+			renderer := card.NewFakeRenderer()
+			cfg := testConfig(t)
+			cfg.CardMaxChars = 12000
+			cfg.CardPreviewMaxChars = 2000
+			cfg.CardMinDeltaChars = 1
+			cfg.CardUpdateEvery = time.Millisecond
+			cfg.CardHeartbeatEvery = time.Hour
+			svc := NewService(cfg, card.NewFakeRenderer(), newFakeRunner(), audit.NewRecorder())
+			stream := newAgentCardStreamWithClock(svc, "run", session.Session{ID: "claude:chat"}, session.Input{
+				ReplyMode: mode, Time: clock.Now(),
+			}, renderer, nil, clock)
+			if err := stream.Start(); err != nil {
+				t.Fatal(err)
+			}
+			want := strings.Repeat("分析", 1250)
+			stream.Handle(AgentStreamUpdate{Segments: []card.Segment{{Kind: card.SegmentThought, Text: want}}})
+			if err := stream.Flush(); err != nil {
+				t.Fatal(err)
+			}
+			events := renderer.Events()
+			preview := events[len(events)-1]
+			if got := segmentTextByKind(preview, card.SegmentThought); !strings.Contains(got, want) {
+				t.Fatalf("clean-card preview was truncated at the legacy 2000-rune threshold: got %d runes", len([]rune(got)))
+			}
+			prepared, err := card.PrepareLarkCard(preview)
+			if err != nil {
+				t.Fatalf("PrepareLarkCard() error: %v", err)
+			}
+			if got := prepared.Capacity(); got.JSONBytes > card.LarkCardSoftMaxJSONBytes || got.Components > card.LarkCardMaxComponents {
+				t.Fatalf("prepared capacity = %#v", got)
+			}
+		})
+	}
+}
+
+func TestCleanCardsKeepLatestAnswerAcrossProgressSnapshots(t *testing.T) {
+	for _, mode := range []config.ReplyMode{config.ReplyModeAppendCleanCard, config.ReplyModeLatestCard} {
+		t.Run(string(mode), func(t *testing.T) {
+			clock := &fakeStreamClock{now: time.Unix(50, 0)}
+			renderer := card.NewFakeRenderer()
+			stream := newPreviewTestStreamForMode(t, renderer, clock, 1, 2000, mode)
+			if err := stream.Start(); err != nil {
+				t.Fatal(err)
+			}
+			stream.Handle(AgentStreamUpdate{
+				Segments:       []card.Segment{{Kind: card.SegmentText, Text: "已完成检查，继续执行。"}},
+				Activity:       streamActivityAnswering,
+				AnswerSnapshot: true,
+			})
+			stream.Handle(AgentStreamUpdate{
+				Segments:          []card.Segment{{Kind: card.SegmentThought, Text: "已完成检查，继续执行。"}},
+				Activity:          streamActivityReasoning,
+				AssistantSnapshot: true,
+				ProgressSnapshot:  true,
+			})
+			if err := stream.Flush(); err != nil {
+				t.Fatal(err)
+			}
+			preview := renderer.Events()[len(renderer.Events())-1]
+			if answer := segmentTextByKind(preview, card.SegmentText); answer != "已完成检查，继续执行。" {
+				t.Fatalf("%s answer after progress = %q", mode, answer)
+			}
+			if thought := segmentTextByKind(preview, card.SegmentThought); !strings.Contains(thought, "已完成检查，继续执行。") {
+				t.Fatalf("%s thought after progress = %q", mode, thought)
+			}
+
+			stream.Handle(AgentStreamUpdate{
+				Segments:       []card.Segment{{Kind: card.SegmentText, Text: "最终答案"}},
+				Activity:       streamActivityAnswering,
+				AnswerSnapshot: true,
+			})
+			if err := stream.Flush(); err != nil {
+				t.Fatal(err)
+			}
+			preview = renderer.Events()[len(renderer.Events())-1]
+			if answer := segmentTextByKind(preview, card.SegmentText); answer != "最终答案" {
+				t.Fatalf("%s answer after replacement = %q", mode, answer)
+			}
+		})
+	}
+}
+
+func TestCleanCardsKeepCandidateAnswerOnFailure(t *testing.T) {
+	for _, mode := range []config.ReplyMode{config.ReplyModeAppendCleanCard, config.ReplyModeLatestCard} {
+		t.Run(string(mode), func(t *testing.T) {
+			clock := &fakeStreamClock{now: time.Unix(50, 0)}
+			renderer := card.NewFakeRenderer()
+			stream := newPreviewTestStreamForMode(t, renderer, clock, 1, 2000, mode)
+			if err := stream.Start(); err != nil {
+				t.Fatal(err)
+			}
+			stream.Handle(AgentStreamUpdate{
+				Segments:       []card.Segment{{Kind: card.SegmentText, Text: "已完成检查，准备继续。"}},
+				Activity:       streamActivityAnswering,
+				AnswerSnapshot: true,
+			})
+			terminal, err := stream.Finish("failed", card.Meta{}, AgentRunResult{
+				Segments: []card.Segment{
+					{Kind: card.SegmentThought, Text: "已完成检查，准备继续。"},
+					{Kind: card.SegmentError, Text: "工具执行失败"},
+				},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			answer := segmentTextByKind(terminal, card.SegmentText)
+			if !containsAll(answer, "已完成检查，准备继续。", "工具执行失败") {
+				t.Fatalf("%s failed answer = %q", mode, answer)
+			}
+		})
 	}
 }
 
@@ -646,13 +890,13 @@ func TestCardHeartbeatRefreshesQuietRunningCardAndStopsAtTerminal(t *testing.T) 
 func TestCardHeartbeatKeepsBodyWithinPreviewLimit(t *testing.T) {
 	clock := &fakeStreamClock{now: time.Unix(100, 0)}
 	renderer := card.NewFakeRenderer()
-	stream := newPreviewTestStream(t, renderer, clock, 1, 10)
+	stream := newPreviewTestStream(t, renderer, clock, 1, 20)
 	stream.heartbeatEvery = 15 * time.Second
 	if err := stream.Start(); err != nil {
 		t.Fatal(err)
 	}
 
-	stream.Handle(AgentStreamUpdate{Segments: []card.Segment{{Kind: card.SegmentText, Text: strings.Repeat("x", 20)}}})
+	stream.Handle(AgentStreamUpdate{Segments: []card.Segment{{Kind: card.SegmentText, Text: strings.Repeat("x", 30)}}})
 	clock.Advance(15 * time.Second)
 
 	events := renderer.Events()
@@ -663,8 +907,15 @@ func TestCardHeartbeatKeepsBodyWithinPreviewLimit(t *testing.T) {
 	if !heartbeat.ForceFullUpdate {
 		t.Fatalf("heartbeat did not request a full update: %#v", heartbeat)
 	}
-	if len(heartbeat.Segments) != 1 || heartbeat.Segments[0].Text != strings.Repeat("x", 10) {
-		t.Fatalf("heartbeat body = %#v, want preview-limited text", heartbeat.Segments)
+	if len(heartbeat.Segments) != 2 || heartbeat.Segments[0].Text != "_较早过程已省略_" || !strings.HasSuffix(heartbeat.Segments[1].Text, "x") {
+		t.Fatalf("heartbeat body = %#v, want preview-limited tail", heartbeat.Segments)
+	}
+	totalRunes := 0
+	for _, segment := range heartbeat.Segments {
+		totalRunes += utf8.RuneCountInString(segment.Text)
+	}
+	if totalRunes > 20 {
+		t.Fatalf("heartbeat body has %d runes, want at most 20", totalRunes)
 	}
 }
 
@@ -898,8 +1149,15 @@ func TestStreamPreviewTruncatesUnicodeButTerminalIsCompleteAndCancelsTimer(t *te
 	full := strings.Repeat("你", 25)
 	stream.Handle(AgentStreamUpdate{Segments: []card.Segment{{Kind: card.SegmentText, Text: full}}})
 	preview := renderer.Events()[1]
-	if len(preview.Segments) != 1 || utf8.RuneCountInString(preview.Segments[0].Text) != 20 {
+	if len(preview.Segments) != 2 || preview.Segments[0].Text != "_较早过程已省略_" || !strings.HasSuffix(preview.Segments[1].Text, "你") {
 		t.Fatalf("preview segments = %#v", preview.Segments)
+	}
+	previewRunes := 0
+	for _, segment := range preview.Segments {
+		previewRunes += utf8.RuneCountInString(segment.Text)
+	}
+	if previewRunes > 20 {
+		t.Fatalf("preview has %d runes, want at most 20", previewRunes)
 	}
 	stream.Handle(AgentStreamUpdate{Segments: []card.Segment{{Kind: card.SegmentText, Text: "尾"}}})
 	if _, err := stream.Finish("completed", card.Meta{}, AgentRunResult{Segments: []card.Segment{{Kind: card.SegmentText, Text: full + "尾"}}}); err != nil {
@@ -1357,11 +1615,14 @@ func TestAppendCleanThreeSectionLatestOnly(t *testing.T) {
 	if !ev.ThreeSectionLayout {
 		t.Fatalf("expected ThreeSectionLayout for append-clean, got %#v", ev)
 	}
-	if !ev.ThoughtExpanded || ev.ToolsExpanded {
+	if ev.ThoughtExpanded || ev.ToolsExpanded {
 		t.Fatalf("running expand state wrong: thought=%v tools=%v", ev.ThoughtExpanded, ev.ToolsExpanded)
 	}
 	if ev.ThoughtRoundCount != 2 || ev.ToolRoundCount != 2 {
 		t.Fatalf("counts = thought:%d tool:%d, want 2/2", ev.ThoughtRoundCount, ev.ToolRoundCount)
+	}
+	if ev.HeaderTitle != "🛠️ 正在执行工具 · ⏱ 1m20s · 💭 2 · 🔧 2" {
+		t.Fatalf("worker running header = %q", ev.HeaderTitle)
 	}
 	thought := segmentTextByKind(ev, card.SegmentThought)
 	for _, want := range []string{"**🔹 #3 · 11:32:30** · 再想第二步", "**🔹 #1 · 11:32:00** · 先想第一步", cleanTimelineSeparator} {
@@ -1424,11 +1685,67 @@ func TestAppendCleanThreeSectionLatestOnly(t *testing.T) {
 	if terminal.ThoughtRoundCount != 2 || terminal.ToolRoundCount != 2 {
 		t.Fatalf("terminal counts = thought:%d tool:%d, want 2/2", terminal.ThoughtRoundCount, terminal.ToolRoundCount)
 	}
+	if terminal.HeaderTitle != "✅ 已完成 · ⏱ 1m20s · 💭 2 · 🔧 2" {
+		t.Fatalf("worker terminal header = %q", terminal.HeaderTitle)
+	}
 	if got := segmentTextByKind(terminal, card.SegmentThought); !strings.Contains(got, "🔹 #3 · 11:32:30") || !strings.Contains(got, "🔹 #1 · 11:32:00") {
 		t.Fatalf("terminal thought timeline should preserve two thoughts, got %q", got)
 	}
 	if got := segmentTextByKind(terminal, card.SegmentTool); !strings.Contains(got, "🔹 #4 · 11:33:20") || !strings.Contains(got, "🔹 #2 · 11:32:10") {
 		t.Fatalf("terminal tool timeline should preserve two tools, got %q", got)
+	}
+}
+
+func TestCodexProgressMessagesCountAsWorkerThoughtRounds(t *testing.T) {
+	clock := &fakeStreamClock{now: time.Date(2026, 8, 6, 19, 0, 0, 0, time.FixedZone("CST", 8*60*60))}
+	renderer := card.NewFakeRenderer()
+	stream := newPreviewTestStreamForMode(t, renderer, clock, 1, 4000, config.ReplyModeAppendCleanCard)
+	if err := stream.Start(); err != nil {
+		t.Fatal(err)
+	}
+
+	input := strings.Join([]string{
+		`{"type":"thread.started","thread_id":"codex-worker-count"}`,
+		`{"type":"turn.started"}`,
+		`{"type":"item.completed","item":{"id":"msg-1","type":"agent_message","text":"先检查发布状态。"}}`,
+		`{"type":"item.started","item":{"id":"cmd-1","type":"command_execution","command":"git status"}}`,
+		`{"type":"item.completed","item":{"id":"cmd-1","type":"command_execution","output":"clean","exit_code":0}}`,
+		`{"type":"item.completed","item":{"id":"msg-2","type":"agent_message","text":"再核对远端标签。"}}`,
+		`{"type":"item.started","item":{"id":"cmd-2","type":"command_execution","command":"git tag -l"}}`,
+		`{"type":"item.completed","item":{"id":"cmd-2","type":"command_execution","output":"v0.1.15-rc.4","exit_code":0}}`,
+		`{"type":"item.completed","item":{"id":"msg-3","type":"agent_message","text":"发布核验完成。"}}`,
+		`{"type":"turn.completed"}`,
+	}, "\n")
+	result, err := parseCodexStream(strings.NewReader(input), nil, stream.Handle)
+	if err != nil {
+		t.Fatal(err)
+	}
+	clock.Advance(12 * time.Second)
+	if err := stream.Flush(); err != nil {
+		t.Fatal(err)
+	}
+
+	running := renderer.Events()[len(renderer.Events())-1]
+	if running.ThoughtRoundCount != 2 || running.ToolRoundCount != 2 {
+		t.Fatalf("Codex running counts = thought:%d tool:%d, want 2/2", running.ThoughtRoundCount, running.ToolRoundCount)
+	}
+	if running.HeaderTitle != "✍️ 正在回复 · ⏱ 1s · 💭 2 · 🔧 2" {
+		t.Fatalf("Codex running header = %q", running.HeaderTitle)
+	}
+	thought := segmentTextByKind(running, card.SegmentThought)
+	if !containsAll(thought, "先检查发布状态。", "再核对远端标签。") {
+		t.Fatalf("Codex progress timeline = %q", thought)
+	}
+
+	terminal, err := stream.Finish("completed", card.Meta{}, result)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if terminal.ThoughtRoundCount != 2 || terminal.ToolRoundCount != 2 {
+		t.Fatalf("Codex terminal counts = thought:%d tool:%d, want 2/2", terminal.ThoughtRoundCount, terminal.ToolRoundCount)
+	}
+	if terminal.HeaderTitle != "✅ 已完成 · ⏱ 12s · 💭 2 · 🔧 2" {
+		t.Fatalf("Codex terminal header = %q", terminal.HeaderTitle)
 	}
 }
 
@@ -1626,7 +1943,7 @@ func TestFormatLatestToolClampsHugeOutputKeepsCommand(t *testing.T) {
 	if len([]rune(rendered)) >= len([]rune(huge)) {
 		t.Fatalf("渲染结果未收缩: %d >= %d", len([]rune(rendered)), len([]rune(huge)))
 	}
-	// 3) 渲染结果整体受控在预算附近(命令+框架+省略后的输出),远小于卡片 28KB 软上限,
+	// 3) 渲染结果整体受控在候选窗口内(命令+框架+输出),
 	//    从而下游 capacity 通常无需再对该 tool 段做 keepTail 截断(即便触发,命令也在头部已保住)。
 	if got := len([]rune(rendered)); got > maxToolOutputRunes+2000 {
 		t.Fatalf("渲染结果仍过大: %d runes", got)
@@ -1634,5 +1951,21 @@ func TestFormatLatestToolClampsHugeOutputKeepsCommand(t *testing.T) {
 	// 4) 结构完整:命令在前、输出在后
 	if strings.Index(rendered, cmd) > strings.Index(rendered, "**输出**") {
 		t.Fatalf("命令未排在输出之前")
+	}
+}
+
+func TestFormatLatestToolKeepsOutputBeyondLegacyLimit(t *testing.T) {
+	output := "OUTPUT_BEGIN\n" + strings.Repeat("x", 15000) + "\nOUTPUT_END"
+	s := &agentCardStream{
+		currentTool: &toolCall{ID: "tu-1", Name: "Bash", Cmd: "long-running-command", Output: output},
+	}
+	rendered := s.formatToolsLocked()
+	if strings.Contains(rendered, "中间省略") {
+		t.Fatal("output below the candidate window was truncated")
+	}
+	for _, want := range []string{"OUTPUT_BEGIN", "OUTPUT_END", strings.Repeat("x", 7000)} {
+		if !strings.Contains(rendered, want) {
+			t.Fatalf("tool output lost content beyond legacy 6000-rune limit: missing length=%d", len(want))
+		}
 	}
 }

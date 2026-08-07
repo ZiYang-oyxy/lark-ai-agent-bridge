@@ -10,9 +10,8 @@ import (
 	"lark-agent-bridge/internal/feishu"
 )
 
-// recordingSender captures every SendReply call and every DeleteMessage call
-// so tests can assert exactly what the precreate path did (nothing on the
-// guard-off branches; a single seed reply + optional recall on the on branch).
+// recordingSender captures the two-stage topic guide flow so tests can assert
+// the initial reply, in-place update, alias binding, and absence of recalls.
 // The programmable SendReply return value lets us cover both the success case
 // and the "Feishu accepted the reply but did not attach a thread" degrade.
 type recordingSender struct {
@@ -22,6 +21,22 @@ type recordingSender struct {
 	sendReplyErr      error
 	deletedMessageIDs []string
 	deleteMessageErr  error
+	updatedMessages   []updatedMessage
+	updateMessageErr  error
+}
+
+type updatedMessage struct {
+	messageID string
+	text      string
+}
+
+type replyOnlySender struct {
+	feishu.NoopSender
+	result feishu.SendResult
+}
+
+func (s *replyOnlySender) SendReply(context.Context, feishu.Reply) (feishu.SendResult, error) {
+	return s.result, nil
 }
 
 func (r *recordingSender) SendReply(_ context.Context, reply feishu.Reply) (feishu.SendResult, error) {
@@ -34,6 +49,11 @@ func (r *recordingSender) DeleteMessage(_ context.Context, messageID string) err
 	return r.deleteMessageErr
 }
 
+func (r *recordingSender) UpdateTextMessage(_ context.Context, messageID, text string) error {
+	r.updatedMessages = append(r.updatedMessages, updatedMessage{messageID: messageID, text: text})
+	return r.updateMessageErr
+}
+
 func TestShouldPrecreateTopicForPostMatrix(t *testing.T) {
 	base := Message{
 		ID:                 "om_root",
@@ -42,10 +62,10 @@ func TestShouldPrecreateTopicForPostMatrix(t *testing.T) {
 		ExplicitBotMention: true,
 	}
 	cases := []struct {
-		name  string
-		mut   func(m *Message)
-		mode  config.ConversationMode
-		want  bool
+		name string
+		mut  func(m *Message)
+		mode config.ConversationMode
+		want bool
 	}{
 		{"post_topic_explicit_no_thread", nil, config.ConversationModeTopic, true},
 		{"chat_mode_skipped", nil, config.ConversationModeChat, false},
@@ -68,7 +88,7 @@ func TestShouldPrecreateTopicForPostMatrix(t *testing.T) {
 	}
 }
 
-func TestPrecreateTopicForPostBindsAliasAndRecallsProbe(t *testing.T) {
+func TestPrecreateTopicForPostBindsAliasAndKeepsGuide(t *testing.T) {
 	sender := &recordingSender{
 		sendReplyResult: feishu.SendResult{
 			MessageID: "om_probe",
@@ -89,27 +109,34 @@ func TestPrecreateTopicForPostBindsAliasAndRecallsProbe(t *testing.T) {
 	if len(sender.sendReplies) != 1 {
 		t.Fatalf("SendReply calls = %d, want 1", len(sender.sendReplies))
 	}
-	probe := sender.sendReplies[0]
-	if !probe.ReplyInThread {
-		t.Fatalf("probe reply_in_thread = false, want true")
+	guide := sender.sendReplies[0]
+	if !guide.ReplyInThread {
+		t.Fatalf("guide reply_in_thread = false, want true")
 	}
-	if probe.ReplyToMessageID != "om_root" {
-		t.Fatalf("probe reply_to = %q, want om_root", probe.ReplyToMessageID)
+	if guide.ReplyToMessageID != "om_root" {
+		t.Fatalf("guide reply_to = %q, want om_root", guide.ReplyToMessageID)
 	}
-	if probe.Message != topicPrecreateProbeText {
-		t.Fatalf("probe body = %q, want %q", probe.Message, topicPrecreateProbeText)
+	if guide.Message != topicPrecreateGuidePendingText {
+		t.Fatalf("guide body = %q, want %q", guide.Message, topicPrecreateGuidePendingText)
 	}
-	if probe.Kind != feishu.ReplyKindPlaceholder {
-		t.Fatalf("probe kind = %q, want placeholder", probe.Kind)
+	if guide.Kind != feishu.ReplyKindPlaceholder {
+		t.Fatalf("guide kind = %q, want placeholder", guide.Kind)
 	}
 	if got, ok := aliases.Resolve("oc_test", "omt_precreated"); !ok || got != SyntheticTopicThreadPrefix+"om_root" {
 		t.Fatalf("alias resolve = (%q, %v), want (%q, true)", got, ok, SyntheticTopicThreadPrefix+"om_root")
 	}
-	if len(sender.deletedMessageIDs) != 1 || sender.deletedMessageIDs[0] != "om_probe" {
-		t.Fatalf("deleted probes = %v, want [om_probe]", sender.deletedMessageIDs)
+	if len(sender.deletedMessageIDs) != 0 {
+		t.Fatalf("guide message must remain visible, deleted = %v", sender.deletedMessageIDs)
+	}
+	wantUpdate := updatedMessage{messageID: "om_probe", text: topicPrecreateGuideSuccessText("omt_precreated")}
+	if len(sender.updatedMessages) != 1 || sender.updatedMessages[0] != wantUpdate {
+		t.Fatalf("guide updates = %#v, want %#v", sender.updatedMessages, wantUpdate)
 	}
 	if !hasAuditEvent(rec.Events(), "topic_precreate_ok") {
 		t.Fatalf("audit missing topic_precreate_ok: %+v", rec.Events())
+	}
+	if !hasAuditEvent(rec.Events(), "topic_precreate_guide_updated") {
+		t.Fatalf("audit missing topic_precreate_guide_updated: %+v", rec.Events())
 	}
 }
 
@@ -151,20 +178,61 @@ func TestPrecreateTopicForPostEmptyThreadDegrades(t *testing.T) {
 	if _, ok := aliases.Resolve("oc_test", ""); ok {
 		t.Fatalf("alias must not be bound with empty thread")
 	}
-	// The probe still exists on the chat side; the degrade path should try
-	// to recall it so the user does not see a lingering seed message.
-	if len(sender.deletedMessageIDs) != 1 || sender.deletedMessageIDs[0] != "om_probe" {
-		t.Fatalf("expected best-effort probe recall on empty-thread degrade, got %v", sender.deletedMessageIDs)
+	if len(sender.deletedMessageIDs) != 0 {
+		t.Fatalf("failed guide must not be recalled into a system placeholder, deleted = %v", sender.deletedMessageIDs)
+	}
+	wantUpdate := updatedMessage{messageID: "om_probe", text: topicPrecreateGuideDegradedText("om_probe")}
+	if len(sender.updatedMessages) != 1 || sender.updatedMessages[0] != wantUpdate {
+		t.Fatalf("degraded guide updates = %#v, want %#v", sender.updatedMessages, wantUpdate)
 	}
 	if !hasAuditEvent(rec.Events(), "topic_precreate_failed") {
 		t.Fatalf("audit missing topic_precreate_failed: %+v", rec.Events())
 	}
 }
 
-func TestPrecreateTopicForPostProbeRecallFailureAudited(t *testing.T) {
+func TestPrecreateTopicForPostGuideUpdateFailureDoesNotRollbackTopic(t *testing.T) {
 	sender := &recordingSender{
 		sendReplyResult:  feishu.SendResult{MessageID: "om_probe", ThreadID: "omt_precreated"},
-		deleteMessageErr: errors.New("beyond recall window"),
+		updateMessageErr: errors.New("update denied"),
+	}
+	aliases := NewTopicAliasStore()
+	rec := audit.NewRecorder()
+	svc := &Service{Notifier: sender, TopicAliases: aliases, Audit: rec}
+	msg := Message{ID: "om_root", ChatID: "oc_test", Sender: "ou_user", MessageType: "post", ExplicitBotMention: true}
+
+	if got := svc.precreateTopicForPost(context.Background(), msg); got != "omt_precreated" {
+		t.Fatalf("thread = %q, want omt_precreated", got)
+	}
+	if got, ok := aliases.Resolve("oc_test", "omt_precreated"); !ok || got != SyntheticTopicThreadPrefix+"om_root" {
+		t.Fatalf("alias resolve = (%q, %v)", got, ok)
+	}
+	if !hasAuditEvent(rec.Events(), "topic_precreate_guide_update_failed") || !hasAuditEvent(rec.Events(), "topic_precreate_ok") {
+		t.Fatalf("audit missing update failure or topic success: %+v", rec.Events())
+	}
+}
+
+func TestPrecreateTopicForPostWithoutUpdaterKeepsTopic(t *testing.T) {
+	sender := &replyOnlySender{result: feishu.SendResult{MessageID: "om_probe", ThreadID: "omt_precreated"}}
+	aliases := NewTopicAliasStore()
+	rec := audit.NewRecorder()
+	svc := &Service{Notifier: sender, TopicAliases: aliases, Audit: rec}
+	msg := Message{ID: "om_root", ChatID: "oc_test", Sender: "ou_user", MessageType: "post", ExplicitBotMention: true}
+
+	if got := svc.precreateTopicForPost(context.Background(), msg); got != "omt_precreated" {
+		t.Fatalf("thread = %q, want omt_precreated", got)
+	}
+	if got, ok := aliases.Resolve("oc_test", "omt_precreated"); !ok || got != SyntheticTopicThreadPrefix+"om_root" {
+		t.Fatalf("alias resolve = (%q, %v)", got, ok)
+	}
+	if !hasAuditEvent(rec.Events(), "topic_precreate_guide_update_failed") || !hasAuditEvent(rec.Events(), "topic_precreate_ok") {
+		t.Fatalf("audit missing updater failure or topic success: %+v", rec.Events())
+	}
+}
+
+func TestPrecreateTopicForPostNeverRecallsGuide(t *testing.T) {
+	sender := &recordingSender{
+		sendReplyResult:  feishu.SendResult{MessageID: "om_probe", ThreadID: "omt_precreated"},
+		deleteMessageErr: errors.New("delete must not be called"),
 	}
 	aliases := NewTopicAliasStore()
 	rec := audit.NewRecorder()
@@ -172,17 +240,17 @@ func TestPrecreateTopicForPostProbeRecallFailureAudited(t *testing.T) {
 
 	msg := Message{ID: "om_root", ChatID: "oc_test", Sender: "ou_user", MessageType: "post", ExplicitBotMention: true}
 	if got := svc.precreateTopicForPost(context.Background(), msg); got != "omt_precreated" {
-		t.Fatalf("thread = %q, want omt_precreated even if recall fails", got)
+		t.Fatalf("thread = %q, want omt_precreated", got)
 	}
 	// Alias must still be bound — the topic is already open on Feishu side.
 	if got, ok := aliases.Resolve("oc_test", "omt_precreated"); !ok || got != SyntheticTopicThreadPrefix+"om_root" {
-		t.Fatalf("alias resolve on recall-fail = (%q, %v)", got, ok)
+		t.Fatalf("alias resolve = (%q, %v)", got, ok)
+	}
+	if len(sender.deletedMessageIDs) != 0 {
+		t.Fatalf("guide message must not be recalled, deleted = %v", sender.deletedMessageIDs)
 	}
 	if !hasAuditEvent(rec.Events(), "topic_precreate_ok") {
-		t.Fatalf("audit missing topic_precreate_ok on recall-fail: %+v", rec.Events())
-	}
-	if !hasAuditEvent(rec.Events(), "topic_precreate_probe_recall_failed") {
-		t.Fatalf("audit missing topic_precreate_probe_recall_failed: %+v", rec.Events())
+		t.Fatalf("audit missing topic_precreate_ok: %+v", rec.Events())
 	}
 }
 

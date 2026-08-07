@@ -131,7 +131,7 @@ sequenceDiagram
 
 `internal/bridge` 是系统核心，主要职责包括：
 
-- 解析普通消息与 `/new`、`/stop`、`/config`、`/resume`、`/cd`、`/ws`、`/cron`、`/timer` 等命令。
+- 解析普通消息与 `/new`、`/stop`、`/compact`、`/config`、`/resume`、`/cd`、`/ws`、`/cron`、`/timer` 等命令。
 - 计算 conversation scope、有效 workdir 和冻结后的 runtime preference。
 - 驱动 session queue、debounce、batch、active run、stop 与 shutdown 收敛。
 - 把 Claude/Codex 的不同事件协议归一为统一的卡片段和运行元数据。
@@ -156,6 +156,7 @@ sequenceDiagram
 
 - Claude 使用 `-p --output-format stream-json`，通过 session ID resume；支持从已有 session fork 新 topic。
 - Codex 使用 `exec --json` / `exec resume --json`，prompt 从 stdin 传入；当前 CLI 没有与 Claude 等价的 fork 能力。
+- `/compact` 作为独立 durable control input 与普通 prompt 隔离：Claude 由 headless CLI 原生截获，Codex 通过同一 preset binary 的 app-server 执行 `thread/resume` 与 `thread/compact/start`，完成后继续沿用原 session ID。
 - 两者都把正文、思考、工具、model、token 和 session ID 映射为统一结果。
 - 子进程 `cmd.Dir` 与 `PWD` 都使用本轮冻结的有效 workdir；停止通过 context 取消并终止进程组。
 
@@ -236,7 +237,7 @@ Agent 只能通过私有 Unix socket 和单次 token 提交规则字段，不能
 - **日志**：`audit.jsonl` 记录脱敏事件；`agent-requests.jsonl` 为受限精确 prompt 日志；`feishu-events.jsonl` 保存 SDK 解析前事件。三者用途和敏感度不同。
 - **去重**：消息 receipt、schedule run ID、action grant 和 CardKit sequence 分别约束不同的重复投递，不用一个通用 ID 假装覆盖全部一致性问题。
 - **关闭**：收到 SIGTERM/SIGINT 后停止接收新输入，关闭 schedule control，取消 active Agent，等待有界 grace period，并保存可恢复 context。
-- **自升级**：只有 owner/admin 可确认；升级前检查 active/queued 任务、manifest、文件大小与 SHA-256，原子替换失败时恢复旧 binary。
+- **自升级**：只有 owner/admin 可确认；升级前检查 active/queued 任务、manifest、文件大小与 SHA-256，原子替换失败时恢复旧 binary。新 binary 成功启动后，systemd 托管进程以专用非零退出码触发 supervisor 重启，避免新子进程被 `KillMode=control-group` 清理后 unit 停留在 inactive。
 - **部署安全**：凭据可来自受权限约束的 secret file；online doctor 验证 Bot 身份；`serve` 通过 App ID 摘要 advisory lock 避免同机重复消费。
 
 ## 配置与部署
