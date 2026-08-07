@@ -60,39 +60,42 @@ type NormalizedRule struct {
 }
 
 type Draft struct {
-	ID          string          `json:"id"`
-	OriginRunID string          `json:"origin_run_id,omitempty"`
-	Kind        Kind            `json:"kind"`
-	CronExpr    string          `json:"cron_expr,omitempty"`
-	ScheduledAt time.Time       `json:"scheduled_at,omitempty"`
-	Timezone    string          `json:"timezone"`
-	Description string          `json:"description"`
-	Prompt      string          `json:"prompt"`
-	Creator     string          `json:"creator"`
-	Target      Target          `json:"target"`
-	Execution   FrozenExecution `json:"execution"`
-	CreatedAt   time.Time       `json:"created_at"`
-	ExpiresAt   time.Time       `json:"expires_at"`
-	Next        []time.Time     `json:"next"`
+	ID            string          `json:"id"`
+	OriginRunID   string          `json:"origin_run_id,omitempty"`
+	Kind          Kind            `json:"kind"`
+	CronExpr      string          `json:"cron_expr,omitempty"`
+	ScheduledAt   time.Time       `json:"scheduled_at,omitempty"`
+	Timezone      string          `json:"timezone"`
+	Description   string          `json:"description"`
+	Prompt        string          `json:"prompt"`
+	Creator       string          `json:"creator"`
+	Target        Target          `json:"target"`
+	Execution     FrozenExecution `json:"execution"`
+	CreatedAt     time.Time       `json:"created_at"`
+	ExpiresAt     time.Time       `json:"expires_at"`
+	AutoConfirmAt time.Time       `json:"auto_confirm_at,omitempty"`
+	Next          []time.Time     `json:"next"`
 }
 
 type Task struct {
-	ID          string          `json:"id"`
-	Kind        Kind            `json:"kind"`
-	CronExpr    string          `json:"cron_expr,omitempty"`
-	ScheduledAt time.Time       `json:"scheduled_at,omitempty"`
-	Timezone    string          `json:"timezone"`
-	Description string          `json:"description"`
-	Prompt      string          `json:"prompt"`
-	Creator     string          `json:"creator"`
-	Target      Target          `json:"target"`
-	Execution   FrozenExecution `json:"execution"`
-	Enabled     bool            `json:"enabled"`
-	Archived    bool            `json:"archived,omitempty"`
-	CreatedAt   time.Time       `json:"created_at"`
-	ConfirmedAt time.Time       `json:"confirmed_at"`
-	NextRun     time.Time       `json:"next_run,omitempty"`
-	LastRunID   string          `json:"last_run_id,omitempty"`
+	ID                       string          `json:"id"`
+	Kind                     Kind            `json:"kind"`
+	CronExpr                 string          `json:"cron_expr,omitempty"`
+	ScheduledAt              time.Time       `json:"scheduled_at,omitempty"`
+	Timezone                 string          `json:"timezone"`
+	Description              string          `json:"description"`
+	Prompt                   string          `json:"prompt"`
+	Creator                  string          `json:"creator"`
+	Target                   Target          `json:"target"`
+	Execution                FrozenExecution `json:"execution"`
+	Enabled                  bool            `json:"enabled"`
+	Archived                 bool            `json:"archived,omitempty"`
+	AutoConfirmed            bool            `json:"auto_confirmed,omitempty"`
+	AutoConfirmNoticePending bool            `json:"auto_confirm_notice_pending,omitempty"`
+	CreatedAt                time.Time       `json:"created_at"`
+	ConfirmedAt              time.Time       `json:"confirmed_at"`
+	NextRun                  time.Time       `json:"next_run,omitempty"`
+	LastRunID                string          `json:"last_run_id,omitempty"`
 }
 
 type Run struct {

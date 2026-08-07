@@ -46,6 +46,70 @@ func TestStorePersistsConfirmedTaskWithPrivatePermissions(t *testing.T) {
 	}
 }
 
+func TestStorePersistsDraftAutoConfirmDeadline(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "schedules.json")
+	store, err := NewStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	draft := fixtureDraft()
+	if err := store.CreateDraft(draft); err != nil {
+		t.Fatal(err)
+	}
+	deadline := draft.CreatedAt.Add(time.Minute)
+	updated, err := store.SetDraftAutoConfirmAt(draft.ID, deadline)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !updated.AutoConfirmAt.Equal(deadline) {
+		t.Fatalf("updated deadline = %s, want %s", updated.AutoConfirmAt, deadline)
+	}
+	reloaded, err := NewStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, ok := reloaded.Draft(draft.ID)
+	if !ok || !got.AutoConfirmAt.Equal(deadline) {
+		t.Fatalf("reloaded draft = %#v", got)
+	}
+}
+
+func TestStorePersistsAutoConfirmNotificationRetry(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "schedules.json")
+	store, err := NewStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	draft := fixtureDraft()
+	draft.AutoConfirmAt = draft.CreatedAt.Add(time.Minute)
+	if err := store.CreateDraft(draft); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.AutoConfirmDraft(draft.ID, draft.AutoConfirmAt); err != nil {
+		t.Fatal(err)
+	}
+
+	reloaded, err := NewStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	task, ok := reloaded.Task(draft.ID)
+	if !ok || !task.AutoConfirmed || !task.AutoConfirmNoticePending {
+		t.Fatalf("reloaded task = %#v", task)
+	}
+	if err := reloaded.MarkAutoConfirmNotified(draft.ID); err != nil {
+		t.Fatal(err)
+	}
+	reloaded, err = NewStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	task, _ = reloaded.Task(draft.ID)
+	if task.AutoConfirmNoticePending {
+		t.Fatal("notification completion was not persisted")
+	}
+}
+
 func TestStoreRejectsCorruptAndUnsupportedSnapshots(t *testing.T) {
 	for name, body := range map[string]string{
 		"corrupt":     "{",

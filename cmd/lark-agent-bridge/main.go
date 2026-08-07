@@ -600,6 +600,10 @@ func runServe(args []string) error {
 	if err := scheduleControl.Start(ctx); err != nil {
 		return fmt.Errorf("start schedule control: %w", err)
 	}
+	if err := svc.ProcessScheduleConfirmations(time.Now()); err != nil {
+		_ = scheduleControl.Close()
+		return fmt.Errorf("recover schedule confirmations: %w", err)
+	}
 	if err := scheduleEngine.Start(ctx); err != nil {
 		_ = scheduleControl.Close()
 		return fmt.Errorf("start schedule engine: %w", err)

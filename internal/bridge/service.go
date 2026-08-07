@@ -67,6 +67,11 @@ type pendingMergeForward struct {
 	ExpiresAt time.Time
 }
 
+type pendingScheduleConfirmation struct {
+	event         card.Event
+	lastRemaining int
+}
+
 type Service struct {
 	Config                config.Config
 	Sessions              *session.Manager
@@ -111,6 +116,8 @@ type Service struct {
 	Updates            UpdateManager
 	accessMu           sync.RWMutex
 	knownChats         []feishu.KnownChat
+	scheduleConfirmMu  sync.Mutex
+	scheduleConfirms   map[string]pendingScheduleConfirmation
 
 	mu          sync.Mutex
 	pendingRuns map[string]pendingRun
@@ -405,6 +412,7 @@ func NewServiceWithSessions(cfg config.Config, renderer card.Renderer, runner Ag
 		resumeContexts:       map[string]resumeContext{},
 		actionReplyHints:     map[string]string{},
 		pendingMergeForwards: map[string]pendingMergeForward{},
+		scheduleConfirms:     map[string]pendingScheduleConfirmation{},
 		reactionDelay:        defaultWaitingReactionDelay,
 		startedAt:            time.Now(),
 		accepting:            true,
@@ -2060,12 +2068,12 @@ func (s *Service) HandleActionResult(ctx context.Context, req ActionRequest) (Ac
 		if err != nil {
 			return ActionResult{}, err
 		}
-		return s.renderActionEvent(card.Event{Type: "schedule_confirmed", SessionID: req.SessionID, HeaderTitle: "✅ 定时任务已创建", HeaderTemplate: "green", Segments: []card.Segment{{Kind: card.SegmentText, Text: confirmedScheduleText(task)}}, Actions: []card.Action{{ID: "schedule.confirm", Label: "已确认", Value: task.ID, Disabled: true}, {ID: "schedule.cancel", Label: "取消", Value: task.ID, Disabled: true}}})
+		return s.renderActionEvent(card.Event{Type: "schedule_confirmed", SessionID: req.SessionID, HeaderTitle: "✅ 定时任务已创建", HeaderTemplate: "green", Segments: []card.Segment{{Kind: card.SegmentText, Text: confirmedScheduleText(task)}}, Actions: disabledScheduleActions(task.ID)})
 	case "schedule.cancel":
 		if s.Schedules == nil {
 			return ActionResult{}, errors.New("schedule store is not configured")
 		}
-		if err := s.Schedules.CancelDraft(strings.TrimSpace(req.Value), req.Actor); err != nil {
+		if err := s.cancelScheduleDraft(strings.TrimSpace(req.Value), req.Actor); err != nil {
 			return ActionResult{}, err
 		}
 		s.Audit.Record(req.Actor, "schedule_draft_cancelled", req.Value, "card action")
@@ -3121,6 +3129,7 @@ func (s *Service) startBackgroundLoopsWithMediaTicks(ctx context.Context, pendin
 				return
 			case now := <-pendingTicks:
 				_ = s.RenderPendingRunTimeouts(now)
+				_ = s.ProcessScheduleConfirmations(now)
 			case now := <-readyTicks:
 				_ = s.DrainReady(now)
 			case <-mediaTicks:
