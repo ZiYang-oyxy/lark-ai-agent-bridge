@@ -86,6 +86,7 @@ func BuildLarkCard(e Event) map[string]any {
 		"schema": "2.0",
 		"config": map[string]any{
 			"update_multi":   true,
+			"width_mode":     "fill",
 			"streaming_mode": e.Streaming,
 			"summary":        map[string]string{"content": title},
 		},
