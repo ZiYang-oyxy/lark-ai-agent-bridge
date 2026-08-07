@@ -340,6 +340,27 @@ func TestBuildLarkCardIncludesActionsAndHidesMeta(t *testing.T) {
 	}
 }
 
+func TestBuildLarkCardUsesFullAvailableWidth(t *testing.T) {
+	tests := []struct {
+		name  string
+		event Event
+	}{
+		{name: "streaming reply", event: Event{Type: "stream", Streaming: true}},
+		{name: "terminal reply", event: Event{Type: "result", Segments: []Segment{{Kind: SegmentText, Text: "done"}}}},
+		{name: "markdown layout", event: Event{Type: "result", MarkdownLayout: true, Markdown: "| A | B |\n|---|---|\n| 1 | 2 |"}},
+		{name: "command card", event: Event{Type: "help", HelpCard: &HelpCard{}}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			config := BuildLarkCard(tt.event)["config"].(map[string]any)
+			if config["width_mode"] != "fill" {
+				t.Fatalf("width_mode = %#v, want fill", config["width_mode"])
+			}
+		})
+	}
+}
+
 // meta 三行(agent/会话ID/模型/tokens · user/ip/workdir · 版本/最新/开发者模式)
 // 由三个独立开关 ShowMetaRow{Agent,Runtime,Developer} 控制:全 false 时返回空切片
 // 与旧的"总开关关闭"视觉一致;分别打开只渲染对应行。
