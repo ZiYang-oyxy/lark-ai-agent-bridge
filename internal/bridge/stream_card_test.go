@@ -917,7 +917,7 @@ func TestStreamPreviewTruncatesUnicodeButTerminalIsCompleteAndCancelsTimer(t *te
 	}
 }
 
-func TestStreamPreviewFailureDisablesOnlyIntermediateUpdates(t *testing.T) {
+func TestStreamPreviewFailureRetriesIntermediateUpdates(t *testing.T) {
 	clock := &fakeStreamClock{now: time.Unix(300, 0)}
 	renderer := &indexedFailRenderer{failCall: 2}
 	stream := newPreviewTestStream(t, renderer, clock, 30, 2000)
@@ -925,16 +925,15 @@ func TestStreamPreviewFailureDisablesOnlyIntermediateUpdates(t *testing.T) {
 		t.Fatal(err)
 	}
 	stream.Handle(AgentStreamUpdate{Segments: []card.Segment{{Kind: card.SegmentText, Text: "first"}}})
-	stream.Handle(AgentStreamUpdate{Segments: []card.Segment{{Kind: card.SegmentText, Text: "second"}}})
 	clock.Advance(time.Second)
-	if got := len(renderer.Events()); got != 2 {
-		t.Fatalf("events after failed preview = %d, want previews disabled", got)
+	if got := len(renderer.Events()); got != 3 {
+		t.Fatalf("events after failed preview retry = %d, want initial + failed + recovered preview", got)
 	}
 	if _, err := stream.Finish("completed", card.Meta{}, AgentRunResult{Segments: []card.Segment{{Kind: card.SegmentText, Text: "final"}}}); err != nil {
 		t.Fatal(err)
 	}
 	events := renderer.Events()
-	if len(events) != 3 || events[2].Type != "result" {
+	if len(events) != 4 || events[3].Type != "result" {
 		t.Fatalf("terminal after preview failure = %#v", events)
 	}
 }
