@@ -647,6 +647,19 @@ func (s *agentCardStream) cancelPreviewTimerLocked() {
 	}
 }
 
+func (s *agentCardStream) schedulePreviewRetryLocked() {
+	if s.closed || s.stopping || s.previewDisabled || s.previewPending || s.previewTimer != nil {
+		return
+	}
+	delay := s.previewPolicy.Interval
+	if delay <= 0 {
+		delay = time.Second
+	}
+	s.previewGen++
+	generation := s.previewGen
+	s.previewTimer = s.clock.AfterFunc(delay, func() { s.onPreviewTimer(generation) })
+}
+
 func (s *agentCardStream) onPreviewTimer(generation uint64) {
 	s.mu.Lock()
 	if s.closed || s.previewDisabled || s.previewPending || generation != s.previewGen {
@@ -751,9 +764,11 @@ func (s *agentCardStream) flushPreview(generation uint64) error {
 	}
 	s.previewPending = false
 	if err != nil {
-		s.previewDisabled = true
-		s.cancelPreviewTimerLocked()
-		s.cancelHeartbeatLocked()
+		// A transient CardKit error must not freeze a long-running card. Keep
+		// the pending revision and retry at the normal preview cadence.
+		s.lastFlush = s.clock.Now()
+		s.resetHeartbeatLocked()
+		s.schedulePreviewRetryLocked()
 		s.mu.Unlock()
 		return err
 	}
