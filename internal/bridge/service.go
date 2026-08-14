@@ -1341,7 +1341,7 @@ func (s *Service) runWithPreference(ctx context.Context, cmd Command, msg Messag
 			msg.ThreadID = realThread
 		}
 	}
-	conversationKey := sessionKeyForModeWithAlias(cmd.Agent, msg, preference.ConversationMode, s.TopicAliases)
+	conversationKey := s.keyForMessage(cmd.Agent, msg, preference.ConversationMode)
 	workDir := s.effectiveWorkDir(conversationKey, cmd)
 	key := conversationKey
 	if cmd.ScheduleKind != "" {
@@ -3657,7 +3657,34 @@ func (s *Service) sessionKey(kind agent.Kind, msg Message) session.Key {
 // paths should all go through this rather than the bare sessionKeyForMode so
 // they observe the same routing.
 func (s *Service) keyForMessage(kind agent.Kind, msg Message, mode config.ConversationMode) session.Key {
-	return sessionKeyForModeWithAlias(kind, msg, mode, s.TopicAliases)
+	if mode == config.ConversationModeTopic && msg.ThreadID != "" && s.Sessions != nil {
+		realKey := session.Key{Agent: kind, ChatID: msg.ChatID, Thread: msg.ThreadID}
+		if _, ok := s.Sessions.Get(realKey); ok {
+			// A topic that arrived with a real omt_* key must stay on that key.
+			// This also heals aliases written by the old unconditional root_id
+			// fallback, which split an established topic into a second session.
+			return realKey
+		}
+	}
+
+	key := sessionKeyForModeWithAlias(kind, msg, mode, s.TopicAliases)
+	if mode != config.ConversationModeTopic || msg.ThreadID == "" || msg.RootID == "" ||
+		key.Thread != msg.ThreadID || s.Sessions == nil {
+		return key
+	}
+
+	// An alias may be unavailable after state loss, but root_id alone does not
+	// prove that Bridge minted a synthetic key: manually-created Feishu topics
+	// carry the same field. Recover only when that synthetic session exists.
+	syntheticKey := session.Key{
+		Agent:  kind,
+		ChatID: msg.ChatID,
+		Thread: SyntheticTopicThreadPrefix + msg.RootID,
+	}
+	if _, ok := s.Sessions.Get(syntheticKey); ok {
+		return syntheticKey
+	}
+	return key
 }
 
 func conversationModeForMessage(msg Message, configured config.ConversationMode) config.ConversationMode {
@@ -3699,12 +3726,6 @@ func sessionKeyForModeWithAlias(kind agent.Kind, msg Message, mode config.Conver
 				key.Thread = syn
 				return key
 			}
-		}
-		if msg.RootID != "" {
-			// 话题根消息即当初 mint synthetic key 的原始 @bot 消息；
-			// 直接路由回同一 synthetic session，重启丢 alias 也能自愈。
-			key.Thread = SyntheticTopicThreadPrefix + msg.RootID
-			return key
 		}
 		key.Thread = msg.ThreadID
 		return key

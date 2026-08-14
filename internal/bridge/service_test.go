@@ -2423,29 +2423,27 @@ func TestServiceTopicAliasRoutesFollowUpIntoSyntheticSession(t *testing.T) {
 	}
 }
 
-// When a follow-up arrives with a real thread_id but no alias is bound (e.g.
-// after a supervisor restart dropped the in-memory alias), the message's
-// root_id — the original @bot message that minted the synthetic key — lets us
-// self-heal by routing back to "@bot:<root_id>" instead of a fresh empty
-// session on the real thread_id.
-func TestSessionKeyRootIDFallbackWhenAliasMisses(t *testing.T) {
-	// No alias store at all (nil resolver): pure root_id fallback.
+// root_id alone cannot distinguish a manually-created Feishu topic from one
+// created by Bridge for a top-level mention. The pure resolver keeps the real
+// topic key; Service.keyForMessage performs synthetic recovery only when the
+// corresponding synthetic session actually exists.
+func TestSessionKeyRootIDDoesNotImplySyntheticSession(t *testing.T) {
 	followUp := Message{ID: "m2", ChatID: "chat", ThreadID: "omt_real", RootID: "m1", Sender: "u"}
 	key := sessionKeyForModeWithAlias(agent.Claude, followUp, config.ConversationModeTopic, nil)
-	if key.Thread != SyntheticTopicThreadPrefix+"m1" {
-		t.Fatalf("root_id fallback key = %+v, want thread=%s", key, SyntheticTopicThreadPrefix+"m1")
+	if key.Thread != "omt_real" {
+		t.Fatalf("root_id-only key = %+v, want real thread omt_real", key)
 	}
 
-	// With an empty alias store (miss), root_id still wins over the real thread.
+	// An empty alias store produces the same result.
 	aliases := NewTopicAliasStore()
 	key = sessionKeyForModeWithAlias(agent.Claude, followUp, config.ConversationModeTopic, aliases)
-	if key.Thread != SyntheticTopicThreadPrefix+"m1" {
-		t.Fatalf("root_id fallback with empty store = %+v, want thread=%s", key, SyntheticTopicThreadPrefix+"m1")
+	if key.Thread != "omt_real" {
+		t.Fatalf("root_id-only key with empty store = %+v, want real thread omt_real", key)
 	}
 }
 
-// A bound alias must take priority over the root_id fallback so an explicitly
-// recorded mapping is never overridden by the heuristic.
+// A bound alias remains authoritative when no existing real session overrides
+// it at the Service layer.
 func TestSessionKeyAliasBeatsRootIDFallback(t *testing.T) {
 	aliases := NewTopicAliasStore()
 	aliases.Bind("chat", "omt_real", SyntheticTopicThreadPrefix+"origin")

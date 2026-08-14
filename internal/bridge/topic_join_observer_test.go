@@ -8,6 +8,7 @@ import (
 	"lark-agent-bridge/internal/agent"
 	"lark-agent-bridge/internal/audit"
 	"lark-agent-bridge/internal/config"
+	"lark-agent-bridge/internal/session"
 )
 
 type fakeTopicStore struct {
@@ -126,12 +127,16 @@ func TestTopicJoinObserverBindsRunSyntheticThreadNotReplyID(t *testing.T) {
 		t.Fatalf("alias = %q, want %q (A's synthetic key, not G-derived %q)", got, SyntheticTopicThreadPrefix+"om_A", SyntheticTopicThreadPrefix+"om_G")
 	}
 
-	// Invariant: the alias-hit path now yields the same synthetic key the
-	// root_id fallback would compute for a follow-up whose root_id is om_A —
-	// so the two routing paths never split.
+	// Invariant: when the synthetic session exists, the alias-hit path yields
+	// the same key as the service-scoped root_id recovery path.
 	followUp := Message{ID: "om_G2", ChatID: "oc_chat", ThreadID: "omt_X", RootID: "om_A", Sender: "u"}
-	aliasKey := sessionKeyForModeWithAlias(agent.Claude, followUp, config.ConversationModeTopic, aliases)
-	rootIDKey := sessionKeyForModeWithAlias(agent.Claude, followUp, config.ConversationModeTopic, nil)
+	syntheticKey := session.Key{Agent: agent.Claude, ChatID: "oc_chat", Thread: SyntheticTopicThreadPrefix + "om_A"}
+	sessions := session.NewManager()
+	sessions.GetOrCreate(syntheticKey, "")
+	svc := &Service{Sessions: sessions, TopicAliases: aliases}
+	aliasKey := svc.keyForMessage(agent.Claude, followUp, config.ConversationModeTopic)
+	svc.TopicAliases = nil
+	rootIDKey := svc.keyForMessage(agent.Claude, followUp, config.ConversationModeTopic)
 	if aliasKey != rootIDKey {
 		t.Fatalf("alias path key %+v != root_id fallback key %+v; paths split", aliasKey, rootIDKey)
 	}
