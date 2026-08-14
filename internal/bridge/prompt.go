@@ -51,11 +51,11 @@ func BuildBatchPrompt(batch session.Batch) string {
 // writeQuotedBlock renders the message the user replied to as a clearly
 // delimited external quote so the agent treats it as referenced context.
 //
-// 结构极简：一行中性 header（保留 open_id 便于追溯）+ 逐行 `> ` 引文，之后
+// 结构极简：一行中性 header（优先显示姓名并始终保留 open_id）+ 逐行 `> ` 引文，之后
 // 一个空行结束。不按 sender_type 追加任何后缀说明（"来自另一个 bot" / "由
 // 你自己发出"）——这些都是对 agent 的解读性暗示，且判定可能失真（同一 App
-// 但 self_bot 识别漏、或 upstream sender_type 不准）。header 只承载纯事实
-// (open_id)，agent 自己看 open_id 判断即可。
+// 但 self_bot 识别漏、或 upstream sender_type 不准）。header 只承载可读姓名和
+// open_id 两项事实。
 //
 // QuotedSenderType 字段仍保留在 session.Input 上供 audit / 未来路由使用，
 // 只是不再进入 prompt 文本。
@@ -66,7 +66,7 @@ func writeQuotedBlock(b *strings.Builder, input session.Input) {
 	}
 	sender := strings.TrimSpace(input.QuotedSender)
 	if sender != "" {
-		fmt.Fprintf(b, "[用户引用了 %s 的消息]\n", sender)
+		fmt.Fprintf(b, "[用户引用了 %s 的消息]\n", quotedSenderLabel(input.QuotedSenderName, sender))
 	} else {
 		b.WriteString("[用户引用了一条消息]\n")
 	}
@@ -78,6 +78,18 @@ func writeQuotedBlock(b *strings.Builder, input session.Input) {
 	}
 
 	b.WriteByte('\n')
+}
+
+func quotedSenderLabel(name, openID string) string {
+	openID = strings.TrimSpace(openID)
+	if openID == "" {
+		return ""
+	}
+	name = strings.Join(strings.Fields(name), " ")
+	if name == "" || name == openID {
+		return openID
+	}
+	return name + "(" + openID + ")"
 }
 
 func attachmentPromptKind(attachment media.Attachment) string {

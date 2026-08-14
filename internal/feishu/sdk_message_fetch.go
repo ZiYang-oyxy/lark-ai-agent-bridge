@@ -26,12 +26,13 @@ const (
 // (replied-to) message into an agent prompt.
 type FetchedMessage struct {
 	MessageID   string
+	ChatID      string
 	MessageType string
 	Text        string
 	SenderID    string
+	SenderName  string
 	// SenderType 是被引用消息发送者的主体类型，飞书 im.v1 message.Get 直接返回
-	// (`user` / `app` / `anonymous` / `unknown`)。上层用它在 prompt 里给引用块加
-	// 主体身份边框——避免另一个 bot 的第一人称自述被 agent 误当成自己的历史。
+	// (`user` / `app` / `anonymous` / `unknown`)。上层保留该事实供 audit 和路由使用。
 	SenderType string
 	// Attachments 是被引用消息里可下载的图片/文件引用。上层(topic seed quote 模式)
 	// 用它把引用里的图片拉回来喂给 agent。文本消息返回 nil。
@@ -111,6 +112,9 @@ func (s *SDKSender) fetchMessage(ctx context.Context, messageID string, state *m
 		return cacheMessageFetch(state, messageID, FetchedMessage{}, fmt.Errorf("fetch feishu message failed: no root item for id=%s", messageID))
 	}
 	out := FetchedMessage{MessageID: messageID}
+	if item.ChatId != nil {
+		out.ChatID = *item.ChatId
+	}
 	if item.MsgType != nil {
 		out.MessageType = *item.MsgType
 	}
@@ -125,6 +129,9 @@ func (s *SDKSender) fetchMessage(ctx context.Context, messageID string, state *m
 	if item.Sender != nil {
 		if item.Sender.Id != nil {
 			out.SenderID = *item.Sender.Id
+		}
+		if item.Sender.SenderName != nil {
+			out.SenderName = *item.Sender.SenderName
 		}
 		if item.Sender.SenderType != nil {
 			out.SenderType = *item.Sender.SenderType

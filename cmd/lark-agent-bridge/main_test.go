@@ -167,6 +167,79 @@ func TestSimulateRunnerReportsSelectedAgent(t *testing.T) {
 	}
 }
 
+type quotedMessageSourceStub struct {
+	message feishu.FetchedMessage
+	err     error
+}
+
+func (s quotedMessageSourceStub) FetchMessage(context.Context, string) (feishu.FetchedMessage, error) {
+	return s.message, s.err
+}
+
+type quotedSenderNameResolverStub struct {
+	name  string
+	err   error
+	calls int
+}
+
+func (s *quotedSenderNameResolverStub) ResolveChatMemberName(context.Context, string, string) (string, error) {
+	s.calls++
+	return s.name, s.err
+}
+
+func TestQuotedMessageFetcherPrefersMessageSenderName(t *testing.T) {
+	resolver := &quotedSenderNameResolverStub{name: "member name"}
+	fetcher := quotedMessageFetcher{
+		sender: quotedMessageSourceStub{message: feishu.FetchedMessage{
+			ChatID: "oc_chat", SenderID: "ou_author", SenderName: "message name", Text: "body",
+		}},
+		memberNames: resolver,
+	}
+	got, err := fetcher.FetchMessage(t.Context(), "om_parent")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.SenderName != "message name" || resolver.calls != 0 {
+		t.Fatalf("quoted sender name=%q resolver calls=%d", got.SenderName, resolver.calls)
+	}
+}
+
+func TestQuotedMessageFetcherFallsBackToChatMemberName(t *testing.T) {
+	resolver := &quotedSenderNameResolverStub{name: "李俊Bot-Mike"}
+	fetcher := quotedMessageFetcher{
+		sender: quotedMessageSourceStub{message: feishu.FetchedMessage{
+			ChatID: "oc_chat", SenderID: "ou_author", Text: "body",
+		}},
+		memberNames: resolver,
+	}
+	got, err := fetcher.FetchMessage(t.Context(), "om_parent")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.SenderName != "李俊Bot-Mike" || resolver.calls != 1 {
+		t.Fatalf("quoted sender name=%q resolver calls=%d", got.SenderName, resolver.calls)
+	}
+}
+
+func TestQuotedMessageFetcherNameFailureKeepsQuoteAndAudits(t *testing.T) {
+	recorder := audit.NewRecorder()
+	fetcher := quotedMessageFetcher{
+		sender: quotedMessageSourceStub{message: feishu.FetchedMessage{
+			ChatID: "oc_chat", SenderID: "ou_author", Text: "body",
+		}},
+		memberNames: &quotedSenderNameResolverStub{err: errors.New("denied")},
+		audit:       recorder,
+	}
+	got, err := fetcher.FetchMessage(t.Context(), "om_parent")
+	if err != nil || got.Text != "body" || got.SenderID != "ou_author" || got.SenderName != "" {
+		t.Fatalf("best-effort result=%#v err=%v", got, err)
+	}
+	events := recorder.Events()
+	if len(events) != 1 || events[0].Action != "quoted_sender_name_resolve_failed" {
+		t.Fatalf("audit events=%#v", events)
+	}
+}
+
 // P-OBSERVE §3.6 Step 6b:LAB_FAKE_FIXTURE_DIR 声明且 prompt 含 marker 时,
 // simulateRunner 走 fakeclaude 引擎 + 真 claude stream parser。此测试锁死该路径,
 // 确保 L1 与 L2 共享同一份 fixture 语义,不出现"L1 走硬编码 3 段,L2 走 fixture"

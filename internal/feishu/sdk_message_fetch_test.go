@@ -80,7 +80,7 @@ func TestSDKSenderFetchMessageText(t *testing.T) {
 
 // TestSDKSenderFetchMessagePropagatesSenderType 断言：飞书 Sender.SenderType（`user` /
 // `app` / `anonymous` / `unknown`）不再被丢弃，会透传到 FetchedMessage.SenderType，
-// 供上层 prompt 侧决定主体身份边框措辞。
+// 供上层 audit 和未来路由使用。
 func TestSDKSenderFetchMessagePropagatesSenderType(t *testing.T) {
 	msgType := "text"
 	content := `{"text":"review subagent 已重新启动"}`
@@ -105,6 +105,31 @@ func TestSDKSenderFetchMessagePropagatesSenderType(t *testing.T) {
 	}
 	if got.SenderID != "ou_other_bot" {
 		t.Fatalf("SenderID = %q", got.SenderID)
+	}
+}
+
+func TestSDKSenderFetchMessagePropagatesChatAndSenderName(t *testing.T) {
+	msgType := "text"
+	content := `{"text":"status"}`
+	chatID := "oc_chat"
+	senderID := "ou_author"
+	senderName := "李俊Bot-Mike"
+	item := &larkim.Message{
+		ChatId:  &chatID,
+		MsgType: &msgType,
+		Body:    &larkim.MessageBody{Content: &content},
+		Sender:  &larkim.Sender{Id: &senderID, SenderName: &senderName},
+	}
+	api := &captureGetMessageAPI{resp: &larkim.GetMessageResp{
+		CodeError: larkcore.CodeError{Code: 0},
+		Data:      &larkim.GetMessageRespData{Items: []*larkim.Message{item}},
+	}}
+	got, err := (&SDKSender{getAPI: api}).FetchMessage(t.Context(), "om_parent")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.ChatID != chatID || got.SenderName != senderName {
+		t.Fatalf("fetched identity = chat %q name %q", got.ChatID, got.SenderName)
 	}
 }
 
