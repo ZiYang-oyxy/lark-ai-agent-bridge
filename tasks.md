@@ -12,6 +12,7 @@
 
 ## Architecture convergence
 
+- [ ] P2：将引用消息发送者的 open_id 补全为可读姓名并保留稳定 ID fallback。
 - [ ] P1：提取 RunCoordinator，隔离 batch 执行、stop、completion 与 schedule 生命周期。
 - [ ] P1：提取纯 StreamProjection，分离 Agent 流事件归一化与 reply mode 投影。
 - [ ] P2：收敛 MessagePipeline 与 RuntimeDependencies，减少 Service/main 隐式装配规则。
