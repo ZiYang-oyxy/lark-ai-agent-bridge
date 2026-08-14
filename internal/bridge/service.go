@@ -2182,6 +2182,11 @@ func (s *Service) HandleActionResult(ctx context.Context, req ActionRequest) (Ac
 		}
 		s.Audit.Record(req.Actor, "config_saved", req.SessionID, fmt.Sprintf("agent=%s agent_home=%s agent_bin=%s model=%s effort=%s reply_mode=%s append_overflow_mode=%s conversation_mode=%s topic_seed_mode=%s group_message_mode=%s respond_to_bots=%t notify_on_complete=%t show_meta_row_agent=%t show_meta_row_runtime=%t show_meta_row_developer=%t", preference.Agent, preference.AgentHome, preference.AgentBin, preference.Model, preference.Effort, preference.ReplyMode, preference.AppendOverflowMode, preference.ConversationMode, preference.TopicSeedMode, preference.GroupMessageMode, preference.RespondToBots, preference.NotifyOnComplete, preference.ShowMetaRowAgent, preference.ShowMetaRowRuntime, preference.ShowMetaRowDeveloper))
 		s.Audit.Record(req.Actor, "group_message_mode_saved", req.SessionID, fmt.Sprintf("mode=%s respond_to_bots=%t", preference.GroupMessageMode, preference.RespondToBots))
+		// 切换全局 agent 会让某些按群覆盖不再合法,store 会就地收敛它们。这类连带
+		// 改动必须留痕,否则某个群的 agent/home/bin 变了却查不到原因。
+		for _, adjustment := range s.Preferences.TakeChatOverrideAdjustments() {
+			s.Audit.Record(req.Actor, "config_chat_override_reconciled", req.SessionID, fmt.Sprintf("chat=%s action=%s reason=%s", adjustment.ChatID, adjustment.Action, adjustment.Reason))
+		}
 		result, err := s.renderActionEvent(card.Event{
 			Type:      "config_saved",
 			SessionID: req.SessionID,

@@ -176,6 +176,62 @@ type PreferenceStore struct {
 	revision      uint64
 	override      *RuntimePreference
 	chatOverrides map[string]ChatOverride
+	// recovery holds what had to be degraded at load time; adjustments holds the
+	// repairs made by later global writes, until a caller takes them.
+	recovery    PreferenceRecovery
+	adjustments []ChatOverrideAdjustment
+}
+
+// PreferenceRecovery reports the degradations applied while loading the store.
+// A stored preference that no longer validates — typically because agents.json
+// changed under it — must not keep the bridge from starting, so the offending
+// part is dropped in memory and reported here for the caller to log loudly.
+//
+// Nothing is rewritten to disk at load time on purpose: a transient agents.json
+// read failure falls back to a minimal catalogue, and persisting the resulting
+// drops would silently destroy the operator's per-chat configuration.
+type PreferenceRecovery struct {
+	// GlobalOverrideDropped means the stored global override was ignored and the
+	// process-level defaults are in effect instead.
+	GlobalOverrideDropped bool
+	GlobalOverrideReason  string
+	// ChatOverrides lists the per-chat overrides that were not loaded.
+	ChatOverrides []ChatOverrideAdjustment
+}
+
+// Empty reports whether the store loaded without any degradation.
+func (r PreferenceRecovery) Empty() bool {
+	return !r.GlobalOverrideDropped && len(r.ChatOverrides) == 0
+}
+
+// Recovery returns the degradations applied when the store was loaded.
+func (s *PreferenceStore) Recovery() PreferenceRecovery {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := s.recovery
+	out.ChatOverrides = append([]ChatOverrideAdjustment(nil), s.recovery.ChatOverrides...)
+	return out
+}
+
+// TakeChatOverrideAdjustments returns and clears the per-chat repairs made by
+// global preference writes since the last call, so a command handler can tell
+// the operator that switching agent rewrote some per-chat overrides.
+func (s *PreferenceStore) TakeChatOverrideAdjustments() []ChatOverrideAdjustment {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(s.adjustments) == 0 {
+		return nil
+	}
+	out := s.adjustments
+	s.adjustments = nil
+	return out
+}
+
+func (s *PreferenceStore) recordAdjustmentsLocked(adjustments []ChatOverrideAdjustment) {
+	if len(adjustments) == 0 {
+		return
+	}
+	s.adjustments = append(s.adjustments, adjustments...)
 }
 
 // OpenPreferenceStore opens (or lazily creates on first Set) the preference
@@ -209,12 +265,17 @@ func OpenPreferenceStore(path string, defaults RuntimePreference, allowedModels 
 	if snapshot.SchemaVersion != PreferenceSchemaVersion {
 		return nil, fmt.Errorf("unsupported preference schema %d", snapshot.SchemaVersion)
 	}
+	// A stored preference that no longer validates is degraded, never fatal:
+	// refusing to start leaves the operator with a bot that is simply gone, and
+	// the offending value can only be fixed through that same bot.
 	if snapshot.Override != nil {
 		preference := normalizeRuntimePreference(*snapshot.Override)
 		if err := validateRuntimePreferenceWith(preference, models, agents); err != nil {
-			return nil, fmt.Errorf("validate stored runtime preference: %w", err)
+			store.recovery.GlobalOverrideDropped = true
+			store.recovery.GlobalOverrideReason = err.Error()
+		} else {
+			store.override = &preference
 		}
-		store.override = &preference
 	}
 	if len(snapshot.ChatOverrides) > 0 {
 		loaded := make(map[string]ChatOverride, len(snapshot.ChatOverrides))
@@ -225,13 +286,21 @@ func OpenPreferenceStore(path string, defaults RuntimePreference, allowedModels 
 			}
 			override = normalizeChatOverride(override)
 			// Validate that the stored override still merges into a legal
-			// preference against the current defaults/catalogue.
+			// preference against the current defaults/catalogue. One bad chat
+			// override only costs that chat its override, not the whole process.
 			if _, err := mergeChatOverride(store.effectiveGlobalLocked(), override, models, agents); err != nil {
-				return nil, fmt.Errorf("validate stored chat override %q: %w", chatID, err)
+				store.recovery.ChatOverrides = append(store.recovery.ChatOverrides, ChatOverrideAdjustment{
+					ChatID: chatID,
+					Action: ChatOverrideDropped,
+					Reason: err.Error(),
+				})
+				continue
 			}
 			loaded[chatID] = override
 		}
-		store.chatOverrides = loaded
+		if len(loaded) > 0 {
+			store.chatOverrides = loaded
+		}
 	}
 	store.revision = snapshot.Revision
 	return store, nil
@@ -261,12 +330,15 @@ func (s *PreferenceStore) Set(preference RuntimePreference) error {
 	if err := validateRuntimePreferenceWith(preference, s.allowedModels, s.agents); err != nil {
 		return err
 	}
+	chatOverrides, adjustments := s.reconcileChatOverridesLocked(preference, s.effectiveGlobalLocked())
 	revision := s.revision + 1
-	if err := savePreferenceSnapshot(s.path, preferenceSnapshot{SchemaVersion: PreferenceSchemaVersion, Revision: revision, Override: &preference, ChatOverrides: s.chatOverrides}); err != nil {
+	if err := savePreferenceSnapshot(s.path, preferenceSnapshot{SchemaVersion: PreferenceSchemaVersion, Revision: revision, Override: &preference, ChatOverrides: chatOverrides}); err != nil {
 		return err
 	}
 	s.override = &preference
+	s.chatOverrides = chatOverrides
 	s.revision = revision
+	s.recordAdjustmentsLocked(adjustments)
 	return nil
 }
 
@@ -305,25 +377,35 @@ func (s *PreferenceStore) updateLocked(update func(RuntimePreference) (RuntimePr
 	if err := validateRuntimePreferenceWith(preference, s.allowedModels, s.agents); err != nil {
 		return RuntimePreference{}, err
 	}
+	// 全局变更(尤其是切 agent)会让某些按群覆盖变成非法组合。写盘前一起收敛,
+	// 否则它们以非法形态留在盘上,直到下次重启才暴露。
+	chatOverrides, adjustments := s.reconcileChatOverridesLocked(preference, s.effectiveGlobalLocked())
 	revision := s.revision + 1
-	if err := savePreferenceSnapshot(s.path, preferenceSnapshot{SchemaVersion: PreferenceSchemaVersion, Revision: revision, Override: &preference, ChatOverrides: s.chatOverrides}); err != nil {
+	if err := savePreferenceSnapshot(s.path, preferenceSnapshot{SchemaVersion: PreferenceSchemaVersion, Revision: revision, Override: &preference, ChatOverrides: chatOverrides}); err != nil {
 		return RuntimePreference{}, err
 	}
 	s.override = &preference
+	s.chatOverrides = chatOverrides
 	s.revision = revision
+	s.recordAdjustmentsLocked(adjustments)
 	return preference, nil
 }
 
 func (s *PreferenceStore) Reset() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	// Reset only clears the global override; per-chat overrides are preserved,
+	// but falling back to the defaults can invalidate them just like any other
+	// global write, so they are reconciled too.
+	chatOverrides, adjustments := s.reconcileChatOverridesLocked(s.defaults, s.effectiveGlobalLocked())
 	revision := s.revision + 1
-	// Reset only clears the global override; per-chat overrides are preserved.
-	if err := savePreferenceSnapshot(s.path, preferenceSnapshot{SchemaVersion: PreferenceSchemaVersion, Revision: revision, ChatOverrides: s.chatOverrides}); err != nil {
+	if err := savePreferenceSnapshot(s.path, preferenceSnapshot{SchemaVersion: PreferenceSchemaVersion, Revision: revision, ChatOverrides: chatOverrides}); err != nil {
 		return err
 	}
 	s.override = nil
+	s.chatOverrides = chatOverrides
 	s.revision = revision
+	s.recordAdjustmentsLocked(adjustments)
 	return nil
 }
 

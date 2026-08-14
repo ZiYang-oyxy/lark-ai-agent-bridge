@@ -685,7 +685,14 @@ func preferenceStoreWritable(cfg config.Config) Check {
 	}
 	defaults := config.RuntimePreference{Model: cfg.Model, Effort: cfg.Effort, ReplyMode: cfg.ReplyMode, AppendOverflowMode: cfg.AppendOverflowMode, ConversationMode: cfg.ConversationMode}
 	agents, _ := config.LoadAgentsConfig(cfg.AgentsConfigPath)
-	if _, err := config.OpenPreferenceStore(path, defaults, cfg.AllowedModels, agents.Agents...); err != nil {
+	store, err := config.OpenPreferenceStore(path, defaults, cfg.AllowedModels, agents.Agents...)
+	if err != nil {
+		return Check{Name: "preference_store", OK: false, Detail: "invalid_snapshot: " + path}
+	}
+	// Opening degrades unusable stored preferences so the bridge can still start;
+	// doctor has the opposite job and must surface exactly what was dropped. The
+	// detail stays path-only: recovery reasons quote stored values.
+	if recovery := store.Recovery(); !recovery.Empty() {
 		return Check{Name: "preference_store", OK: false, Detail: "invalid_snapshot: " + path}
 	}
 	return Check{Name: "preference_store", OK: true, Detail: path}

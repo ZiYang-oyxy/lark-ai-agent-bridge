@@ -509,6 +509,18 @@ func runServe(args []string) error {
 	if err != nil {
 		return fmt.Errorf("open runtime preference store: %w", err)
 	}
+	// 存量偏好与当前 agents 目录不匹配时,store 会丢弃失效部分而不是拒绝启动。
+	// 这类降级必须显性上报:否则用户只会看到某个群的配置莫名回到全局值。
+	if recovery := preferences.Recovery(); !recovery.Empty() {
+		if recovery.GlobalOverrideDropped {
+			recorder.Record("system", "preference_global_override_dropped", "", recovery.GlobalOverrideReason)
+			fmt.Fprintf(os.Stderr, "[warn] 存储的全局偏好已失效,本次启动回退到默认值:%s\n", recovery.GlobalOverrideReason)
+		}
+		for _, adjustment := range recovery.ChatOverrides {
+			recorder.Record("system", "preference_chat_override_dropped", "", fmt.Sprintf("chat=%s: %s", adjustment.ChatID, adjustment.Reason))
+			fmt.Fprintf(os.Stderr, "[warn] 群 %s 的按群偏好已失效并被忽略,该群回到全局配置:%s\n", adjustment.ChatID, adjustment.Reason)
+		}
+	}
 	topicStore, err := openParticipationStore(cfg)
 	if err != nil {
 		return err
