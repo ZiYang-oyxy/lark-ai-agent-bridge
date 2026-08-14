@@ -1364,20 +1364,21 @@ func (s *Service) runWithPreference(ctx context.Context, cmd Command, msg Messag
 	if text == "" && len(msg.Attachments) == 0 && !cmd.Reset {
 		return s.renderTextWithMode("empty", msg.ID, card.SegmentError, "empty prompt", preference.ConversationMode)
 	}
-	// topic seed 的 quote 模式:先拉引用消息,把里面的图片/文件附件合并进 msg.Attachments,
-	// 一起走 resolveAttachments 下载。这样 quote 模式看到的完整 seed 是:@bot 正文 +
-	// 引用消息文本(下面 quotedText/quotedSender)+ 引用消息附件(此处并入 msg.Attachments)。
-	// fork 模式跳过合并,只走后面单独的 quotedText 内联。为避免 executeBatch 侧路径分裂,
-	// 这里两分支拿到的 quotedText 都填进 session.Input;区别只在附件合并与 forkFrom 是否传。
-	quotedText, quotedSender, quotedSenderName, quotedSenderType, quotedAttachments := s.resolveQuotedMessage(ctx, msg)
+	// Feishu 话题内的每条后续消息都会携带 parent_id=root。引用内容只属于话题
+	// seed；若每轮都按 parent_id 回拉，root 正文和 `[用户引用了 ...]` 会被重复
+	// 注入 Agent。chat 模式没有 topic seed 概念，仍保留逐条显式引用的原语义。
+	firstTopicSeed := preference.ConversationMode == config.ConversationModeTopic &&
+		isTopicSeedFirstRun(s.Sessions, key)
+	var quotedText, quotedSender, quotedSenderName, quotedSenderType string
+	var quotedAttachments []media.Ref
+	if preference.ConversationMode != config.ConversationModeTopic || firstTopicSeed {
+		quotedText, quotedSender, quotedSenderName, quotedSenderType, quotedAttachments = s.resolveQuotedMessage(ctx, msg)
+	}
 	seedMode := preference.TopicSeedMode
 	if seedMode == "" {
 		seedMode = config.TopicSeedModeQuote
 	}
-	topicQuoteSeed := preference.ConversationMode == config.ConversationModeTopic &&
-		seedMode == config.TopicSeedModeQuote &&
-		len(quotedAttachments) > 0 &&
-		isTopicSeedFirstRun(s.Sessions, key)
+	topicQuoteSeed := firstTopicSeed && seedMode == config.TopicSeedModeQuote && len(quotedAttachments) > 0
 	if topicQuoteSeed {
 		msg.Attachments = append(append([]media.Ref(nil), msg.Attachments...), quotedAttachments...)
 	}
@@ -3754,11 +3755,10 @@ func (s *Service) forkSeedForTopicSession(kind agent.Kind, topicKey session.Key,
 }
 
 // isTopicSeedFirstRun reports whether the given topic-scoped session key has
-// never run before (no AgentSessionID minted, no History rows). This is the
-// gate quote-mode uses to decide "should I fold parent-message attachments
-// into the seed" — only for the very first run on that key. On any subsequent
-// run the topic already has its own history, and re-injecting the quoted
-// attachments would duplicate them uselessly.
+// never accepted an input before. This is the gate topic mode uses to decide
+// whether parent-message text, sender metadata and attachments belong in the
+// seed. Queue and ActiveBatch are part of the check so two messages arriving
+// inside the first debounce window cannot both claim to be the seed.
 func isTopicSeedFirstRun(sessions *session.Manager, key session.Key) bool {
 	if sessions == nil {
 		return false
@@ -3770,7 +3770,7 @@ func isTopicSeedFirstRun(sessions *session.Manager, key session.Key) bool {
 	if !ok {
 		return true
 	}
-	return existing.AgentSessionID == "" && len(existing.History) == 0
+	return existing.AgentSessionID == "" && len(existing.History) == 0 && len(existing.Queue) == 0 && existing.ActiveBatch == nil
 }
 
 // resolveQuotedMessage fetches the body of a message the user quoted

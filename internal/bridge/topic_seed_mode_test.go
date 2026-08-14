@@ -2,10 +2,14 @@ package bridge
 
 import (
 	"context"
+	"strings"
 	"testing"
+	"time"
 
 	"lark-agent-bridge/internal/agent"
 	"lark-agent-bridge/internal/audit"
+	"lark-agent-bridge/internal/card"
+	"lark-agent-bridge/internal/config"
 	"lark-agent-bridge/internal/media"
 	"lark-agent-bridge/internal/session"
 )
@@ -38,6 +42,20 @@ func TestIsTopicSeedFirstRunFalseAfterFirstRun(t *testing.T) {
 	mgr.UpdateRunResult(topicKey.ID(), "topic-uuid", "", 0)
 	if isTopicSeedFirstRun(mgr, topicKey) {
 		t.Fatal("topic with minted agent session id is not first run any more")
+	}
+}
+
+func TestIsTopicSeedFirstRunFalseAfterFirstInputQueued(t *testing.T) {
+	mgr := session.NewManager()
+	topicKey := session.Key{Agent: agent.Claude, ChatID: "chat", Thread: "omt-1"}
+	_, _, err := mgr.AcceptAndEnqueue(topicKey, session.Input{
+		ID: "om-first", Text: "first", State: session.InputQueued,
+	}, time.Now(), time.Hour, 10, session.BatchLimits{MaxPending: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if isTopicSeedFirstRun(mgr, topicKey) {
+		t.Fatal("topic with a queued first input must not accept a second seed")
 	}
 }
 
@@ -80,5 +98,96 @@ func TestResolveQuotedMessageReturnsAttachmentsEvenWithEmptyText(t *testing.T) {
 	}
 	if len(gotAtt) != 1 || gotAtt[0].FileKey != "img_key_2" {
 		t.Fatalf("image-only quote must still surface attachments: %#v", gotAtt)
+	}
+}
+
+func TestServiceTopicQuoteIsInjectedOnlyIntoFirstSeed(t *testing.T) {
+	cfg := testConfig(t)
+	cfg.TopicSeedMode = config.TopicSeedModeQuote
+	runner := newFakeRunner()
+	svc := NewService(cfg, card.NewFakeRenderer(), runner, audit.NewRecorder())
+	svc.TopicAliases = NewTopicAliasStore()
+	svc.TopicAliases.Bind("oc_topic", "omt_topic", SyntheticTopicThreadPrefix+"om_root")
+	fetcher := &fakeMessageFetcher{msg: QuotedMessage{
+		Text: "root context", SenderID: "ou_author", SenderType: "user", MessageType: "text",
+	}}
+	svc.MessageFetcher = fetcher
+
+	sendAndDrain := func(msg Message, wantCalls int) {
+		t.Helper()
+		if err := svc.HandleMessage(context.Background(), msg); err != nil {
+			t.Fatal(err)
+		}
+		key := session.Key{Agent: agent.Claude, ChatID: msg.ChatID, Thread: SyntheticTopicThreadPrefix + "om_root"}
+		sess, ok := svc.Sessions.Get(key)
+		if !ok || len(sess.Queue) != 1 {
+			t.Fatalf("queued session = %#v, want one input", sess)
+		}
+		if err := svc.DrainReady(sess.Queue[0].DebounceUntil); err != nil {
+			t.Fatal(err)
+		}
+		waitForCalls(t, runner, wantCalls)
+		waitForSessionNoActiveBatch(t, svc, key)
+	}
+
+	now := time.Now()
+	sendAndDrain(Message{
+		ID: "om_root", ChatID: "oc_topic", ThreadID: "omt_topic", ParentID: "om_quoted",
+		Sender: "ou_user", Text: "first", ExplicitBotMention: true, Time: now,
+	}, 1)
+	sendAndDrain(Message{
+		ID: "om_follow", ChatID: "oc_topic", ThreadID: "omt_topic", RootID: "om_root", ParentID: "om_root",
+		Sender: "ou_user", Text: "second", Time: now.Add(time.Second),
+	}, 2)
+
+	calls := runner.Calls()
+	if !strings.Contains(calls[0].Prompt, "[用户引用了 ou_author 的消息]") || !strings.Contains(calls[0].Prompt, "> root context") {
+		t.Fatalf("first topic prompt must contain quote seed: %q", calls[0].Prompt)
+	}
+	if strings.Contains(calls[1].Prompt, "[用户引用了") || strings.Contains(calls[1].Prompt, "root context") || calls[1].Prompt != "second" {
+		t.Fatalf("follow-up topic prompt must not repeat quote seed: %q", calls[1].Prompt)
+	}
+	if len(fetcher.calls) != 1 || fetcher.calls[0] != "om_quoted" {
+		t.Fatalf("quoted message fetches = %v, want only first seed parent", fetcher.calls)
+	}
+}
+
+func TestServiceChatModeKeepsPerMessageQuotes(t *testing.T) {
+	cfg := testConfig(t)
+	cfg.ConversationMode = config.ConversationModeChat
+	runner := newFakeRunner()
+	svc := NewService(cfg, card.NewFakeRenderer(), runner, audit.NewRecorder())
+	fetcher := &fakeMessageFetcher{msg: QuotedMessage{
+		Text: "explicit quote", SenderID: "ou_author", SenderType: "user", MessageType: "text",
+	}}
+	svc.MessageFetcher = fetcher
+
+	now := time.Now()
+	for i, msg := range []Message{
+		{ID: "om_first", ChatID: "oc_chat", ParentID: "om_parent_1", Sender: "ou_user", Text: "first", Time: now},
+		{ID: "om_second", ChatID: "oc_chat", ParentID: "om_parent_2", Sender: "ou_user", Text: "second", Time: now.Add(time.Second)},
+	} {
+		if err := svc.HandleMessage(context.Background(), msg); err != nil {
+			t.Fatal(err)
+		}
+		key := session.Key{Agent: agent.Claude, ChatID: msg.ChatID}
+		sess, ok := svc.Sessions.Get(key)
+		if !ok || len(sess.Queue) != 1 {
+			t.Fatalf("queued session = %#v, want one input", sess)
+		}
+		if err := svc.DrainReady(sess.Queue[0].DebounceUntil); err != nil {
+			t.Fatal(err)
+		}
+		waitForCalls(t, runner, i+1)
+		waitForSessionNoActiveBatch(t, svc, key)
+	}
+
+	for i, call := range runner.Calls() {
+		if !strings.Contains(call.Prompt, "[用户引用了 ou_author 的消息]") || !strings.Contains(call.Prompt, "> explicit quote") {
+			t.Fatalf("chat prompt %d lost explicit quote: %q", i+1, call.Prompt)
+		}
+	}
+	if len(fetcher.calls) != 2 {
+		t.Fatalf("chat quote fetches = %v, want one per explicit reply", fetcher.calls)
 	}
 }
