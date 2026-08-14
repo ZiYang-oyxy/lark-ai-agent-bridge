@@ -1826,6 +1826,7 @@ func TestBuildConfigFormElementsKeepsLocalActionsInEqualWidthRow(t *testing.T) {
 		ChatID: "oc-a", Agent: "claude", AgentHome: "默认", AgentBin: "主机 claude",
 		ReplyMode: "append", ConversationMode: "chat",
 		GroupMessageMode: "mention_only", RespondToBots: "false",
+		Agents: []SelectOption{{Value: "claude", Label: "claude · Claude Code"}, {Value: "codex", Label: "codex · Codex CLI"}},
 	})
 	form := elements[1].(map[string]any)
 	formElements := form["elements"].([]any)
@@ -1848,6 +1849,9 @@ func TestBuildConfigFormElementsKeepsLocalActionsInEqualWidthRow(t *testing.T) {
 	buttons := map[string]map[string]any{}
 	var copy strings.Builder
 	collectConfigControls(formElements, selects, buttons, &copy)
+	if agentMode := selects["agent"]; agentMode == nil || agentMode["initial_option"] != "claude" || len(agentMode["options"].([]any)) != 2 {
+		t.Fatalf("local config agent mode select = %#v", agentMode)
+	}
 	save := buttons["submit_runtime_config"]
 	if save == nil || save["form_action_type"] != "submit" || save["width"] != "fill" {
 		t.Fatalf("local config save button = %#v", save)

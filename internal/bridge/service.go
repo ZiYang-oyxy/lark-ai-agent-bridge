@@ -2213,8 +2213,9 @@ func (s *Service) HandleActionResult(ctx context.Context, req ActionRequest) (Ac
 		if !req.HasPreferenceRevision {
 			_, _, expected = s.Preferences.SnapshotForChat(chatID)
 		}
-		previous, effective, err := s.Preferences.UpdateChatAtRevision(chatID, expected, func(global config.RuntimePreference, _ config.ChatOverride) (config.ChatOverride, error) {
-			return chatOverrideFromForm(req.FormValues, global), nil
+		current := s.Preferences.GetForChat(chatID)
+		previous, effective, err := s.Preferences.UpdateChatAtRevision(chatID, expected, func(global config.RuntimePreference, currentOverride config.ChatOverride) (config.ChatOverride, error) {
+			return chatOverrideFromForm(req.FormValues, global, current, currentOverride), nil
 		})
 		if errors.Is(err, config.ErrPreferenceConflict) {
 			s.Audit.Record(req.Actor, "local_config_save_conflict", chatID, err.Error())
@@ -2606,9 +2607,8 @@ func (s *Service) localConfigForm(preference config.RuntimePreference, chatID st
 // localConfigOverview assembles the read-only /local-config summary for a group:
 // each overridable field's effective value (global with this group's override
 // layered on) plus whether the group overrides it, and a count of overrides. It
-// intentionally lists only the fields a group may override in the /config
-// surface (reply/conversation/group-message/respond-to-bots/agent-bin); model
-// and effort are not exposed here, matching /config.
+// intentionally lists only the fields exposed by the per-chat configuration
+// surface. Model remains runtime-selected and is not shown here.
 func (s *Service) localConfigOverview(chatID string) *card.LocalConfigOverview {
 	overview := &card.LocalConfigOverview{ChatID: chatID}
 	if s.Preferences == nil {
@@ -2622,6 +2622,7 @@ func (s *Service) localConfigOverview(chatID string) *card.LocalConfigOverview {
 		agentBin = "主机（当前 Agent 默认）"
 	}
 	items := []card.LocalConfigItem{
+		{Label: "Agent mode", Value: preferenceAgentLabel(effective.Agent), Overridden: override.Agent != nil},
 		{Label: "Agent 可执行文件", Value: agentBin, Overridden: override.AgentBin != nil},
 		{Label: "推理深度", Value: effective.Effort, Overridden: override.Effort != nil},
 		{Label: "回复模式", Value: string(effective.ReplyMode), Overridden: override.ReplyMode != nil},
@@ -2722,7 +2723,7 @@ func onOffText(v bool) string {
 // differs from the current global default; fields equal to global stay nil so
 // the group keeps inheriting them. Access-control form values are intentionally
 // never read here — access is global-only.
-func chatOverrideFromForm(values map[string]string, global config.RuntimePreference) config.ChatOverride {
+func chatOverrideFromForm(values map[string]string, global, current config.RuntimePreference, currentOverride config.ChatOverride) config.ChatOverride {
 	var override config.ChatOverride
 	// Model is still not exposed on the /config form so it keeps inheriting the
 	// global preference. Effort is editable and can be per-chat overridden.
@@ -2777,19 +2778,46 @@ func chatOverrideFromForm(values map[string]string, global config.RuntimePrefere
 			override.ShowMetaRowDeveloper = &parsed
 		}
 	}
+	selectedAgent := strings.ToLower(strings.TrimSpace(current.Agent))
+	_, hasAgentField := values["agent"]
 	if raw, ok := values["agent"]; ok {
-		if v := strings.ToLower(strings.TrimSpace(raw)); v != "" && v != global.Agent {
-			override.Agent = &v
+		if v := strings.ToLower(strings.TrimSpace(raw)); v != "" {
+			selectedAgent = v
+			if v != global.Agent {
+				override.Agent = &v
+			}
 		}
+	} else {
+		// Cards opened before the per-chat Agent selector was introduced do not
+		// submit an agent field. Preserve an existing command-created override so
+		// saving an unrelated field during a rolling upgrade cannot clear it.
+		override.Agent = currentOverride.Agent
 	}
-	if raw, ok := values["agent_home"]; ok {
-		if v := strings.TrimSpace(raw); v != global.AgentHome {
-			override.AgentHome = &v
+	agentChanged := selectedAgent != strings.ToLower(strings.TrimSpace(current.Agent))
+	if agentChanged {
+		// The home/bin controls were rendered for current.Agent. Their submitted
+		// values are therefore stale after an Agent switch and must not leak into
+		// the newly selected runtime. A non-global Agent needs explicit empty
+		// pointers so it does not inherit foreign presets from the global Agent.
+		if override.Agent != nil {
+			empty := ""
+			override.AgentHome = &empty
+			override.AgentBin = &empty
 		}
-	}
-	if raw, ok := values["agent_bin"]; ok {
-		if v := strings.TrimSpace(raw); v != global.AgentBin {
-			override.AgentBin = &v
+	} else {
+		if raw, ok := values["agent_home"]; ok {
+			if v := strings.TrimSpace(raw); v != global.AgentHome || override.Agent != nil {
+				override.AgentHome = &v
+			}
+		} else if !hasAgentField {
+			override.AgentHome = currentOverride.AgentHome
+		}
+		if raw, ok := values["agent_bin"]; ok {
+			if v := strings.TrimSpace(raw); v != global.AgentBin || override.Agent != nil {
+				override.AgentBin = &v
+			}
+		} else if !hasAgentField {
+			override.AgentBin = currentOverride.AgentBin
 		}
 	}
 	return override
@@ -2802,10 +2830,20 @@ func chatOverrideFromForm(values map[string]string, global config.RuntimePrefere
 // preference: setting a value equal to global is still an explicit override.
 func applyChatOverrideFields(existing config.ChatOverride, values map[string]string) (config.ChatOverride, error) {
 	updated := existing
+	var rawAgent string
+	var agentTouched, agentHomeTouched, agentBinTouched bool
 	for key, raw := range values {
 		key = strings.ToLower(strings.TrimSpace(key))
 		value := strings.TrimSpace(raw)
 		inherit := strings.EqualFold(value, "inherit")
+		switch key {
+		case "agent":
+			rawAgent, agentTouched = raw, true
+		case "agent_home":
+			agentHomeTouched = true
+		case "agent_bin":
+			agentBinTouched = true
+		}
 		switch key {
 		case "model":
 			if inherit {
@@ -2911,6 +2949,25 @@ func applyChatOverrideFields(existing config.ChatOverride, values map[string]str
 			}
 		default:
 			return config.ChatOverride{}, fmt.Errorf("unsupported local config field %q", key)
+		}
+	}
+	if agentTouched {
+		inheritAgent := strings.EqualFold(strings.TrimSpace(rawAgent), "inherit")
+		if !agentHomeTouched {
+			if inheritAgent {
+				updated.AgentHome = nil
+			} else {
+				empty := ""
+				updated.AgentHome = &empty
+			}
+		}
+		if !agentBinTouched {
+			if inheritAgent {
+				updated.AgentBin = nil
+			} else {
+				empty := ""
+				updated.AgentBin = &empty
+			}
 		}
 	}
 	return updated, nil

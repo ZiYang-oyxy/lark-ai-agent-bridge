@@ -20,7 +20,3 @@
 ## CardKit roadmap
 
 - [ ] P3（按需）：结构化表格、图表等展示组件出现明确场景后再引入。
-
-## Runtime preferences
-
-- [ ] 支持通过 `/local-config` 为当前群配置 Agent mode，并安全重置跨 Agent 的 home/bin preset。

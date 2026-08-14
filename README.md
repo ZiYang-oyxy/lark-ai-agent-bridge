@@ -158,7 +158,7 @@ owner 或管理员可在飞书中管理名单：
 
 - **作用域路由：** `/config` 始终写全局默认；`/local-config` 只在群里生效，写当前群的覆盖。私聊里发 `/local-config` 会引导改用 `/config`。
 - **逐字段继承：** 覆盖是逐字段的——群里只存显式改过、且与全局不同的字段，其余字段实时继承全局。改了全局默认，未覆盖该字段的群立即跟随。
-- **可覆盖项：** model、effort、agent、agent_home、agent_bin、reply_mode、conversation_mode、group_message_mode、respond_to_bots。
+- **可覆盖项：** model、effort、agent、agent_home、agent_bin、reply_mode、conversation_mode、group_message_mode、respond_to_bots。编辑卡可直接选择本群 `Agent mode`；切换 Agent 时会先把本群 home/bin 重置为新 Agent 的默认项，避免沿用另一 Agent 的 preset。
 - **访问控制永远全局：** allowed_users / allowed_chats / admins 不可 per-chat，`/local-config` 表单不展示、也不接受这些字段，管理仍走 `/invite`、`/remove`。
 - **重置：** `/local-config reset` 只清当前群的覆盖，全部回到继承全局；不影响全局默认，也不影响其它群。全局 `/config reset` 不会清空任何群覆盖。
 - **可解释性：** 群里 `/status` 会以 `local_overrides=<字段列表>` 标出本群覆盖了哪些字段，其余继承全局。
@@ -209,7 +209,7 @@ Bridge 会按引用顺序把图片作为独立的飞书图片消息发送，并�
 
 使用 `/agent-mode` 选择后续消息使用的 Agent；`/config` 只展示当前 mode 的 home/bin 与其它运行偏好：
 
-- **Agent mode**：从 `agents.json` 中选择 `claude` 或 `codex`。也支持 `/agent-mode claude`、`/agent-mode codex` 直接切换。
+- **Agent mode**：从 `agents.json` 中选择 `claude` 或 `codex`。也支持 `/agent-mode claude`、`/agent-mode codex` 直接切换全局默认；群聊可在 `/local-config` 编辑卡中为本群单独覆盖。
 - **Agent home**：选 `默认` 时完整继承 executable 的环境；选显式预设时，Claude 注入 `CLAUDE_CONFIG_DIR=<path>`，Codex 注入 `CODEX_HOME=<path>`。
 - **Agent bin**：Claude 的主机默认为 `E2E_CLAUDE_BIN`（默认 `claude`），并兼容旧部署变量 `LAB_CLAUDE_BIN`；两者同时存在时 `E2E_CLAUDE_BIN` 优先。Codex 的主机默认为 `codex`；其他选项直接使用预设路径。
 

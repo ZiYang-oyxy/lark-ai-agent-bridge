@@ -233,9 +233,9 @@ func normalizeTerminalEvent(e Event) Event {
 // buildConfigFormElements renders the /config (and /local-config) form as four
 // bordered sections — 运行参数 / 会话行为 / 群消息 / 访问控制 — instead of a flat
 // vertical list. Each field is a bold label + one-line hint + control, produced
-// by fieldElements. Model / Effort / Agent-mode are intentionally not rendered
-// here (those live on /agent-mode or are being retired); the ConfigForm struct
-// still carries them for now.
+// by fieldElements. Model is intentionally not rendered here. Global Agent mode
+// remains on /agent-mode, while the per-chat form exposes it so a group can
+// override the global Agent without introducing a second configuration surface.
 func buildConfigFormElements(sessionID string, form ConfigForm) []any {
 	intro := "⚙️ **全局运行偏好**\n\n改后只影响新进入队列的消息。此为全局默认，各群可用 `/local-config` 覆盖。"
 	saveAction := "config.save"
@@ -247,6 +247,9 @@ func buildConfigFormElements(sessionID string, form ConfigForm) []any {
 	}
 
 	runtime := []map[string]any{}
+	if form.ChatID != "" {
+		runtime = append(runtime, fieldElements("cfg_agent", "Agent mode", "仅覆盖本群；切换 Agent 会重置本群的主目录和可执行文件", configSelectOptions("agent", form.Agent, form.Agents))...)
+	}
 	runtime = append(runtime, fieldElements("cfg_home", "Agent 主目录", "默认继承 executable 环境；显式选择注入 CONFIG_DIR", configSelectOptions("agent_home", form.AgentHome, form.AgentHomes))...)
 	runtime = append(runtime, fieldElements("cfg_bin", "Agent 可执行文件", "主机项用当前 Agent 默认 executable，其余为预设", configSelectOptions("agent_bin", form.AgentBin, form.AgentBins))...)
 	runtime = append(runtime, fieldElements("cfg_effort", "推理深度", "default 跟随 Agent 自身设定 · low/medium/high 显式指定思考强度", configSelectOptions("effort", form.Effort, effortOptions(form.Efforts)))...)
