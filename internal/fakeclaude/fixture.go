@@ -8,24 +8,24 @@
 // A fixture declares:
 //   - name        : human label for evidence.
 //   - match       : how to trigger (any marker substring in argv, or a prompt
-//                   substring).
+//     substring).
 //   - emit        : NDJSON lines to write to stdout, in order. Each line is
-//                   either a Claude "stream/result/assistant" event or a Codex
-//                   "response" event. Consumers parse them as Claude does today.
-//                   Template placeholders ${marker}, ${image_name} are
-//                   substituted per invocation.
+//     either a Claude "stream/result/assistant" event or a Codex
+//     "response" event. Consumers parse them as Claude does today.
+//     Template placeholders ${marker}, ${image_name} are
+//     substituted per invocation.
 //   - write_image : when true, write a 1x1 test png to CWD before emit. The
-//                   filename is image_name (default "e2e-output-${marker}.png").
-//                   Reproduces the shim's write_test_image side-effect for the
-//                   bridge_image_* / *_OUTPUT_IMAGE fixture family.
+//     filename is image_name (default "e2e-output-${marker}.png").
+//     Reproduces the shim's write_test_image side-effect for the
+//     bridge_image_* / *_OUTPUT_IMAGE fixture family.
 //   - image_name  : template for the image filename, allows ${marker}. Only
-//                   read when write_image=true.
+//     read when write_image=true.
 //   - hang        : when true, block after emit (equivalent to shim's
-//                   `exec sleep 300`). Consumers block forever until the
-//                   process is killed by the parent. Reproduces the
-//                   *_E2E_BLOCK / native_text_stream_stop semantics.
+//     `exec sleep 300`). Consumers block forever until the
+//     process is killed by the parent. Reproduces the
+//     *_E2E_BLOCK / native_text_stream_stop semantics.
 //   - post_delay  : optional trailing sleep (seconds) after emit. Distinct
-//                   from hang (which is unbounded).
+//     from hang (which is unbounded).
 //
 // A single fixture directory can hold any number of files; ResolveFirst
 // evaluates fixtures in registration order and returns the first match. When
@@ -73,10 +73,10 @@ type FixtureEmit struct {
 
 // Fixture is one deterministic scenario.
 type Fixture struct {
-	Name       string        `json:"name"`
-	Match      FixtureMatch  `json:"match"`
-	Emit       []FixtureEmit `json:"emit"`
-	PostDelay  float64       `json:"post_delay_sec,omitempty"`
+	Name      string        `json:"name"`
+	Match     FixtureMatch  `json:"match"`
+	Emit      []FixtureEmit `json:"emit"`
+	PostDelay float64       `json:"post_delay_sec,omitempty"`
 	// WriteImage: when true, materialise a 1x1 test png into CWD before emit.
 	// Reproduces the shim's write_test_image side-effect.
 	WriteImage bool `json:"write_image,omitempty"`
@@ -268,35 +268,28 @@ func TestImagePNG() ([]byte, error) {
 	return base64.StdEncoding.DecodeString(testImagePNGBase64)
 }
 
-// ValidateInstruction verifies the shell shim's original invariant:
-// the instruction file passed via --append-system-prompt-file must exist and
-// contain "Feishu Bridge Runtime Instructions"; the prompt itself must NOT
-// contain that string (would indicate instruction leaked into user prompt).
+// ValidateInstruction verifies that Bridge instructions use Claude's native
+// append-system-prompt channel and contain the expected contract marker.
 // Callers that don't want this check (e.g. the OK preflight probe) skip it.
 func ValidateInstruction(argv []string) error {
-	var instrFile string
+	var instruction string
+	count := 0
 	prev := ""
 	for _, a := range argv {
-		if prev == "--append-system-prompt-file" {
-			instrFile = a
+		if prev == "--append-system-prompt" {
+			instruction = a
+			count++
 		}
 		prev = a
 	}
-	if instrFile == "" {
-		return errors.New("fakeclaude: --append-system-prompt-file missing")
+	if count != 1 {
+		return fmt.Errorf("fakeclaude: expected one --append-system-prompt, got %d", count)
 	}
-	data, err := os.ReadFile(instrFile)
-	if err != nil {
-		return fmt.Errorf("fakeclaude: read instruction file %q: %w", instrFile, err)
+	if instruction == "" {
+		return errors.New("fakeclaude: --append-system-prompt missing")
 	}
-	if !strings.Contains(string(data), "Feishu Bridge Runtime Instructions") {
-		return fmt.Errorf("fakeclaude: instruction file %q missing marker", instrFile)
-	}
-	if len(argv) > 0 {
-		last := argv[len(argv)-1]
-		if strings.Contains(last, "Feishu Bridge Runtime Instructions") {
-			return errors.New("fakeclaude: runtime instructions leaked into user prompt")
-		}
+	if !strings.Contains(instruction, "Feishu Bridge Runtime Instructions") {
+		return errors.New("fakeclaude: appended system prompt missing marker")
 	}
 	return nil
 }

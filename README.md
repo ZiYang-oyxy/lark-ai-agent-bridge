@@ -187,7 +187,7 @@ owner 或管理员可在飞书中管理名单：
 
 Claude 和 Codex 会收到同一份由 Bridge 管理的图片能力说明，并在最终回复中生成内部图片引用；用户不需要输入 Markdown，也不需要了解上传协议。普通任务即使 workdir 中存在图片也不会自动发送；“刚才那张图”存在多个合理候选时，Agent 应先询问用户。
 
-能力说明使用 Agent 原生 instruction channel 注入：Claude 使用 `--append-system-prompt-file`，Codex 使用 `developer_instructions`。Bridge 在 session 首次运行时固定 instruction version，普通 resume 保持不变，`/new` 才切换到当前版本；内容不会逐轮拼入 user prompt 或重复写入会话历史。
+能力说明使用 Agent 原生 instruction channel 注入：Claude 使用 `--append-system-prompt` 追加正文，Codex 使用 `developer_instructions`。Bridge 在 session 首次运行时固定 instruction version，普通 resume 保持不变，`/new` 才切换到当前版本；内容不会逐轮拼入 user prompt 或重复写入会话历史。
 
 以下 Markdown 是 Agent → Bridge 的内部交接协议，也可用于排障：
 

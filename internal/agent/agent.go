@@ -38,8 +38,9 @@ type OneShotConfig struct {
 	// Images are validated local image paths. Only Codex consumes them as
 	// repeated --image flags; Claude continues to receive paths in the prompt.
 	Images []string
-	// ClaudeSystemPromptFile is a bridge-owned immutable instruction file.
-	ClaudeSystemPromptFile string
+	// ClaudeSystemPrompt is the bridge-owned instruction layer appended to
+	// Claude Code's default system prompt.
+	ClaudeSystemPrompt string
 	// DeveloperInstructions is the bridge-owned Codex developer layer.
 	DeveloperInstructions string
 }
@@ -181,11 +182,11 @@ func buildClaudeOneShotCommand(cfg OneShotConfig) ([]string, error) {
 	if !strings.EqualFold(effort, "default") {
 		args = append(args, "--effort", effort)
 	}
-	if path := strings.TrimSpace(cfg.ClaudeSystemPromptFile); path != "" {
-		if strings.ContainsRune(path, '\x00') {
-			return nil, fmt.Errorf("claude system prompt file contains NUL")
+	if strings.TrimSpace(cfg.ClaudeSystemPrompt) != "" {
+		if strings.ContainsRune(cfg.ClaudeSystemPrompt, '\x00') {
+			return nil, fmt.Errorf("claude system prompt contains NUL")
 		}
-		args = append(args, "--append-system-prompt-file", path)
+		args = append(args, "--append-system-prompt", cfg.ClaudeSystemPrompt)
 	}
 	if model := strings.TrimSpace(cfg.Model); model != "" && !strings.EqualFold(model, "default") {
 		args = append(args, "--model", model)

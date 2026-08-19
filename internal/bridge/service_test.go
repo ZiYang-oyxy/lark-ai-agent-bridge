@@ -5365,31 +5365,41 @@ func TestCLIExecRunnerBridgeInstructionsUseNativeChannels(t *testing.T) {
 
 	claudeBin := filepath.Join(binDir, "claude")
 	// Prompt now arrives on stdin (E2BIG fix), so the fake reads it there and
-	// records the instruction file resolved from argv plus whether the prompt
+	// checks the appended system prompt from argv plus whether the user prompt
 	// leaked into argv at all.
 	claudeScript := `#!/bin/sh
 previous=
-instruction_file=
+instruction=
+instruction_count=0
 prompt_in_argv=no
 for arg in "$@"; do
-  if [ "$previous" = "--append-system-prompt-file" ]; then instruction_file="$arg"; fi
+  if [ "$previous" = "--append-system-prompt" ]; then instruction="$arg"; instruction_count=$((instruction_count + 1)); fi
   case "$arg" in *"CLAUDE_PROMPT_"*) prompt_in_argv=yes ;; esac
   previous="$arg"
 done
-test -r "$instruction_file"
-grep -q 'Feishu Bridge Runtime Instructions' "$instruction_file"
+test "$instruction_count" -eq 1
+case "$instruction" in *"Feishu Bridge Runtime Instructions"*) ;; *) exit 91 ;; esac
+printf '%s' "$instruction" >"$FAKE_INSTRUCTION_LOG"
 IFS= read -r prompt || true
-printf '%s\n%s\n%s\n' "$instruction_file" "$prompt" "$prompt_in_argv" >"$FAKE_AGENT_LOG"
+printf '%s\n%s\n%s\n' yes "$prompt" "$prompt_in_argv" >"$FAKE_AGENT_LOG"
 printf '%s\n' '{"type":"assistant","message":{"model":"fake-claude","content":[{"type":"text","text":"ok"}]},"session_id":"claude-session"}'
 `
 	if err := os.WriteFile(claudeBin, []byte(claudeScript), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	var claudeInstructionPath string
-	for i, prompt := range []string{"CLAUDE_PROMPT_first", "CLAUDE_PROMPT_second"} {
+	content, err := rt.Content(bridgeinstructions.CurrentVersion)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i, tc := range []struct {
+		prompt    string
+		sessionID string
+	}{{prompt: "CLAUDE_PROMPT_first"}, {prompt: "CLAUDE_PROMPT_second", sessionID: "claude-session"}} {
 		logPath := filepath.Join(t.TempDir(), fmt.Sprintf("claude-%d.log", i))
+		instructionLog := filepath.Join(t.TempDir(), fmt.Sprintf("claude-instruction-%d.log", i))
 		t.Setenv("FAKE_AGENT_LOG", logPath)
-		if _, err := runner.Run(context.Background(), AgentRunRequest{Kind: agent.Claude, Bin: claudeBin, Prompt: prompt, BridgeInstructionsVersion: bridgeinstructions.CurrentVersion}); err != nil {
+		t.Setenv("FAKE_INSTRUCTION_LOG", instructionLog)
+		if _, err := runner.Run(context.Background(), AgentRunRequest{Kind: agent.Claude, Bin: claudeBin, Prompt: tc.prompt, AgentSessionID: tc.sessionID, BridgeInstructionsVersion: bridgeinstructions.CurrentVersion}); err != nil {
 			t.Fatal(err)
 		}
 		data, err := os.ReadFile(logPath)
@@ -5397,13 +5407,15 @@ printf '%s\n' '{"type":"assistant","message":{"model":"fake-claude","content":[{
 			t.Fatal(err)
 		}
 		lines := strings.Split(strings.TrimSpace(string(data)), "\n")
-		if len(lines) != 3 || lines[1] != prompt || lines[2] != "no" {
+		if len(lines) != 3 || lines[0] != "yes" || lines[1] != tc.prompt || lines[2] != "no" {
 			t.Fatalf("claude log = %q (prompt must arrive on stdin, never argv)", data)
 		}
-		if i == 0 {
-			claudeInstructionPath = lines[0]
-		} else if lines[0] != claudeInstructionPath {
-			t.Fatalf("claude instruction paths differ: %q and %q", claudeInstructionPath, lines[0])
+		gotInstruction, err := os.ReadFile(instructionLog)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(gotInstruction) != content {
+			t.Fatalf("claude instruction content differs: got %d bytes, want %d", len(gotInstruction), len(content))
 		}
 	}
 
@@ -5425,10 +5437,6 @@ printf '%s\n' '{"type":"item.completed","item":{"id":"msg-1","type":"agent_messa
 printf '%s\n' '{"type":"turn.completed","usage":{"input_tokens":1,"output_tokens":1}}'
 `
 	if err := os.WriteFile(codexBin, []byte(codexScript), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	content, err := rt.Content(bridgeinstructions.CurrentVersion)
-	if err != nil {
 		t.Fatal(err)
 	}
 	encoded, err := json.Marshal(content)

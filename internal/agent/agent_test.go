@@ -69,12 +69,12 @@ func TestBuildClaudeOneShotCommandResumesInternalSession(t *testing.T) {
 	}
 }
 
-func TestClaudeOneShotAppendsBridgeSystemPromptFileBeforeUserPrompt(t *testing.T) {
-	got, err := BuildOneShotCommand(OneShotConfig{Kind: Claude, Prompt: "hello", AgentSessionID: "sess", ClaudeSystemPromptFile: "/private/v1.md"})
+func TestClaudeOneShotAppendsBridgeSystemPromptBeforeResume(t *testing.T) {
+	got, err := BuildOneShotCommand(OneShotConfig{Kind: Claude, Prompt: "hello", AgentSessionID: "sess", ClaudeSystemPrompt: "bridge\nrules\n"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"claude", "-p", "--output-format", "stream-json", "--verbose", "--include-partial-messages", "--dangerously-skip-permissions", "--effort", "low", "--append-system-prompt-file", "/private/v1.md", "--resume", "sess"}
+	want := []string{"claude", "-p", "--output-format", "stream-json", "--verbose", "--include-partial-messages", "--dangerously-skip-permissions", "--effort", "low", "--append-system-prompt", "bridge\nrules\n", "--resume", "sess"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("argv = %#v, want %#v", got, want)
 	}
@@ -252,7 +252,7 @@ func TestBuildClaudeOneShotKeepsPromptOffArgv(t *testing.T) {
 
 func TestBuildOneShotRejectsNULInBridgeInstructions(t *testing.T) {
 	for _, cfg := range []OneShotConfig{
-		{Kind: Claude, Prompt: "hello", ClaudeSystemPromptFile: "/private/v1\x00.md"},
+		{Kind: Claude, Prompt: "hello", ClaudeSystemPrompt: "bridge\x00rules"},
 		{Kind: Codex, Prompt: "hello", DeveloperInstructions: "bridge\x00rules"},
 	} {
 		if _, err := BuildOneShotCommand(cfg); err == nil || !strings.Contains(err.Error(), "NUL") {

@@ -351,10 +351,8 @@ mkdir -p "$FAKE_CONTRACT_DIR"
 eval "$fake_claude_source"
 prepare_fake_claude_if_needed
 
-FAKE_INSTRUCTIONS_FILE="$FAKE_CONTRACT_DIR/feishu-runtime-v1.md"
-printf '%s\n' '# Feishu Bridge Runtime Instructions' >"$FAKE_INSTRUCTIONS_FILE"
 run_fake_claude() {
-  "$FAKE_BIN_DIR/claude" --append-system-prompt-file "$FAKE_INSTRUCTIONS_FILE" "$@"
+  "$FAKE_BIN_DIR/claude" --append-system-prompt '# Feishu Bridge Runtime Instructions' "$@"
 }
 
 run_fake_claude 'E2E_20260719-123456_NATIVE_TEXT_STREAM_NORMAL' >"$FAKE_CONTRACT_DIR/native-normal.jsonl"

@@ -4199,12 +4199,9 @@ func (r CLIExecRunner) Run(ctx context.Context, req AgentRunRequest) (AgentRunRe
 		}
 		switch req.Kind {
 		case agent.Claude:
-			cfg.ClaudeSystemPromptFile, err = r.Instructions.ClaudeFile(version)
+			cfg.ClaudeSystemPrompt = content
 		case agent.Codex:
 			cfg.DeveloperInstructions = content
-		}
-		if err != nil {
-			return AgentRunResult{}, err
 		}
 	}
 	command, err := agent.BuildOneShotCommand(cfg)
