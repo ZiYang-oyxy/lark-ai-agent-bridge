@@ -107,11 +107,28 @@ func (m ReplyMode) Label() string {
 
 var builtinModels = []string{"default", "sonnet", "opus", "haiku"}
 
-var validEfforts = map[string]struct{}{
-	"default": {},
-	"low":     {},
-	"medium":  {},
-	"high":    {},
+var runtimeEfforts = []string{"default", "low", "medium", "high", "xhigh", "max"}
+
+var validEfforts = func() map[string]struct{} {
+	valid := make(map[string]struct{}, len(runtimeEfforts))
+	for _, effort := range runtimeEfforts {
+		valid[effort] = struct{}{}
+	}
+	return valid
+}()
+
+// RuntimeEfforts returns the ordered effort options accepted by runtime
+// preferences. Callers receive a copy so the shared validation catalogue
+// cannot be mutated by a form renderer.
+func RuntimeEfforts() []string {
+	return append([]string(nil), runtimeEfforts...)
+}
+
+// IsRuntimeEffort reports whether effort is accepted after the same trim and
+// case normalization applied to persisted runtime preferences.
+func IsRuntimeEffort(effort string) bool {
+	_, ok := validEfforts[strings.ToLower(strings.TrimSpace(effort))]
+	return ok
 }
 
 type RuntimePreference struct {
@@ -432,7 +449,7 @@ func validateRuntimePreferenceWith(preference RuntimePreference, allowedModels [
 	if !allowed {
 		return fmt.Errorf("model %q is not allowed", preference.Model)
 	}
-	if _, ok := validEfforts[preference.Effort]; !ok {
+	if !IsRuntimeEffort(preference.Effort) {
 		return fmt.Errorf("effort %q is not allowed", preference.Effort)
 	}
 	switch preference.ReplyMode {

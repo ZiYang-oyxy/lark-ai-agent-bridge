@@ -91,6 +91,21 @@ func TestBuildClaudeOneShotCommandUsesConfiguredModelAndEffort(t *testing.T) {
 	}
 }
 
+func TestBuildClaudeOneShotCommandSupportsExtendedEfforts(t *testing.T) {
+	for _, effort := range []string{"xhigh", "max"} {
+		t.Run(effort, func(t *testing.T) {
+			cmd, err := BuildOneShotCommand(OneShotConfig{Kind: Claude, Prompt: "hello", Effort: effort})
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := []string{"claude", "-p", "--output-format", "stream-json", "--verbose", "--include-partial-messages", "--dangerously-skip-permissions", "--effort", effort}
+			if !reflect.DeepEqual(cmd, want) {
+				t.Fatalf("one-shot command = %#v, want %#v", cmd, want)
+			}
+		})
+	}
+}
+
 func TestBuildClaudeOneShotCommandOmitsDefaultModelAndEffort(t *testing.T) {
 	cmd, err := BuildOneShotCommand(OneShotConfig{Kind: Claude, Prompt: "hello", Model: "default", Effort: "default"})
 	if err != nil {
@@ -148,6 +163,16 @@ func TestBuildCodexOneShotCommandUsesConfiguredEffort(t *testing.T) {
 			name: "resume",
 			cfg:  OneShotConfig{Kind: Codex, Prompt: "next", AgentSessionID: "thread-1", Effort: "medium"},
 			want: []string{"codex", "exec", "-c", `model_reasoning_effort="medium"`, "resume", "--json", "thread-1", "-"},
+		},
+		{
+			name: "xhigh",
+			cfg:  OneShotConfig{Kind: Codex, Prompt: "inspect", Effort: "xhigh"},
+			want: []string{"codex", "exec", "-c", `model_reasoning_effort="xhigh"`, "--json", "-"},
+		},
+		{
+			name: "max",
+			cfg:  OneShotConfig{Kind: Codex, Prompt: "inspect", Effort: "max"},
+			want: []string{"codex", "exec", "-c", `model_reasoning_effort="max"`, "--json", "-"},
 		},
 	}
 	for _, tt := range tests {

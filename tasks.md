@@ -1,9 +1,5 @@
 # Feishu AI Agent Bridge Tasks
 
-## Runtime configuration
-
-- [ ] 将推理深度扩展为 `low / medium / high / xhigh / max`，覆盖全局/群配置、Agent 启动参数、文档与分层验证。
-
 ## Production stability
 
 - [ ] P0：隔离 Agent 子进程环境中的 Bridge/飞书/发布凭据。

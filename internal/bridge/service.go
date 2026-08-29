@@ -2413,15 +2413,10 @@ func (s *Service) agentKindConfigured(kind string) bool {
 	return ok
 }
 
-// isKnownEffort reports whether v is one of the effort options offered by the
-// /config form. Kept next to configForm() so the accepted set stays in sync
-// with what the UI renders.
+// isKnownEffort keeps command parsing aligned with the preference catalogue
+// used by validation and the /config form.
 func isKnownEffort(v string) bool {
-	switch v {
-	case "default", "low", "medium", "high":
-		return true
-	}
-	return false
+	return config.IsRuntimeEffort(v)
 }
 
 // preferenceFromFields applies the editable /config fields to current. Both
@@ -2581,7 +2576,7 @@ func (s *Service) configFormAtRevision(preference config.RuntimePreference, revi
 		ShowMetaRowRuntime:   strconv.FormatBool(preference.ShowMetaRowRuntime),
 		ShowMetaRowDeveloper: strconv.FormatBool(preference.ShowMetaRowDeveloper),
 		Agents:               toCardOptions(catalogue.AgentOptions()), AgentHomes: toCardOptions(catalogue.HomeOptions(agentKind)), AgentBins: toCardOptions(catalogue.BinOptions(agentKind)),
-		Models: s.configModelOptions(), Efforts: []string{"default", "low", "medium", "high"},
+		Models: s.configModelOptions(), Efforts: config.RuntimeEfforts(),
 		ReplyModes:          []string{string(config.ReplyModeCoder), string(config.ReplyModeWorker), string(config.ReplyModeSingleton)},
 		AppendOverflowModes: []card.SelectOption{{Value: string(config.AppendOverflowModeTruncate), Label: "尾部截断（默认）"}, {Value: string(config.AppendOverflowModeContinueCard), Label: "自动续卡（最多 9 张）"}},
 		ConversationModes:   []string{string(config.ConversationModeChat), string(config.ConversationModeTopic)},

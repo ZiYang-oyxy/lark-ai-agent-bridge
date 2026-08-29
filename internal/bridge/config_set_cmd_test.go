@@ -14,11 +14,11 @@ import (
 func TestConfigSetWritesSpecifiedFieldsAndPreservesCurrent(t *testing.T) {
 	svc, store := localConfigService(t)
 	current := store.Get()
-	if err := svc.handleConfigCommand(context.Background(), Message{ID: "set", Sender: "ou_admin"}, Command{Type: CommandConfig, Text: "set reply_mode=latest-card effort=high"}, current, current.ConversationMode); err != nil {
+	if err := svc.handleConfigCommand(context.Background(), Message{ID: "set", Sender: "ou_admin"}, Command{Type: CommandConfig, Text: "set reply_mode=latest-card effort=xhigh"}, current, current.ConversationMode); err != nil {
 		t.Fatal(err)
 	}
 	got := store.Get()
-	if got.ReplyMode != config.ReplyModeLatestCard || got.Effort != "high" || got.Model != current.Model || got.ConversationMode != current.ConversationMode {
+	if got.ReplyMode != config.ReplyModeLatestCard || got.Effort != "xhigh" || got.Model != current.Model || got.ConversationMode != current.ConversationMode {
 		t.Fatalf("preference = %#v, current = %#v", got, current)
 	}
 }

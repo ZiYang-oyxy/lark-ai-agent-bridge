@@ -261,7 +261,7 @@ Bridge 拥有主 Codex invocation 的顶层 `developer_instructions`。显式 Co
 }
 ```
 
-> Codex 的 `default` reasoning effort 以及 model、sandbox、approval、profile、plugins、MCP 和 rules 由所选 `codex` / `cx*` executable 及其环境决定；`/config` 选择 `low` / `medium` / `high` 时，Bridge 通过 `model_reasoning_effort` 显式覆盖本轮推理深度。Claude 仍保持现有 Bridge 参数策略。
+> Codex 的 `default` reasoning effort 以及 model、sandbox、approval、profile、plugins、MCP 和 rules 由所选 `codex` / `cx*` executable 及其环境决定；`/config` 选择 `low` / `medium` / `high` / `xhigh` / `max` 时，Bridge 通过 `model_reasoning_effort` 显式覆盖本轮推理深度。Claude 对这五档继续使用原生 `--effort` 参数。
 
 > 当前 Codex 自动验收使用无网络 fake executable；真实飞书 + 真实 `codex`/`cx*` E2E 需在具备凭据和部署授权的环境另行执行。
 

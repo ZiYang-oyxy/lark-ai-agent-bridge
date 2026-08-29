@@ -252,7 +252,7 @@ func buildConfigFormElements(sessionID string, form ConfigForm) []any {
 	}
 	runtime = append(runtime, fieldElements("cfg_home", "Agent 主目录", "默认继承 executable 环境；显式选择注入 CONFIG_DIR", configSelectOptions("agent_home", form.AgentHome, form.AgentHomes))...)
 	runtime = append(runtime, fieldElements("cfg_bin", "Agent 可执行文件", "主机项用当前 Agent 默认 executable，其余为预设", configSelectOptions("agent_bin", form.AgentBin, form.AgentBins))...)
-	runtime = append(runtime, fieldElements("cfg_effort", "推理深度", "default 跟随 Agent 自身设定 · low/medium/high 显式指定思考强度", configSelectOptions("effort", form.Effort, effortOptions(form.Efforts)))...)
+	runtime = append(runtime, fieldElements("cfg_effort", "推理深度", "default 跟随 Agent 自身设定 · low/medium/high/xhigh/max 显式指定思考强度", configSelectOptions("effort", form.Effort, effortOptions(form.Efforts)))...)
 
 	conversation := []map[string]any{}
 	conversation = append(conversation, fieldElements("cfg_reply", "回复模式", "选择展示过程的程度；保存后只影响新进入队列的消息。", configSelectOptions("reply_mode", form.ReplyMode, replyModeOptions(form.ReplyModes)))...)
@@ -647,7 +647,7 @@ func accessPanelElement(form ConfigForm) map[string]any {
 	return collapsiblePanelElement("panel_access", "🔒 访问控制", false, []map[string]any{markdownElement("access_summary", content)})
 }
 
-// effortOptions turns a plain effort list (e.g. "default","low","medium","high")
+// effortOptions turns a plain effort list (e.g. "default","low",...,"max")
 // into SelectOption pairs that annotate "default" so users know it defers to
 // the agent's own setting.
 func effortOptions(values []string) []SelectOption {

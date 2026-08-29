@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -155,7 +156,8 @@ func TestRuntimePreferenceValidationUsesBuiltinsAndAllowedModels(t *testing.T) {
 		{Model: "sonnet", Effort: "low", ReplyMode: ReplyModeAppendCleanCard},
 		{Model: "opus", Effort: "medium", ReplyMode: ReplyModeLatestCard},
 		{Model: "haiku", Effort: "high", ReplyMode: ReplyModeAppend},
-		{Model: "claude-custom-1", Effort: "high", ReplyMode: ReplyModeAppend},
+		{Model: "claude-custom-1", Effort: "xhigh", ReplyMode: ReplyModeAppend},
+		{Model: "claude-custom-1", Effort: "max", ReplyMode: ReplyModeAppend},
 	} {
 		if err := ValidateRuntimePreference(preference, "claude-custom-1"); err != nil {
 			t.Fatalf("ValidateRuntimePreference(%#v): %v", preference, err)
@@ -170,6 +172,18 @@ func TestRuntimePreferenceValidationUsesBuiltinsAndAllowedModels(t *testing.T) {
 		if err := ValidateRuntimePreference(preference, "claude-custom-1"); err == nil {
 			t.Fatalf("ValidateRuntimePreference(%#v) error = nil", preference)
 		}
+	}
+}
+
+func TestRuntimeEffortsReturnsOrderedCopy(t *testing.T) {
+	want := []string{"default", "low", "medium", "high", "xhigh", "max"}
+	got := RuntimeEfforts()
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("RuntimeEfforts() = %#v, want %#v", got, want)
+	}
+	got[0] = "changed"
+	if next := RuntimeEfforts(); !reflect.DeepEqual(next, want) {
+		t.Fatalf("RuntimeEfforts() shared mutable state: %#v", next)
 	}
 }
 
