@@ -16,6 +16,8 @@ import (
 	"lark-agent-bridge/internal/session"
 )
 
+const scheduleAutoConfirmDelay = 60 * time.Second
+
 func (s *Service) Enqueue(_ context.Context, task schedule.Task, run schedule.Run) (schedule.EnqueueResult, error) {
 	if s.isUpgradeMaintenance() {
 		return schedule.EnqueueResult{}, schedule.ErrQueueFull
@@ -79,7 +81,7 @@ func (s *Service) handlePendingScheduleReply(msg Message, preference config.Runt
 		return true, err
 	}
 	if answer == "取消" {
-		if err := s.Schedules.CancelDraft(drafts[0].ID, msg.Sender); err != nil {
+		if err := s.cancelScheduleDraft(drafts[0].ID, msg.Sender); err != nil {
 			return true, err
 		}
 		s.Audit.Record(msg.Sender, "schedule_draft_cancelled", drafts[0].ID, "text confirmation")
@@ -149,7 +151,7 @@ func (s *Service) handleScheduleCommand(ctx context.Context, msg Message, cmd Co
 			draft = matches[0]
 		}
 		if sub == "cancel" {
-			if err := s.Schedules.CancelDraft(draft.ID, msg.Sender); err != nil {
+			if err := s.cancelScheduleDraft(draft.ID, msg.Sender); err != nil {
 				return s.renderTextWithMode(label+"-cancel-failed", msg.ID, card.SegmentError, "取消草稿失败："+err.Error(), preference.ConversationMode)
 			}
 			s.Audit.Record(msg.Sender, "schedule_draft_cancelled", draft.ID, "command")
@@ -289,7 +291,20 @@ func (s *Service) confirmScheduleDraft(id, actor string, now time.Time) (schedul
 		s.Scheduler.Add(task)
 	}
 	s.Audit.Record(actor, "schedule_task_confirmed", task.ID, string(task.Kind))
+	s.scheduleConfirmMu.Lock()
+	delete(s.scheduleConfirms, id)
+	s.scheduleConfirmMu.Unlock()
 	return task, nil
+}
+
+func (s *Service) cancelScheduleDraft(id, actor string) error {
+	if err := s.Schedules.CancelDraft(id, actor); err != nil {
+		return err
+	}
+	s.scheduleConfirmMu.Lock()
+	delete(s.scheduleConfirms, id)
+	s.scheduleConfirmMu.Unlock()
+	return nil
 }
 
 func (s *Service) canManageSchedule(msg Message, task schedule.Task) bool {
@@ -341,17 +356,33 @@ func scheduleAddPrompt(kind schedule.Kind, request string) string {
 	return fmt.Sprintf("[Bridge scheduling request: propose exactly one %s task using the schedule proposal tool; do not claim it is created before user confirmation.]\n%s", kind, request)
 }
 
-func scheduleConfirmationEvent(sessionID string, draft schedule.Draft) card.Event {
+func scheduleConfirmationEvent(sessionID string, draft schedule.Draft, now time.Time) card.Event {
 	next := make([]string, 0, len(draft.Next))
 	for _, at := range draft.Next {
 		next = append(next, at.Format("2006-01-02 15:04 MST"))
 	}
-	text := fmt.Sprintf("请确认定时任务：\n\n**规则**：%s（%s）\n\n**接下来执行**：%s\n\n**任务**：%s\n\n**执行环境**：%s / %s / `%s`\n\n服务离线不超过 5 分钟时补跑最近一次；同一任务不会重叠执行。", draft.Description, draft.Timezone, strings.Join(next, "、"), draft.Prompt, draft.Execution.Agent, draft.Execution.Model, draft.Execution.WorkDir)
+	countdown := ""
+	if !draft.AutoConfirmAt.IsZero() {
+		remaining := scheduleConfirmationRemaining(draft.AutoConfirmAt, now)
+		countdown = fmt.Sprintf("\n\n⏳ **%d 秒后自动确认**；此前可点击取消。", remaining)
+	}
+	text := fmt.Sprintf("请确认定时任务：\n\n**规则**：%s（%s）\n\n**接下来执行**：%s\n\n**任务**：%s\n\n**执行环境**：%s / %s / `%s`%s\n\n服务离线不超过 5 分钟时补跑最近一次；同一任务不会重叠执行。", draft.Description, draft.Timezone, strings.Join(next, "、"), draft.Prompt, draft.Execution.Agent, draft.Execution.Model, draft.Execution.WorkDir, countdown)
 	return card.Event{
 		Type: "schedule_confirmation", SessionID: sessionID, HeaderTitle: "⏰ 确认定时任务", HeaderTemplate: "orange",
 		Segments: []card.Segment{{Kind: card.SegmentText, Text: text}}, HideAgentPanels: true,
 		Actions: []card.Action{{ID: "schedule.confirm", Label: "确认创建", Value: draft.ID}, {ID: "schedule.cancel", Label: "取消", Value: draft.ID}},
 	}
+}
+
+func scheduleConfirmationRemaining(deadline, now time.Time) int {
+	remaining := int(deadline.Sub(now).Seconds())
+	if now.Add(time.Duration(remaining) * time.Second).Before(deadline) {
+		remaining++
+	}
+	if remaining < 0 {
+		return 0
+	}
+	return remaining
 }
 
 func (s *Service) issueScheduleProposalContext(sess session.Session, batch session.Batch, originRunID string) (string, string) {
@@ -392,8 +423,16 @@ func (s *Service) scheduleDraftForOrigin(originRunID string) (schedule.Draft, bo
 }
 
 func (s *Service) finishScheduleConfirmation(stream *agentCardStream, status string, meta card.Meta, result AgentRunResult, draft schedule.Draft, sessionID string) {
+	deadline := time.Now().Add(scheduleAutoConfirmDelay)
+	autoDraft, autoErr := s.Schedules.SetDraftAutoConfirmAt(draft.ID, deadline)
+	if autoErr != nil {
+		s.Audit.Record("system", "schedule_auto_confirm_arm_failed", draft.ID, autoErr.Error())
+	} else {
+		draft = autoDraft
+	}
+	var rendered card.Event
 	_, err := stream.FinishTransformed(status, meta, result, func(event card.Event) card.Event {
-		confirmation := scheduleConfirmationEvent(event.SessionID, draft)
+		confirmation := scheduleConfirmationEvent(event.SessionID, draft, time.Now())
 		for i := range confirmation.Actions {
 			grantID, grantErr := s.issueActionGrantWithAdmin(draft.Creator, draft.Target.ChatID, confirmation.SessionID, confirmation.Actions[i].ID, confirmation.Actions[i].Value, draft.ExpiresAt, false)
 			if grantErr != nil {
@@ -406,11 +445,156 @@ func (s *Service) finishScheduleConfirmation(stream *agentCardStream, status str
 		confirmation.ReplyToMessageID = event.ReplyToMessageID
 		confirmation.ReplyInThread = event.ReplyInThread
 		confirmation.Meta = event.Meta
+		rendered = confirmation
 		return confirmation
 	})
 	if err != nil {
 		s.Audit.Record("system", "terminal_reply_render_failed", sessionID, fmt.Sprintf("status=schedule_confirmation error=%v", err))
+		if autoErr == nil {
+			_, _ = s.Schedules.SetDraftAutoConfirmAt(draft.ID, time.Time{})
+		}
+		return
 	}
+	if autoErr == nil {
+		s.scheduleConfirmMu.Lock()
+		s.scheduleConfirms[draft.ID] = pendingScheduleConfirmation{
+			event: rendered, lastRemaining: scheduleConfirmationRemaining(draft.AutoConfirmAt, time.Now()),
+		}
+		s.scheduleConfirmMu.Unlock()
+		s.Audit.Record("system", "schedule_auto_confirm_armed", draft.ID, "deadline="+draft.AutoConfirmAt.Format(time.RFC3339Nano))
+	}
+}
+
+func (s *Service) ProcessScheduleConfirmations(now time.Time) error {
+	if s.Schedules == nil {
+		return nil
+	}
+	for _, task := range s.Schedules.Tasks() {
+		if task.AutoConfirmNoticePending {
+			if err := s.deliverAutoConfirmNotice(task); err != nil {
+				s.Audit.Record("system", "schedule_auto_confirm_render_failed", task.ID, err.Error())
+			}
+		}
+	}
+	for _, draft := range s.Schedules.Drafts() {
+		if draft.AutoConfirmAt.IsZero() {
+			continue
+		}
+		pending, tracked := s.pendingScheduleConfirmation(draft.ID)
+		if now.Before(draft.AutoConfirmAt) {
+			if !tracked {
+				continue
+			}
+			remaining := scheduleConfirmationRemaining(draft.AutoConfirmAt, now)
+			if remaining == pending.lastRemaining {
+				continue
+			}
+			updated := scheduleConfirmationEvent(pending.event.SessionID, draft, now)
+			updated.ReplyToMessageID = pending.event.ReplyToMessageID
+			updated.ReplyInThread = pending.event.ReplyInThread
+			updated.Meta = pending.event.Meta
+			updated.Actions = pending.event.Actions
+			if err := s.Cards.Render(updated); err != nil {
+				s.Audit.Record("system", "schedule_countdown_render_failed", draft.ID, err.Error())
+				continue
+			}
+			if task, ok := s.Schedules.Task(draft.ID); ok {
+				if task.AutoConfirmed {
+					_ = s.deliverAutoConfirmNotice(task)
+				} else {
+					_ = s.renderResolvedScheduleConfirmation(task, pending.event, false)
+				}
+				continue
+			}
+			if _, ok := s.Schedules.Draft(draft.ID); !ok {
+				_ = s.renderCancelledScheduleConfirmation(pending.event)
+				s.deletePendingScheduleConfirmation(draft.ID)
+				continue
+			}
+			s.updatePendingScheduleConfirmation(draft.ID, updated, remaining)
+			continue
+		}
+
+		task, err := s.Schedules.AutoConfirmDraft(draft.ID, now)
+		if err != nil {
+			if _, stillDraft := s.Schedules.Draft(draft.ID); stillDraft {
+				s.Audit.Record("system", "schedule_auto_confirm_failed", draft.ID, err.Error())
+			}
+			continue
+		}
+		if s.Scheduler != nil {
+			s.Scheduler.Add(task)
+		}
+		s.Audit.Record(draft.Creator, "schedule_task_confirmed", task.ID, string(task.Kind))
+		s.Audit.Record("system", "schedule_task_auto_confirmed", task.ID, string(task.Kind))
+		if err := s.deliverAutoConfirmNotice(task); err != nil {
+			s.Audit.Record("system", "schedule_auto_confirm_render_failed", task.ID, err.Error())
+		}
+	}
+	return nil
+}
+
+func (s *Service) pendingScheduleConfirmation(id string) (pendingScheduleConfirmation, bool) {
+	s.scheduleConfirmMu.Lock()
+	defer s.scheduleConfirmMu.Unlock()
+	pending, ok := s.scheduleConfirms[id]
+	return pending, ok
+}
+
+func (s *Service) updatePendingScheduleConfirmation(id string, event card.Event, remaining int) {
+	s.scheduleConfirmMu.Lock()
+	defer s.scheduleConfirmMu.Unlock()
+	if _, ok := s.scheduleConfirms[id]; ok {
+		s.scheduleConfirms[id] = pendingScheduleConfirmation{event: event, lastRemaining: remaining}
+	}
+}
+
+func (s *Service) deletePendingScheduleConfirmation(id string) {
+	s.scheduleConfirmMu.Lock()
+	delete(s.scheduleConfirms, id)
+	s.scheduleConfirmMu.Unlock()
+}
+
+func (s *Service) deliverAutoConfirmNotice(task schedule.Task) error {
+	pending, tracked := s.pendingScheduleConfirmation(task.ID)
+	if tracked {
+		if err := s.renderResolvedScheduleConfirmation(task, pending.event, true); err == nil {
+			return s.finishAutoConfirmNotice(task.ID)
+		} else {
+			s.Audit.Record("system", "schedule_auto_confirm_card_update_failed", task.ID, err.Error())
+		}
+	}
+	text := "⏳ 60 秒倒计时结束，已自动确认。\n\n" + confirmedScheduleText(task)
+	if err := s.renderTextWithMode("schedule-auto-confirmed-"+task.ID, task.Target.ReplyToMessageID, card.SegmentText, text, config.ConversationMode(task.Execution.ConversationMode)); err != nil {
+		return err
+	}
+	return s.finishAutoConfirmNotice(task.ID)
+}
+
+func (s *Service) finishAutoConfirmNotice(taskID string) error {
+	if err := s.Schedules.MarkAutoConfirmNotified(taskID); err != nil {
+		return err
+	}
+	s.deletePendingScheduleConfirmation(taskID)
+	return nil
+}
+
+func (s *Service) renderResolvedScheduleConfirmation(task schedule.Task, base card.Event, automatic bool) error {
+	title := "✅ 定时任务已创建"
+	text := confirmedScheduleText(task)
+	if automatic {
+		title = "✅ 定时任务已自动创建"
+		text = "⏳ 60 秒倒计时结束，已自动确认。\n\n" + text
+	}
+	return s.Cards.Render(card.Event{Type: "schedule_confirmed", SessionID: base.SessionID, ReplyToMessageID: base.ReplyToMessageID, ReplyInThread: base.ReplyInThread, HeaderTitle: title, HeaderTemplate: "green", Segments: []card.Segment{{Kind: card.SegmentText, Text: text}}, Meta: base.Meta, HideAgentPanels: true, Actions: disabledScheduleActions(task.ID)})
+}
+
+func (s *Service) renderCancelledScheduleConfirmation(base card.Event) error {
+	return s.Cards.Render(card.Event{Type: "schedule_cancelled", SessionID: base.SessionID, ReplyToMessageID: base.ReplyToMessageID, ReplyInThread: base.ReplyInThread, HeaderTitle: "已取消", HeaderTemplate: "grey", Segments: []card.Segment{{Kind: card.SegmentText, Text: "已取消，不会创建定时任务。"}}, Meta: base.Meta, HideAgentPanels: true})
+}
+
+func disabledScheduleActions(taskID string) []card.Action {
+	return []card.Action{{ID: "schedule.confirm", Label: "已确认", Value: taskID, Disabled: true}, {ID: "schedule.cancel", Label: "取消", Value: taskID, Disabled: true}}
 }
 
 func scheduleRunIDFromBatch(batch session.Batch) string {

@@ -92,6 +92,96 @@ func normalizeChatOverride(o ChatOverride) ChatOverride {
 	return o
 }
 
+// ChatOverrideAdjustmentAction describes how a per-chat override was repaired
+// when it stopped merging into a legal preference.
+type ChatOverrideAdjustmentAction string
+
+const (
+	// ChatOverridePinnedAgent means the agent kind the chat had been inheriting
+	// was written into the override so its home/bin selection stays legal.
+	ChatOverridePinnedAgent ChatOverrideAdjustmentAction = "pinned_agent"
+	// ChatOverrideClearedAgent means the agent/home/bin fields were dropped so
+	// the chat follows the global agent again; other fields are kept.
+	ChatOverrideClearedAgent ChatOverrideAdjustmentAction = "cleared_agent"
+	// ChatOverrideDropped means the whole override was removed.
+	ChatOverrideDropped ChatOverrideAdjustmentAction = "dropped"
+)
+
+// ChatOverrideAdjustment records one per-chat override that had to be repaired
+// or removed because it no longer merges into a legal preference.
+type ChatOverrideAdjustment struct {
+	ChatID string
+	Action ChatOverrideAdjustmentAction
+	Reason string
+}
+
+// pinAgentForOverride fixes the agent kind into an override that selects an
+// agent-specific home or bin. Home/bin labels only exist under one agent kind,
+// so leaving Agent nil makes the override illegal the moment the global agent
+// changes — the exact shape that used to abort startup. global must already be
+// the normalized effective global preference.
+func pinAgentForOverride(o ChatOverride, global RuntimePreference) ChatOverride {
+	if o.Agent != nil || (o.AgentHome == nil && o.AgentBin == nil) {
+		return o
+	}
+	agent := strings.ToLower(strings.TrimSpace(global.Agent))
+	if agent == "" {
+		agent = DefaultAgentKind
+	}
+	o.Agent = &agent
+	return o
+}
+
+// reconcileChatOverridesLocked re-validates every per-chat override against
+// nextGlobal and repairs the ones that no longer merge legally, returning the
+// map to persist plus a description of what changed. A global write (above all
+// switching agent) can invalidate overrides that were legal when written; left
+// alone they sit illegal on disk and only surface at the next startup.
+//
+// Repairs escalate: pin the agent the chat was inheriting (keeps its home/bin
+// choice), else drop just the agent dimension (chat follows the global agent),
+// else drop the override. previousGlobal supplies the agent being inherited
+// before this write. Callers must hold s.mu.
+func (s *PreferenceStore) reconcileChatOverridesLocked(nextGlobal, previousGlobal RuntimePreference) (map[string]ChatOverride, []ChatOverrideAdjustment) {
+	if len(s.chatOverrides) == 0 {
+		return s.chatOverrides, nil
+	}
+	var adjustments []ChatOverrideAdjustment
+	next := cloneChatOverrides(s.chatOverrides)
+	for chatID, override := range s.chatOverrides {
+		_, err := mergeChatOverride(nextGlobal, override, s.allowedModels, s.agents)
+		if err == nil {
+			continue
+		}
+		reason := err.Error()
+		if pinned := pinAgentForOverride(override, previousGlobal); override.Agent == nil && pinned.Agent != nil {
+			if _, err := mergeChatOverride(nextGlobal, pinned, s.allowedModels, s.agents); err == nil {
+				next[chatID] = pinned
+				adjustments = append(adjustments, ChatOverrideAdjustment{ChatID: chatID, Action: ChatOverridePinnedAgent, Reason: reason})
+				continue
+			}
+		}
+		cleared := override
+		cleared.Agent, cleared.AgentHome, cleared.AgentBin = nil, nil, nil
+		if !cleared.IsEmpty() {
+			if _, err := mergeChatOverride(nextGlobal, cleared, s.allowedModels, s.agents); err == nil {
+				next[chatID] = cleared
+				adjustments = append(adjustments, ChatOverrideAdjustment{ChatID: chatID, Action: ChatOverrideClearedAgent, Reason: reason})
+				continue
+			}
+		}
+		delete(next, chatID)
+		adjustments = append(adjustments, ChatOverrideAdjustment{ChatID: chatID, Action: ChatOverrideDropped, Reason: reason})
+	}
+	if len(adjustments) == 0 {
+		return s.chatOverrides, nil
+	}
+	if len(next) == 0 {
+		next = nil
+	}
+	return next, adjustments
+}
+
 // mergeChatOverride layers a chat override on top of a base preference,
 // normalizes and validates the result. The base is expected to already be the
 // effective global preference.
@@ -232,7 +322,9 @@ func (s *PreferenceStore) SetChat(chatID string, override ChatOverride) error {
 	if override.IsEmpty() {
 		return s.resetChatLocked(chatID)
 	}
-	if _, err := mergeChatOverride(s.effectiveGlobalLocked(), override, s.allowedModels, s.agents); err != nil {
+	global := s.effectiveGlobalLocked()
+	override = pinAgentForOverride(override, global)
+	if _, err := mergeChatOverride(global, override, s.allowedModels, s.agents); err != nil {
 		return err
 	}
 	next := cloneChatOverrides(s.chatOverrides)
@@ -301,6 +393,9 @@ func (s *PreferenceStore) updateChatLocked(chatID string, update func(ChatOverri
 		}
 		return previous, global, nil
 	}
+	// 选定 home/bin 就隐含选定了 agent:一并固化,否则全局切 agent 后这条覆盖
+	// 会变成非法组合(旧数据正是这样让启动崩掉的)。
+	override = pinAgentForOverride(override, global)
 	effective, err := mergeChatOverride(global, override, s.allowedModels, s.agents)
 	if err != nil {
 		return RuntimePreference{}, RuntimePreference{}, err

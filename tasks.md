@@ -1,9 +1,5 @@
 # Feishu AI Agent Bridge Tasks
 
-## Release and installation hardening
-
-- [ ] Publish and verify `v0.1.14-rc.4`.
-
 ## Production stability
 
 - [ ] P0：隔离 Agent 子进程环境中的 Bridge/飞书/发布凭据。

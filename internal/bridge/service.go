@@ -67,6 +67,11 @@ type pendingMergeForward struct {
 	ExpiresAt time.Time
 }
 
+type pendingScheduleConfirmation struct {
+	event         card.Event
+	lastRemaining int
+}
+
 type Service struct {
 	Config                config.Config
 	Sessions              *session.Manager
@@ -111,6 +116,8 @@ type Service struct {
 	Updates            UpdateManager
 	accessMu           sync.RWMutex
 	knownChats         []feishu.KnownChat
+	scheduleConfirmMu  sync.Mutex
+	scheduleConfirms   map[string]pendingScheduleConfirmation
 
 	mu          sync.Mutex
 	pendingRuns map[string]pendingRun
@@ -185,11 +192,10 @@ type MessageDeleter interface {
 type QuotedMessage struct {
 	Text        string
 	SenderID    string
+	SenderName  string
 	MessageType string
 	// SenderType 是引用消息发送者的主体类型，飞书原生 `user` / `app` / `anonymous` /
-	// `unknown`。上层用它给 prompt 里的引用块加主体身份边框（对来自 bot 的引用做
-	// 更严格的隔离提示），避免另一分身的第一人称自述被 agent 误认成自己的历史。
-	// 空表示未知；缺失时降级为普通消息处理。
+	// `unknown`。上层保留该事实供 audit 和未来路由使用；空表示未知。
 	SenderType string
 	// Attachments 是引用消息里可下载的图片/文件引用。topic seed 的 quote 模式会把
 	// 这些附件与当前消息的附件合并,喂给 agent 作 seed;fork 模式忽略。
@@ -405,6 +411,7 @@ func NewServiceWithSessions(cfg config.Config, renderer card.Renderer, runner Ag
 		resumeContexts:       map[string]resumeContext{},
 		actionReplyHints:     map[string]string{},
 		pendingMergeForwards: map[string]pendingMergeForward{},
+		scheduleConfirms:     map[string]pendingScheduleConfirmation{},
 		reactionDelay:        defaultWaitingReactionDelay,
 		startedAt:            time.Now(),
 		accepting:            true,
@@ -1334,7 +1341,7 @@ func (s *Service) runWithPreference(ctx context.Context, cmd Command, msg Messag
 			msg.ThreadID = realThread
 		}
 	}
-	conversationKey := sessionKeyForModeWithAlias(cmd.Agent, msg, preference.ConversationMode, s.TopicAliases)
+	conversationKey := s.keyForMessage(cmd.Agent, msg, preference.ConversationMode)
 	workDir := s.effectiveWorkDir(conversationKey, cmd)
 	key := conversationKey
 	if cmd.ScheduleKind != "" {
@@ -1357,20 +1364,21 @@ func (s *Service) runWithPreference(ctx context.Context, cmd Command, msg Messag
 	if text == "" && len(msg.Attachments) == 0 && !cmd.Reset {
 		return s.renderTextWithMode("empty", msg.ID, card.SegmentError, "empty prompt", preference.ConversationMode)
 	}
-	// topic seed 的 quote 模式:先拉引用消息,把里面的图片/文件附件合并进 msg.Attachments,
-	// 一起走 resolveAttachments 下载。这样 quote 模式看到的完整 seed 是:@bot 正文 +
-	// 引用消息文本(下面 quotedText/quotedSender)+ 引用消息附件(此处并入 msg.Attachments)。
-	// fork 模式跳过合并,只走后面单独的 quotedText 内联。为避免 executeBatch 侧路径分裂,
-	// 这里两分支拿到的 quotedText 都填进 session.Input;区别只在附件合并与 forkFrom 是否传。
-	quotedText, quotedSender, quotedSenderType, quotedAttachments := s.resolveQuotedMessage(ctx, msg)
+	// Feishu 话题内的每条后续消息都会携带 parent_id=root。引用内容只属于话题
+	// seed；若每轮都按 parent_id 回拉，root 正文和 `[用户引用了 ...]` 会被重复
+	// 注入 Agent。chat 模式没有 topic seed 概念，仍保留逐条显式引用的原语义。
+	firstTopicSeed := preference.ConversationMode == config.ConversationModeTopic &&
+		isTopicSeedFirstRun(s.Sessions, key)
+	var quotedText, quotedSender, quotedSenderName, quotedSenderType string
+	var quotedAttachments []media.Ref
+	if preference.ConversationMode != config.ConversationModeTopic || firstTopicSeed {
+		quotedText, quotedSender, quotedSenderName, quotedSenderType, quotedAttachments = s.resolveQuotedMessage(ctx, msg)
+	}
 	seedMode := preference.TopicSeedMode
 	if seedMode == "" {
 		seedMode = config.TopicSeedModeQuote
 	}
-	topicQuoteSeed := preference.ConversationMode == config.ConversationModeTopic &&
-		seedMode == config.TopicSeedModeQuote &&
-		len(quotedAttachments) > 0 &&
-		isTopicSeedFirstRun(s.Sessions, key)
+	topicQuoteSeed := firstTopicSeed && seedMode == config.TopicSeedModeQuote && len(quotedAttachments) > 0
 	if topicQuoteSeed {
 		msg.Attachments = append(append([]media.Ref(nil), msg.Attachments...), quotedAttachments...)
 	}
@@ -1390,7 +1398,7 @@ func (s *Service) runWithPreference(ctx context.Context, cmd Command, msg Messag
 	if seedMode == config.TopicSeedModeFork {
 		forkFrom = s.forkSeedForTopicSession(cmd.Agent, key, msg, preference.ConversationMode)
 	}
-	input := session.Input{ID: msg.ID, Sender: msg.Sender, Text: text, QuotedText: quotedText, QuotedSender: quotedSender, QuotedSenderType: quotedSenderType, Attachments: attachments, ReplyToMessageID: msg.ID, CardSessionID: cardSessionID, WorkDir: workDir, RequestedModel: preference.Model, RequestedEffort: preference.Effort, AgentBin: bin, AgentHome: home, ForkFromAgentSessionID: forkFrom, ReplyMode: preference.ReplyMode, AppendOverflowMode: preference.AppendOverflowMode, ConversationMode: preference.ConversationMode, TopicID: msg.ThreadID, NotifyOnComplete: preference.NotifyOnComplete, CompletionStatusText: preference.EffectiveCompletionStatusText(), BridgeInstructionsVersion: bridgeinstructions.CurrentVersion, ScheduleKind: cmd.ScheduleKind, ScheduleTargetThreadID: msg.ThreadID, IsGroup: msg.IsGroup, Compact: cmd.Type == CommandCompact, Time: effectiveMessageTime(msg), DebounceUntil: receivedAt.Add(debounceWindow), DebounceWindow: debounceWindow, State: session.InputDebouncing, Reset: cmd.Reset || cmd.ScheduleKind != ""}
+	input := session.Input{ID: msg.ID, Sender: msg.Sender, Text: text, QuotedText: quotedText, QuotedSender: quotedSender, QuotedSenderName: quotedSenderName, QuotedSenderType: quotedSenderType, Attachments: attachments, ReplyToMessageID: msg.ID, CardSessionID: cardSessionID, WorkDir: workDir, RequestedModel: preference.Model, RequestedEffort: preference.Effort, AgentBin: bin, AgentHome: home, ForkFromAgentSessionID: forkFrom, ReplyMode: preference.ReplyMode, AppendOverflowMode: preference.AppendOverflowMode, ConversationMode: preference.ConversationMode, TopicID: msg.ThreadID, NotifyOnComplete: preference.NotifyOnComplete, CompletionStatusText: preference.EffectiveCompletionStatusText(), BridgeInstructionsVersion: bridgeinstructions.CurrentVersion, ScheduleKind: cmd.ScheduleKind, ScheduleTargetThreadID: msg.ThreadID, IsGroup: msg.IsGroup, Compact: cmd.Type == CommandCompact, Time: effectiveMessageTime(msg), DebounceUntil: receivedAt.Add(debounceWindow), DebounceWindow: debounceWindow, State: session.InputDebouncing, Reset: cmd.Reset || cmd.ScheduleKind != ""}
 	accepted, queued, err := s.Sessions.AcceptAndEnqueue(key, input, receivedAt, s.dedupTTL(), s.dedupMaxEntries(), s.batchLimits())
 	if err != nil {
 		action := "queue_rejected"
@@ -2060,12 +2068,12 @@ func (s *Service) HandleActionResult(ctx context.Context, req ActionRequest) (Ac
 		if err != nil {
 			return ActionResult{}, err
 		}
-		return s.renderActionEvent(card.Event{Type: "schedule_confirmed", SessionID: req.SessionID, HeaderTitle: "✅ 定时任务已创建", HeaderTemplate: "green", Segments: []card.Segment{{Kind: card.SegmentText, Text: confirmedScheduleText(task)}}, Actions: []card.Action{{ID: "schedule.confirm", Label: "已确认", Value: task.ID, Disabled: true}, {ID: "schedule.cancel", Label: "取消", Value: task.ID, Disabled: true}}})
+		return s.renderActionEvent(card.Event{Type: "schedule_confirmed", SessionID: req.SessionID, HeaderTitle: "✅ 定时任务已创建", HeaderTemplate: "green", Segments: []card.Segment{{Kind: card.SegmentText, Text: confirmedScheduleText(task)}}, Actions: disabledScheduleActions(task.ID)})
 	case "schedule.cancel":
 		if s.Schedules == nil {
 			return ActionResult{}, errors.New("schedule store is not configured")
 		}
-		if err := s.Schedules.CancelDraft(strings.TrimSpace(req.Value), req.Actor); err != nil {
+		if err := s.cancelScheduleDraft(strings.TrimSpace(req.Value), req.Actor); err != nil {
 			return ActionResult{}, err
 		}
 		s.Audit.Record(req.Actor, "schedule_draft_cancelled", req.Value, "card action")
@@ -2174,6 +2182,11 @@ func (s *Service) HandleActionResult(ctx context.Context, req ActionRequest) (Ac
 		}
 		s.Audit.Record(req.Actor, "config_saved", req.SessionID, fmt.Sprintf("agent=%s agent_home=%s agent_bin=%s model=%s effort=%s reply_mode=%s append_overflow_mode=%s conversation_mode=%s topic_seed_mode=%s group_message_mode=%s respond_to_bots=%t notify_on_complete=%t show_meta_row_agent=%t show_meta_row_runtime=%t show_meta_row_developer=%t", preference.Agent, preference.AgentHome, preference.AgentBin, preference.Model, preference.Effort, preference.ReplyMode, preference.AppendOverflowMode, preference.ConversationMode, preference.TopicSeedMode, preference.GroupMessageMode, preference.RespondToBots, preference.NotifyOnComplete, preference.ShowMetaRowAgent, preference.ShowMetaRowRuntime, preference.ShowMetaRowDeveloper))
 		s.Audit.Record(req.Actor, "group_message_mode_saved", req.SessionID, fmt.Sprintf("mode=%s respond_to_bots=%t", preference.GroupMessageMode, preference.RespondToBots))
+		// 切换全局 agent 会让某些按群覆盖不再合法,store 会就地收敛它们。这类连带
+		// 改动必须留痕,否则某个群的 agent/home/bin 变了却查不到原因。
+		for _, adjustment := range s.Preferences.TakeChatOverrideAdjustments() {
+			s.Audit.Record(req.Actor, "config_chat_override_reconciled", req.SessionID, fmt.Sprintf("chat=%s action=%s reason=%s", adjustment.ChatID, adjustment.Action, adjustment.Reason))
+		}
 		result, err := s.renderActionEvent(card.Event{
 			Type:      "config_saved",
 			SessionID: req.SessionID,
@@ -2205,8 +2218,9 @@ func (s *Service) HandleActionResult(ctx context.Context, req ActionRequest) (Ac
 		if !req.HasPreferenceRevision {
 			_, _, expected = s.Preferences.SnapshotForChat(chatID)
 		}
-		previous, effective, err := s.Preferences.UpdateChatAtRevision(chatID, expected, func(global config.RuntimePreference, _ config.ChatOverride) (config.ChatOverride, error) {
-			return chatOverrideFromForm(req.FormValues, global), nil
+		current := s.Preferences.GetForChat(chatID)
+		previous, effective, err := s.Preferences.UpdateChatAtRevision(chatID, expected, func(global config.RuntimePreference, currentOverride config.ChatOverride) (config.ChatOverride, error) {
+			return chatOverrideFromForm(req.FormValues, global, current, currentOverride), nil
 		})
 		if errors.Is(err, config.ErrPreferenceConflict) {
 			s.Audit.Record(req.Actor, "local_config_save_conflict", chatID, err.Error())
@@ -2399,15 +2413,10 @@ func (s *Service) agentKindConfigured(kind string) bool {
 	return ok
 }
 
-// isKnownEffort reports whether v is one of the effort options offered by the
-// /config form. Kept next to configForm() so the accepted set stays in sync
-// with what the UI renders.
+// isKnownEffort keeps command parsing aligned with the preference catalogue
+// used by validation and the /config form.
 func isKnownEffort(v string) bool {
-	switch v {
-	case "default", "low", "medium", "high":
-		return true
-	}
-	return false
+	return config.IsRuntimeEffort(v)
 }
 
 // preferenceFromFields applies the editable /config fields to current. Both
@@ -2567,7 +2576,7 @@ func (s *Service) configFormAtRevision(preference config.RuntimePreference, revi
 		ShowMetaRowRuntime:   strconv.FormatBool(preference.ShowMetaRowRuntime),
 		ShowMetaRowDeveloper: strconv.FormatBool(preference.ShowMetaRowDeveloper),
 		Agents:               toCardOptions(catalogue.AgentOptions()), AgentHomes: toCardOptions(catalogue.HomeOptions(agentKind)), AgentBins: toCardOptions(catalogue.BinOptions(agentKind)),
-		Models: s.configModelOptions(), Efforts: []string{"default", "low", "medium", "high"},
+		Models: s.configModelOptions(), Efforts: config.RuntimeEfforts(),
 		ReplyModes:          []string{string(config.ReplyModeCoder), string(config.ReplyModeWorker), string(config.ReplyModeSingleton)},
 		AppendOverflowModes: []card.SelectOption{{Value: string(config.AppendOverflowModeTruncate), Label: "尾部截断（默认）"}, {Value: string(config.AppendOverflowModeContinueCard), Label: "自动续卡（最多 9 张）"}},
 		ConversationModes:   []string{string(config.ConversationModeChat), string(config.ConversationModeTopic)},
@@ -2598,9 +2607,8 @@ func (s *Service) localConfigForm(preference config.RuntimePreference, chatID st
 // localConfigOverview assembles the read-only /local-config summary for a group:
 // each overridable field's effective value (global with this group's override
 // layered on) plus whether the group overrides it, and a count of overrides. It
-// intentionally lists only the fields a group may override in the /config
-// surface (reply/conversation/group-message/respond-to-bots/agent-bin); model
-// and effort are not exposed here, matching /config.
+// intentionally lists only the fields exposed by the per-chat configuration
+// surface. Model remains runtime-selected and is not shown here.
 func (s *Service) localConfigOverview(chatID string) *card.LocalConfigOverview {
 	overview := &card.LocalConfigOverview{ChatID: chatID}
 	if s.Preferences == nil {
@@ -2614,6 +2622,7 @@ func (s *Service) localConfigOverview(chatID string) *card.LocalConfigOverview {
 		agentBin = "主机（当前 Agent 默认）"
 	}
 	items := []card.LocalConfigItem{
+		{Label: "Agent mode", Value: preferenceAgentLabel(effective.Agent), Overridden: override.Agent != nil},
 		{Label: "Agent 可执行文件", Value: agentBin, Overridden: override.AgentBin != nil},
 		{Label: "推理深度", Value: effective.Effort, Overridden: override.Effort != nil},
 		{Label: "回复模式", Value: string(effective.ReplyMode), Overridden: override.ReplyMode != nil},
@@ -2714,7 +2723,7 @@ func onOffText(v bool) string {
 // differs from the current global default; fields equal to global stay nil so
 // the group keeps inheriting them. Access-control form values are intentionally
 // never read here — access is global-only.
-func chatOverrideFromForm(values map[string]string, global config.RuntimePreference) config.ChatOverride {
+func chatOverrideFromForm(values map[string]string, global, current config.RuntimePreference, currentOverride config.ChatOverride) config.ChatOverride {
 	var override config.ChatOverride
 	// Model is still not exposed on the /config form so it keeps inheriting the
 	// global preference. Effort is editable and can be per-chat overridden.
@@ -2769,19 +2778,46 @@ func chatOverrideFromForm(values map[string]string, global config.RuntimePrefere
 			override.ShowMetaRowDeveloper = &parsed
 		}
 	}
+	selectedAgent := strings.ToLower(strings.TrimSpace(current.Agent))
+	_, hasAgentField := values["agent"]
 	if raw, ok := values["agent"]; ok {
-		if v := strings.ToLower(strings.TrimSpace(raw)); v != "" && v != global.Agent {
-			override.Agent = &v
+		if v := strings.ToLower(strings.TrimSpace(raw)); v != "" {
+			selectedAgent = v
+			if v != global.Agent {
+				override.Agent = &v
+			}
 		}
+	} else {
+		// Cards opened before the per-chat Agent selector was introduced do not
+		// submit an agent field. Preserve an existing command-created override so
+		// saving an unrelated field during a rolling upgrade cannot clear it.
+		override.Agent = currentOverride.Agent
 	}
-	if raw, ok := values["agent_home"]; ok {
-		if v := strings.TrimSpace(raw); v != global.AgentHome {
-			override.AgentHome = &v
+	agentChanged := selectedAgent != strings.ToLower(strings.TrimSpace(current.Agent))
+	if agentChanged {
+		// The home/bin controls were rendered for current.Agent. Their submitted
+		// values are therefore stale after an Agent switch and must not leak into
+		// the newly selected runtime. A non-global Agent needs explicit empty
+		// pointers so it does not inherit foreign presets from the global Agent.
+		if override.Agent != nil {
+			empty := ""
+			override.AgentHome = &empty
+			override.AgentBin = &empty
 		}
-	}
-	if raw, ok := values["agent_bin"]; ok {
-		if v := strings.TrimSpace(raw); v != global.AgentBin {
-			override.AgentBin = &v
+	} else {
+		if raw, ok := values["agent_home"]; ok {
+			if v := strings.TrimSpace(raw); v != global.AgentHome || override.Agent != nil {
+				override.AgentHome = &v
+			}
+		} else if !hasAgentField {
+			override.AgentHome = currentOverride.AgentHome
+		}
+		if raw, ok := values["agent_bin"]; ok {
+			if v := strings.TrimSpace(raw); v != global.AgentBin || override.Agent != nil {
+				override.AgentBin = &v
+			}
+		} else if !hasAgentField {
+			override.AgentBin = currentOverride.AgentBin
 		}
 	}
 	return override
@@ -2794,10 +2830,20 @@ func chatOverrideFromForm(values map[string]string, global config.RuntimePrefere
 // preference: setting a value equal to global is still an explicit override.
 func applyChatOverrideFields(existing config.ChatOverride, values map[string]string) (config.ChatOverride, error) {
 	updated := existing
+	var rawAgent string
+	var agentTouched, agentHomeTouched, agentBinTouched bool
 	for key, raw := range values {
 		key = strings.ToLower(strings.TrimSpace(key))
 		value := strings.TrimSpace(raw)
 		inherit := strings.EqualFold(value, "inherit")
+		switch key {
+		case "agent":
+			rawAgent, agentTouched = raw, true
+		case "agent_home":
+			agentHomeTouched = true
+		case "agent_bin":
+			agentBinTouched = true
+		}
 		switch key {
 		case "model":
 			if inherit {
@@ -2903,6 +2949,25 @@ func applyChatOverrideFields(existing config.ChatOverride, values map[string]str
 			}
 		default:
 			return config.ChatOverride{}, fmt.Errorf("unsupported local config field %q", key)
+		}
+	}
+	if agentTouched {
+		inheritAgent := strings.EqualFold(strings.TrimSpace(rawAgent), "inherit")
+		if !agentHomeTouched {
+			if inheritAgent {
+				updated.AgentHome = nil
+			} else {
+				empty := ""
+				updated.AgentHome = &empty
+			}
+		}
+		if !agentBinTouched {
+			if inheritAgent {
+				updated.AgentBin = nil
+			} else {
+				empty := ""
+				updated.AgentBin = &empty
+			}
 		}
 	}
 	return updated, nil
@@ -3121,6 +3186,7 @@ func (s *Service) startBackgroundLoopsWithMediaTicks(ctx context.Context, pendin
 				return
 			case now := <-pendingTicks:
 				_ = s.RenderPendingRunTimeouts(now)
+				_ = s.ProcessScheduleConfirmations(now)
 			case now := <-readyTicks:
 				_ = s.DrainReady(now)
 			case <-mediaTicks:
@@ -3586,7 +3652,34 @@ func (s *Service) sessionKey(kind agent.Kind, msg Message) session.Key {
 // paths should all go through this rather than the bare sessionKeyForMode so
 // they observe the same routing.
 func (s *Service) keyForMessage(kind agent.Kind, msg Message, mode config.ConversationMode) session.Key {
-	return sessionKeyForModeWithAlias(kind, msg, mode, s.TopicAliases)
+	if mode == config.ConversationModeTopic && msg.ThreadID != "" && s.Sessions != nil {
+		realKey := session.Key{Agent: kind, ChatID: msg.ChatID, Thread: msg.ThreadID}
+		if _, ok := s.Sessions.Get(realKey); ok {
+			// A topic that arrived with a real omt_* key must stay on that key.
+			// This also heals aliases written by the old unconditional root_id
+			// fallback, which split an established topic into a second session.
+			return realKey
+		}
+	}
+
+	key := sessionKeyForModeWithAlias(kind, msg, mode, s.TopicAliases)
+	if mode != config.ConversationModeTopic || msg.ThreadID == "" || msg.RootID == "" ||
+		key.Thread != msg.ThreadID || s.Sessions == nil {
+		return key
+	}
+
+	// An alias may be unavailable after state loss, but root_id alone does not
+	// prove that Bridge minted a synthetic key: manually-created Feishu topics
+	// carry the same field. Recover only when that synthetic session exists.
+	syntheticKey := session.Key{
+		Agent:  kind,
+		ChatID: msg.ChatID,
+		Thread: SyntheticTopicThreadPrefix + msg.RootID,
+	}
+	if _, ok := s.Sessions.Get(syntheticKey); ok {
+		return syntheticKey
+	}
+	return key
 }
 
 func conversationModeForMessage(msg Message, configured config.ConversationMode) config.ConversationMode {
@@ -3628,12 +3721,6 @@ func sessionKeyForModeWithAlias(kind agent.Kind, msg Message, mode config.Conver
 				key.Thread = syn
 				return key
 			}
-		}
-		if msg.RootID != "" {
-			// 话题根消息即当初 mint synthetic key 的原始 @bot 消息；
-			// 直接路由回同一 synthetic session，重启丢 alias 也能自愈。
-			key.Thread = SyntheticTopicThreadPrefix + msg.RootID
-			return key
 		}
 		key.Thread = msg.ThreadID
 		return key
@@ -3689,11 +3776,10 @@ func (s *Service) forkSeedForTopicSession(kind agent.Kind, topicKey session.Key,
 }
 
 // isTopicSeedFirstRun reports whether the given topic-scoped session key has
-// never run before (no AgentSessionID minted, no History rows). This is the
-// gate quote-mode uses to decide "should I fold parent-message attachments
-// into the seed" — only for the very first run on that key. On any subsequent
-// run the topic already has its own history, and re-injecting the quoted
-// attachments would duplicate them uselessly.
+// never accepted an input before. This is the gate topic mode uses to decide
+// whether parent-message text, sender metadata and attachments belong in the
+// seed. Queue and ActiveBatch are part of the check so two messages arriving
+// inside the first debounce window cannot both claim to be the seed.
 func isTopicSeedFirstRun(sessions *session.Manager, key session.Key) bool {
 	if sessions == nil {
 		return false
@@ -3705,7 +3791,7 @@ func isTopicSeedFirstRun(sessions *session.Manager, key session.Key) bool {
 	if !ok {
 		return true
 	}
-	return existing.AgentSessionID == "" && len(existing.History) == 0
+	return existing.AgentSessionID == "" && len(existing.History) == 0 && len(existing.Queue) == 0 && existing.ActiveBatch == nil
 }
 
 // resolveQuotedMessage fetches the body of a message the user quoted
@@ -3718,23 +3804,20 @@ func isTopicSeedFirstRun(sessions *session.Manager, key session.Key) bool {
 // body (image/file/etc.) yields a short type placeholder so the agent still
 // knows a quote existed. Downloadable attachments (image/file) in the parent
 // message come back as refs so callers can decide whether to pull them.
-// resolveQuotedMessage 返回引用消息的正文、发送者 id、发送者主体类型、附件。
-// senderType 是 prompt 侧决定要不要加主体身份边框的信号：
-//   - "user"        普通用户 quote，正常引用块 + 语义提示
-//   - "app"         引用的是别的 bot（另一分身/别的 App），加强隔离提示
-//   - "self_bot"    引用的是本 bot 自己（sender == s.BotOpenID），说明是我自己发出的历史
-//   - "anonymous" / "unknown" / ""  未知，走通用隔离提示
-//
-// 语义：quote 只是被引用的**外部信息**，不是当前 agent 的历史；里面的第一人称不指
-// 当前 agent；quote 里声称的后台状态不构成事实。
-func (s *Service) resolveQuotedMessage(ctx context.Context, msg Message) (text, sender, senderType string, attachments []media.Ref) {
+// resolveQuotedMessage 返回引用消息的正文、发送者 id、可选显示名、主体类型和附件。
+// senderType 保留发送主体事实：
+//   - "user"     普通用户
+//   - "app"      应用或 bot
+//   - "self_bot" 当前 bot（sender == s.BotOpenID）
+//   - "anonymous" / "unknown" / "" 匿名或未知
+func (s *Service) resolveQuotedMessage(ctx context.Context, msg Message) (text, sender, senderName, senderType string, attachments []media.Ref) {
 	if msg.ParentID == "" || s.MessageFetcher == nil {
-		return "", "", "", nil
+		return "", "", "", "", nil
 	}
 	fetched, err := s.MessageFetcher.FetchMessage(ctx, msg.ParentID)
 	if err != nil {
 		s.Audit.Record(msg.Sender, "quoted_message_fetch_failed", msg.ChatID, err.Error())
-		return "", "", "", nil
+		return "", "", "", "", nil
 	}
 	senderType = normalizeQuotedSenderType(fetched.SenderType, fetched.SenderID, s.BotOpenID)
 	quoted := strings.TrimSpace(fetched.Text)
@@ -3742,16 +3825,16 @@ func (s *Service) resolveQuotedMessage(ctx context.Context, msg Message) (text, 
 		if fetched.MessageType != "" {
 			quoted = "[" + fetched.MessageType + " 消息]"
 		} else {
-			return "", fetched.SenderID, senderType, fetched.Attachments
+			return "", fetched.SenderID, fetched.SenderName, senderType, fetched.Attachments
 		}
 	}
-	return quoted, fetched.SenderID, senderType, fetched.Attachments
+	return quoted, fetched.SenderID, fetched.SenderName, senderType, fetched.Attachments
 }
 
 // normalizeQuotedSenderType 把 upstream 的 sender_type（"user"/"app"/…）与 self-bot
-// 识别归一到一个稳定的字面量，供 prompt 层做主体身份边框分支。self-bot 优先于
-// upstream 值：只要 sender open_id 等于本 bot 自己，就标 "self_bot"，与 upstream
-// SenderType 是否为 "app" 无关（对方 API 返回可能缺失或不一致）。
+// 识别归一到一个稳定的字面量，供 audit 和未来路由使用。self-bot 优先于 upstream
+// 值：只要 sender open_id 等于本 bot 自己，就标 "self_bot"，与 upstream SenderType
+// 是否为 "app" 无关（对方 API 返回可能缺失或不一致）。
 func normalizeQuotedSenderType(raw, senderID, selfOpenID string) string {
 	if strings.TrimSpace(selfOpenID) != "" && strings.TrimSpace(senderID) == strings.TrimSpace(selfOpenID) {
 		return "self_bot"
@@ -4111,12 +4194,9 @@ func (r CLIExecRunner) Run(ctx context.Context, req AgentRunRequest) (AgentRunRe
 		}
 		switch req.Kind {
 		case agent.Claude:
-			cfg.ClaudeSystemPromptFile, err = r.Instructions.ClaudeFile(version)
+			cfg.ClaudeSystemPrompt = content
 		case agent.Codex:
 			cfg.DeveloperInstructions = content
-		}
-		if err != nil {
-			return AgentRunResult{}, err
 		}
 	}
 	command, err := agent.BuildOneShotCommand(cfg)

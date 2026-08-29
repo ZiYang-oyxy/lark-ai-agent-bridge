@@ -2,6 +2,7 @@ package bridge
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -39,6 +40,190 @@ func TestScheduleConfirmationActionPromotesDraft(t *testing.T) {
 	}
 	if events := renderer.Events(); len(events) != 1 || !strings.Contains(events[0].Segments[0].Text, draft.ID) {
 		t.Fatalf("events = %#v", events)
+	}
+}
+
+func TestScheduleAutoConfirmationRecoversFromPersistedDeadline(t *testing.T) {
+	service, renderer, store := scheduleTestService(t)
+	now := time.Now()
+	draft := bridgeFixtureDraft(now)
+	draft.AutoConfirmAt = now.Add(-time.Second)
+	draft.ExpiresAt = now.Add(-time.Minute)
+	if err := store.CreateDraft(draft); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := service.ProcessScheduleConfirmations(now); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := store.Task(draft.ID); !ok {
+		t.Fatal("expired persisted deadline was not auto-confirmed")
+	}
+	if _, ok := store.Draft(draft.ID); ok {
+		t.Fatal("auto-confirmed draft still exists")
+	}
+	events := renderer.Events()
+	if len(events) != 1 || !strings.Contains(segmentText(events[0]), "已自动确认") {
+		t.Fatalf("recovery event = %#v", events)
+	}
+	if err := service.ProcessScheduleConfirmations(now.Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if got := len(store.Tasks()); got != 1 {
+		t.Fatalf("repeated processing created %d tasks, want 1", got)
+	}
+	if _, err := store.ExpireDrafts(now); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := store.Task(draft.ID); !ok {
+		t.Fatal("startup draft expiry removed recovered task")
+	}
+}
+
+func TestScheduleAutoConfirmationFallsBackWhenCardUpdateFails(t *testing.T) {
+	renderer := &selectiveScheduleRenderer{failTypes: map[string]bool{"schedule_confirmed": true}}
+	service, store := scheduleTestServiceWithRenderer(t, renderer)
+	now := time.Now()
+	draft := bridgeFixtureDraft(now)
+	draft.AutoConfirmAt = now.Add(-time.Second)
+	if err := store.CreateDraft(draft); err != nil {
+		t.Fatal(err)
+	}
+	service.scheduleConfirms[draft.ID] = pendingScheduleConfirmation{event: card.Event{SessionID: "confirm-card", ReplyToMessageID: "om_origin"}}
+
+	if err := service.ProcessScheduleConfirmations(now); err != nil {
+		t.Fatal(err)
+	}
+	task, ok := store.Task(draft.ID)
+	if !ok || task.AutoConfirmNoticePending {
+		t.Fatalf("task notification state = %#v", task)
+	}
+	events := renderer.Events()
+	if len(events) != 1 || events[0].Type != "message" || !strings.Contains(segmentText(events[0]), "已自动确认") {
+		t.Fatalf("fallback events = %#v", events)
+	}
+}
+
+func TestScheduleAutoConfirmationRetriesPendingNotice(t *testing.T) {
+	renderer := &selectiveScheduleRenderer{failAll: true}
+	service, store := scheduleTestServiceWithRenderer(t, renderer)
+	now := time.Now()
+	draft := bridgeFixtureDraft(now)
+	draft.AutoConfirmAt = now.Add(-time.Second)
+	if err := store.CreateDraft(draft); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := service.ProcessScheduleConfirmations(now); err != nil {
+		t.Fatal(err)
+	}
+	task, ok := store.Task(draft.ID)
+	if !ok || !task.AutoConfirmNoticePending {
+		t.Fatalf("failed delivery was not persisted = %#v", task)
+	}
+	renderer.SetFailAll(false)
+	service.scheduleConfirms = map[string]pendingScheduleConfirmation{}
+	if err := service.ProcessScheduleConfirmations(now.Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	task, _ = store.Task(draft.ID)
+	if task.AutoConfirmNoticePending {
+		t.Fatal("successful retry did not clear pending notification")
+	}
+	if events := renderer.Events(); len(events) != 1 || !strings.Contains(segmentText(events[0]), "已自动确认") {
+		t.Fatalf("retry events = %#v", events)
+	}
+}
+
+func TestScheduleCancellationDoesNotWaitForCountdownRender(t *testing.T) {
+	renderer := newBlockingScheduleRenderer()
+	service, store := scheduleTestServiceWithRenderer(t, renderer)
+	now := time.Now()
+	draft := bridgeFixtureDraft(now)
+	draft.AutoConfirmAt = now.Add(time.Minute)
+	if err := store.CreateDraft(draft); err != nil {
+		t.Fatal(err)
+	}
+	service.scheduleConfirms[draft.ID] = pendingScheduleConfirmation{event: card.Event{Type: "schedule_confirmation", SessionID: "confirm-card"}, lastRemaining: 60}
+
+	processed := make(chan error, 1)
+	go func() { processed <- service.ProcessScheduleConfirmations(now.Add(time.Second)) }()
+	select {
+	case <-renderer.started:
+	case <-time.After(time.Second):
+		t.Fatal("countdown render did not start")
+	}
+	cancelled := make(chan error, 1)
+	go func() { cancelled <- service.cancelScheduleDraft(draft.ID, draft.Creator) }()
+	select {
+	case err := <-cancelled:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(200 * time.Millisecond):
+		t.Fatal("cancellation blocked behind countdown render")
+	}
+	close(renderer.release)
+	if err := <-processed; err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := store.Task(draft.ID); ok {
+		t.Fatal("cancelled draft became a task")
+	}
+}
+
+func TestScheduleCancellationWinsBeforeAutoConfirmation(t *testing.T) {
+	service, _, store := scheduleTestService(t)
+	now := time.Now()
+	draft := bridgeFixtureDraft(now)
+	draft.AutoConfirmAt = now.Add(time.Second)
+	if err := store.CreateDraft(draft); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.cancelScheduleDraft(draft.ID, draft.Creator); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.ProcessScheduleConfirmations(now.Add(2 * time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := store.Task(draft.ID); ok {
+		t.Fatal("cancelled draft was created by a late auto-confirm tick")
+	}
+}
+
+func TestScheduleConfirmAndCancelRaceHasSingleWinner(t *testing.T) {
+	service, _, store := scheduleTestService(t)
+	now := time.Now()
+	draft := bridgeFixtureDraft(now)
+	if err := store.CreateDraft(draft); err != nil {
+		t.Fatal(err)
+	}
+	start := make(chan struct{})
+	results := make(chan error, 2)
+	go func() {
+		<-start
+		_, err := service.confirmScheduleDraft(draft.ID, draft.Creator, now)
+		results <- err
+	}()
+	go func() {
+		<-start
+		results <- service.cancelScheduleDraft(draft.ID, draft.Creator)
+	}()
+	close(start)
+	successes := 0
+	for range 2 {
+		if err := <-results; err == nil {
+			successes++
+		}
+	}
+	if successes != 1 {
+		t.Fatalf("successful terminal transitions = %d, want 1", successes)
+	}
+	if _, ok := store.Draft(draft.ID); ok {
+		t.Fatal("terminal transition left draft pending")
+	}
+	if got := len(store.Tasks()); got > 1 {
+		t.Fatalf("race created %d tasks, want at most 1", got)
 	}
 }
 
@@ -499,16 +684,41 @@ func TestAgentProposalGetsScopedTokenAndReplacesTerminalCard(t *testing.T) {
 	if got := len(store.Drafts()); got != 1 {
 		t.Fatalf("draft count = %d", got)
 	}
-	if got := store.Drafts()[0].Target.ThreadID; got != msg.ThreadID {
+	armedDraft := store.Drafts()[0]
+	if got := armedDraft.Target.ThreadID; got != msg.ThreadID {
 		t.Fatalf("draft target thread = %q, want %q", got, msg.ThreadID)
 	}
-	if got := store.Drafts()[0].Execution.AppendOverflowMode; got != string(config.AppendOverflowModeContinueCard) {
+	if got := armedDraft.Execution.AppendOverflowMode; got != string(config.AppendOverflowModeContinueCard) {
 		t.Fatalf("draft append overflow mode = %q", got)
+	}
+	if armedDraft.AutoConfirmAt.IsZero() {
+		t.Fatal("auto-confirm deadline was not persisted")
 	}
 	events := renderer.Events()
 	last := events[len(events)-1]
-	if last.Type != "schedule_confirmation" || len(last.Actions) != 2 || last.Actions[0].GrantID == "" || last.Actions[1].GrantID == "" || strings.Contains(last.Segments[0].Text, "proposal submitted") {
+	if last.Type != "schedule_confirmation" || len(last.Actions) != 2 || last.Actions[0].GrantID == "" || last.Actions[1].GrantID == "" || strings.Contains(last.Segments[0].Text, "proposal submitted") || !strings.Contains(last.Segments[0].Text, "60 秒后自动确认") {
 		t.Fatalf("terminal event = %#v", last)
+	}
+	confirmGrant, cancelGrant := last.Actions[0].GrantID, last.Actions[1].GrantID
+	if err := service.ProcessScheduleConfirmations(armedDraft.AutoConfirmAt.Add(-30 * time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	countdown := renderer.Events()[len(renderer.Events())-1]
+	if !strings.Contains(segmentText(countdown), "30 秒后自动确认") {
+		t.Fatalf("countdown event = %#v", countdown)
+	}
+	if countdown.Actions[0].GrantID != confirmGrant || countdown.Actions[1].GrantID != cancelGrant {
+		t.Fatalf("countdown grants changed: before=(%q,%q) after=(%q,%q)", confirmGrant, cancelGrant, countdown.Actions[0].GrantID, countdown.Actions[1].GrantID)
+	}
+	if err := service.ProcessScheduleConfirmations(armedDraft.AutoConfirmAt); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := store.Task(armedDraft.ID); !ok {
+		t.Fatal("countdown expiry did not create task")
+	}
+	autoConfirmed := renderer.Events()[len(renderer.Events())-1]
+	if autoConfirmed.Type != "schedule_confirmed" || !strings.Contains(segmentText(autoConfirmed), "倒计时结束") || len(autoConfirmed.Actions) != 2 || !autoConfirmed.Actions[0].Disabled || !autoConfirmed.Actions[1].Disabled {
+		t.Fatalf("auto-confirmed event = %#v", autoConfirmed)
 	}
 }
 
@@ -626,13 +836,66 @@ func shortBridgeSocketPath(t *testing.T) string {
 func scheduleTestService(t *testing.T) (*Service, *card.FakeRenderer, *schedule.Store) {
 	t.Helper()
 	renderer := card.NewFakeRenderer()
+	service, store := scheduleTestServiceWithRenderer(t, renderer)
+	return service, renderer, store
+}
+
+func scheduleTestServiceWithRenderer(t *testing.T, renderer card.Renderer) (*Service, *schedule.Store) {
+	t.Helper()
 	service := NewService(testConfig(t), renderer, newFakeRunner(), audit.NewRecorder())
 	store, err := schedule.NewStore(filepath.Join(t.TempDir(), "schedules.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	service.Schedules = store
-	return service, renderer, store
+	return service, store
+}
+
+type selectiveScheduleRenderer struct {
+	mu        sync.Mutex
+	failAll   bool
+	failTypes map[string]bool
+	events    []card.Event
+}
+
+func (r *selectiveScheduleRenderer) Render(event card.Event) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.failAll || r.failTypes[event.Type] {
+		return errors.New("injected render failure")
+	}
+	r.events = append(r.events, event)
+	return nil
+}
+
+func (r *selectiveScheduleRenderer) SetFailAll(fail bool) {
+	r.mu.Lock()
+	r.failAll = fail
+	r.mu.Unlock()
+}
+
+func (r *selectiveScheduleRenderer) Events() []card.Event {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]card.Event(nil), r.events...)
+}
+
+type blockingScheduleRenderer struct {
+	once    sync.Once
+	started chan struct{}
+	release chan struct{}
+}
+
+func newBlockingScheduleRenderer() *blockingScheduleRenderer {
+	return &blockingScheduleRenderer{started: make(chan struct{}), release: make(chan struct{})}
+}
+
+func (r *blockingScheduleRenderer) Render(card.Event) error {
+	r.once.Do(func() {
+		close(r.started)
+		<-r.release
+	})
+	return nil
 }
 
 func bridgeFixtureDraft(now time.Time) schedule.Draft {

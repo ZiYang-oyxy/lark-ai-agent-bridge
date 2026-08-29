@@ -86,9 +86,22 @@ func TestBuildBatchPromptQuoteWithoutSenderUsesGenericLabel(t *testing.T) {
 	}
 }
 
+func TestBuildBatchPromptQuoteUsesReadableSenderIdentity(t *testing.T) {
+	batch := session.Batch{Inputs: []session.Input{{
+		Text:             "继续",
+		QuotedText:       "上一条消息",
+		QuotedSender:     "ou_author",
+		QuotedSenderName: " 李俊Bot-Mike\nOwner ",
+	}}}
+	got := BuildBatchPrompt(batch)
+	if !strings.Contains(got, "[用户引用了 李俊Bot-Mike Owner(ou_author) 的消息]") {
+		t.Fatalf("readable quote identity missing: %q", got)
+	}
+}
+
 // TestBuildBatchPromptQuoteHeaderIsSenderTypeAgnostic 锁死 header 极简契约：
-// 不论 sender_type=user / app / self_bot / 空，header 都只含 open_id
-// 事实，不追加任何解读性后缀（"来自另一个 bot"、"由你自己发出" 等）。
+// 不论 sender_type=user / app / self_bot / 空，header 都只含姓名（若有）和
+// open_id 事实，不追加任何解读性后缀（"来自另一个 bot"、"由你自己发出" 等）。
 // sender_type 的解读留给 agent 自行判断（open_id 已足够），bridge 不做暗示。
 func TestBuildBatchPromptQuoteHeaderIsSenderTypeAgnostic(t *testing.T) {
 	cases := []struct {

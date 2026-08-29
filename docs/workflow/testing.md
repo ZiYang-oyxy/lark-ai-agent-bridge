@@ -382,7 +382,7 @@ Runtime Config 已迁到 config/service/doctor L0 tests,用 fake renderer 与 fa
 验收要求:
 
 - `default/sonnet/opus/haiku` 与一个 `E2E_ALLOWED_MODELS` 扩展值均完成 save→persist→下一次 argv 闭环;`default` 不产生对应 CLI flag。
-- `default/low/medium/high` 四种 effort 均覆盖;非法 callback 返回错误卡并写 `config_save_failed`,且不得覆盖最后一次有效偏好。
+- `default/low/medium/high/xhigh/max` 六种 effort 均覆盖;非法 callback 返回错误卡并写 `config_save_failed`,且不得覆盖最后一次有效偏好。
 - queued input 使用入队时冻结的 model/effort;后保存的偏好只影响后入队输入。
 - `/config reset` 后 snapshot 无 override;restart 后重新读取 `E2E_MODEL`/`E2E_EFFORT` 环境默认。
 - 结果卡分别显示 requested、actual、effort;requested/actual 不一致时必须有 `model_requested_actual_mismatch` audit。

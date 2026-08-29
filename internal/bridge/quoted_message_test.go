@@ -22,14 +22,17 @@ func (f *fakeMessageFetcher) FetchMessage(_ context.Context, messageID string) (
 }
 
 func TestResolveQuotedMessageFetchesParent(t *testing.T) {
-	fetcher := &fakeMessageFetcher{msg: QuotedMessage{Text: "我是一只黑猫", SenderID: "ou_author", SenderType: "user", MessageType: "text"}}
+	fetcher := &fakeMessageFetcher{msg: QuotedMessage{Text: "我是一只黑猫", SenderID: "ou_author", SenderName: "李俊", SenderType: "user", MessageType: "text"}}
 	svc := &Service{Audit: audit.NewRecorder(), MessageFetcher: fetcher}
-	text, sender, senderType, _ := svc.resolveQuotedMessage(context.Background(), Message{ParentID: "om_parent", ChatID: "oc_x"})
+	text, sender, senderName, senderType, _ := svc.resolveQuotedMessage(context.Background(), Message{ParentID: "om_parent", ChatID: "oc_x"})
 	if text != "我是一只黑猫" {
 		t.Fatalf("text = %q", text)
 	}
 	if sender != "ou_author" {
 		t.Fatalf("sender = %q", sender)
+	}
+	if senderName != "李俊" {
+		t.Fatalf("senderName = %q", senderName)
 	}
 	if senderType != "user" {
 		t.Fatalf("senderType = %q, want user", senderType)
@@ -42,9 +45,9 @@ func TestResolveQuotedMessageFetchesParent(t *testing.T) {
 func TestResolveQuotedMessageNoParentSkips(t *testing.T) {
 	fetcher := &fakeMessageFetcher{msg: QuotedMessage{Text: "unused"}}
 	svc := &Service{Audit: audit.NewRecorder(), MessageFetcher: fetcher}
-	text, sender, senderType, _ := svc.resolveQuotedMessage(context.Background(), Message{ParentID: ""})
-	if text != "" || sender != "" || senderType != "" {
-		t.Fatalf("expected empty, got text=%q sender=%q senderType=%q", text, sender, senderType)
+	text, sender, senderName, senderType, _ := svc.resolveQuotedMessage(context.Background(), Message{ParentID: ""})
+	if text != "" || sender != "" || senderName != "" || senderType != "" {
+		t.Fatalf("expected empty, got text=%q sender=%q senderName=%q senderType=%q", text, sender, senderName, senderType)
 	}
 	if fetcher.fetched {
 		t.Fatal("fetcher must not be called when there is no parent id")
@@ -53,25 +56,25 @@ func TestResolveQuotedMessageNoParentSkips(t *testing.T) {
 
 func TestResolveQuotedMessageNilFetcherSkips(t *testing.T) {
 	svc := &Service{Audit: audit.NewRecorder()}
-	text, sender, senderType, _ := svc.resolveQuotedMessage(context.Background(), Message{ParentID: "om_parent"})
-	if text != "" || sender != "" || senderType != "" {
-		t.Fatalf("expected empty when no fetcher, got text=%q sender=%q senderType=%q", text, sender, senderType)
+	text, sender, senderName, senderType, _ := svc.resolveQuotedMessage(context.Background(), Message{ParentID: "om_parent"})
+	if text != "" || sender != "" || senderName != "" || senderType != "" {
+		t.Fatalf("expected empty when no fetcher, got text=%q sender=%q senderName=%q senderType=%q", text, sender, senderName, senderType)
 	}
 }
 
 func TestResolveQuotedMessageFetchErrorDegrades(t *testing.T) {
 	fetcher := &fakeMessageFetcher{err: errors.New("boom")}
 	svc := &Service{Audit: audit.NewRecorder(), MessageFetcher: fetcher}
-	text, sender, senderType, _ := svc.resolveQuotedMessage(context.Background(), Message{ParentID: "om_parent", Sender: "ou_s", ChatID: "oc_x"})
-	if text != "" || sender != "" || senderType != "" {
-		t.Fatalf("fetch failure must degrade to empty, got text=%q sender=%q senderType=%q", text, sender, senderType)
+	text, sender, senderName, senderType, _ := svc.resolveQuotedMessage(context.Background(), Message{ParentID: "om_parent", Sender: "ou_s", ChatID: "oc_x"})
+	if text != "" || sender != "" || senderName != "" || senderType != "" {
+		t.Fatalf("fetch failure must degrade to empty, got text=%q sender=%q senderName=%q senderType=%q", text, sender, senderName, senderType)
 	}
 }
 
 func TestResolveQuotedMessageNonTextUsesPlaceholder(t *testing.T) {
 	fetcher := &fakeMessageFetcher{msg: QuotedMessage{Text: "", MessageType: "image", SenderType: "user"}}
 	svc := &Service{Audit: audit.NewRecorder(), MessageFetcher: fetcher}
-	text, _, senderType, _ := svc.resolveQuotedMessage(context.Background(), Message{ParentID: "om_parent"})
+	text, _, _, senderType, _ := svc.resolveQuotedMessage(context.Background(), Message{ParentID: "om_parent"})
 	if text != "[image 消息]" {
 		t.Fatalf("expected type placeholder, got %q", text)
 	}
@@ -86,7 +89,7 @@ func TestResolveQuotedMessageNonTextUsesPlaceholder(t *testing.T) {
 func TestResolveQuotedMessageAppSenderIsMarkedApp(t *testing.T) {
 	fetcher := &fakeMessageFetcher{msg: QuotedMessage{Text: "review subagent 已重新启动", SenderID: "ou_other_bot", SenderType: "app", MessageType: "text"}}
 	svc := &Service{Audit: audit.NewRecorder(), MessageFetcher: fetcher, BotOpenID: "ou_self"}
-	_, _, senderType, _ := svc.resolveQuotedMessage(context.Background(), Message{ParentID: "om_parent"})
+	_, _, _, senderType, _ := svc.resolveQuotedMessage(context.Background(), Message{ParentID: "om_parent"})
 	if senderType != "app" {
 		t.Fatalf("senderType = %q, want app", senderType)
 	}
@@ -98,7 +101,7 @@ func TestResolveQuotedMessageAppSenderIsMarkedApp(t *testing.T) {
 func TestResolveQuotedMessageSelfBotOverridesSenderType(t *testing.T) {
 	fetcher := &fakeMessageFetcher{msg: QuotedMessage{Text: "hi", SenderID: "ou_self", SenderType: "app", MessageType: "text"}}
 	svc := &Service{Audit: audit.NewRecorder(), MessageFetcher: fetcher, BotOpenID: "ou_self"}
-	_, _, senderType, _ := svc.resolveQuotedMessage(context.Background(), Message{ParentID: "om_parent"})
+	_, _, _, senderType, _ := svc.resolveQuotedMessage(context.Background(), Message{ParentID: "om_parent"})
 	if senderType != "self_bot" {
 		t.Fatalf("senderType = %q, want self_bot", senderType)
 	}
@@ -109,7 +112,7 @@ func TestResolveQuotedMessageSelfBotOverridesSenderType(t *testing.T) {
 func TestResolveQuotedMessageUnknownSenderTypeStaysEmpty(t *testing.T) {
 	fetcher := &fakeMessageFetcher{msg: QuotedMessage{Text: "hi", SenderID: "ou_x", SenderType: "unknown", MessageType: "text"}}
 	svc := &Service{Audit: audit.NewRecorder(), MessageFetcher: fetcher}
-	_, _, senderType, _ := svc.resolveQuotedMessage(context.Background(), Message{ParentID: "om_parent"})
+	_, _, _, senderType, _ := svc.resolveQuotedMessage(context.Background(), Message{ParentID: "om_parent"})
 	if senderType != "" {
 		t.Fatalf("unknown sender_type must degrade to empty, got %q", senderType)
 	}
@@ -121,7 +124,7 @@ func TestResolveQuotedMessageUnknownSenderTypeStaysEmpty(t *testing.T) {
 func TestResolveQuotedMessagePassesThroughLiteralSelfBot(t *testing.T) {
 	fetcher := &fakeMessageFetcher{msg: QuotedMessage{Text: "hi", SenderID: "ou_x", SenderType: "self_bot", MessageType: "text"}}
 	svc := &Service{Audit: audit.NewRecorder(), MessageFetcher: fetcher}
-	_, _, senderType, _ := svc.resolveQuotedMessage(context.Background(), Message{ParentID: "om_parent"})
+	_, _, _, senderType, _ := svc.resolveQuotedMessage(context.Background(), Message{ParentID: "om_parent"})
 	if senderType != "self_bot" {
 		t.Fatalf("literal self_bot must pass through, got %q", senderType)
 	}

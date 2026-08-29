@@ -81,22 +81,36 @@ func (s *Store) CreateDraft(draft Draft) error {
 func (s *Store) ConfirmDraft(id, actor string, now time.Time) (Task, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	return s.confirmDraftLocked(id, actor, now, false)
+}
+
+func (s *Store) AutoConfirmDraft(id string, now time.Time) (Task, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.confirmDraftLocked(id, "", now, true)
+}
+
+func (s *Store) confirmDraftLocked(id, actor string, now time.Time, automatic bool) (Task, error) {
 	idx, ok := draftIndex(s.snapshot.Drafts, id)
 	if !ok {
 		return Task{}, fmt.Errorf("draft %q not found", id)
 	}
 	draft := cloneDraft(s.snapshot.Drafts[idx])
-	if actor != draft.Creator {
+	if !automatic && actor != draft.Creator {
 		return Task{}, fmt.Errorf("draft %q is owned by another user", id)
 	}
-	if !draft.ExpiresAt.IsZero() && now.After(draft.ExpiresAt) {
+	if automatic && (draft.AutoConfirmAt.IsZero() || now.Before(draft.AutoConfirmAt)) {
+		return Task{}, fmt.Errorf("draft %q is not due for auto-confirmation", id)
+	}
+	if !automatic && !draft.ExpiresAt.IsZero() && now.After(draft.ExpiresAt) {
 		return Task{}, fmt.Errorf("draft %q expired", id)
 	}
 	task := Task{
 		ID: draft.ID, Kind: draft.Kind, CronExpr: draft.CronExpr, ScheduledAt: draft.ScheduledAt,
 		Timezone: draft.Timezone, Description: draft.Description, Prompt: draft.Prompt,
 		Creator: draft.Creator, Target: draft.Target, Execution: draft.Execution,
-		Enabled: true, CreatedAt: draft.CreatedAt, ConfirmedAt: now,
+		Enabled: true, AutoConfirmed: automatic, AutoConfirmNoticePending: automatic,
+		CreatedAt: draft.CreatedAt, ConfirmedAt: now,
 	}
 	if len(draft.Next) > 0 {
 		task.NextRun = draft.Next[0]
@@ -108,6 +122,36 @@ func (s *Store) ConfirmDraft(id, actor string, now time.Time) (Task, error) {
 		return Task{}, err
 	}
 	return task, nil
+}
+
+func (s *Store) MarkAutoConfirmNotified(id string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	idx, ok := taskIndex(s.snapshot.Tasks, id)
+	if !ok {
+		return fmt.Errorf("task %q not found", id)
+	}
+	if !s.snapshot.Tasks[idx].AutoConfirmNoticePending {
+		return nil
+	}
+	candidate := cloneSnapshot(s.snapshot)
+	candidate.Tasks[idx].AutoConfirmNoticePending = false
+	return s.publishLocked(candidate)
+}
+
+func (s *Store) SetDraftAutoConfirmAt(id string, at time.Time) (Draft, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	idx, ok := draftIndex(s.snapshot.Drafts, id)
+	if !ok {
+		return Draft{}, fmt.Errorf("draft %q not found", id)
+	}
+	candidate := cloneSnapshot(s.snapshot)
+	candidate.Drafts[idx].AutoConfirmAt = at
+	if err := s.publishLocked(candidate); err != nil {
+		return Draft{}, err
+	}
+	return cloneDraft(candidate.Drafts[idx]), nil
 }
 
 func (s *Store) CancelDraft(id, actor string) error {

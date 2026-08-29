@@ -109,7 +109,7 @@ sequenceDiagram
 主链路分为五个阶段：
 
 1. `internal/feishu` 将长连接事件标准化为 Bridge `Message`，原始事件可写入受限日志用于排障。
-2. `Service.HandleMessage` 依次执行访问控制、群消息 intake、去重、命令解析、附件与引用消息解析。
+2. `Service.HandleMessage` 依次执行访问控制、群消息 intake、去重、命令解析、附件与引用消息解析。Topic 模式只在首轮 seed 解析并注入引用正文、发送者与附件，后续消息携带的 `parent_id=root` 不重复注入；chat 模式仍按每条显式引用解析。
 3. 普通任务进入 `internal/session`。同 scope 输入可在 debounce 窗口内组成 batch；达到执行条件后由 dispatcher 启动 Agent runner。
 4. `CLIExecRunner` 按 agent kind 构造 Claude 或 Codex 命令，逐行解析 JSONL，并把统一的 stream update 回调给 CardStream。
 5. CardStream 创建、节流更新并收敛同一逻辑回复；终态先写 session，再写卡片。发送本地图片等终态副作用在 Agent 成功结果上继续执行，但单张图片失败不会把整个 run 改判失败。
@@ -238,7 +238,6 @@ Agent 只能通过私有 Unix socket 和单次 token 提交规则字段，不能
 - **去重**：消息 receipt、schedule run ID、action grant 和 CardKit sequence 分别约束不同的重复投递，不用一个通用 ID 假装覆盖全部一致性问题。
 - **关闭**：收到 SIGTERM/SIGINT 后停止接收新输入，关闭 schedule control，取消 active Agent，等待有界 grace period，并保存可恢复 context。
 - **自升级**：只有 owner/admin 可确认；升级前检查 active/queued 任务、manifest、文件大小与 SHA-256，原子替换失败时恢复旧 binary。新 binary 成功启动后，systemd 托管进程以专用非零退出码触发 supervisor 重启，避免新子进程被 `KillMode=control-group` 清理后 unit 停留在 inactive。
-- **部署安全**：凭据可来自受权限约束的 secret file；online doctor 验证 Bot 身份；`serve` 通过 App ID 摘要 advisory lock 避免同机重复消费。
 
 ## 配置与部署
 

@@ -8,7 +8,7 @@
 // Log file: appends "pid=<pid> args=<argv>" to $FAKE_CLAUDE_LOG when set, so
 // existing L2 cases (which grep this log for markers) keep working.
 //
-// The instruction file must contain "Feishu Bridge Runtime Instructions"
+// The appended system prompt must contain "Feishu Bridge Runtime Instructions"
 // (mirrors the shell shim invariant) unless the prompt is the harmless
 // pre-flight canary "Reply with exactly OK. Do not use tools."
 package main
@@ -41,7 +41,7 @@ func main() {
 
 	inv := fakeclaude.NewInvocation(argv)
 
-	// Instruction-file validation is skipped for the canary probe (the shell
+	// System-prompt validation is skipped for the canary probe (the shell
 	// shim did the same via `case "$prompt" in *'Reply with exactly OK...`).
 	if !strings.Contains(inv.Prompt, "Reply with exactly OK. Do not use tools.") {
 		if err := fakeclaude.ValidateInstruction(argv); err != nil {

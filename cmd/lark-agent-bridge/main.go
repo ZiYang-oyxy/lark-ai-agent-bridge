@@ -337,6 +337,7 @@ func runSimulate(args []string) error {
 	defaultWorkDir := fs.String("default-workdir", cfg.DefaultWorkDir, "default workdir for messages without --workdir")
 	quoteText := fs.String("quote-text", "", "if set, simulate a Feishu quoted (replied-to) message with this text body; also sets --parent-id when unspecified")
 	quoteSender := fs.String("quote-sender", "", "sender open_id of the simulated quoted message; empty leaves the generic label")
+	quoteSenderName := fs.String("quote-sender-name", "", "display name of the simulated quoted message sender")
 	quoteSenderType := fs.String("quote-sender-type", "", "sender_type of the simulated quoted message: user / app / anonymous / empty (unknown)")
 	parentID := fs.String("parent-id", "", "explicit parent_id for the simulated inbound message; defaults to a fake id when --quote-text is set")
 	var nextMessages stringList
@@ -376,7 +377,7 @@ func runSimulate(args []string) error {
 	}
 	// simulate 侧的引用消息注入：--quote-text 非空时装配 in-memory MessageFetcher，
 	// 让 bridge.resolveQuotedMessage 拿到我们预设的 QuotedMessage 而不走 SDK。
-	// 用来在无飞书链路下断言主体身份边框的渲染（L2）。
+	// 用来在无飞书链路下断言引用正文与可读发送者身份的渲染（L2）。
 	simulateParentID := strings.TrimSpace(*parentID)
 	if strings.TrimSpace(*quoteText) != "" {
 		if simulateParentID == "" {
@@ -385,6 +386,7 @@ func runSimulate(args []string) error {
 		svc.MessageFetcher = simulateQuotedFetcher{
 			text:       *quoteText,
 			senderID:   strings.TrimSpace(*quoteSender),
+			senderName: strings.TrimSpace(*quoteSenderName),
 			senderType: strings.TrimSpace(*quoteSenderType),
 		}
 	}
@@ -551,6 +553,18 @@ func runServe(args []string) error {
 	if err != nil {
 		return fmt.Errorf("open runtime preference store: %w", err)
 	}
+	// 存量偏好与当前 agents 目录不匹配时,store 会丢弃失效部分而不是拒绝启动。
+	// 这类降级必须显性上报:否则用户只会看到某个群的配置莫名回到全局值。
+	if recovery := preferences.Recovery(); !recovery.Empty() {
+		if recovery.GlobalOverrideDropped {
+			recorder.Record("system", "preference_global_override_dropped", "", recovery.GlobalOverrideReason)
+			fmt.Fprintf(os.Stderr, "[warn] 存储的全局偏好已失效,本次启动回退到默认值:%s\n", recovery.GlobalOverrideReason)
+		}
+		for _, adjustment := range recovery.ChatOverrides {
+			recorder.Record("system", "preference_chat_override_dropped", "", fmt.Sprintf("chat=%s: %s", adjustment.ChatID, adjustment.Reason))
+			fmt.Fprintf(os.Stderr, "[warn] 群 %s 的按群偏好已失效并被忽略,该群回到全局配置:%s\n", adjustment.ChatID, adjustment.Reason)
+		}
+	}
 	topicStore, err := openParticipationStore(cfg)
 	if err != nil {
 		return err
@@ -616,7 +630,11 @@ func runServe(args []string) error {
 	svc.Reactions = sender
 	svc.OutputImages = sender
 	svc.MessageDeleter = sender
-	svc.MessageFetcher = quotedMessageFetcher{sender: sender}
+	svc.MessageFetcher = quotedMessageFetcher{
+		sender:      sender,
+		memberNames: feishu.NewChatMemberNameResolver(appID, appSecret),
+		audit:       recorder,
+	}
 	svc.Notifier = sender
 	actionGateway := bridge.ActionGateway{Service: svc, Fencer: cardRouter}
 	actionHandler, callbackHandler := newServeActionTransportsWithRawEvents(actionGateway, cfg.CardMaxChars, recordRawFeishuEvent)
@@ -643,6 +661,10 @@ func runServe(args []string) error {
 	svc.ScheduleSocket = cfg.ScheduleSocketPath
 	if err := scheduleControl.Start(ctx); err != nil {
 		return fmt.Errorf("start schedule control: %w", err)
+	}
+	if err := svc.ProcessScheduleConfirmations(time.Now()); err != nil {
+		_ = scheduleControl.Close()
+		return fmt.Errorf("recover schedule confirmations: %w", err)
 	}
 	if err := scheduleEngine.Start(ctx); err != nil {
 		_ = scheduleControl.Close()
@@ -1128,8 +1150,18 @@ func (s *simulateFakeSender) UpdateTextMessage(_ context.Context, _, _ string) e
 // quotedMessageFetcher adapts *feishu.SDKSender to bridge.MessageFetcher,
 // mapping the feishu-specific FetchedMessage into the bridge domain view so
 // bridge stays free of feishu SDK types.
+type quotedMessageSource interface {
+	FetchMessage(context.Context, string) (feishu.FetchedMessage, error)
+}
+
+type quotedSenderNameResolver interface {
+	ResolveChatMemberName(context.Context, string, string) (string, error)
+}
+
 type quotedMessageFetcher struct {
-	sender *feishu.SDKSender
+	sender      quotedMessageSource
+	memberNames quotedSenderNameResolver
+	audit       *audit.Recorder
 }
 
 func (f quotedMessageFetcher) FetchMessage(ctx context.Context, messageID string) (bridge.QuotedMessage, error) {
@@ -1137,9 +1169,21 @@ func (f quotedMessageFetcher) FetchMessage(ctx context.Context, messageID string
 	if err != nil {
 		return bridge.QuotedMessage{}, err
 	}
+	senderName := strings.TrimSpace(fetched.SenderName)
+	if senderName == "" && f.memberNames != nil && strings.TrimSpace(fetched.ChatID) != "" && strings.TrimSpace(fetched.SenderID) != "" {
+		resolved, resolveErr := f.memberNames.ResolveChatMemberName(ctx, fetched.ChatID, fetched.SenderID)
+		if resolveErr != nil {
+			if f.audit != nil {
+				f.audit.Record(fetched.SenderID, "quoted_sender_name_resolve_failed", fetched.ChatID, resolveErr.Error())
+			}
+		} else {
+			senderName = strings.TrimSpace(resolved)
+		}
+	}
 	return bridge.QuotedMessage{
 		Text:        fetched.Text,
 		SenderID:    fetched.SenderID,
+		SenderName:  senderName,
 		SenderType:  fetched.SenderType,
 		MessageType: fetched.MessageType,
 		Attachments: fetched.Attachments,
@@ -1150,10 +1194,11 @@ var _ bridge.MessageFetcher = quotedMessageFetcher{}
 
 // simulateQuotedFetcher 是 simulate 通道下的伪 MessageFetcher：任意 messageID
 // 都返回同一份注入的 QuotedMessage，用来在无 SDK/无飞书链路下模拟引用消息触发
-// 的 prompt 分支（含主体身份边框断言）。
+// 的 prompt 分支（含引用发送者标签断言）。
 type simulateQuotedFetcher struct {
 	text       string
 	senderID   string
+	senderName string
 	senderType string
 }
 
@@ -1161,6 +1206,7 @@ func (f simulateQuotedFetcher) FetchMessage(_ context.Context, _ string) (bridge
 	return bridge.QuotedMessage{
 		Text:        f.text,
 		SenderID:    f.senderID,
+		SenderName:  f.senderName,
 		SenderType:  f.senderType,
 		MessageType: "text",
 	}, nil

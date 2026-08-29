@@ -2423,29 +2423,27 @@ func TestServiceTopicAliasRoutesFollowUpIntoSyntheticSession(t *testing.T) {
 	}
 }
 
-// When a follow-up arrives with a real thread_id but no alias is bound (e.g.
-// after a supervisor restart dropped the in-memory alias), the message's
-// root_id — the original @bot message that minted the synthetic key — lets us
-// self-heal by routing back to "@bot:<root_id>" instead of a fresh empty
-// session on the real thread_id.
-func TestSessionKeyRootIDFallbackWhenAliasMisses(t *testing.T) {
-	// No alias store at all (nil resolver): pure root_id fallback.
+// root_id alone cannot distinguish a manually-created Feishu topic from one
+// created by Bridge for a top-level mention. The pure resolver keeps the real
+// topic key; Service.keyForMessage performs synthetic recovery only when the
+// corresponding synthetic session actually exists.
+func TestSessionKeyRootIDDoesNotImplySyntheticSession(t *testing.T) {
 	followUp := Message{ID: "m2", ChatID: "chat", ThreadID: "omt_real", RootID: "m1", Sender: "u"}
 	key := sessionKeyForModeWithAlias(agent.Claude, followUp, config.ConversationModeTopic, nil)
-	if key.Thread != SyntheticTopicThreadPrefix+"m1" {
-		t.Fatalf("root_id fallback key = %+v, want thread=%s", key, SyntheticTopicThreadPrefix+"m1")
+	if key.Thread != "omt_real" {
+		t.Fatalf("root_id-only key = %+v, want real thread omt_real", key)
 	}
 
-	// With an empty alias store (miss), root_id still wins over the real thread.
+	// An empty alias store produces the same result.
 	aliases := NewTopicAliasStore()
 	key = sessionKeyForModeWithAlias(agent.Claude, followUp, config.ConversationModeTopic, aliases)
-	if key.Thread != SyntheticTopicThreadPrefix+"m1" {
-		t.Fatalf("root_id fallback with empty store = %+v, want thread=%s", key, SyntheticTopicThreadPrefix+"m1")
+	if key.Thread != "omt_real" {
+		t.Fatalf("root_id-only key with empty store = %+v, want real thread omt_real", key)
 	}
 }
 
-// A bound alias must take priority over the root_id fallback so an explicitly
-// recorded mapping is never overridden by the heuristic.
+// A bound alias remains authoritative when no existing real session overrides
+// it at the Service layer.
 func TestSessionKeyAliasBeatsRootIDFallback(t *testing.T) {
 	aliases := NewTopicAliasStore()
 	aliases.Bind("chat", "omt_real", SyntheticTopicThreadPrefix+"origin")
@@ -5367,31 +5365,41 @@ func TestCLIExecRunnerBridgeInstructionsUseNativeChannels(t *testing.T) {
 
 	claudeBin := filepath.Join(binDir, "claude")
 	// Prompt now arrives on stdin (E2BIG fix), so the fake reads it there and
-	// records the instruction file resolved from argv plus whether the prompt
+	// checks the appended system prompt from argv plus whether the user prompt
 	// leaked into argv at all.
 	claudeScript := `#!/bin/sh
 previous=
-instruction_file=
+instruction=
+instruction_count=0
 prompt_in_argv=no
 for arg in "$@"; do
-  if [ "$previous" = "--append-system-prompt-file" ]; then instruction_file="$arg"; fi
+  if [ "$previous" = "--append-system-prompt" ]; then instruction="$arg"; instruction_count=$((instruction_count + 1)); fi
   case "$arg" in *"CLAUDE_PROMPT_"*) prompt_in_argv=yes ;; esac
   previous="$arg"
 done
-test -r "$instruction_file"
-grep -q 'Feishu Bridge Runtime Instructions' "$instruction_file"
+test "$instruction_count" -eq 1
+case "$instruction" in *"Feishu Bridge Runtime Instructions"*) ;; *) exit 91 ;; esac
+printf '%s' "$instruction" >"$FAKE_INSTRUCTION_LOG"
 IFS= read -r prompt || true
-printf '%s\n%s\n%s\n' "$instruction_file" "$prompt" "$prompt_in_argv" >"$FAKE_AGENT_LOG"
+printf '%s\n%s\n%s\n' yes "$prompt" "$prompt_in_argv" >"$FAKE_AGENT_LOG"
 printf '%s\n' '{"type":"assistant","message":{"model":"fake-claude","content":[{"type":"text","text":"ok"}]},"session_id":"claude-session"}'
 `
 	if err := os.WriteFile(claudeBin, []byte(claudeScript), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	var claudeInstructionPath string
-	for i, prompt := range []string{"CLAUDE_PROMPT_first", "CLAUDE_PROMPT_second"} {
+	content, err := rt.Content(bridgeinstructions.CurrentVersion)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i, tc := range []struct {
+		prompt    string
+		sessionID string
+	}{{prompt: "CLAUDE_PROMPT_first"}, {prompt: "CLAUDE_PROMPT_second", sessionID: "claude-session"}} {
 		logPath := filepath.Join(t.TempDir(), fmt.Sprintf("claude-%d.log", i))
+		instructionLog := filepath.Join(t.TempDir(), fmt.Sprintf("claude-instruction-%d.log", i))
 		t.Setenv("FAKE_AGENT_LOG", logPath)
-		if _, err := runner.Run(context.Background(), AgentRunRequest{Kind: agent.Claude, Bin: claudeBin, Prompt: prompt, BridgeInstructionsVersion: bridgeinstructions.CurrentVersion}); err != nil {
+		t.Setenv("FAKE_INSTRUCTION_LOG", instructionLog)
+		if _, err := runner.Run(context.Background(), AgentRunRequest{Kind: agent.Claude, Bin: claudeBin, Prompt: tc.prompt, AgentSessionID: tc.sessionID, BridgeInstructionsVersion: bridgeinstructions.CurrentVersion}); err != nil {
 			t.Fatal(err)
 		}
 		data, err := os.ReadFile(logPath)
@@ -5399,13 +5407,15 @@ printf '%s\n' '{"type":"assistant","message":{"model":"fake-claude","content":[{
 			t.Fatal(err)
 		}
 		lines := strings.Split(strings.TrimSpace(string(data)), "\n")
-		if len(lines) != 3 || lines[1] != prompt || lines[2] != "no" {
+		if len(lines) != 3 || lines[0] != "yes" || lines[1] != tc.prompt || lines[2] != "no" {
 			t.Fatalf("claude log = %q (prompt must arrive on stdin, never argv)", data)
 		}
-		if i == 0 {
-			claudeInstructionPath = lines[0]
-		} else if lines[0] != claudeInstructionPath {
-			t.Fatalf("claude instruction paths differ: %q and %q", claudeInstructionPath, lines[0])
+		gotInstruction, err := os.ReadFile(instructionLog)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(gotInstruction) != content {
+			t.Fatalf("claude instruction content differs: got %d bytes, want %d", len(gotInstruction), len(content))
 		}
 	}
 
@@ -5427,10 +5437,6 @@ printf '%s\n' '{"type":"item.completed","item":{"id":"msg-1","type":"agent_messa
 printf '%s\n' '{"type":"turn.completed","usage":{"input_tokens":1,"output_tokens":1}}'
 `
 	if err := os.WriteFile(codexBin, []byte(codexScript), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	content, err := rt.Content(bridgeinstructions.CurrentVersion)
-	if err != nil {
 		t.Fatal(err)
 	}
 	encoded, err := json.Marshal(content)

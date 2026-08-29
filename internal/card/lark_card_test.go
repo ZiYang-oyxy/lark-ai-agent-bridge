@@ -606,7 +606,7 @@ func TestBuildLarkCardRendersRuntimeConfigForm(t *testing.T) {
 			AgentHomes:           []SelectOption{{Value: "默认", Label: "默认 · 宿主默认配置目录"}, {Value: "隔离", Label: "隔离 · demo home"}},
 			AgentBins:            []SelectOption{{Value: "主机 claude", Label: "主机 claude · bridge 默认可执行"}, {Value: "ark4", Label: "ark4 · 豆包 seed-2-1-pro"}},
 			Models:               []string{"default", "sonnet", "opus", "haiku"},
-			Efforts:              []string{"default", "low", "medium", "high"},
+			Efforts:              []string{"default", "low", "medium", "high", "xhigh", "max"},
 			ReplyModes:           []string{"append", "append-clean-card", "latest-card"},
 			AppendOverflowModes:  []SelectOption{{Value: "truncate", Label: "尾部截断（默认）"}, {Value: "continue-card", Label: "自动续卡（最多 9 张）"}},
 			ConversationModes:    []string{"chat", "topic"},
@@ -665,8 +665,8 @@ func TestBuildLarkCardRendersRuntimeConfigForm(t *testing.T) {
 	if effort, ok := selects["effort"]; !ok || effort["initial_option"] != "high" {
 		t.Fatalf("effort select missing or wrong initial: %#v", selects)
 	}
-	if opts := selects["effort"]["options"].([]any); len(opts) != 4 {
-		t.Fatalf("effort select must expose 4 options (default/low/medium/high), got %#v", opts)
+	if opts := selects["effort"]["options"].([]any); len(opts) != 6 {
+		t.Fatalf("effort select must expose 6 options (default/low/medium/high/xhigh/max), got %#v", opts)
 	}
 	// 全局 /config 和群覆盖卡都通过三个独立 select_static 显式提交元信息行
 	// 开关，避免 multi-select 在客户端取消单项后回传旧选择。总数为 13。
@@ -1826,6 +1826,7 @@ func TestBuildConfigFormElementsKeepsLocalActionsInEqualWidthRow(t *testing.T) {
 		ChatID: "oc-a", Agent: "claude", AgentHome: "默认", AgentBin: "主机 claude",
 		ReplyMode: "append", ConversationMode: "chat",
 		GroupMessageMode: "mention_only", RespondToBots: "false",
+		Agents: []SelectOption{{Value: "claude", Label: "claude · Claude Code"}, {Value: "codex", Label: "codex · Codex CLI"}},
 	})
 	form := elements[1].(map[string]any)
 	formElements := form["elements"].([]any)
@@ -1848,6 +1849,9 @@ func TestBuildConfigFormElementsKeepsLocalActionsInEqualWidthRow(t *testing.T) {
 	buttons := map[string]map[string]any{}
 	var copy strings.Builder
 	collectConfigControls(formElements, selects, buttons, &copy)
+	if agentMode := selects["agent"]; agentMode == nil || agentMode["initial_option"] != "claude" || len(agentMode["options"].([]any)) != 2 {
+		t.Fatalf("local config agent mode select = %#v", agentMode)
+	}
 	save := buttons["submit_runtime_config"]
 	if save == nil || save["form_action_type"] != "submit" || save["width"] != "fill" {
 		t.Fatalf("local config save button = %#v", save)

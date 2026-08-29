@@ -16,7 +16,7 @@ func writeFixture(t *testing.T, dir, name, body string) {
 
 func TestNewInvocationExtractsLastMarker(t *testing.T) {
 	// 两个独立 marker(用空格隔开):取最后一个,与 shell shim `grep -Eo | tail -n 1` 一致。
-	argv := []string{"claude", "--model", "claude-3", "--append-system-prompt-file", "/tmp/i", "E2E_RUN_ID_007 prefix E2E_STREAM_005 suffix"}
+	argv := []string{"claude", "--model", "claude-3", "--append-system-prompt", "instructions", "E2E_RUN_ID_007 prefix E2E_STREAM_005 suffix"}
 	inv := NewInvocation(argv)
 	if inv.Marker != "E2E_STREAM_005" {
 		t.Fatalf("marker: want last E2E_STREAM_005, got %q", inv.Marker)
@@ -127,33 +127,23 @@ func TestResolveFallsBackToDefault(t *testing.T) {
 }
 
 func TestValidateInstructionRequiresMarker(t *testing.T) {
-	tmp := t.TempDir()
-	inst := filepath.Join(tmp, "i.md")
-	if err := os.WriteFile(inst, []byte("Feishu Bridge Runtime Instructions\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	argv := []string{"claude", "--append-system-prompt-file", inst, "normal user prompt"}
+	argv := []string{"claude", "--append-system-prompt", "Feishu Bridge Runtime Instructions\n", "normal user prompt"}
 	if err := ValidateInstruction(argv); err != nil {
 		t.Fatalf("valid case failed: %v", err)
 	}
 }
 
-func TestValidateInstructionRejectsLeak(t *testing.T) {
-	tmp := t.TempDir()
-	inst := filepath.Join(tmp, "i.md")
-	if err := os.WriteFile(inst, []byte("Feishu Bridge Runtime Instructions\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	argv := []string{"claude", "--append-system-prompt-file", inst, "prompt including Feishu Bridge Runtime Instructions text"}
+func TestValidateInstructionRejectsMissingMarker(t *testing.T) {
+	argv := []string{"claude", "--append-system-prompt", "other instructions", "user prompt"}
 	if err := ValidateInstruction(argv); err == nil {
-		t.Fatalf("leak should be rejected")
+		t.Fatalf("missing marker should be rejected")
 	}
 }
 
-func TestValidateInstructionRejectsMissingFile(t *testing.T) {
-	argv := []string{"claude", "--append-system-prompt-file", "/no/such/file", "user prompt"}
+func TestValidateInstructionRejectsMissingArgument(t *testing.T) {
+	argv := []string{"claude", "user prompt"}
 	if err := ValidateInstruction(argv); err == nil {
-		t.Fatalf("missing instruction file should error")
+		t.Fatalf("missing instruction argument should error")
 	}
 }
 

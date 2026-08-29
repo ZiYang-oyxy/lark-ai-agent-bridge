@@ -69,12 +69,12 @@ func TestBuildClaudeOneShotCommandResumesInternalSession(t *testing.T) {
 	}
 }
 
-func TestClaudeOneShotAppendsBridgeSystemPromptFileBeforeUserPrompt(t *testing.T) {
-	got, err := BuildOneShotCommand(OneShotConfig{Kind: Claude, Prompt: "hello", AgentSessionID: "sess", ClaudeSystemPromptFile: "/private/v1.md"})
+func TestClaudeOneShotAppendsBridgeSystemPromptBeforeResume(t *testing.T) {
+	got, err := BuildOneShotCommand(OneShotConfig{Kind: Claude, Prompt: "hello", AgentSessionID: "sess", ClaudeSystemPrompt: "bridge\nrules\n"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"claude", "-p", "--output-format", "stream-json", "--verbose", "--include-partial-messages", "--dangerously-skip-permissions", "--effort", "low", "--append-system-prompt-file", "/private/v1.md", "--resume", "sess"}
+	want := []string{"claude", "-p", "--output-format", "stream-json", "--verbose", "--include-partial-messages", "--dangerously-skip-permissions", "--effort", "low", "--append-system-prompt", "bridge\nrules\n", "--resume", "sess"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("argv = %#v, want %#v", got, want)
 	}
@@ -88,6 +88,21 @@ func TestBuildClaudeOneShotCommandUsesConfiguredModelAndEffort(t *testing.T) {
 	want := []string{"claude", "-p", "--output-format", "stream-json", "--verbose", "--include-partial-messages", "--dangerously-skip-permissions", "--effort", "high", "--model", "opus"}
 	if got := strings.Join(cmd, "\x00"); got != strings.Join(want, "\x00") {
 		t.Fatalf("one-shot command = %#v, want %#v", cmd, want)
+	}
+}
+
+func TestBuildClaudeOneShotCommandSupportsExtendedEfforts(t *testing.T) {
+	for _, effort := range []string{"xhigh", "max"} {
+		t.Run(effort, func(t *testing.T) {
+			cmd, err := BuildOneShotCommand(OneShotConfig{Kind: Claude, Prompt: "hello", Effort: effort})
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := []string{"claude", "-p", "--output-format", "stream-json", "--verbose", "--include-partial-messages", "--dangerously-skip-permissions", "--effort", effort}
+			if !reflect.DeepEqual(cmd, want) {
+				t.Fatalf("one-shot command = %#v, want %#v", cmd, want)
+			}
+		})
 	}
 }
 
@@ -148,6 +163,16 @@ func TestBuildCodexOneShotCommandUsesConfiguredEffort(t *testing.T) {
 			name: "resume",
 			cfg:  OneShotConfig{Kind: Codex, Prompt: "next", AgentSessionID: "thread-1", Effort: "medium"},
 			want: []string{"codex", "exec", "-c", `model_reasoning_effort="medium"`, "resume", "--json", "thread-1", "-"},
+		},
+		{
+			name: "xhigh",
+			cfg:  OneShotConfig{Kind: Codex, Prompt: "inspect", Effort: "xhigh"},
+			want: []string{"codex", "exec", "-c", `model_reasoning_effort="xhigh"`, "--json", "-"},
+		},
+		{
+			name: "max",
+			cfg:  OneShotConfig{Kind: Codex, Prompt: "inspect", Effort: "max"},
+			want: []string{"codex", "exec", "-c", `model_reasoning_effort="max"`, "--json", "-"},
 		},
 	}
 	for _, tt := range tests {
@@ -252,7 +277,7 @@ func TestBuildClaudeOneShotKeepsPromptOffArgv(t *testing.T) {
 
 func TestBuildOneShotRejectsNULInBridgeInstructions(t *testing.T) {
 	for _, cfg := range []OneShotConfig{
-		{Kind: Claude, Prompt: "hello", ClaudeSystemPromptFile: "/private/v1\x00.md"},
+		{Kind: Claude, Prompt: "hello", ClaudeSystemPrompt: "bridge\x00rules"},
 		{Kind: Codex, Prompt: "hello", DeveloperInstructions: "bridge\x00rules"},
 	} {
 		if _, err := BuildOneShotCommand(cfg); err == nil || !strings.Contains(err.Error(), "NUL") {

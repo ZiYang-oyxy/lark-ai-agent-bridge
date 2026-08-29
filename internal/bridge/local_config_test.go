@@ -36,6 +36,30 @@ func localConfigService(t *testing.T) (*Service, *config.PreferenceStore) {
 	return svc, store
 }
 
+func localAgentConfigService(t *testing.T) (*Service, *config.PreferenceStore) {
+	t.Helper()
+	agents := config.AgentsConfig{
+		SchemaVersion: config.AgentsSchemaVersion,
+		Agents: []config.AgentDef{
+			{Kind: "claude", Label: "Claude Code", Homes: []config.AgentHome{{Label: config.DefaultHomeLabel}, {Label: "claude-home", Path: "/h/claude"}}, Bins: []config.AgentBin{{Label: config.DefaultBinLabel}, {Label: "cc4", Path: "/b/cc4"}}},
+			{Kind: "codex", Label: "Codex CLI", Homes: []config.AgentHome{{Label: config.DefaultHomeLabel}, {Label: "codex-home", Path: "/h/codex"}}, Bins: []config.AgentBin{{Label: config.DefaultBinLabelFor("codex")}, {Label: "cx4", Path: "/b/cx4"}}},
+		},
+	}
+	defaults := config.RuntimePreference{
+		Model: "default", Effort: "low", ReplyMode: config.ReplyModeAppend,
+		ConversationMode: config.ConversationModeChat, GroupMessageMode: config.GroupMessageModeMentionOnly,
+		Agent: "claude", AgentHome: "claude-home", AgentBin: "cc4",
+	}
+	store, err := config.OpenPreferenceStore(filepath.Join(t.TempDir(), "preferences.json"), defaults, nil, agents.Agents...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc := NewService(config.Config{}, card.NewFakeRenderer(), newFakeRunner(), audit.NewRecorder())
+	svc.Agents = agents
+	svc.Preferences = store
+	return svc, store
+}
+
 // /local-config in a DM must not write an override; it guides the user to
 // /config instead.
 func TestLocalConfigInDirectMessageGuidesToConfig(t *testing.T) {
@@ -83,6 +107,116 @@ func TestLocalConfigSaveWritesOnlyTargetGroup(t *testing.T) {
 	}
 	if got := store.GetForChat("oc-b").ConversationMode; got != config.ConversationModeChat {
 		t.Fatalf("group oc-b conversation mode = %q, want unchanged chat", got)
+	}
+}
+
+func TestLocalConfigSaveSwitchesAgentAndClearsForeignPresets(t *testing.T) {
+	svc, store := localAgentConfigService(t)
+	result, err := svc.HandleActionResult(context.Background(), ActionRequest{
+		SessionID: "local-agent-card", ActionID: "local_config.save", Actor: "ou_admin", Value: "oc-a",
+		FormValues: map[string]string{
+			"agent": "codex", "agent_home": "claude-home", "agent_bin": "cc4",
+			"effort": "low", "reply_mode": "append", "conversation_mode": "chat",
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Event == nil || result.Event.Type != "local_config_saved" {
+		t.Fatalf("result event = %#v", result.Event)
+	}
+	global := store.Get()
+	if global.Agent != "claude" || global.AgentHome != "claude-home" || global.AgentBin != "cc4" {
+		t.Fatalf("global preference changed = %#v", global)
+	}
+	effective := store.GetForChat("oc-a")
+	if effective.Agent != "codex" || effective.AgentHome != "" || effective.AgentBin != "" {
+		t.Fatalf("local effective preference = %#v, want codex defaults", effective)
+	}
+	override, ok := store.ChatOverride("oc-a")
+	if !ok || override.Agent == nil || *override.Agent != "codex" || override.AgentHome == nil || *override.AgentHome != "" || override.AgentBin == nil || *override.AgentBin != "" {
+		t.Fatalf("local override = %#v, want pinned codex defaults", override)
+	}
+	if text := segmentText(*result.Event); !strings.Contains(text, "**Agent**：`claude` → `codex`") || !strings.Contains(text, "**Agent 主目录**") || !strings.Contains(text, "**Agent 可执行文件**") {
+		t.Fatalf("agent switch summary = %q", text)
+	}
+}
+
+func TestLocalConfigSaveSwitchingBackToGlobalAgentClearsAgentPresets(t *testing.T) {
+	svc, store := localAgentConfigService(t)
+	codex, empty := "codex", ""
+	if err := store.SetChat("oc-a", config.ChatOverride{Agent: &codex, AgentHome: &empty, AgentBin: &empty}); err != nil {
+		t.Fatal(err)
+	}
+	_, err := svc.HandleActionResult(context.Background(), ActionRequest{
+		SessionID: "local-agent-card", ActionID: "local_config.save", Actor: "ou_admin", Value: "oc-a",
+		FormValues: map[string]string{"agent": "claude", "agent_home": config.DefaultHomeLabel, "agent_bin": config.DefaultBinLabelFor("codex")},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := store.ChatOverride("oc-a"); ok {
+		t.Fatalf("switching back to global Agent should clear the override: %#v", store.GetForChat("oc-a"))
+	}
+}
+
+func TestLocalConfigSaveLegacyFormWithoutAgentPreservesAgentOverride(t *testing.T) {
+	svc, store := localAgentConfigService(t)
+	codex, codexHome, codexBin := "codex", "codex-home", "cx4"
+	if err := store.SetChat("oc-a", config.ChatOverride{Agent: &codex, AgentHome: &codexHome, AgentBin: &codexBin}); err != nil {
+		t.Fatal(err)
+	}
+	_, err := svc.HandleActionResult(context.Background(), ActionRequest{
+		SessionID: "legacy-local-card", ActionID: "local_config.save", Actor: "ou_admin", Value: "oc-a",
+		// A pre-upgrade card has home/bin controls but no Agent mode control.
+		FormValues: map[string]string{"agent_home": "codex-home", "agent_bin": "cx4", "reply_mode": "latest-card"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	effective := store.GetForChat("oc-a")
+	if effective.Agent != "codex" || effective.AgentHome != "codex-home" || effective.AgentBin != "cx4" || effective.ReplyMode != config.ReplyModeLatestCard {
+		t.Fatalf("legacy form save = %#v", effective)
+	}
+}
+
+func TestLocalConfigSetAgentPinsDefaultsAndInheritClearsThem(t *testing.T) {
+	svc, store := localAgentConfigService(t)
+	msg := Message{ID: "set-agent", IsGroup: true, ChatID: "oc-a", Sender: "ou_admin"}
+	if err := svc.handleLocalConfigCommand(context.Background(), msg, Command{Type: CommandLocalConfig, Text: "set agent=codex"}, store.GetForChat("oc-a").ConversationMode); err != nil {
+		t.Fatal(err)
+	}
+	override, ok := store.ChatOverride("oc-a")
+	if !ok || override.Agent == nil || *override.Agent != "codex" || override.AgentHome == nil || *override.AgentHome != "" || override.AgentBin == nil || *override.AgentBin != "" {
+		t.Fatalf("agent set override = %#v", override)
+	}
+	if err := svc.handleLocalConfigCommand(context.Background(), msg, Command{Type: CommandLocalConfig, Text: "set agent=inherit"}, store.GetForChat("oc-a").ConversationMode); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := store.ChatOverride("oc-a"); ok {
+		t.Fatalf("agent inherit should clear Agent and its presets")
+	}
+	if err := svc.handleLocalConfigCommand(context.Background(), msg, Command{Type: CommandLocalConfig, Text: "set agent=codex agent_home=codex-home agent_bin=cx4"}, store.GetForChat("oc-a").ConversationMode); err != nil {
+		t.Fatal(err)
+	}
+	effective := store.GetForChat("oc-a")
+	if effective.Agent != "codex" || effective.AgentHome != "codex-home" || effective.AgentBin != "cx4" {
+		t.Fatalf("explicit codex presets = %#v", effective)
+	}
+}
+
+func TestLocalConfigSetRejectsUnconfiguredAgent(t *testing.T) {
+	svc, store := localConfigService(t)
+	msg := Message{ID: "set-agent", IsGroup: true, ChatID: "oc-a", Sender: "ou_admin"}
+	if err := svc.handleLocalConfigCommand(context.Background(), msg, Command{Type: CommandLocalConfig, Text: "set agent=codex"}, store.GetForChat("oc-a").ConversationMode); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := store.ChatOverride("oc-a"); ok {
+		t.Fatal("unconfigured Agent must not be persisted")
+	}
+	events := svc.Cards.(*card.FakeRenderer).Events()
+	if len(events) == 0 || !strings.Contains(segmentText(events[len(events)-1]), "agent") {
+		t.Fatalf("events = %#v, want validation error", events)
 	}
 }
 
@@ -234,7 +368,8 @@ func TestLocalConfigOverviewMarksOverriddenFields(t *testing.T) {
 	svc, store := localConfigService(t)
 	topic := config.ConversationModeTopic
 	latest := config.ReplyModeLatestCard
-	if err := store.SetChat("oc-a", config.ChatOverride{ConversationMode: &topic, ReplyMode: &latest}); err != nil {
+	claude := config.DefaultAgentKind
+	if err := store.SetChat("oc-a", config.ChatOverride{ConversationMode: &topic, ReplyMode: &latest, Agent: &claude}); err != nil {
 		t.Fatal(err)
 	}
 	overview := svc.localConfigOverview("oc-a")
@@ -244,14 +379,14 @@ func TestLocalConfigOverviewMarksOverriddenFields(t *testing.T) {
 	if overview.ChatID != "oc-a" {
 		t.Fatalf("overview ChatID = %q, want oc-a", overview.ChatID)
 	}
-	if overview.OverrideCount != 2 {
-		t.Fatalf("overview OverrideCount = %d, want 2", overview.OverrideCount)
+	if overview.OverrideCount != 3 {
+		t.Fatalf("overview OverrideCount = %d, want 3", overview.OverrideCount)
 	}
 	byLabel := map[string]card.LocalConfigItem{}
 	for _, item := range overview.Items {
 		byLabel[item.Label] = item
 	}
-	for _, label := range []string{"回复模式", "会话模式"} {
+	for _, label := range []string{"Agent mode", "回复模式", "会话模式"} {
 		if !byLabel[label].Overridden {
 			t.Fatalf("item %q should be marked overridden", label)
 		}
@@ -264,6 +399,9 @@ func TestLocalConfigOverviewMarksOverriddenFields(t *testing.T) {
 	// Effective values flow through GetForChat.
 	if got := byLabel["会话模式"].Value; got != string(config.ConversationModeTopic) {
 		t.Fatalf("会话模式 value = %q, want topic", got)
+	}
+	if got := byLabel["Agent mode"].Value; got != config.DefaultAgentKind {
+		t.Fatalf("Agent mode value = %q, want %q", got, config.DefaultAgentKind)
 	}
 }
 

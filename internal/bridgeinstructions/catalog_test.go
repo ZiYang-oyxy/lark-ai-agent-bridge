@@ -2,7 +2,6 @@ package bridgeinstructions
 
 import (
 	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -64,25 +63,14 @@ func TestCurrentCatalogContainsScheduleProposalContract(t *testing.T) {
 	}
 }
 
-func TestRuntimeMaterializesOnePrivateReusableClaudeFile(t *testing.T) {
+func TestRuntimeKeepsInstructionsInMemoryUntilClose(t *testing.T) {
+	tempDir := t.TempDir()
+	t.Setenv("TMPDIR", tempDir)
 	rt, err := NewRuntime()
 	if err != nil {
 		t.Fatal(err)
 	}
-	path1, err := rt.ClaudeFile(CurrentVersion)
-	if err != nil {
-		t.Fatal(err)
-	}
-	path2, err := rt.ClaudeFile(CurrentVersion)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if path1 != path2 {
-		t.Fatalf("paths differ: %q %q", path1, path2)
-	}
-	assertMode(t, filepath.Dir(path1), 0o700)
-	assertMode(t, path1, 0o600)
-	got, err := os.ReadFile(path1)
+	got, err := rt.Content(CurrentVersion)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -90,39 +78,34 @@ func TestRuntimeMaterializesOnePrivateReusableClaudeFile(t *testing.T) {
 	if !ok {
 		t.Fatal("current version missing")
 	}
-	if string(got) != want {
-		t.Fatal("materialized content differs")
+	if got != want {
+		t.Fatal("runtime content differs")
 	}
-	dir := filepath.Dir(path1)
+	entries, err := os.ReadDir(tempDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("runtime wrote temporary artifacts: %#v", entries)
+	}
 	if err := rt.Close(); err != nil {
 		t.Fatal(err)
 	}
 	if err := rt.Close(); err != nil {
 		t.Fatalf("second close: %v", err)
 	}
-	if _, err := os.Stat(dir); !os.IsNotExist(err) {
-		t.Fatalf("runtime directory survived close: %v", err)
+	if _, err := rt.Content(CurrentVersion); err == nil {
+		t.Fatal("runtime content survived close")
 	}
 }
 
-func TestRuntimeMaterializesVersionsIndependently(t *testing.T) {
+func TestRuntimeKeepsVersionsIndependently(t *testing.T) {
 	rt, err := newRuntime(map[string]string{"v1": "one", "v2": "two"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer rt.Close()
 
-	path1, err := rt.ClaudeFile("v1")
-	if err != nil {
-		t.Fatal(err)
-	}
-	path2, err := rt.ClaudeFile("v2")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if path1 == path2 {
-		t.Fatalf("versions share path %q", path1)
-	}
 	if got, err := rt.Content("v1"); err != nil || got != "one" {
 		t.Fatalf("v1 content = %q, %v", got, err)
 	}
@@ -137,21 +120,7 @@ func TestRuntimeRejectsUnknownVersion(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer rt.Close()
-	if _, err := rt.ClaudeFile("v999"); err == nil || !strings.Contains(err.Error(), "unsupported bridge instructions version") {
-		t.Fatalf("error = %v", err)
-	}
 	if _, err := rt.Content("v999"); err == nil || !strings.Contains(err.Error(), "unsupported bridge instructions version") {
 		t.Fatalf("error = %v", err)
-	}
-}
-
-func assertMode(t *testing.T, path string, want os.FileMode) {
-	t.Helper()
-	info, err := os.Stat(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got := info.Mode().Perm(); got != want {
-		t.Fatalf("mode(%q) = %04o, want %04o", path, got, want)
 	}
 }
